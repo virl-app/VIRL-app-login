@@ -1389,8 +1389,10 @@ function GateScreen({onAuth}) {
   const [password,setPassword] = useState("");
   const [authLoading,setAuthLoading] = useState(false);
   const [authError,setAuthError] = useState("");
+  const [ageConfirmed,setAgeConfirmed] = useState(false);
   function handleEmailAuth() {
     if (!email.trim()||!password.trim()) return;
+    if (mode==="signup"&&!ageConfirmed) { setAuthError("Please confirm you are 18 or older to create an account."); return; }
     setAuthLoading(true); setAuthError("");
     var p = mode==="signup"
       ? supabaseClient.auth.signUp({email:email.trim(),password:password.trim()})
@@ -1433,6 +1435,17 @@ function GateScreen({onAuth}) {
             placeholder="Password" type="password"
             style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:12,color:B.ink,fontFamily:"'Jost',sans-serif",fontSize:15,padding:"13px 16px",marginBottom:12,outline:"none"}}/>
           {authError&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:mode==="signup"&&authError.includes("Check")?B.blue:B.coral,textAlign:"center",marginBottom:10,lineHeight:1.5}}>{authError}</div>}
+          {mode==="signup"&&(
+            <div style={{display:"flex",alignItems:"flex-start",gap:10,marginBottom:12,padding:"10px 14px",background:ageConfirmed?B.navySoft:B.bg,border:"1px solid "+(ageConfirmed?B.blue:B.border),borderRadius:10,cursor:"pointer",transition:"all .2s"}}
+              onClick={function(){setAgeConfirmed(function(v){return !v;});}}>
+              <div style={{width:18,height:18,border:"2px solid "+(ageConfirmed?B.blue:B.border),borderRadius:4,background:ageConfirmed?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1,transition:"all .15s"}}>
+                {ageConfirmed&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
+              </div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:ageConfirmed?B.navy:B.muted,lineHeight:1.5}}>
+                {"I confirm that I am 18 years of age or older."}
+              </div>
+            </div>
+          )}
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted,textAlign:"center",marginBottom:14,lineHeight:1.6}}>
             {"By continuing you agree to VIRL's "}
             <a href="https://app.termly.io/policy-viewer/policy.html?policyUUID=45628bcc-78b6-4904-9408-c872a26558cf" target="_blank" rel="noreferrer"
@@ -1442,7 +1455,7 @@ function GateScreen({onAuth}) {
               style={{color:B.blue,textDecoration:"none",fontWeight:500}}>Privacy Policy</a>
             {". You are solely responsible for reviewing and ensuring any content you post complies with each platform's community guidelines and terms of service."}
           </div>
-          <button onClick={handleEmailAuth} disabled={authLoading||!email.trim()||!password.trim()}
+          <button onClick={handleEmailAuth} disabled={authLoading||!email.trim()||!password.trim()||(mode==="signup"&&!ageConfirmed)}
             style={{width:"100%",background:authLoading?B.muted:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,marginBottom:12,boxShadow:authLoading?"none":"0 4px 14px rgba(31,58,138,0.3)",transition:"all .2s"}}>
             {authLoading?"Signing in...":(mode==="signup"?"Create account":"Sign in")}
           </button>
@@ -1584,6 +1597,27 @@ function App() {
   }
 
   function handleSignOut() { supabaseClient.auth.signOut(); }
+
+  // ── Account deletion ─────────────────────────────────────────────────
+  const [showDeleteConfirm,setShowDeleteConfirm] = useState(false);
+  const [deleteLoading,setDeleteLoading] = useState(false);
+
+  async function handleDeleteAccount() {
+    if (!session) return;
+    setDeleteLoading(true);
+    try {
+      // Delete Supabase data via service-side API
+      await fetch("/api/delete-account", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({userId: session.user.id}),
+      });
+    } catch(e) { console.error("Delete error:", e); }
+    // Sign out regardless — Supabase auth deletion requires service key on server
+    await supabaseClient.auth.signOut();
+    setDeleteLoading(false);
+    setShowDeleteConfirm(false);
+  }
 
   // Calculate trial status
   var trialExpired = false;
@@ -1959,6 +1993,36 @@ function App() {
               setProfile(p);
               if(session)saveProfileToSupabase(p,session.user.id);
             }}/>
+
+            {/* ── Account settings ───────────────────────────────────── */}
+            <div style={{marginTop:32,paddingTop:24,borderTop:"1px solid "+B.divider}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:16}}>Account</div>
+              {!showDeleteConfirm?(
+                <button onClick={function(){setShowDeleteConfirm(true);}}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.coral,background:"none",border:"1px solid rgba(244,63,94,0.2)",borderRadius:10,padding:"10px 16px",cursor:"pointer",width:"100%",textAlign:"left",display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:14}}>{"⚠"}</span>
+                  {"Delete my account"}
+                </button>
+              ):(
+                <div style={{background:"rgba(244,63,94,0.05)",border:"1px solid rgba(244,63,94,0.25)",borderRadius:14,padding:"20px"}}>
+                  <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.coral,marginBottom:8}}>Delete your account?</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.7,marginBottom:16}}>
+                    {"This will permanently delete your Creator Profile, Vault content, and all saved plans. Your subscription (if active) will not be automatically cancelled — please cancel in Stripe before deleting. This action cannot be undone."}
+                  </div>
+                  <div style={{display:"flex",gap:10}}>
+                    <button onClick={function(){setShowDeleteConfirm(false);}}
+                      style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.muted,background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px",cursor:"pointer"}}>
+                      Cancel
+                    </button>
+                    <button onClick={handleDeleteAccount} disabled={deleteLoading}
+                      style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,color:B.white,background:deleteLoading?B.muted:B.coral,border:"none",borderRadius:10,padding:"12px",cursor:"pointer",transition:"all .2s"}}>
+                      {deleteLoading?"Deleting...":"Yes, delete my account"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {!isFoundingOrPro&&profileComplete&&(
               <div style={{background:B.navy,borderRadius:14,padding:"20px 20px",marginTop:16,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
                 <div>
@@ -2356,6 +2420,7 @@ function App() {
               {label:"Terms of Service",    href:"https://app.termly.io/policy-viewer/policy.html?policyUUID=45628bcc-78b6-4904-9408-c872a26558cf",         isBtn:false},
               {label:"Cookie Policy",       href:"https://app.termly.io/policy-viewer/policy.html?policyUUID=b300ada6-f4b7-4b62-bbe6-053da497d2c6",       isBtn:false},
               {label:"Consent Preferences", href:"#",                               termly:true},
+              {label:"Consent Preferences", href:"#",                               termly:true},
               {label:"Contact Us",          href:"mailto:hello@govirl.ai",          isBtn:false},
             ].map(function(link,i){return (
               <React.Fragment key={link.label}>
@@ -2366,6 +2431,7 @@ function App() {
                     onClick={function(e){
                       e.preventDefault();
                       if (window.displayPreferenceModal) { window.displayPreferenceModal(); }
+                      else if (window.Termly && window.Termly.openCcpa) { window.Termly.openCcpa(); }
                     }}
                     style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,color:B.muted,textDecoration:"none",padding:"4px 6px",borderRadius:6,transition:"color .15s",cursor:"pointer"}}
                     onMouseOver={function(e){e.currentTarget.style.color=B.navy;}}
