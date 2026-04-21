@@ -1399,7 +1399,7 @@ function GateScreen({onAuth}) {
     setAuthLoading(true);
     supabaseClient.auth.signInWithOAuth({
       provider:"google",
-      options:{redirectTo:"https://govirl.ai"}
+      options:{redirectTo:"https://app.govirl.ai"}
     }).catch(function(){ setAuthLoading(false); setAuthError("Google sign-in failed. Try email instead."); });
   }
 
