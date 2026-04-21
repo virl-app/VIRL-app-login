@@ -1515,8 +1515,22 @@ function App() {
   const [trending,setTrending] = useState("");
   const [context,setContext] = useState("");
   const [loading,setLoading] = useState(false);
-  const [cards,setCards] = useState(null);
-  const [stats,setStats] = useState(null);
+  // Load persisted plan — valid until next Monday credit reset
+  const [cards,setCards] = useState(function(){
+    try {
+      var p = JSON.parse(localStorage.getItem("virl_saved_plan")||"null");
+      if (p && p.expiresAt && Date.now() < p.expiresAt) return p.cards;
+    } catch(e){}
+    return null;
+  });
+  const [stats,setStats] = useState(function(){
+    try {
+      var p = JSON.parse(localStorage.getItem("virl_saved_plan")||"null");
+      if (p && p.expiresAt && Date.now() < p.expiresAt) return p.stats||null;
+    } catch(e){}
+    return null;
+  });
+  const [showVaultReminder,setShowVaultReminder] = useState(false);
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
   const [results,setResults] = useState(stored.results||[]);
@@ -1728,12 +1742,29 @@ function App() {
       setUpgradeReason("credits"); setShowUpgrade(true); return;
     }
     refreshCredits();
-    setLoading(true); setError(""); setCards(null); setStats(null);
+    setLoading(true); setError(""); setCards(null); setStats(null); setShowVaultReminder(false);
+    try { localStorage.removeItem("virl_saved_plan"); } catch(e) {}
     callAPI(planPrompt, 3000, null, null, cost, userToken).then(function(full) {
       const parts = full.split(/STATS/i);
       const parsed = extractJSON(parts[0]||full);
       if (parsed&&Array.isArray(parsed)&&parsed.length>0) {
         setCards(parsed);
+        setShowVaultReminder(true);
+        // Persist plan + stats until next Monday
+        try {
+          var planStats = null;
+          if (parts[1]) {
+            var sm = parts[1].match(/reach=([\d,K+]+).*?rate=([\d.]+).*?earn=([^\s\n]+)/i);
+            if (sm) planStats = {reach:sm[1],engagement:sm[2]+"%",earnings:sm[3]};
+          }
+          localStorage.setItem("virl_saved_plan", JSON.stringify({
+            cards: parsed,
+            stats: planStats,
+            expiresAt: getNextMonday(),
+            savedAt: Date.now(),
+          }));
+          if (planStats) setStats(planStats);
+        } catch(e) {}
         if(!firstPlanDone&&!isFoundingOrPro){
           setFirstPlanDone(true);
           setShowFirstPlanCelebration(true);
@@ -2145,6 +2176,21 @@ function App() {
 
             {cards&&(
               <div>
+                {showVaultReminder&&!showFirstPlanCelebration&&(
+                  <div style={{background:B.navySoft,borderRadius:14,padding:"14px 18px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:10}}>
+                      <span style={{fontSize:16}}>{"🗂"}</span>
+                      <div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.navy,marginBottom:2}}>Save the cards you want to keep.</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>{"Your plan is saved for the week, but Vault items are yours to keep forever."}</div>
+                      </div>
+                    </div>
+                    <button onClick={function(){setShowVaultReminder(false);}}
+                      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.muted,background:"none",border:"none",cursor:"pointer",flexShrink:0,padding:0}}>
+                      {"Dismiss"}
+                    </button>
+                  </div>
+                )}
                 {showFirstPlanCelebration&&(
                   <div style={{background:"linear-gradient(135deg,"+B.navy+" 0%,"+B.blue+" 100%)",borderRadius:16,padding:"24px 20px",marginBottom:16,textAlign:"center",position:"relative",overflow:"hidden"}}>
                     <div style={{position:"absolute",top:-20,right:-20,fontSize:80,opacity:0.06}}>{"✦"}</div>
@@ -2526,8 +2572,7 @@ function App() {
               {label:"Privacy Policy",      href:"https://app.termly.io/policy-viewer/policy.html?policyUUID=bc2fc2c6-2e38-40d0-9d73-de9941f510d0",      isBtn:false},
               {label:"Terms of Service",    href:"https://app.termly.io/policy-viewer/policy.html?policyUUID=45628bcc-78b6-4904-9408-c872a26558cf",         isBtn:false},
               {label:"Cookie Policy",       href:"https://app.termly.io/policy-viewer/policy.html?policyUUID=b300ada6-f4b7-4b62-bbe6-053da497d2c6",       isBtn:false},
-              {label:"Consent Preferences", href:"#",                               termly:true},
-              {label:"Consent Preferences", href:"#",                               termly:true},
+              {label:"Consent Preferences", <a href="#" class="termly-display-preferences">Consent Preferences</a>                          termly:true},
               {label:"Contact Us",          href:"mailto:hello@govirl.ai",          isBtn:false},
             ].map(function(link,i){return (
               <React.Fragment key={link.label}>
