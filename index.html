@@ -1601,6 +1601,37 @@ function App() {
   // ── Account deletion ─────────────────────────────────────────────────
   const [showDeleteConfirm,setShowDeleteConfirm] = useState(false);
   const [deleteLoading,setDeleteLoading] = useState(false);
+  const [adminData,setAdminData] = useState(null);
+  const [adminLoading,setAdminLoading] = useState(false);
+
+  // ── Admin dashboard data fetch ────────────────────────────────────────
+  async function loadAdminData() {
+    if (!isAdmin) return;
+    setAdminLoading(true);
+    try {
+      const headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer "+SUPABASE_ANON_KEY,
+      };
+      // Fetch credits table — plan, credits, stripe_customer_id, created_at
+      const credRes = await fetch(
+        SUPABASE_URL+"/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id,updated_at&order=updated_at.desc",
+        {headers}
+      );
+      const credits = await credRes.json();
+
+      // Aggregate stats
+      const total = credits.length;
+      const paid = credits.filter(function(r){return r.plan==="standard"||r.plan==="founding";}).length;
+      const free = credits.filter(function(r){return r.plan==="free";}).length;
+      const mrr = paid * 19;
+
+      setAdminData({credits, total, paid, free, mrr});
+    } catch(e) {
+      console.error("Admin load error:", e);
+    }
+    setAdminLoading(false);
+  }
 
   async function handleDeleteAccount() {
     if (!session) return;
@@ -1665,6 +1696,7 @@ function App() {
       +((profile.platformAudiences&&Object.keys(profile.platformAudiences).filter(function(k){return profile.platformAudiences[k];}).length)?" Per-platform audiences: "+Object.keys(profile.platformAudiences).filter(function(k){return profile.platformAudiences[k];}).map(function(k){return k+": "+profile.platformAudiences[k];}).join("; ")+".":"")
     : "";
 
+  const isAdmin = session&&session.user&&session.user.email==="laurenannedoty@gmail.com";
   const TABS = [
     {key:"profile", label:"My Profile"},
     {key:"plan",    label:"VIRL Plan"},
@@ -1673,6 +1705,7 @@ function App() {
     {key:"algo",    label:"Algorithm"},
     {key:"vault",   label:"Vault ("+vault.length+")"},
     {key:"results", label:"Results"},
+    ...(isAdmin?[{key:"admin", label:"Dashboard"}]:[]),
   ];
 
   const planPrompt = "You are VIRL, an AI content strategist and creative director. "+profileCtx
@@ -2399,6 +2432,80 @@ function App() {
               </div>
             </div>
             <Results results={results}/>
+          </div>
+        )}
+
+        {tab==="admin"&&isAdmin&&(
+          <div>
+            <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
+              <Eyebrow>Admin</Eyebrow>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+                VIRL<br/><span style={{color:B.navy}}>Dashboard.</span>
+              </div>
+              <button onClick={loadAdminData} disabled={adminLoading}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:adminLoading?B.muted:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",transition:"all .2s"}}>
+                {adminLoading?"Loading...":"Refresh data"}
+              </button>
+            </div>
+
+            {!adminData&&!adminLoading&&(
+              <div style={{background:B.card,borderRadius:16,padding:"40px 24px",textAlign:"center"}}>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,marginBottom:8}}>Click Refresh to load your data.</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted}}>Pulls live from Supabase each time.</div>
+              </div>
+            )}
+
+            {adminData&&(
+              <div>
+                {/* ── KPI cards ── */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:12,marginBottom:20}}>
+                  {[
+                    {label:"Total users",   value:adminData.total,           color:B.navy},
+                    {label:"Paid",          value:adminData.paid,             color:B.green},
+                    {label:"Free trial",    value:adminData.free,             color:B.muted},
+                    {label:"Est. MRR",      value:"$"+adminData.mrr,          color:B.blue},
+                  ].map(function(kpi,i){return (
+                    <div key={i} style={{background:B.card,borderRadius:14,padding:"18px 16px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{kpi.label}</div>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:36,color:kpi.color,lineHeight:1}}>{kpi.value}</div>
+                    </div>
+                  );})}
+                </div>
+
+                {/* ── Conversion rate ── */}
+                <div style={{background:B.navySoft,borderRadius:14,padding:"16px 18px",marginBottom:20,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.navy}}>Trial to paid conversion</div>
+                  <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.navy}}>
+                    {adminData.total>0?Math.round((adminData.paid/adminData.total)*100)+"%":"—"}
+                  </div>
+                </div>
+
+                {/* ── User table ── */}
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>
+                  {"All users ("+adminData.credits.length+")"}
+                </div>
+                <div style={{background:B.card,borderRadius:14,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                  {/* Header */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 80px 80px",background:B.navy,padding:"10px 16px",gap:8}}>
+                    {["User ID","Plan","Credits"].map(function(h){return (
+                      <div key={h} style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>{h}</div>
+                    );})}
+                  </div>
+                  {/* Rows */}
+                  {adminData.credits.map(function(row,i){return (
+                    <div key={row.user_id} style={{display:"grid",gridTemplateColumns:"1fr 80px 80px",padding:"10px 16px",gap:8,borderBottom:i<adminData.credits.length-1?"1px solid "+B.divider:"none",background:i%2===0?B.card:B.bg,alignItems:"center"}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.user_id}</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:row.plan==="standard"||row.plan==="founding"?B.green:B.muted,textTransform:"capitalize"}}>{row.plan}</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.ink}}>{row.credits}</div>
+                    </div>
+                  );})}
+                </div>
+
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:12,textAlign:"center"}}>
+                  {"Est. MRR assumes $19/mo per paid user. Founding members counted at $19 equivalent. Data from Supabase credits table only."}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
