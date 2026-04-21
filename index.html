@@ -627,9 +627,21 @@ function PlanCard({card,idx,onSave,onLog,saved,result}) {
           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:B.sub,border:"none",borderRadius:99,cursor:"pointer"}}>
           {showLog?"Cancel":result?"Update Results":"Log Results"}
         </button>
-        <button onClick={function(){setShowScript(true);}}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
-          Write Script
+        <button onClick={function(){
+          if(isFoundingOrPro||(scriptsUsed<FREE_SCRIPT_LIMIT)){
+            if(!isFoundingOrPro){
+              var next=scriptsUsed+1;
+              setScriptsUsed(next);
+              try{localStorage.setItem("virl_scripts_used",String(next));}catch(e){}
+            }
+            setShowScript(true);
+          } else {
+            setUpgradeReason("scripts");
+            setShowUpgrade(true);
+          }
+        }}
+          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:isFoundingOrPro||scriptsUsed<FREE_SCRIPT_LIMIT?B.blueSoft:B.divider,color:isFoundingOrPro||scriptsUsed<FREE_SCRIPT_LIMIT?B.blue:B.muted,border:"none",borderRadius:99,cursor:"pointer",position:"relative"}}>
+          {isFoundingOrPro?"Write Script":scriptsUsed<FREE_SCRIPT_LIMIT?"Write Script ("+(FREE_SCRIPT_LIMIT-scriptsUsed)+" free left)":"Scripts — Upgrade to unlock"}
         </button>
         <SharePlanCard card={card}/>
       </div>
@@ -1545,6 +1557,12 @@ function App() {
   // ── Trial + upgrade state ────────────────────────────────────────────────
   const [showUpgrade,setShowUpgrade] = useState(false);
   const [upgradeReason,setUpgradeReason] = useState("credits");
+  const [scriptsUsed,setScriptsUsed] = useState(function(){try{return parseInt(localStorage.getItem("virl_scripts_used")||"0");}catch(e){return 0;}});
+  const [scansUsed,setScansUsed] = useState(function(){try{return parseInt(localStorage.getItem("virl_scans_used")||"0");}catch(e){return 0;}});
+  const [firstPlanDone,setFirstPlanDone] = useState(function(){try{return localStorage.getItem("virl_first_plan")==="1";}catch(e){return false;}});
+  const [showFirstPlanCelebration,setShowFirstPlanCelebration] = useState(false);
+  const FREE_SCRIPT_LIMIT = 2;
+  const FREE_SCAN_LIMIT = 3;
 
   async function handleCheckout(planType) {
     if (!session) return;
@@ -1644,6 +1662,11 @@ function App() {
     }
     refreshCredits();
     setLoading(true); setError(""); setCards(null); setStats(null);
+    if(!firstPlanDone&&!isFoundingOrPro){
+      setFirstPlanDone(true);
+      setShowFirstPlanCelebration(true);
+      try{localStorage.setItem("virl_first_plan","1");}catch(e){}
+    }
     callAPI(planPrompt, 3000, null, null, cost, userToken).then(function(full) {
       const parts = full.split(/STATS/i);
       const parsed = extractJSON(parts[0]||full);
@@ -1891,26 +1914,36 @@ function App() {
 
         {tab==="profile"&&(
           <div>
-            {!profileComplete&&(
+            {!(profileComplete&&firstPlanDone&&scansUsed>0)&&(
               <div style={{background:B.navy,borderRadius:16,padding:"20px",marginBottom:20,color:B.white}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.sky,marginBottom:12}}>Getting started</div>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.sky}}>Getting started</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:"rgba(255,255,255,0.4)"}}>
+                    {[profileComplete,firstPlanDone,scansUsed>0].filter(Boolean).length+"/3 complete"}
+                  </div>
+                </div>
                 {[
-                  {done:profileComplete, label:"Fill in your creator profile", sub:"Unlocks personalized AI plans"},
-                  {done:false, label:"Generate your first VIRL Plan", sub:"Your full week built in 60 seconds*", action:function(){setTab("plan");}},
-                  {done:false, label:"Scan a photo or video with VIRL Scan", sub:"Get your first viral potential score", action:function(){setTab("scan");}},
+                  {done:profileComplete, label:"Fill in your Creator Profile", sub:"Unlocks personalized AI plans that sound like you", action:null},
+                  {done:firstPlanDone, label:"Generate your first VIRL Plan", sub:"Your full week built in 60 seconds*", action:function(){setTab("plan");}},
+                  {done:scansUsed>0, label:"Scan a photo or video", sub:"Get your first viral potential score", action:function(){setTab("scan");}},
                 ].map(function(step,i){return (
-                  <div key={i} onClick={step.action||undefined}
-                    style={{display:"flex",alignItems:"center",gap:14,padding:"10px 0",borderBottom:i<2?"1px solid rgba(255,255,255,0.08)":"none",cursor:step.action?"pointer":"default"}}>
-                    <div style={{width:24,height:24,borderRadius:"50%",background:step.done?B.green:"rgba(255,255,255,0.1)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontFamily:"'Jost',sans-serif",fontSize:11,color:step.done?B.white:"rgba(255,255,255,0.6)"}}>
+                  <div key={i} onClick={!step.done&&step.action?step.action:undefined}
+                    style={{display:"flex",alignItems:"center",gap:14,padding:"10px 0",borderBottom:i<2?"1px solid rgba(255,255,255,0.08)":"none",cursor:!step.done&&step.action?"pointer":"default",opacity:step.done?0.7:1,transition:"opacity .2s"}}>
+                    <div style={{width:26,height:26,borderRadius:"50%",background:step.done?B.green:"rgba(255,255,255,0.1)",border:step.done?"none":"1px solid rgba(255,255,255,0.2)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontFamily:"'Jost',sans-serif",fontSize:11,color:step.done?B.white:"rgba(255,255,255,0.6)",transition:"all .3s"}}>
                       {step.done?"✓":(i+1)}
                     </div>
                     <div style={{flex:1}}>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:step.done?B.green:B.white}}>{step.label}</div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)",marginTop:2}}>{step.sub}</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:step.done?"rgba(255,255,255,0.5)":B.white,textDecoration:step.done?"line-through":"none"}}>{step.label}</div>
+                      {!step.done&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.45)",marginTop:2}}>{step.sub}</div>}
                     </div>
-                    {step.action&&!step.done&&<div style={{color:B.sky,fontSize:16}}>{"→"}</div>}
+                    {!step.done&&step.action&&<div style={{color:B.sky,fontSize:16}}>{"→"}</div>}
                   </div>
                 );})}
+                {!isFoundingOrPro&&(
+                  <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid rgba(255,255,255,0.08)",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.4)",textAlign:"center"}}>
+                    {"Free trial · "+Math.max(0,14-Math.round((Date.now()-new Date(session?.user?.created_at||Date.now()).getTime())/(1000*60*60*24)))+" days remaining"}
+                  </div>
+                )}
               </div>
             )}
             <div style={{marginBottom:24,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
@@ -1922,7 +1955,22 @@ function App() {
                 Fill this in once. Every plan and caption VIRL generates will sound authentically like you - not generic AI.
               </div>
             </div>
-            <CreatorProfile profile={profile} onSave={function(p){setProfile(p);if(session)saveProfileToSupabase(p,session.user.id);}}/>
+            <CreatorProfile profile={profile} onSave={function(p){
+              setProfile(p);
+              if(session)saveProfileToSupabase(p,session.user.id);
+            }}/>
+            {!isFoundingOrPro&&profileComplete&&(
+              <div style={{background:B.navy,borderRadius:14,padding:"20px 20px",marginTop:16,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+                <div>
+                  <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.white,marginBottom:4}}>{"Your profile is ready."}</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.6)",lineHeight:1.5}}>{"Upgrade to keep generating plans built on it — unlimited, every week."}</div>
+                </div>
+                <button onClick={function(){setUpgradeReason("profile");setShowUpgrade(true);}}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 20px",background:B.blue,color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0,boxShadow:"0 4px 12px rgba(37,99,235,0.4)"}}>
+                  Upgrade now
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -2000,6 +2048,27 @@ function App() {
 
             {cards&&(
               <div>
+                {showFirstPlanCelebration&&(
+                  <div style={{background:"linear-gradient(135deg,"+B.navy+" 0%,"+B.blue+" 100%)",borderRadius:16,padding:"24px 20px",marginBottom:16,textAlign:"center",position:"relative",overflow:"hidden"}}>
+                    <div style={{position:"absolute",top:-20,right:-20,fontSize:80,opacity:0.06}}>{"✦"}</div>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.white,marginBottom:6,position:"relative",zIndex:1}}>Your first VIRL plan.</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.7,marginBottom:16,position:"relative",zIndex:1}}>
+                      {"This is what 60 seconds of strategy looks like. Save the cards you love to your Vault — they’re yours to keep, even after your trial."}
+                    </div>
+                    <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",position:"relative",zIndex:1}}>
+                      <button onClick={function(){setShowFirstPlanCelebration(false);}}
+                        style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 20px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer"}}>
+                        Explore my plan
+                      </button>
+                      {!isFoundingOrPro&&(
+                        <button onClick={function(){setShowFirstPlanCelebration(false);setUpgradeReason("celebration");setShowUpgrade(true);}}
+                          style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 20px",background:"rgba(255,255,255,0.15)",color:B.white,border:"1px solid rgba(255,255,255,0.3)",borderRadius:99,cursor:"pointer"}}>
+                          Upgrade to keep generating
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {!hasSeenExplainer&&(
                   <div style={{background:B.navySoft,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",gap:14,alignItems:"flex-start"}}>
                     <div style={{fontSize:20,flexShrink:0}}>{"✦"}</div>
@@ -2113,7 +2182,35 @@ function App() {
                 Upload photos or videos. VIRL scores each for viral potential out of 10, recommends the best platform, and writes a ready-to-post caption you can edit and save.
               </div>
             </div>
-            <VIRLScan profile={profile} onSaveCaption={saveCaption}/>
+            {!isFoundingOrPro&&scansUsed>=FREE_SCAN_LIMIT?(
+              <div style={{background:B.navy,borderRadius:16,padding:"28px 24px",textAlign:"center"}}>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,marginBottom:8}}>{"You've used your "+FREE_SCAN_LIMIT+" free scans."}</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.65)",lineHeight:1.7,marginBottom:20}}>
+                  Upgrade to Standard for unlimited scans — plus 150 credits per week, Algorithm Intel, and the script generator.
+                </div>
+                <button onClick={function(){setUpgradeReason("scans");setShowUpgrade(true);}}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 32px",background:B.blue,color:B.white,border:"none",borderRadius:99,cursor:"pointer",boxShadow:"0 4px 14px rgba(37,99,235,0.4)"}}>
+                  Upgrade to unlock unlimited scans
+                </button>
+              </div>
+            ):(
+              <div>
+                {!isFoundingOrPro&&(
+                  <div style={{background:B.navySoft,borderRadius:10,padding:"10px 16px",marginBottom:16,fontFamily:"'Jost',sans-serif",fontSize:12,color:B.navy,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <span>{"Free trial: "+(FREE_SCAN_LIMIT-scansUsed)+" of "+FREE_SCAN_LIMIT+" scans remaining"}</span>
+                    <button onClick={function(){setUpgradeReason("scans");setShowUpgrade(true);}}
+                    style={{background:"none",border:"none",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.blue,cursor:"pointer",padding:0}}>Upgrade for unlimited</button>
+                  </div>
+                )}
+                <VIRLScan profile={profile} onSaveCaption={saveCaption} onScanComplete={function(){
+                  if(!isFoundingOrPro){
+                    var next=scansUsed+1;
+                    setScansUsed(next);
+                    try{localStorage.setItem("virl_scans_used",String(next));}catch(e){}
+                  }
+                }}/>
+              </div>
+            )}
           </div>
         )}
 
@@ -2125,6 +2222,18 @@ function App() {
                 Your saved<br/><span style={{color:B.navy}}>content library.</span>
               </div>
               <SherpaTip>Everything you've saved from your plans and captions lives here. Your Vault grows over time into a personal content library built around your voice.</SherpaTip>
+              {!isFoundingOrPro&&vault.length>0&&(
+                <div style={{background:B.navySoft,borderRadius:10,padding:"12px 16px",marginTop:12,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                  <div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:2}}>{"Your vault is saved — even after your trial ends."}</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>{"Upgrade to keep generating. Your "+vault.length+" saved item"+(vault.length===1?"":"s")+" will always be here."}</div>
+                  </div>
+                  <button onClick={function(){setUpgradeReason("vault");setShowUpgrade(true);}}
+                    style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"7px 14px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
+                    Upgrade
+                  </button>
+                </div>
+              )}
             </div>
             <Vault vault={vault} onDelete={deleteFromVault}/>
           </div>
@@ -2142,32 +2251,48 @@ function App() {
               </div>
             </div>
             {!isFoundingOrPro&&(
-              <div style={{background:B.navy,borderRadius:16,padding:"28px 24px",marginBottom:20,textAlign:"center"}}>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,marginBottom:8}}>Pro feature</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.7,marginBottom:20}}>
-                  Algorithm Intel gives you the insider playbook for every platform - what to post, when to post it, and how to signal the algorithm to push your content further.
+              <div>
+                <div style={{background:B.navySoft,borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.navy}}>{"Free preview: TikTok intel unlocked. Upgrade to unlock all 7 platforms."}</div>
+                  <button onClick={function(){setUpgradeReason("algo");setShowUpgrade(true);}}
+                    style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:B.white,background:B.navy,border:"none",borderRadius:99,padding:"6px 14px",cursor:"pointer"}}>Upgrade</button>
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:20,textAlign:"left"}}>
-                  {["Optimal posting times per platform","What content formats get pushed","Hashtag and keyword strategies","Engagement signals that matter most"].map(function(item){return (
-                    <div key={item} style={{background:"rgba(255,255,255,0.08)",borderRadius:10,padding:"10px 14px",display:"flex",gap:8,alignItems:"flex-start"}}>
-                      <div style={{color:B.sky,flexShrink:0}}>{"✦"}</div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.5}}>{item}</div>
+                <div style={{background:B.card,borderRadius:14,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                  <div style={{background:B.navy,padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white}}>TikTok</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.sky}}>{(ALGO_TIPS.TikTok||[]).length+" tips"}</div>
+                  </div>
+                  <div style={{padding:"16px 18px"}}>
+                    {(ALGO_TIPS.TikTok||[]).map(function(t,i,arr){return (
+                      <div key={i} style={{display:"flex",gap:12,marginBottom:i<arr.length-1?14:0,paddingBottom:i<arr.length-1?14:0,borderBottom:i<arr.length-1?"1px solid "+B.divider:"none"}}>
+                        <div style={{fontSize:18,flexShrink:0,marginTop:1}}>{t.icon}</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65}}>{t.tip}</div>
+                      </div>
+                    );})}
+                  </div>
+                </div>
+                {PLATFORMS.filter(function(p){return p!=="TikTok";}).map(function(platform){return (
+                  <div key={platform} style={{background:B.card,borderRadius:14,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",opacity:0.6,position:"relative"}}>
+                    <div style={{background:B.navy,padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white}}>{platform}</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.sky,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase"}}>Standard</div>
                     </div>
-                  );})}
-                </div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:"rgba(255,255,255,0.5)",marginBottom:16}}>Here is a preview of what you get:</div>
-                <div style={{background:"rgba(255,255,255,0.06)",borderRadius:10,padding:"14px 16px",marginBottom:20,textAlign:"left",filter:"blur(2px)",userSelect:"none",pointerEvents:"none"}}>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.sky,marginBottom:8}}>TikTok</div>
-                  {(ALGO_TIPS.TikTok||[]).slice(0,2).map(function(t,i){return (
-                    <div key={i} style={{display:"flex",gap:10,marginBottom:8}}>
-                      <div style={{fontSize:14,flexShrink:0}}>{t.icon}</div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.6)",lineHeight:1.5}}>{t.tip}</div>
+                    <div style={{padding:"16px 18px",filter:"blur(3px)",userSelect:"none",pointerEvents:"none"}}>
+                      {(ALGO_TIPS[platform]||[]).slice(0,2).map(function(t,i){return (
+                        <div key={i} style={{display:"flex",gap:12,marginBottom:10}}>
+                          <div style={{fontSize:18,flexShrink:0}}>{t.icon}</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65}}>{t.tip}</div>
+                        </div>
+                      );})}
                     </div>
-                  );})}
-                </div>
-                <button style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 32px",background:B.blue,color:B.white,border:"none",borderRadius:99,cursor:"pointer",boxShadow:"0 4px 14px rgba(37,99,235,0.4)"}}>
-                  Upgrade to Pro
-                </button>
+                    <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(248,250,252,0.5)"}}>
+                      <button onClick={function(){setUpgradeReason("algo");setShowUpgrade(true);}}
+                        style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 20px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",boxShadow:"0 4px 12px rgba(31,58,138,0.3)"}}>
+                        Unlock {platform} intel
+                      </button>
+                    </div>
+                  </div>
+                );})}
               </div>
             )}
             {isFoundingOrPro&&(
