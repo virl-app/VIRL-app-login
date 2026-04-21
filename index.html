@@ -1428,7 +1428,7 @@ function GateScreen({onAuth}) {
             {" and "}
             <a href="https://app.termly.io/policy-viewer/policy.html?policyUUID=bc2fc2c6-2e38-40d0-9d73-de9941f510d0" target="_blank" rel="noreferrer"
               style={{color:B.blue,textDecoration:"none",fontWeight:500}}>Privacy Policy</a>
-            {"."}
+            {". You are solely responsible for reviewing and ensuring any content you post complies with each platform's community guidelines and terms of service."}
           </div>
           <button onClick={handleEmailAuth} disabled={authLoading||!email.trim()||!password.trim()}
             style={{width:"100%",background:authLoading?B.muted:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,marginBottom:12,boxShadow:authLoading?"none":"0 4px 14px rgba(31,58,138,0.3)",transition:"all .2s"}}>
@@ -1502,6 +1502,15 @@ function App() {
     try { return localStorage.getItem("virl_seen_explainer")==="1"; } catch(e) { return false; }
   });
 
+  // Handle post-checkout redirect
+  useEffect(function() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('upgraded') === 'true') {
+      alert('Welcome to VIRL Standard! Your credits have been upgraded to 150 per week.');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
   // Load profile + credits from Supabase when session is available
   useEffect(function() {
     if (!session) return;
@@ -1535,7 +1544,28 @@ function App() {
 
   // ── Trial + upgrade state ────────────────────────────────────────────────
   const [showUpgrade,setShowUpgrade] = useState(false);
-  const [upgradeReason,setUpgradeReason] = useState("credits"); // "credits"|"trial"|"lowcredits"
+  const [upgradeReason,setUpgradeReason] = useState("credits");
+
+  async function handleCheckout(planType) {
+    if (!session) return;
+    setShowUpgrade(false);
+    try {
+      var res = await fetch("/api/create-checkout", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          userId: session.user.id,
+          email: session.user.email,
+          planType: planType||"monthly",
+        }),
+      });
+      var data = await res.json();
+      if (data.url) { window.location.href = data.url; }
+      else { alert("Something went wrong. Please try again."); }
+    } catch (err) { alert("Something went wrong. Please try again."); }
+  }
+
+  function handleSignOut() { supabaseClient.auth.signOut(); }
 
   // Calculate trial status
   var trialExpired = false;
@@ -1708,27 +1738,43 @@ function App() {
                 </div>
               </div>
             )}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
-              <div style={{background:B.navySoft,borderRadius:16,padding:"20px 16px",textAlign:"center",border:"2px solid "+B.navy}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>Founding Member</div>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:36,color:B.navy,lineHeight:1}}>$47</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,marginBottom:16}}>one-time, forever</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.sub,marginBottom:16,lineHeight:1.5}}>Unlimited credits. Locked in for life. Algorithm Intel included.</div>
-                <button onClick={function(){setShowUpgrade(false);}}
-                  style={{width:"100%",background:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"12px",cursor:"pointer",borderRadius:10,boxShadow:"0 4px 12px rgba(31,58,138,0.3)"}}>
-                  Get lifetime access
-                </button>
+            <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
+
+              {/* Annual — best value, shown first */}
+              <div style={{background:B.navy,borderRadius:16,padding:"16px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"}}
+                onClick={function(){handleCheckout("annual");}}>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>Annual</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:"#10B981",color:"white",borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"}}>2 months free</div>
+                  </div>
+                  <div style={{display:"flex",alignItems:"baseline",gap:6}}>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:"white",lineHeight:1}}>$190</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)"}}>/year &middot; saves $38</div>
+                  </div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)",marginTop:2}}>150 credits/week &middot; all features</div>
+                </div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:"white",background:"rgba(255,255,255,0.12)",padding:"8px 14px",borderRadius:99,flexShrink:0}}>
+                  Get started
+                </div>
               </div>
-              <div style={{background:B.bg,borderRadius:16,padding:"20px 16px",textAlign:"center",border:"1px solid "+B.border}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>Standard</div>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:36,color:B.ink,lineHeight:1}}>$19</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,marginBottom:16}}>per month</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.sub,marginBottom:16,lineHeight:1.5}}>150 credits/week. Cancel anytime.</div>
-                <button onClick={function(){setShowUpgrade(false);}}
-                  style={{width:"100%",background:B.white,color:B.ink,border:"1px solid "+B.border,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"12px",cursor:"pointer",borderRadius:10}}>
-                  Start monthly
-                </button>
+
+              {/* Monthly */}
+              <div style={{background:B.bg,borderRadius:16,padding:"16px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",border:"1px solid "+B.border}}
+                onClick={function(){handleCheckout("monthly");}}>
+                <div style={{flex:1}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>Monthly</div>
+                  <div style={{display:"flex",alignItems:"baseline",gap:6}}>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.ink,lineHeight:1}}>$19</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>/month &middot; cancel anytime</div>
+                  </div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:2}}>150 credits/week &middot; all features</div>
+                </div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:B.navy,background:B.navySoft,padding:"8px 14px",borderRadius:99,flexShrink:0}}>
+                  Get started
+                </div>
               </div>
+
             </div>
             {upgradeReason!=="trial"&&(
               <button onClick={function(){setShowUpgrade(false);}}
@@ -2027,6 +2073,9 @@ function App() {
                     Regenerate
                   </button>
                 </div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.65,textAlign:"center",padding:"12px 4px"}}>
+                  {"Content generated by VIRL is a suggestion only. You are solely responsible for reviewing, editing, and ensuring anything you post complies with each platform's community guidelines and terms of service. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest."}
+                </div>
               </div>
             )}
 
@@ -2211,8 +2260,31 @@ function App() {
               </React.Fragment>
             );})}
           </div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.65,maxWidth:480,textAlign:"center",marginTop:4}}>
+            {"Content generated by VIRL is provided as a suggestion only. You are solely responsible for any content you choose to post and for ensuring compliance with each platform's community guidelines and terms of service. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest."}
+          </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.6,maxWidth:400,textAlign:"center",marginTop:4}}>
             {"* Generation time is approximate and varies based on profile completeness, number of platforms selected, and network conditions. Most users experience plan generation in under 90 seconds."}
+          </div>
+          <div style={{display:"flex",gap:16,justifyContent:"center",alignItems:"center",marginTop:4}}>
+            <a href="https://www.instagram.com/virl_app?igsh=MTg2d2xtYjRrOGl6cA%3D%3D&utm_source=qr" target="_blank" rel="noreferrer"
+              style={{color:B.muted,textDecoration:"none",transition:"color .15s",lineHeight:1}}
+              onMouseOver={function(e){e.currentTarget.style.color=B.navy;}}
+              onMouseOut={function(e){e.currentTarget.style.color=B.muted;}}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
+            </a>
+            <a href="https://www.tiktok.com/@virlapp?_r=1&_t=ZT-95i36Hj5sFB" target="_blank" rel="noreferrer"
+              style={{color:B.muted,textDecoration:"none",transition:"color .15s",lineHeight:1}}
+              onMouseOver={function(e){e.currentTarget.style.color=B.navy;}}
+              onMouseOut={function(e){e.currentTarget.style.color=B.muted;}}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 00-.79-.05 6.34 6.34 0 00-6.34 6.34 6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.33-6.34V8.69a8.18 8.18 0 004.78 1.52V6.77a4.85 4.85 0 01-1.01-.08z"/></svg>
+            </a>
+            <a href="https://x.com/virlapp?s=21" target="_blank" rel="noreferrer"
+              style={{color:B.muted,textDecoration:"none",transition:"color .15s",lineHeight:1}}
+              onMouseOver={function(e){e.currentTarget.style.color=B.navy;}}
+              onMouseOut={function(e){e.currentTarget.style.color=B.muted;}}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.431-8.51-7.845-10.99h6.55l4.26 5.632 5.106-5.632zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            </a>
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.border,letterSpacing:"0.05em"}}>
             {"© "+new Date().getFullYear()+" VIRL™ · govirl.ai · All rights reserved."}
