@@ -1533,32 +1533,14 @@ function GateScreen({onAuth}) {
   );
 }
 
-class ErrorBoundary extends React.Component {
-  constructor(props) { super(props); this.state = {hasError:false,error:null}; }
-  static getDerivedStateFromError(error) { return {hasError:true,error}; }
-  componentDidCatch(error, info) { console.error("VIRL render error:", error, info); }
-  render() {
-    if (this.state.hasError) {
-      return React.createElement("div", {
-        style:{minHeight:"100vh",background:"#F8FAFC",display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px",fontFamily:"'Jost',sans-serif"}
-      }, React.createElement("div", {style:{textAlign:"center",maxWidth:360}},
-        React.createElement("div", {style:{fontFamily:"'Italiana',serif",fontSize:48,color:"#1F3A8A",marginBottom:8}}, "VIRL"),
-        React.createElement("div", {style:{fontSize:16,fontWeight:600,color:"#0F172A",marginBottom:8}}, "Something went wrong."),
-        React.createElement("div", {style:{fontSize:13,fontWeight:300,color:"#64748B",marginBottom:24,lineHeight:1.6}}, "Try refreshing the page. If the problem persists, clear your browser cache and reload."),
-        React.createElement("button", {
-          onClick:function(){window.location.reload();},
-          style:{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 28px",background:"#1F3A8A",color:"white",border:"none",borderRadius:99,cursor:"pointer"}
-        }, "Refresh page")
-      ));
-    }
-    return this.props.children;
-  }
-}
+// ErrorBoundary removed — static class methods not supported in Babel standalone
+// Error handling done via try/catch inside App
 
 function App() {
   // ── Supabase session state ──────────────────────────────────────────────
   const [session,setSession]         = useState(null);
   const [authLoading,setAuthLoading] = useState(true);
+  const [appError,setAppError]       = useState(null);
 
   useEffect(function() {
     // Check for existing session on load (handles OAuth redirects too)
@@ -1857,8 +1839,9 @@ function App() {
     if (!platforms.length||!formats.length) return;
     const cost = cards ? CREDIT_COSTS.regen : CREDIT_COSTS.plan;
     // Block generation if trial expired or out of credits
-    // Wait for Supabase credits to load before checking — avoids false trial expiry
-    if (session && !creditsLoaded) return;
+    // For non-pro users, wait for Supabase credits to load to avoid false trial expiry
+    // Pro/founding users bypass this — they should never be blocked
+    if (session && !creditsLoaded && !isFoundingOrPro) return;
     if (!isFoundingOrPro && trialExpired) {
       setUpgradeReason("trial"); setShowUpgrade(true); return;
     }
@@ -1960,6 +1943,23 @@ function App() {
   const profileComplete = !!(profile.name&&profile.audience&&profile.voice);
 
   // ── Auth gate - show loading, then auth screen, then app ────────────────
+  if (appError) return (
+    <div style={{minHeight:"100vh",background:B.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px",fontFamily:"'Jost',sans-serif"}}>
+      <div style={{textAlign:"center",maxWidth:360}}>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:48,color:B.navy,marginBottom:8}}>VIRL</div>
+        <div style={{fontSize:15,fontWeight:600,color:B.ink,marginBottom:8}}>Something went wrong.</div>
+        <div style={{fontSize:13,fontWeight:300,color:B.muted,marginBottom:8,lineHeight:1.6}}>{"Error: "+String(appError)}</div>
+        <div style={{fontSize:13,fontWeight:300,color:B.muted,marginBottom:24,lineHeight:1.6}}>Try clearing your browser data for this site, then reload.</div>
+        <button onClick={function(){
+          try{localStorage.clear();}catch(e){}
+          window.location.reload();
+        }}
+          style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 28px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",marginRight:8}}>
+          Clear cache &amp; reload
+        </button>
+      </div>
+    </div>
+  );
   if (authLoading) return (
     <div style={{minHeight:"100vh",background:B.bg,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{textAlign:"center"}}>
@@ -2287,8 +2287,8 @@ function App() {
                   style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:13,fontWeight:300,fontStyle:"italic",padding:"10px 14px",resize:"vertical",minHeight:60,lineHeight:1.6}}/>
               </div>
             </div>
-            <GenBtn onClick={generate} loading={loading} disabled={!platforms.length||!formats.length}>
-              {loading?"Building your strategy...":"Generate my 7-day plan"}
+            <GenBtn onClick={generate} loading={loading||(!creditsLoaded&&!!session&&!isFoundingOrPro)} disabled={!platforms.length||!formats.length}>
+              {loading?"Building your strategy...":(!creditsLoaded&&!!session&&!isFoundingOrPro)?"Loading your account...":"Generate my 7-day plan"}
             </GenBtn>
             <ErrBox msg={error}/>
             {loading&&!cards&&<Spinner/>}
@@ -2368,6 +2368,7 @@ function App() {
                 )}
                 {(function() {
                   const pc = {};
+                  if (!Array.isArray(cards)) return null;
                   cards.forEach(function(card){ pc[card.platform]=(pc[card.platform]||0)+1; });
                   const entries = Object.keys(pc);
                   const colors = [B.navy,B.blue,B.sky,"#8B5CF6",B.green,B.amber,"#EC4899"];
@@ -2396,7 +2397,7 @@ function App() {
                   <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink}}>Your <span style={{color:B.navy}}>week</span></div>
                   <div style={{flex:1,height:1,background:B.border}}/>
                 </div>
-                {cards.reduce(function(acc,card,i){
+                {Array.isArray(cards)&&cards.reduce(function(acc,card,i){
                   if (!card||typeof card!=="object"||!card.title) return acc;
                   const prevDay = i>0?cards[i-1].day:"";
                   if (card.day!==prevDay) {
@@ -2409,7 +2410,7 @@ function App() {
                   acc.push(
                     <PlanCard key={i} card={card} idx={i}
                       onSave={saveToVault} onLog={logResult}
-                      saved={vault.some(function(v){return v.id===card.title+card.day;})}
+                      saved={Array.isArray(vault)&&vault.some(function(v){return v&&v.id===card.title+card.day;})}
                       result={results.find(function(r){return r.id===card.title+card.day;})}
                     />
                   );
@@ -2814,9 +2815,7 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(
-  React.createElement(ErrorBoundary, null, React.createElement(App))
-);
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
 </script>
 </body>
 </html>
