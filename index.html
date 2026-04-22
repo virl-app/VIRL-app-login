@@ -323,11 +323,17 @@ function extractVideoFrame(file, atSeconds) {
   });
 }
 
-async function callAPI(prompt, maxTokens, imageBase64, imageType, cost, token) {
+// ── Model constants ──────────────────────────────────────────────────────
+var MODEL_SONNET = "claude-sonnet-4-6";
+var MODEL_HAIKU  = "claude-haiku-4-5-20251001";
+
+async function callAPI(prompt, maxTokens, imageBase64, imageType, cost, token, model, systemPrompt) {
   const body = { prompt, maxTokens };
   if (imageBase64) { body.imageBase64 = imageBase64; body.imageType = imageType; }
   if (cost) body.cost = cost;
   if (token) body.token = token;
+  if (model) body.model = model;
+  if (systemPrompt) body.systemPrompt = systemPrompt;
   let res;
   try {
     res = await fetch("/api/chat", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -501,7 +507,7 @@ function ScriptGenerator({card,onClose}) {
     const guide = platformGuide[card.platform]||"short-form social video 60 seconds.";
     const prompt = "You are VIRL, an expert content scriptwriter. Write a complete ready-to-film script for: "+card.title+". Platform: "+card.platform+" - "+guide+" Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script\",\"tip\":\"one filming tip\"}],\"cta\":\"closing call to action\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe\"}";
     const tokenMap = {YouTube:2500,LinkedIn:1500};
-    callAPI(prompt, tokenMap[card.platform]||1000).then(function(text) {
+    callAPI(prompt, tokenMap[card.platform]||1000, null, null, null, null, MODEL_SONNET).then(function(text) {
       const parsed = extractJSON(text);
       if (parsed&&parsed.hook) { setScript(parsed); }
       else { setError("Script generation takes a moment - tap Try Again."); }
@@ -703,7 +709,7 @@ function RemixCaption({text,onSelect}) {
     // Credit check handled server-side
     setLoading(true); setVariants(null); setError("");
     const prompt = "Rewrite this caption 3 ways. Same core message and voice. Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"}} Caption to remix: "+text;
-    callAPI(prompt, 800).then(function(raw) {
+    callAPI(prompt, 800, null, null, null, null, MODEL_HAIKU).then(function(raw) {
       const parsed = extractJSON(raw);
       if (parsed&&parsed.shorter) {
         setVariants(parsed);
@@ -804,7 +810,7 @@ function CaptionGen({profile,onSaveCaption}) {
     // Credit check handled server-side
     setLoading(true); setResult(null); setError("");
     const prompt = "You are VIRL, an AI content strategist. "+voiceCtx+" Generate captions for a "+platform+" post about: "+topic.trim()+". Tone: "+tone+". Length: "+length+" - "+lengthGuide[length]+" Platform style: "+platformCtx+" Reply ONLY with JSON: {\"hook\":\"punchy line under 10 words\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\",\"tag6\",\"tag7\"]}";
-    callAPI(prompt, 900).then(function(full) {
+    callAPI(prompt, 900, null, null, null, null, MODEL_HAIKU).then(function(full) {
       const parsed = extractJSON(full);
       if (parsed&&parsed.hook&&parsed.captions) {
         setResult(parsed);
@@ -925,7 +931,7 @@ function VIRLScan({profile,onSaveCaption}) {
       if (isVideo) {
         extractVideoFrame(file,1).then(function(fd) {
           var prompt = "You are VIRL, an AI content strategist. "+voiceCtx+" Analyze this video frame for social media viral potential. Reply ONLY with JSON: {\"score\":\"X.X out of 10\",\"platform\":\"best platform\",\"hook\":\"scroll-stopping opening line under 10 words\",\"caption\":\"full ready-to-post caption with emojis\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"tip\":\"one tip to maximize this post\",\"analysis\":\"2 sentences on why this will perform\",\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
-          return callAPI(prompt,700,fd.b64,"image/jpeg").then(function(text) {
+          return callAPI(prompt,700,fd.b64,"image/jpeg",null,null,MODEL_SONNET).then(function(text) {
             var parsed = extractJSON(text);
             if (parsed) { out.push(Object.assign({name:file.name,isVideo:true,duration:fd.dur},parsed)); }
             else { out.push({name:file.name,isVideo:true,error:"Could not analyze this video. Try a screenshot of your best moment instead."}); }
@@ -938,7 +944,7 @@ function VIRLScan({profile,onSaveCaption}) {
       } else {
         fileToBase64(file).then(function(b64) {
           var prompt = "You are VIRL, an AI content strategist. "+voiceCtx+" Analyze this image for viral potential. Reply ONLY with JSON: {\"score\":\"X.X out of 10\",\"platform\":\"best platform\",\"hook\":\"scroll-stopping opening line under 10 words\",\"caption\":\"full ready-to-post caption with emojis\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"tip\":\"one tip to maximize this post\",\"analysis\":\"2 sentences on why this will perform\"}";
-          return callAPI(prompt,700,b64,file.type);
+          return callAPI(prompt,700,b64,file.type,null,null,MODEL_SONNET);
         }).then(function(text) {
           var parsed = extractJSON(text);
           if (parsed) { out.push(Object.assign({name:file.name,url:URL.createObjectURL(file)},parsed)); }
@@ -1738,14 +1744,24 @@ function App() {
     ...(isAdmin?[{key:"admin", label:"Dashboard"}]:[]),
   ];
 
-  const planPrompt = "You are VIRL, an AI content strategist and creative director. "+profileCtx
-    +" Plan settings: platforms="+platforms.join(",")+" niche="+niche+" goal="+goal
+  // planSystemPrompt — the stable VIRL persona + creator profile.
+  // This is passed as a system block with cache_control in chat.js,
+  // so Anthropic caches it server-side for 1 hour. Subsequent plan
+  // generations in the same session hit the cache at ~10% token cost.
+  const planSystemPrompt = "You are VIRL, an AI content strategist and creative director. "
+    +"Your job is to create highly personalised 7-day social media content plans. "
+    +"Always return valid JSON arrays only — no markdown, no preamble, no explanation. "
+    +(profileCtx ? "Creator context: "+profileCtx : "No creator profile set — generate a general plan.");
+
+  // planPrompt — per-request user variables (never cached, changes each call)
+  const planPrompt = "Generate a 7-day content plan with these settings: "
+    +"platforms="+platforms.join(",")+" niche="+niche+" goal="+goal
     +" formats="+formats.join(",")+" followers="+followers
     +(trending?" TRENDING THIS WEEK - incorporate these where natural: "+trending:"")
     +(context?" Extra context: "+context:"")
-    +" Create a 7-day content plan with 10-14 total posts (1-3 per day). Spread across ALL selected platforms. Vary posting times realistically. For each post: description is 2 punchy sentences max. Include a why field - one sentence on the strategic reason this post will perform well for this creator's specific audience."
+    +" Create 10-14 total posts (1-3 per day). Spread across ALL selected platforms. Vary posting times realistically. For each post: description is 2 punchy sentences max. Include a why field — one sentence on the strategic reason this post will perform well for this creator's specific audience."
     +" Return ONLY a JSON array of 10-14 objects: [{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\",\"tag6\"]}]"
-    +" Multiple objects can share the same day. After the JSON write: STATS reach=45000 rate=6.2 earn=$120-$400";
+    +" Multiple objects can share the same day. After the JSON array write: STATS reach=45000 rate=6.2 earn=$120-$400";
 
   function generate() {
     if (!platforms.length||!formats.length) return;
@@ -1759,7 +1775,7 @@ function App() {
     }
     refreshCredits();
     setLoading(true); setError(""); setCards(null); setStats(null);
-    callAPI(planPrompt, 3000, null, null, cost, userToken).then(function(full) {
+    callAPI(planPrompt, 3000, null, null, cost, userToken, MODEL_SONNET, planSystemPrompt).then(function(full) {
       const parts = full.split(/STATS/i);
       const parsed = extractJSON(parts[0]||full);
       if (parsed&&Array.isArray(parsed)&&parsed.length>0) {
