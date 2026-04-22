@@ -1,0 +1,15 @@
+{
+  "name": "virl-app-login",
+  "version": "1.0.0",
+  "description": "VIRL app login and content strategy application",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'Static HTML project - no build step required'",
+    "lint": "echo 'No linter configured'"
+  },
+  "dependencies": {
+    "@vercel/analytics": "^1.4.1"
+  },
+  "devDependencies": {},
+  "type": "module"
+}
