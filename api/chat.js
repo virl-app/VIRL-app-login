@@ -9,94 +9,104 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing prompt' });
   }
 
-  // ── Optional: verify Supabase session token ──────────────────────────────
-  if (token) {
-    try {
-      const userRes = await fetch(
-        `${process.env.SUPABASE_URL}/auth/v1/user`,
-        { headers: { 'Authorization': `Bearer ${token}`, 'apikey': process.env.SUPABASE_ANON_KEY } }
-      );
-      if (!userRes.ok) {
-        return res.status(401).json({ error: 'Invalid session - please sign in again.' });
-      }
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+  const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-      // ── Deduct credits if cost provided ───────────────────────────────────
-      if (cost) {
+  // ── Verify session and deduct credits if user is logged in ───────────────
+  if (token && SUPABASE_URL && SUPABASE_SERVICE_KEY) {
+    try {
+      // Verify the JWT token with Supabase
+      const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'apikey': SUPABASE_SERVICE_KEY,
+        },
+      });
+
+      if (userRes.ok) {
         const userData = await userRes.json();
         const userId = userData.id;
 
-        const creditRes = await fetch(
-          `${process.env.SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=credits,plan`,
-          { headers: { 'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`, 'apikey': process.env.SUPABASE_SERVICE_KEY } }
-        );
-        const credits = await creditRes.json();
-
-        if (!credits.length) {
-          return res.status(402).json({ error: 'No credit record found.' });
-        }
-
-        const current = credits[0].credits;
-        const plan = credits[0].plan;
-
-        // Standard/founding members have unlimited credits (150/week resets Monday)
-        if (plan === 'free' && current < cost) {
-          return res.status(402).json({ error: 'Not enough credits this week. Upgrade or wait for Monday reset.' });
-        }
-
-        if (current < cost) {
-          return res.status(402).json({ error: 'Not enough credits this week.' });
-        }
-
-        // Deduct credits
-        await fetch(
-          `${process.env.SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`,
+        // Get user's credits row
+        const credRes = await fetch(
+          `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan,credits`,
           {
-            method: 'PATCH',
             headers: {
-              'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
-              'apikey': process.env.SUPABASE_SERVICE_KEY,
-              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+              'apikey': SUPABASE_SERVICE_KEY,
             },
-            body: JSON.stringify({ credits: current - cost }),
           }
         );
+
+        if (credRes.ok) {
+          const credRows = await credRes.json();
+          const row = credRows[0];
+
+          if (row) {
+            const plan = row.plan;
+            const currentCredits = row.credits;
+            const creditCost = cost || 1;
+
+            // Founding/pro members bypass credit checks
+            const isPro = plan === 'founding' || plan === 'pro' || plan === 'standard';
+
+            if (!isPro && currentCredits < creditCost) {
+              return res.status(402).json({ error: 'Not enough credits this week.' });
+            }
+
+            // Deduct credits (skip for founding)
+            if (plan !== 'founding' && plan !== 'pro') {
+              const newCredits = Math.max(0, currentCredits - creditCost);
+              await fetch(
+                `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`,
+                {
+                  method: 'PATCH',
+                  headers: {
+                    'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+                    'apikey': SUPABASE_SERVICE_KEY,
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=minimal',
+                  },
+                  body: JSON.stringify({ credits: newCredits }),
+                }
+              );
+            }
+          }
+        }
       }
-    } catch (err) {
-      console.error('Auth/credit error:', err);
-      return res.status(401).json({ error: 'Session verification failed.' });
+    } catch (e) {
+      // Non-fatal — continue with generation even if credit deduction fails
+      console.error('Credit deduction error:', e.message);
     }
-  }
-
-  // ── Build Anthropic messages ──────────────────────────────────────────────
-  const messages = [];
-
-  if (imageBase64) {
-    messages.push({
-      role: 'user',
-      content: [
-        {
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: imageType || 'image/jpeg',
-            data: imageBase64,
-          },
-        },
-        { type: 'text', text: prompt },
-      ],
-    });
-  } else {
-    messages.push({ role: 'user', content: prompt });
   }
 
   // ── Call Anthropic API ────────────────────────────────────────────────────
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const messages = [];
+    const content = [];
+
+    // Add image if provided (for VIRL Scan)
+    if (imageBase64 && imageType) {
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: imageType,
+          data: imageBase64,
+        },
+      });
+    }
+
+    content.push({ type: 'text', text: prompt });
+    messages.push({ role: 'user', content });
+
+    const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'x-api-key': ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: 'claude-opus-4-6',
@@ -105,23 +115,24 @@ export default async function handler(req, res) {
       }),
     });
 
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      console.error('Anthropic error:', errData);
-      return res.status(500).json({ error: 'AI service error - please try again.' });
+    if (!anthropicRes.ok) {
+      const errData = await anthropicRes.json().catch(() => ({}));
+      console.error('Anthropic error:', anthropicRes.status, errData);
+      return res.status(500).json({
+        error: `AI error ${anthropicRes.status}: ${errData.error?.message || 'Unknown error'}`,
+      });
     }
 
-    const data = await response.json();
-    const text = data.content?.[0]?.text || '';
-
-    if (!text) {
-      return res.status(500).json({ error: 'Empty response from AI - please try again.' });
-    }
+    const data = await anthropicRes.json();
+    const text = data.content
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('');
 
     return res.status(200).json({ text });
 
-  } catch (err) {
-    console.error('Anthropic fetch error:', err);
-    return res.status(500).json({ error: 'Connection error - please try again.' });
+  } catch (e) {
+    console.error('Generation error:', e.message);
+    return res.status(500).json({ error: e.message || 'Server error' });
   }
 }
