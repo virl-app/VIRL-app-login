@@ -937,7 +937,7 @@ function EditableScanCaption({captionText,platform,onSave}) {
   );
 }
 
-function VIRLScan({profile,onSaveCaption}) {
+function VIRLScan({profile,onSaveCaption,onScanComplete}) {
   const [files,setFiles] = useState([]);
   const [results,setResults] = useState([]);
   const [scanning,setScanning] = useState(false);
@@ -976,6 +976,7 @@ function VIRLScan({profile,onSaveCaption}) {
       if (i>=files.length) {
         setResults(out);
         setScanning(false);
+        if (onScanComplete) { try { onScanComplete(); } catch(e){} }
         try {
           var scores = out.filter(function(r){return r.score;}).map(function(r){
             var m=String(r.score).match(/(\d+\.?\d*)/); return m?parseFloat(m[1]):0;
@@ -1532,6 +1533,28 @@ function GateScreen({onAuth}) {
   );
 }
 
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = {hasError:false,error:null}; }
+  static getDerivedStateFromError(error) { return {hasError:true,error}; }
+  componentDidCatch(error, info) { console.error("VIRL render error:", error, info); }
+  render() {
+    if (this.state.hasError) {
+      return React.createElement("div", {
+        style:{minHeight:"100vh",background:"#F8FAFC",display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px",fontFamily:"'Jost',sans-serif"}
+      }, React.createElement("div", {style:{textAlign:"center",maxWidth:360}},
+        React.createElement("div", {style:{fontFamily:"'Italiana',serif",fontSize:48,color:"#1F3A8A",marginBottom:8}}, "VIRL"),
+        React.createElement("div", {style:{fontSize:16,fontWeight:600,color:"#0F172A",marginBottom:8}}, "Something went wrong."),
+        React.createElement("div", {style:{fontSize:13,fontWeight:300,color:"#64748B",marginBottom:24,lineHeight:1.6}}, "Try refreshing the page. If the problem persists, clear your browser cache and reload."),
+        React.createElement("button", {
+          onClick:function(){window.location.reload();},
+          style:{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 28px",background:"#1F3A8A",color:"white",border:"none",borderRadius:99,cursor:"pointer"}
+        }, "Refresh page")
+      ));
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   // ── Supabase session state ──────────────────────────────────────────────
   const [session,setSession]         = useState(null);
@@ -1687,14 +1710,16 @@ function App() {
         SUPABASE_URL+"/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id,updated_at&order=updated_at.desc",
         {headers}
       );
-      const credits = await credRes.json();
+      const creditsRaw = await credRes.json();
+      const credits = Array.isArray(creditsRaw) ? creditsRaw : [];
 
       // Fetch events table — last 500
       const evRes = await fetch(
         SUPABASE_URL+"/rest/v1/events?select=user_id,event_name,properties,created_at&order=created_at.desc&limit=500",
         {headers}
       );
-      const events = await evRes.json();
+      const eventsRaw = await evRes.json();
+      const events = Array.isArray(eventsRaw) ? eventsRaw : [];
 
       // Aggregate user stats
       const total = credits.length;
@@ -1703,7 +1728,7 @@ function App() {
       const mrr = paid * 19;
 
       // Aggregate event stats
-      const evArr = Array.isArray(events) ? events : [];
+      const evArr = events; // already guarded above
       function countEv(name) { return evArr.filter(function(e){return e.event_name===name;}).length; }
       function uniqueUsers(name) { return new Set(evArr.filter(function(e){return e.event_name===name;}).map(function(e){return e.user_id;})).size; }
 
@@ -1870,7 +1895,6 @@ function App() {
             expiresAt: getNextMonday(),
             savedAt: Date.now(),
           }));
-          if (planStats) setStats(planStats);
         } catch(e) {}
         if(!firstPlanDone&&!isFoundingOrPro){
           setFirstPlanDone(true);
@@ -2154,7 +2178,7 @@ function App() {
                 );})}
                 {!isFoundingOrPro&&(
                   <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid rgba(255,255,255,0.08)",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.4)",textAlign:"center"}}>
-                    {"Free trial · "+Math.max(0,14-Math.round((Date.now()-new Date(session?.user?.created_at||Date.now()).getTime())/(1000*60*60*24)))+" days remaining"}
+                    {"Free trial · "+Math.max(0,14-Math.round((Date.now()-new Date((session&&session.user&&session.user.created_at)||Date.now()).getTime())/(1000*60*60*24)))+" days remaining"}
                   </div>
                 )}
               </div>
@@ -2790,7 +2814,9 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+ReactDOM.createRoot(document.getElementById("root")).render(
+  React.createElement(ErrorBoundary, null, React.createElement(App))
+);
 </script>
 </body>
 </html>
