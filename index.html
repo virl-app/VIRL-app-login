@@ -1537,6 +1537,7 @@ function App() {
   const [profile,setProfile] = useState(stored.profile||{});
   const [creditState,setCreditState] = useState(getCredits);
   const [sbCredits,setSbCredits]     = useState(null); // Supabase credits row
+  const [creditsLoaded,setCreditsLoaded] = useState(false); // true once Supabase has responded
   const [hasSeenExplainer,setHasSeenExplainer] = useState(function(){
     try { return localStorage.getItem("virl_seen_explainer")==="1"; } catch(e) { return false; }
   });
@@ -1561,6 +1562,7 @@ function App() {
     // Load credits
     loadCreditsFromSupabase(userId).then(function(row) {
       if (row) setSbCredits(row);
+      setCreditsLoaded(true);
     });
   }, [session]);
 
@@ -1664,10 +1666,12 @@ function App() {
     setShowDeleteConfirm(false);
   }
 
-  // Calculate trial status
+  // Calculate trial status — only after Supabase credits have loaded
+  // This prevents a flash where sbPlan defaults to "free" before Supabase responds,
+  // causing trial expiry to incorrectly fire for founding/pro users.
   var trialExpired = false;
   var daysIntoTrial = 0;
-  if (session && !isFoundingOrPro) {
+  if (session && creditsLoaded && !isFoundingOrPro) {
     var signupDate = new Date(session.user.created_at);
     daysIntoTrial = Math.floor((Date.now() - signupDate.getTime()) / 86400000);
     trialExpired = daysIntoTrial >= 14;
@@ -1735,6 +1739,8 @@ function App() {
     if (!platforms.length||!formats.length) return;
     const cost = cards ? CREDIT_COSTS.regen : CREDIT_COSTS.plan;
     // Block generation if trial expired or out of credits
+    // Wait for Supabase credits to load before checking — avoids false trial expiry
+    if (session && !creditsLoaded) return;
     if (!isFoundingOrPro && trialExpired) {
       setUpgradeReason("trial"); setShowUpgrade(true); return;
     }
