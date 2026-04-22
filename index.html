@@ -231,6 +231,80 @@ const PLATFORM_TONE = {
   Pinterest:"Keyword-rich, searchable. Tutorial or how-to framing. Warm and instructive."
 };
 
+// ── Shared profile context builder ────────────────────────────────────────
+// Called by every generation feature to ensure all profile settings are
+// consistently honoured — voice, emoji prefs, audience, handles, off-limits, etc.
+function buildProfileCtx(profile) {
+  if (!profile) return "";
+  var parts = [];
+
+  // Core voice identity
+  if (profile.voice)         parts.push("Voice/style: "+profile.voice+".");
+  if (profile.sampleCaption) parts.push("Sample caption (match this tone exactly): "+profile.sampleCaption+".");
+  if (profile.audience)      parts.push("Target audience: "+profile.audience+".");
+  if (profile.name)          parts.push("Creator name: "+profile.name+".");
+
+  // Emoji preference — enforce strictly
+  if (profile.emojiPref) {
+    if (profile.emojiPref==="Never") {
+      parts.push("EMOJI RULE: NEVER use emojis anywhere in any output. Not in captions, hooks, hashtags, or CTAs. Zero emojis.");
+    } else if (profile.emojiPref==="Always") {
+      parts.push("EMOJI RULE: Use emojis naturally and frequently throughout all output.");
+    } else {
+      parts.push("EMOJI RULE: Use emojis sparingly — only where they add clear value.");
+    }
+  }
+
+  // Content direction
+  if (profile.purpose)  parts.push("Content purpose: "+profile.purpose+".");
+  if (profile.topics)   parts.push("Main topics: "+profile.topics+".");
+  if ((profile.vibes||[]).length)   parts.push("Vibe/aesthetic: "+profile.vibes.join(", ")+".");
+  if ((profile.pillars||[]).length) parts.push("Content pillars: "+profile.pillars.join(", ")+".");
+
+  // Hard constraints
+  if (profile.offLimits) parts.push("NEVER mention or reference these topics: "+profile.offLimits+".");
+
+  // Social handles — for CTAs and link references
+  if (profile.handles && typeof profile.handles === "object") {
+    var handleList = Object.keys(profile.handles)
+      .filter(function(k){ return profile.handles[k]; })
+      .map(function(k){ return k+": "+profile.handles[k]; })
+      .join(", ");
+    if (handleList) parts.push("Social handles (use in CTAs where relevant): "+handleList+".");
+  }
+
+  // Platform-specific audiences
+  if (profile.platformAudiences && typeof profile.platformAudiences === "object") {
+    var platAud = Object.keys(profile.platformAudiences)
+      .filter(function(k){ return profile.platformAudiences[k]; })
+      .map(function(k){ return k+": "+profile.platformAudiences[k]; })
+      .join("; ");
+    if (platAud) parts.push("Per-platform audiences: "+platAud+".");
+  }
+
+  // Style preferences
+  if (profile.contentLength) parts.push("Preferred content length: "+profile.contentLength+".");
+  if (profile.workedWell)    parts.push("Content that has worked well before: "+profile.workedWell+".");
+  if (profile.inspiration)   parts.push("Style inspiration/reference: "+profile.inspiration+".");
+
+  return parts.join(" ");
+}
+
+
+// buildSystemPrompt — wraps buildProfileCtx into a cacheable system block string.
+// Pass this as the systemPrompt arg to callAPI so chat.js caches it server-side.
+// role = short description of what VIRL is doing (e.g. "scriptwriter", "caption remixer")
+function buildSystemPrompt(profile, role) {
+  var ctx = buildProfileCtx(profile);
+  var base = "You are VIRL, an expert "+role+" for social media creators. "
+    +"You always produce content that sounds authentically like the creator — never generic AI. "
+    +"Return ONLY valid JSON. No markdown, no preamble, no explanation outside the JSON.";
+  if (ctx) {
+    base += " CREATOR PROFILE (follow every rule strictly): "+ctx;
+  }
+  return base;
+}
+
 const tog = (arr,v) => arr.includes(v) ? arr.filter(x=>x!==v) : [...arr,v];
 const fmtDate = () => new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
 
@@ -486,7 +560,7 @@ function SharePlanCard({card}) {
   );
 }
 
-function ScriptGenerator({card,onClose}) {
+function ScriptGenerator({card,onClose,profile}) {
   const [script,setScript] = useState(null);
   const [loading,setLoading] = useState(false);
   const [error,setError] = useState("");
@@ -505,9 +579,14 @@ function ScriptGenerator({card,onClose}) {
     // Credit check handled server-side
     setLoading(true); setScript(null); setError("");
     const guide = platformGuide[card.platform]||"short-form social video 60 seconds.";
-    const prompt = "You are VIRL, an expert content scriptwriter. Write a complete ready-to-film script for: "+card.title+". Platform: "+card.platform+" - "+guide+" Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script\",\"tip\":\"one filming tip\"}],\"cta\":\"closing call to action\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe\"}";
+    // System prompt (cached) — VIRL persona + full creator profile
+    var scriptSystem = buildSystemPrompt(profile, "content scriptwriter");
+    // User prompt — just the task, lean and specific
+    const prompt = "Write a complete ready-to-film script for this post: "+card.title+". "
+      +"Platform: "+card.platform+" — format guide: "+guide+" "
+      +"Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences in creator voice\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script in creator voice\",\"tip\":\"one filming tip\"}],\"cta\":\"closing call to action in creator voice\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe that matches creator aesthetic\"}";
     const tokenMap = {YouTube:2500,LinkedIn:1500};
-    callAPI(prompt, tokenMap[card.platform]||1000, null, null, null, null, MODEL_SONNET).then(function(text) {
+    callAPI(prompt, tokenMap[card.platform]||1000, null, null, null, null, MODEL_SONNET, scriptSystem).then(function(text) {
       const parsed = extractJSON(text);
       if (parsed&&parsed.hook) { setScript(parsed); }
       else { setError("Script generation takes a moment - tap Try Again."); }
@@ -615,7 +694,7 @@ const MTag = ({type,children}) => {
   return <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"3px 10px",borderRadius:99,...s}}>{children}</span>;
 };
 
-function PlanCard({card,idx,onSave,onLog,saved,result}) {
+function PlanCard({card,idx,onSave,onLog,saved,result,profile}) {
   const bl = card.priority==="HIGH"?B.navy:card.priority==="MED"?B.blue:B.border;
   const [showLog,setShowLog] = useState(false);
   const [showScript,setShowScript] = useState(false);
@@ -628,7 +707,7 @@ function PlanCard({card,idx,onSave,onLog,saved,result}) {
 
   return (
     <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:"3px solid "+bl,padding:"20px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s"}}>
-      {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}}/>}
+      {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile}/>}
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:10}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.28em",textTransform:"uppercase",color:B.muted}}>{card.day}</div>
         <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -699,7 +778,7 @@ function PlanCard({card,idx,onSave,onLog,saved,result}) {
   );
 }
 
-function RemixCaption({text,onSelect}) {
+function RemixCaption({text,onSelect,profile}) {
   const [open,setOpen] = useState(false);
   const [loading,setLoading] = useState(false);
   const [variants,setVariants] = useState(null);
@@ -708,8 +787,14 @@ function RemixCaption({text,onSelect}) {
   function generate() {
     // Credit check handled server-side
     setLoading(true); setVariants(null); setError("");
-    const prompt = "Rewrite this caption 3 ways. Same core message and voice. Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"}} Caption to remix: "+text;
-    callAPI(prompt, 800, null, null, null, null, MODEL_HAIKU).then(function(raw) {
+    // System prompt (cached) — VIRL persona + full creator profile
+    var remixSystem = buildSystemPrompt(profile, "caption writer and remixer");
+    // User prompt — just the task
+    const prompt = "Rewrite this caption 3 ways. Keep the core message but vary the angle. "
+      +"Each version must sound like the creator — same voice, different approach. "
+      +"Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"}} "
+      +"Caption to remix: "+text;
+    callAPI(prompt, 800, null, null, null, null, MODEL_HAIKU, remixSystem).then(function(raw) {
       const parsed = extractJSON(raw);
       if (parsed&&parsed.shorter) {
         setVariants(parsed);
@@ -748,7 +833,7 @@ function RemixCaption({text,onSelect}) {
   );
 }
 
-function EditableCaption({caption,idx,topic,onSave}) {
+function EditableCaption({caption,idx,topic,onSave,profile}) {
   const [editing,setEditing] = useState(false);
   const [text,setText] = useState(caption.text);
   const [saved,setSaved] = useState(false);
@@ -781,7 +866,7 @@ function EditableCaption({caption,idx,topic,onSave}) {
       ):(
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-line"}}>{text}</div>
       )}
-      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(t);}}/>}
+      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(t);}} profile={profile}/>}
     </div>
   );
 }
@@ -802,15 +887,21 @@ function CaptionGen({profile,onSaveCaption}) {
     Long:"7-10 lines. Story-driven, conversational."
   };
 
-  const voiceCtx = profile.voice?"Creator voice: "+profile.voice+". Sample: "+(profile.sampleCaption||"authentic")+"." :"";
+  // System prompt built once per component mount (profile rarely changes mid-session)
+  // Passed to callAPI for server-side caching — creator profile cached 1 hour
+  const captionSystem = buildSystemPrompt(profile, "caption writer and content strategist");
   const platformCtx = PLATFORM_TONE[platform]||"";
 
   function generate() {
     if (!topic.trim()) return;
     // Credit check handled server-side
     setLoading(true); setResult(null); setError("");
-    const prompt = "You are VIRL, an AI content strategist. "+voiceCtx+" Generate captions for a "+platform+" post about: "+topic.trim()+". Tone: "+tone+". Length: "+length+" - "+lengthGuide[length]+" Platform style: "+platformCtx+" Reply ONLY with JSON: {\"hook\":\"punchy line under 10 words\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\",\"tag6\",\"tag7\"]}";
-    callAPI(prompt, 900, null, null, null, null, MODEL_HAIKU).then(function(full) {
+    // User prompt — just the task variables (not cached, changes every call)
+    const prompt = "Generate 3 caption options for a "+platform+" post about: "+topic.trim()+". "
+      +"Tone: "+tone+". Length: "+length+" — "+lengthGuide[length]+" "
+      +"Platform style: "+platformCtx+" "
+      +"Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\",\"tag6\",\"tag7\"]}";
+    callAPI(prompt, 900, null, null, null, null, MODEL_HAIKU, captionSystem).then(function(full) {
       const parsed = extractJSON(full);
       if (parsed&&parsed.hook&&parsed.captions) {
         setResult(parsed);
@@ -861,7 +952,7 @@ function CaptionGen({profile,onSaveCaption}) {
             <CopyBtn text={result.hook} label="Copy hook"/>
           </div>
           {(result.captions||[]).map(function(cap,i){return (
-            <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption}/>
+            <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile}/>
           );})}
           <HashtagRow hashtags={result.hashtags}/>
           <button onClick={generate} disabled={loading}
@@ -906,7 +997,9 @@ function VIRLScan({profile,onSaveCaption}) {
     const cost = files.length * CREDIT_COSTS.scan;
     // Credit check handled server-side
     setScanning(true); setResults([]); setError(""); setCurrent(0);
-    const voiceCtx = profile.voice?"The creator's voice is: "+profile.voice+"." :"";
+    // System prompt (cached) — VIRL persona + full creator profile
+    var scanSystem = buildSystemPrompt(profile, "content strategist and viral potential analyst");
+    var profileCtx = buildProfileCtx(profile); // kept for inline prompt refs
     const out = [];
     var i = 0;
     function next() {
@@ -930,8 +1023,8 @@ function VIRLScan({profile,onSaveCaption}) {
       var isVideo = file.type.startsWith("video/");
       if (isVideo) {
         extractVideoFrame(file,1).then(function(fd) {
-          var prompt = "You are VIRL, an AI content strategist. "+voiceCtx+" Analyze this video frame for social media viral potential. Reply ONLY with JSON: {\"score\":\"X.X out of 10\",\"platform\":\"best platform\",\"hook\":\"scroll-stopping opening line under 10 words\",\"caption\":\"full ready-to-post caption with emojis\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"tip\":\"one tip to maximize this post\",\"analysis\":\"2 sentences on why this will perform\",\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
-          return callAPI(prompt,700,fd.b64,"image/jpeg",null,null,MODEL_SONNET).then(function(text) {
+          var prompt = "Analyze this video frame for social media viral potential. Reply ONLY with JSON: {\"score\":\"X.X out of 10\",\"platform\":\"best platform\",\"hook\":\"scroll-stopping opening line under 10 words\",\"caption\":\"full ready-to-post caption\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"tip\":\"one tip to maximize this post\",\"analysis\":\"2 sentences on why this will perform\",\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
+          return callAPI(prompt,700,fd.b64,"image/jpeg",null,null,MODEL_SONNET,scanSystem).then(function(text) {
             var parsed = extractJSON(text);
             if (parsed) { out.push(Object.assign({name:file.name,isVideo:true,duration:fd.dur},parsed)); }
             else { out.push({name:file.name,isVideo:true,error:"Could not analyze this video. Try a screenshot of your best moment instead."}); }
@@ -943,8 +1036,8 @@ function VIRLScan({profile,onSaveCaption}) {
         });
       } else {
         fileToBase64(file).then(function(b64) {
-          var prompt = "You are VIRL, an AI content strategist. "+voiceCtx+" Analyze this image for viral potential. Reply ONLY with JSON: {\"score\":\"X.X out of 10\",\"platform\":\"best platform\",\"hook\":\"scroll-stopping opening line under 10 words\",\"caption\":\"full ready-to-post caption with emojis\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"tip\":\"one tip to maximize this post\",\"analysis\":\"2 sentences on why this will perform\"}";
-          return callAPI(prompt,700,b64,file.type,null,null,MODEL_SONNET);
+          var prompt = "Analyze this image for viral potential. Reply ONLY with JSON: {\"score\":\"X.X out of 10\",\"platform\":\"best platform\",\"hook\":\"scroll-stopping opening line under 10 words\",\"caption\":\"full ready-to-post caption\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"tip\":\"one tip to maximize this post\",\"analysis\":\"2 sentences on why this will perform\"}";
+          return callAPI(prompt,700,b64,file.type,null,null,MODEL_SONNET,scanSystem);
         }).then(function(text) {
           var parsed = extractJSON(text);
           if (parsed) { out.push(Object.assign({name:file.name,url:URL.createObjectURL(file)},parsed)); }
@@ -1038,7 +1131,7 @@ function VIRLScan({profile,onSaveCaption}) {
                 <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,flex:1,lineHeight:1.3}}>{"\""+r.hook+"\""}</div>
                 <CopyBtn text={r.hook||""} label="Copy hook"/>
               </div>
-              <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption}/>
+              <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile}/>
               <HashtagRow hashtags={r.hashtags}/>
               {r.tip&&<div style={{background:B.blueSoft,borderRadius:10,padding:"10px 14px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.blue,lineHeight:1.6,marginTop:8}}>{"✦ "+r.tip}</div>}
               <ShareScoreCard score={r.score} platform={r.platform} hook={r.hook||""}/>
@@ -2261,6 +2354,7 @@ return (
                       onSave={saveToVault} onLog={logResult}
                       saved={vault.some(function(v){return v.id===card.title+card.day;})}
                       result={results.find(function(r){return r.id===card.title+card.day;})}
+                      profile={profile}
                     />
                   );
                   return acc;
