@@ -51,6 +51,7 @@ const { useState, useEffect, useRef } = React;
 // ── Supabase client ────────────────────────────────────────────────────────
 // TODO: Replace these placeholder values with your real Supabase credentials
 // Project URL and anon key are in: Supabase dashboard > Settings > API
+
 const SUPABASE_URL = "https://xjewyayhtyalhxekphzg.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhqZXd5YXlodHlhbGh4ZWtwaHpnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzODgwMzEsImV4cCI6MjA5MTk2NDAzMX0.QjyAu_NLyOgKL6I_Fop3j7MZSRfHzWTLSbG4LLY0mbY";
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -347,6 +348,7 @@ async function callAPI(prompt, maxTokens, imageBase64, imageType, cost, token) {
 }
 
 // ── Event logging ─────────────────────────────────────────────────────────
+
 async function logEvent(userId, eventName, properties, token) {
   if (!userId) return;
   try {
@@ -659,21 +661,10 @@ function PlanCard({card,idx,onSave,onLog,saved,result}) {
           {showLog?"Cancel":result?"Update Results":"Log Results"}
         </button>
         <button onClick={function(){
-          if(isFoundingOrPro||(scriptsUsed<FREE_SCRIPT_LIMIT)){
-            if(!isFoundingOrPro){
-              var next=scriptsUsed+1;
-              setScriptsUsed(next);
-              try{localStorage.setItem("virl_scripts_used",String(next));}catch(e){}
-            }
-            setShowScript(true);
-            try{logEvent(window.__virlUserId||null,"script_generated",{platform:card.platform});}catch(e){}
-          } else {
-            setUpgradeReason("scripts");
-            setShowUpgrade(true);
-          }
+          setShowScript(true);
         }}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:isFoundingOrPro||scriptsUsed<FREE_SCRIPT_LIMIT?B.blueSoft:B.divider,color:isFoundingOrPro||scriptsUsed<FREE_SCRIPT_LIMIT?B.blue:B.muted,border:"none",borderRadius:99,cursor:"pointer",position:"relative"}}>
-          {isFoundingOrPro?"Write Script":scriptsUsed<FREE_SCRIPT_LIMIT?"Write Script ("+(FREE_SCRIPT_LIMIT-scriptsUsed)+" free left)":"Scripts — Upgrade to unlock"}
+          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
+          {"Write Script"}
         </button>
         <SharePlanCard card={card}/>
       </div>
@@ -877,77 +868,7 @@ function CaptionGen({profile,onSaveCaption}) {
   );
 }
 
-function ShareScoreCard({score,platform,hook}) {
-  const [copied,setCopied] = useState(false);
-  const scoreNum = parseFloat((String(score).match(/(\d+\.?\d*)/)||["0","0"])[1]);
-
-  function share() {
-    const text = "VIRL gave my content a "+score+" viral potential score on "+platform+" \ud83d\udc40\n\n\""+hook+"\"\n\nGet your own score at govirl.ai";
-    navigator.clipboard&&navigator.clipboard.writeText(text).then(function(){
-      setCopied(true); setTimeout(function(){setCopied(false);},2000);
-    });
-  }
-
-  return (
-    <div style={{marginTop:12}}>
-      <div style={{background:"linear-gradient(135deg,"+B.navy+" 0%,"+B.blue+" 100%)",borderRadius:16,padding:"24px 20px",color:B.white,marginBottom:8}}>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.5)",marginBottom:12}}>Powered by VIRL · govirl.ai</div>
-        <div style={{display:"flex",alignItems:"center",gap:20,marginBottom:16}}>
-          <div style={{fontFamily:"'Italiana',serif",fontSize:64,lineHeight:1,color:scoreNum>=8?B.green:scoreNum>=6?B.amber:B.sky}}>{score}</div>
-          <div>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.7)",marginBottom:4}}>Viral potential score</div>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.white}}>{"→ "+platform}</div>
-          </div>
-        </div>
-        <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:"rgba(255,255,255,0.9)",lineHeight:1.3,fontStyle:"italic"}}>{"\""+hook+"\""}</div>
-      </div>
-      <button onClick={share}
-        style={{width:"100%",background:copied?B.greenSoft:B.blueSoft,color:copied?B.green:B.blue,border:"none",borderRadius:99,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"12px",cursor:"pointer",transition:"all .2s"}}>
-        {copied?"Copied to clipboard!":"Share my score"}
-      </button>
-    </div>
-  );
-}
-
-function EditableScanCaption({captionText,platform,onSave}) {
-  const [editing,setEditing] = useState(false);
-  const [text,setText] = useState(captionText||"");
-  const [saved,setSaved] = useState(false);
-
-  function handleSave() {
-    onSave({title:"VIRL Scan: "+platform, preview:text.slice(0,100)});
-    setEditing(false); setSaved(true);
-    setTimeout(function(){setSaved(false);},2000);
-  }
-
-  return (
-    <div style={{marginBottom:12}}>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-        <Label>Ready-to-post caption</Label>
-        <div style={{display:"flex",gap:6}}>
-          {!editing&&<CopyBtn text={text} label="Copy"/>}
-          <button onClick={function(){setEditing(function(v){return !v;});}}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:editing?B.ink:B.bg,color:editing?B.white:B.muted,border:"none",borderRadius:99,cursor:"pointer"}}>
-            {editing?"Cancel":"Edit"}
-          </button>
-          <button onClick={handleSave}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:saved?B.greenSoft:editing?B.blue:B.bg,color:saved?B.green:editing?B.white:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
-            {saved?"Saved":"Save"}
-          </button>
-        </div>
-      </div>
-      {editing?(
-        <textarea value={text} onChange={function(e){setText(e.target.value);}}
-          style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,padding:"11px 14px",resize:"vertical",minHeight:100,lineHeight:1.8}}/>
-      ):(
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-line",padding:"12px 16px",background:B.bg,borderRadius:10}}>{text}</div>
-      )}
-      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(t);}}/>}
-    </div>
-  );
-}
-
-function VIRLScan({profile,onSaveCaption,onScanComplete}) {
+function VIRLScan({profile,onSaveCaption}) {
   const [files,setFiles] = useState([]);
   const [results,setResults] = useState([]);
   const [scanning,setScanning] = useState(false);
@@ -986,7 +907,6 @@ function VIRLScan({profile,onSaveCaption,onScanComplete}) {
       if (i>=files.length) {
         setResults(out);
         setScanning(false);
-        if (onScanComplete) { try { onScanComplete(); } catch(e){} }
         try {
           var scores = out.filter(function(r){return r.score;}).map(function(r){
             var m=String(r.score).match(/(\d+\.?\d*)/); return m?parseFloat(m[1]):0;
@@ -1441,7 +1361,12 @@ function Results({results}) {
 }
 
 function GateScreen({onAuth}) {
-  const [mode,setMode]       = useState("login"); // "login" | "signup" | "waitlist"
+  const [mode,setMode]       = useState(function(){
+    try {
+      var p = new URLSearchParams(window.location.search);
+      return p.get("signup")==="true" ? "signup" : "login";
+    } catch(e) { return "login"; }
+  });
   const [email,setEmail]     = useState("");
   const [password,setPassword] = useState("");
   const [authLoading,setAuthLoading] = useState(false);
@@ -1547,7 +1472,8 @@ function GateScreen({onAuth}) {
 // Error handling done via try/catch inside App
 
 function App() {
-  // ── Supabase session state ──────────────────────────────────────────────
+
+// ── Supabase session state ──────────────────────────────────────────────
   const [session,setSession]         = useState(null);
   const [authLoading,setAuthLoading] = useState(true);
   const [appError,setAppError]       = useState(null);
@@ -1576,34 +1502,15 @@ function App() {
   const [trending,setTrending] = useState("");
   const [context,setContext] = useState("");
   const [loading,setLoading] = useState(false);
-  // Load persisted plan — valid until next Monday credit reset
-  const [cards,setCards] = useState(function(){
-    try {
-      var p = JSON.parse(localStorage.getItem("virl_saved_plan")||"null");
-      if (p && p.expiresAt && Date.now() < p.expiresAt && Array.isArray(p.cards) && p.cards.length > 0) return p.cards;
-    } catch(e){ try { localStorage.removeItem("virl_saved_plan"); } catch(e2){} }
-    return null;
-  });
-  const [stats,setStats] = useState(function(){
-    try {
-      var p = JSON.parse(localStorage.getItem("virl_saved_plan")||"null");
-      if (p && p.expiresAt && Date.now() < p.expiresAt && p.stats) return p.stats;
-    } catch(e){}
-    return null;
-  });
-  const [showVaultReminder,setShowVaultReminder] = useState(function(){
-    try {
-      var p = JSON.parse(localStorage.getItem("virl_saved_plan")||"null");
-      return !!(p && p.expiresAt && Date.now() < p.expiresAt && Array.isArray(p.cards) && p.cards.length > 0);
-    } catch(e){ return false; }
-  });
+  const [cards,setCards] = useState(null);
+  const [stats,setStats] = useState(null);
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
   const [results,setResults] = useState(stored.results||[]);
   const [profile,setProfile] = useState(stored.profile||{});
   const [creditState,setCreditState] = useState(getCredits);
   const [sbCredits,setSbCredits]     = useState(null); // Supabase credits row
-  const [creditsLoaded,setCreditsLoaded] = useState(false); // true once Supabase has responded
+
   const [hasSeenExplainer,setHasSeenExplainer] = useState(function(){
     try { return localStorage.getItem("virl_seen_explainer")==="1"; } catch(e) { return false; }
   });
@@ -1628,10 +1535,8 @@ function App() {
     // Load credits
     loadCreditsFromSupabase(userId, session.access_token).then(function(row) {
       if (row) setSbCredits(row);
-      setCreditsLoaded(true);
     });
-    // Expose userId globally for child component event logging
-    window.__virlUserId = userId;
+
   }, [session]);
 
   function refreshCredits() {
@@ -1654,12 +1559,9 @@ function App() {
   // ── Trial + upgrade state ────────────────────────────────────────────────
   const [showUpgrade,setShowUpgrade] = useState(false);
   const [upgradeReason,setUpgradeReason] = useState("credits");
-  const [scriptsUsed,setScriptsUsed] = useState(function(){try{return parseInt(localStorage.getItem("virl_scripts_used")||"0");}catch(e){return 0;}});
-  const [scansUsed,setScansUsed] = useState(function(){try{return parseInt(localStorage.getItem("virl_scans_used")||"0");}catch(e){return 0;}});
-  const [firstPlanDone,setFirstPlanDone] = useState(function(){try{return localStorage.getItem("virl_first_plan")==="1";}catch(e){return false;}});
-  const [showFirstPlanCelebration,setShowFirstPlanCelebration] = useState(false);
-  const FREE_SCRIPT_LIMIT = 2;
-  const FREE_SCAN_LIMIT = 3;
+
+
+
 
   async function handleCheckout(planType) {
     if (!session) return;
@@ -1781,7 +1683,7 @@ function App() {
   // causing trial expiry to incorrectly fire for founding/pro users.
   var trialExpired = false;
   var daysIntoTrial = 0;
-  if (session && creditsLoaded && !isFoundingOrPro) {
+  if (session && !isFoundingOrPro) {
     var signupDate = new Date(session.user.created_at);
     daysIntoTrial = Math.floor((Date.now() - signupDate.getTime()) / 86400000);
     trialExpired = daysIntoTrial >= 14;
@@ -1849,9 +1751,6 @@ function App() {
     if (!platforms.length||!formats.length) return;
     const cost = cards ? CREDIT_COSTS.regen : CREDIT_COSTS.plan;
     // Block generation if trial expired or out of credits
-    // For non-pro users, wait for Supabase credits to load to avoid false trial expiry
-    // Pro/founding users bypass this — they should never be blocked
-    if (session && !creditsLoaded && !isFoundingOrPro) return;
     if (!isFoundingOrPro && trialExpired) {
       setUpgradeReason("trial"); setShowUpgrade(true); return;
     }
@@ -1859,41 +1758,12 @@ function App() {
       setUpgradeReason("credits"); setShowUpgrade(true); return;
     }
     refreshCredits();
-    setLoading(true); setError(""); setCards(null); setStats(null); setShowVaultReminder(false);
-    try { localStorage.removeItem("virl_saved_plan"); } catch(e) {}
+    setLoading(true); setError(""); setCards(null); setStats(null);
     callAPI(planPrompt, 3000, null, null, cost, userToken).then(function(full) {
       const parts = full.split(/STATS/i);
       const parsed = extractJSON(parts[0]||full);
       if (parsed&&Array.isArray(parsed)&&parsed.length>0) {
         setCards(parsed);
-        setShowVaultReminder(true);
-        // Log event
-        logEvent(session&&session.user?session.user.id:null, "plan_generated", {
-          platforms: platforms,
-          niche: niche,
-          goal: goal,
-          post_count: parsed.length,
-          is_regen: !!(cards),
-        }, userToken);
-        // Persist plan + stats until next Monday
-        try {
-          var planStats = null;
-          if (parts[1]) {
-            var sm = parts[1].match(/reach=([\d,K+]+).*?rate=([\d.]+).*?earn=([^\s\n]+)/i);
-            if (sm) planStats = {reach:sm[1],engagement:sm[2]+"%",earnings:sm[3]};
-          }
-          localStorage.setItem("virl_saved_plan", JSON.stringify({
-            cards: parsed,
-            stats: planStats,
-            expiresAt: getNextMonday(),
-            savedAt: Date.now(),
-          }));
-        } catch(e) {}
-        if(!firstPlanDone&&!isFoundingOrPro){
-          setFirstPlanDone(true);
-          setShowFirstPlanCelebration(true);
-          try{localStorage.setItem("virl_first_plan","1");}catch(e){}
-        }
         if (parts[1]) {
           const m = parts[1].match(/reach=([\d,K+]+).*?rate=([\d.]+).*?earn=([^\s\n]+)/i);
           if (m) setStats({reach:m[1],engagement:m[2]+"%",earnings:m[3]});
@@ -1920,11 +1790,11 @@ function App() {
     const id = card.title+card.day;
     if (vault.some(function(v){return v.id===id;})) return;
     setVault(function(v){return [{id,type:"plan",title:card.title,platform:card.platform,postTime:card.postTime,savedAt:fmtDate(),result:null}].concat(v);});
-    logEvent(session&&session.user?session.user.id:null,"vault_saved",{type:"plan_card",platform:card.platform},userToken);
+
   }
   function saveCaption(cap) {
     setVault(function(v){return [{id:"cap_"+Date.now(),type:"caption",title:cap.title,preview:cap.preview,savedAt:fmtDate()}].concat(v);});
-    logEvent(session&&session.user?session.user.id:null,"vault_saved",{type:"caption"},userToken);
+
   }
   function deleteFromVault(id) {
     setVault(function(v){return v.filter(function(x){return x.id!==id;});});
@@ -1938,12 +1808,7 @@ function App() {
       if (idx>=0) { const n=r.slice(); n[idx]=entry; return n; }
       return r.concat([entry]);
     });
-    logEvent(session&&session.user?session.user.id:null,"result_logged",{
-      platform:card.platform,
-      views:parseInt(result.views)||0,
-      likes:parseInt(result.likes)||0,
-      saves:parseInt(result.saves)||0,
-    },userToken);
+
   }
   function dismissExplainer() {
     setHasSeenExplainer(true);
@@ -1985,7 +1850,7 @@ function App() {
     <GateScreen onAuth={function(s){setSession(s);}}/>
   );
 
-  return (
+return (
     <div id="virl-shell" style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",fontWeight:300,color:B.ink}}>
 
       {/* ── Upgrade Modal ────────────────────────────────────────────────── */}
@@ -2161,36 +2026,31 @@ function App() {
 
         {tab==="profile"&&(
           <div>
-            {!(profileComplete&&firstPlanDone&&scansUsed>0)&&(
+            {!profileComplete&&(
               <div style={{background:B.navy,borderRadius:16,padding:"20px",marginBottom:20,color:B.white}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.sky}}>Getting started</div>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:"rgba(255,255,255,0.4)"}}>
-                    {[profileComplete,firstPlanDone,scansUsed>0].filter(Boolean).length+"/3 complete"}
+                    {"Getting started"}
                   </div>
                 </div>
                 {[
-                  {done:profileComplete, label:"Fill in your Creator Profile", sub:"Unlocks personalized AI plans that sound like you", action:null},
-                  {done:firstPlanDone, label:"Generate your first VIRL Plan", sub:"Your full week built in 60 seconds*", action:function(){setTab("plan");}},
-                  {done:scansUsed>0, label:"Scan a photo or video", sub:"Get your first viral potential score", action:function(){setTab("scan");}},
+                  {label:"Fill in your Creator Profile", sub:"Unlocks personalized AI plans", action:null},
+                  {label:"Generate your first VIRL Plan", sub:"Your full week in 60 seconds*", action:function(){setTab("plan");}},
+                  {label:"Try VIRL Scan", sub:"Get a viral potential score", action:function(){setTab("scan");}},
                 ].map(function(step,i){return (
-                  <div key={i} onClick={!step.done&&step.action?step.action:undefined}
-                    style={{display:"flex",alignItems:"center",gap:14,padding:"10px 0",borderBottom:i<2?"1px solid rgba(255,255,255,0.08)":"none",cursor:!step.done&&step.action?"pointer":"default",opacity:step.done?0.7:1,transition:"opacity .2s"}}>
-                    <div style={{width:26,height:26,borderRadius:"50%",background:step.done?B.green:"rgba(255,255,255,0.1)",border:step.done?"none":"1px solid rgba(255,255,255,0.2)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontFamily:"'Jost',sans-serif",fontSize:11,color:step.done?B.white:"rgba(255,255,255,0.6)",transition:"all .3s"}}>
-                      {step.done?"✓":(i+1)}
+                  <div key={i} onClick={step.action||undefined}
+                    style={{display:"flex",alignItems:"center",gap:14,padding:"10px 0",borderBottom:i<2?"1px solid rgba(255,255,255,0.08)":"none",cursor:step.action?"pointer":"default"}}>
+                    <div style={{width:24,height:24,borderRadius:"50%",background:"rgba(255,255,255,0.1)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.6)"}}>
+                      {i+1}
                     </div>
                     <div style={{flex:1}}>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:step.done?"rgba(255,255,255,0.5)":B.white,textDecoration:step.done?"line-through":"none"}}>{step.label}</div>
-                      {!step.done&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.45)",marginTop:2}}>{step.sub}</div>}
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.white}}>{step.label}</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)",marginTop:2}}>{step.sub}</div>
                     </div>
-                    {!step.done&&step.action&&<div style={{color:B.sky,fontSize:16}}>{"→"}</div>}
+                    {step.action&&<div style={{color:B.sky,fontSize:16}}>{"→"}</div>}
                   </div>
                 );})}
-                {!isFoundingOrPro&&(
-                  <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid rgba(255,255,255,0.08)",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.4)",textAlign:"center"}}>
-                    {"Free trial · "+Math.max(0,14-Math.round((Date.now()-new Date((session&&session.user&&session.user.created_at)||Date.now()).getTime())/(1000*60*60*24)))+" days remaining"}
-                  </div>
-                )}
               </div>
             )}
             <div style={{marginBottom:24,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
@@ -2297,8 +2157,8 @@ function App() {
                   style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:13,fontWeight:300,fontStyle:"italic",padding:"10px 14px",resize:"vertical",minHeight:60,lineHeight:1.6}}/>
               </div>
             </div>
-            <GenBtn onClick={generate} loading={loading||(!creditsLoaded&&!!session&&!isFoundingOrPro)} disabled={!platforms.length||!formats.length}>
-              {loading?"Building your strategy...":(!creditsLoaded&&!!session&&!isFoundingOrPro)?"Loading your account...":"Generate my 7-day plan"}
+            <GenBtn onClick={generate} loading={loading} disabled={!platforms.length||!formats.length}>
+              {loading?"Building your strategy...":"Generate my 7-day plan"}
             </GenBtn>
             <ErrBox msg={error}/>
             {loading&&!cards&&<Spinner/>}
@@ -2325,42 +2185,6 @@ function App() {
 
             {cards&&(
               <div>
-                {showVaultReminder&&!showFirstPlanCelebration&&(
-                  <div style={{background:B.navySoft,borderRadius:14,padding:"14px 18px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:10}}>
-                      <span style={{fontSize:16}}>{"🗂"}</span>
-                      <div>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.navy,marginBottom:2}}>Save the cards you want to keep.</div>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>{"Your plan is saved for the week, but Vault items are yours to keep forever."}</div>
-                      </div>
-                    </div>
-                    <button onClick={function(){setShowVaultReminder(false);}}
-                      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.muted,background:"none",border:"none",cursor:"pointer",flexShrink:0,padding:0}}>
-                      {"Dismiss"}
-                    </button>
-                  </div>
-                )}
-                {showFirstPlanCelebration&&(
-                  <div style={{background:"linear-gradient(135deg,"+B.navy+" 0%,"+B.blue+" 100%)",borderRadius:16,padding:"24px 20px",marginBottom:16,textAlign:"center",position:"relative",overflow:"hidden"}}>
-                    <div style={{position:"absolute",top:-20,right:-20,fontSize:80,opacity:0.06}}>{"✦"}</div>
-                    <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.white,marginBottom:6,position:"relative",zIndex:1}}>Your first VIRL plan.</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.7,marginBottom:16,position:"relative",zIndex:1}}>
-                      {"This is what 60 seconds of strategy looks like. Save the cards you love to your Vault — they’re yours to keep, even after your trial."}
-                    </div>
-                    <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",position:"relative",zIndex:1}}>
-                      <button onClick={function(){setShowFirstPlanCelebration(false);}}
-                        style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 20px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer"}}>
-                        Explore my plan
-                      </button>
-                      {!isFoundingOrPro&&(
-                        <button onClick={function(){setShowFirstPlanCelebration(false);setUpgradeReason("celebration");setShowUpgrade(true);}}
-                          style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 20px",background:"rgba(255,255,255,0.15)",color:B.white,border:"1px solid rgba(255,255,255,0.3)",borderRadius:99,cursor:"pointer"}}>
-                          Upgrade to keep generating
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
                 {!hasSeenExplainer&&(
                   <div style={{background:B.navySoft,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",gap:14,alignItems:"flex-start"}}>
                     <div style={{fontSize:20,flexShrink:0}}>{"✦"}</div>
@@ -2378,7 +2202,6 @@ function App() {
                 )}
                 {(function() {
                   const pc = {};
-                  if (!Array.isArray(cards)) return null;
                   cards.forEach(function(card){ pc[card.platform]=(pc[card.platform]||0)+1; });
                   const entries = Object.keys(pc);
                   const colors = [B.navy,B.blue,B.sky,"#8B5CF6",B.green,B.amber,"#EC4899"];
@@ -2407,7 +2230,7 @@ function App() {
                   <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink}}>Your <span style={{color:B.navy}}>week</span></div>
                   <div style={{flex:1,height:1,background:B.border}}/>
                 </div>
-                {Array.isArray(cards)&&cards.reduce(function(acc,card,i){
+                {cards.reduce(function(acc,card,i){
                   if (!card||typeof card!=="object"||!card.title) return acc;
                   const prevDay = i>0?cards[i-1].day:"";
                   if (card.day!==prevDay) {
@@ -2420,7 +2243,7 @@ function App() {
                   acc.push(
                     <PlanCard key={i} card={card} idx={i}
                       onSave={saveToVault} onLog={logResult}
-                      saved={Array.isArray(vault)&&vault.some(function(v){return v&&v.id===card.title+card.day;})}
+                      saved={vault.some(function(v){return v.id===card.title+card.day;})}
                       result={results.find(function(r){return r.id===card.title+card.day;})}
                     />
                   );
@@ -2476,35 +2299,7 @@ function App() {
                 Upload photos or videos. VIRL scores each for viral potential out of 10, recommends the best platform, and writes a ready-to-post caption you can edit and save.
               </div>
             </div>
-            {!isFoundingOrPro&&scansUsed>=FREE_SCAN_LIMIT?(
-              <div style={{background:B.navy,borderRadius:16,padding:"28px 24px",textAlign:"center"}}>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,marginBottom:8}}>{"You've used your "+FREE_SCAN_LIMIT+" free scans."}</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.65)",lineHeight:1.7,marginBottom:20}}>
-                  Upgrade to Standard for 150 credits per week, all 7 platforms, Algorithm Intel, and the script generator.
-                </div>
-                <button onClick={function(){setUpgradeReason("scans");setShowUpgrade(true);}}
-                  style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 32px",background:B.blue,color:B.white,border:"none",borderRadius:99,cursor:"pointer",boxShadow:"0 4px 14px rgba(37,99,235,0.4)"}}>
-                  Upgrade to unlock full scan access
-                </button>
-              </div>
-            ):(
-              <div>
-                {!isFoundingOrPro&&(
-                  <div style={{background:B.navySoft,borderRadius:10,padding:"10px 16px",marginBottom:16,fontFamily:"'Jost',sans-serif",fontSize:12,color:B.navy,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                    <span>{"Free trial: "+(FREE_SCAN_LIMIT-scansUsed)+" of "+FREE_SCAN_LIMIT+" scans remaining"}</span>
-                    <button onClick={function(){setUpgradeReason("scans");setShowUpgrade(true);}}
-                    style={{background:"none",border:"none",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.blue,cursor:"pointer",padding:0}}>Upgrade to Standard</button>
-                  </div>
-                )}
-                <VIRLScan profile={profile} onSaveCaption={saveCaption} onScanComplete={function(){
-                  if(!isFoundingOrPro){
-                    var next=scansUsed+1;
-                    setScansUsed(next);
-                    try{localStorage.setItem("virl_scans_used",String(next));}catch(e){}
-                  }
-                }}/>
-              </div>
-            )}
+            <VIRLScan profile={profile} onSaveCaption={saveCaption}/>
           </div>
         )}
 
@@ -2823,6 +2618,7 @@ function App() {
 
     </div></div>
   );
+
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
