@@ -3,103 +3,94 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { prompt, maxTokens, imageBase64, imageType, cost, token } = req.body;
+  const {
+    prompt, maxTokens, imageBase64, imageType,
+    cost, token, model, systemPrompt,
+  } = req.body;
 
-  if (!prompt) {
-    return res.status(400).json({ error: 'Missing prompt' });
-  }
+  if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
-  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_URL        = process.env.SUPABASE_URL;
   const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-  const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+  const ANTHROPIC_API_KEY   = process.env.ANTHROPIC_API_KEY;
 
-  // ── Verify session and deduct credits if user is logged in ───────────────
+  // ── Model selection ────────────────────────────────────────────────────────
+  // Allowlist prevents callers from arbitrarily picking expensive models.
+  const ALLOWED_MODELS = ['claude-sonnet-4-6', 'claude-haiku-4-5-20251001'];
+  const selectedModel  = ALLOWED_MODELS.includes(model) ? model : 'claude-sonnet-4-6';
+
+  // ── Credit check & deduction ───────────────────────────────────────────────
   if (token && SUPABASE_URL && SUPABASE_SERVICE_KEY) {
     try {
-      // Verify the JWT token with Supabase
       const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'apikey': SUPABASE_SERVICE_KEY,
-        },
+        headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_SERVICE_KEY },
       });
 
       if (userRes.ok) {
-        const userData = await userRes.json();
-        const userId = userData.id;
+        const { id: userId } = await userRes.json();
 
-        // Get user's credits row
         const credRes = await fetch(
           `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan,credits`,
-          {
-            headers: {
-              'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-              'apikey': SUPABASE_SERVICE_KEY,
-            },
-          }
+          { headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_SERVICE_KEY } }
         );
 
         if (credRes.ok) {
-          const credRows = await credRes.json();
-          const row = credRows[0];
-
+          const [row] = await credRes.json();
           if (row) {
-            const plan = row.plan;
-            const currentCredits = row.credits;
+            const { plan, credits: currentCredits } = row;
             const creditCost = cost || 1;
-
-            // Founding/pro members bypass credit checks
-            const isPro = plan === 'founding' || plan === 'pro' || plan === 'standard';
+            const isPro = ['founding','pro','standard'].includes(plan);
 
             if (!isPro && currentCredits < creditCost) {
               return res.status(402).json({ error: 'Not enough credits this week.' });
             }
 
-            // Deduct credits (skip for founding)
-            if (plan !== 'founding' && plan !== 'pro') {
-              const newCredits = Math.max(0, currentCredits - creditCost);
-              await fetch(
-                `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`,
-                {
-                  method: 'PATCH',
-                  headers: {
-                    'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-                    'apikey': SUPABASE_SERVICE_KEY,
-                    'Content-Type': 'application/json',
-                    'Prefer': 'return=minimal',
-                  },
-                  body: JSON.stringify({ credits: newCredits }),
-                }
-              );
+            if (!['founding','pro'].includes(plan)) {
+              await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
+                method: 'PATCH',
+                headers: {
+                  'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+                  'apikey': SUPABASE_SERVICE_KEY,
+                  'Content-Type': 'application/json',
+                  'Prefer': 'return=minimal',
+                },
+                body: JSON.stringify({ credits: Math.max(0, currentCredits - creditCost) }),
+              });
             }
           }
         }
       }
     } catch (e) {
-      // Non-fatal — continue with generation even if credit deduction fails
       console.error('Credit deduction error:', e.message);
+      // Non-fatal — never block generation
     }
   }
 
-  // ── Call Anthropic API ────────────────────────────────────────────────────
+  // ── Build Anthropic request ────────────────────────────────────────────────
   try {
-    const messages = [];
+    // System prompt with prompt caching
+    // cache_control: ephemeral → Anthropic caches this block server-side for 1 hour.
+    // On cache hit, cached tokens cost ~10% of normal input price.
+    // Most impactful for plan generation where the full creator profile is sent
+    // on every call. The beta header is required to enable caching.
+    const useCache   = !!(systemPrompt && systemPrompt.trim());
+    const systemBlock = useCache
+      ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
+      : undefined;
+
+    // User message
     const content = [];
-
-    // Add image if provided (for VIRL Scan)
     if (imageBase64 && imageType) {
-      content.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: imageType,
-          data: imageBase64,
-        },
-      });
+      content.push({ type: 'image', source: { type: 'base64', media_type: imageType, data: imageBase64 } });
     }
-
     content.push({ type: 'text', text: prompt });
-    messages.push({ role: 'user', content });
+
+    const payload = {
+      model: selectedModel,
+      max_tokens: maxTokens || 1000,
+      messages: [{ role: 'user', content }],
+      ...(systemBlock ? { system: systemBlock } : {}),
+    };
 
     const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -107,28 +98,33 @@ export default async function handler(req, res) {
         'x-api-key': ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json',
+        ...(useCache ? { 'anthropic-beta': 'prompt-caching-2024-07-31' } : {}),
       },
-      body: JSON.stringify({
-        model: 'claude-opus-4-6',
-        max_tokens: maxTokens || 1000,
-        messages,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!anthropicRes.ok) {
-      const errData = await anthropicRes.json().catch(() => ({}));
-      console.error('Anthropic error:', anthropicRes.status, errData);
+      const err = await anthropicRes.json().catch(() => ({}));
+      console.error('Anthropic error:', anthropicRes.status, err);
       return res.status(500).json({
-        error: `AI error ${anthropicRes.status}: ${errData.error?.message || 'Unknown error'}`,
+        error: `AI error ${anthropicRes.status}: ${err.error?.message || 'Unknown'}`,
       });
     }
 
     const data = await anthropicRes.json();
-    const text = data.content
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('');
 
+    // Log token usage + cache performance to Vercel logs
+    if (data.usage) {
+      console.log('virl_usage', JSON.stringify({
+        model: selectedModel,
+        input_tokens:        data.usage.input_tokens,
+        output_tokens:       data.usage.output_tokens,
+        cache_read_tokens:   data.usage.cache_read_input_tokens || 0,
+        cache_write_tokens:  data.usage.cache_creation_input_tokens || 0,
+      }));
+    }
+
+    const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
     return res.status(200).json({ text });
 
   } catch (e) {
