@@ -113,11 +113,21 @@ async function loadProfileFromSupabase(userId) {
   } catch(e) { return {}; }
 }
 
-async function loadCreditsFromSupabase(userId) {
+async function loadCreditsFromSupabase(userId, accessToken) {
   try {
-    const { data } = await supabaseClient
-      .from("credits").select("credits,plan,reset_at").eq("user_id", userId).single();
-    return data || null;
+    // Use REST API with the user's own token to bypass RLS issues
+    const headers = {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + (accessToken || SUPABASE_ANON_KEY),
+      "Content-Type": "application/json",
+    };
+    const res = await fetch(
+      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at&user_id=eq." + userId + "&limit=1",
+      { headers }
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return (Array.isArray(rows) && rows.length > 0) ? rows[0] : null;
   } catch(e) { return null; }
 }
 
@@ -1616,7 +1626,7 @@ function App() {
       if (p&&p.name) setProfile(p);
     });
     // Load credits
-    loadCreditsFromSupabase(userId).then(function(row) {
+    loadCreditsFromSupabase(userId, session.access_token).then(function(row) {
       if (row) setSbCredits(row);
       setCreditsLoaded(true);
     });
@@ -1627,7 +1637,7 @@ function App() {
   function refreshCredits() {
     setCreditState(getCredits());
     if (session) {
-      loadCreditsFromSupabase(session.user.id).then(function(row) {
+      loadCreditsFromSupabase(session.user.id, session.access_token).then(function(row) {
         if (row) setSbCredits(row);
       });
     }
@@ -1892,7 +1902,7 @@ function App() {
     }).then(function(){
       // Refresh credits from Supabase after successful generation
       if (session) {
-        loadCreditsFromSupabase(session.user.id).then(function(row){
+        loadCreditsFromSupabase(session.user.id, session.access_token).then(function(row){
           if (row) setSbCredits(row);
         });
       }
