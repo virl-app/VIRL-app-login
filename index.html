@@ -336,6 +336,27 @@ async function callAPI(prompt, maxTokens, imageBase64, imageType, cost, token) {
   return data.text;
 }
 
+// ── Event logging ─────────────────────────────────────────────────────────
+async function logEvent(userId, eventName, properties, token) {
+  if (!userId) return;
+  try {
+    await fetch(SUPABASE_URL+"/rest/v1/events", {
+      method: "POST",
+      headers: {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer "+(token||SUPABASE_ANON_KEY),
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        event_name: eventName,
+        properties: properties||{},
+      }),
+    });
+  } catch(e) { /* non-critical — never block UI on analytics */ }
+}
+
 // ── Shared UI ──────────────────────────────────────────────────────────────
 
 const Label = ({children}) => (
@@ -635,6 +656,7 @@ function PlanCard({card,idx,onSave,onLog,saved,result}) {
               try{localStorage.setItem("virl_scripts_used",String(next));}catch(e){}
             }
             setShowScript(true);
+            try{logEvent(window.__virlUserId||null,"script_generated",{platform:card.platform});}catch(e){}
           } else {
             setUpgradeReason("scripts");
             setShowUpgrade(true);
@@ -682,7 +704,10 @@ function RemixCaption({text,onSelect}) {
     const prompt = "Rewrite this caption 3 ways. Same core message and voice. Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"}} Caption to remix: "+text;
     callAPI(prompt, 800).then(function(raw) {
       const parsed = extractJSON(raw);
-      if (parsed&&parsed.shorter) { setVariants(parsed); }
+      if (parsed&&parsed.shorter) {
+        setVariants(parsed);
+        try { logEvent(window.__virlUserId||null,"caption_remixed",{}); } catch(e){}
+      }
       else { setError("Try again in a moment."); }
     }).catch(function(){ setError("Connection issue - try again."); }).finally(function(){ setLoading(false); });
   }
@@ -780,7 +805,13 @@ function CaptionGen({profile,onSaveCaption}) {
     const prompt = "You are VIRL, an AI content strategist. "+voiceCtx+" Generate captions for a "+platform+" post about: "+topic.trim()+". Tone: "+tone+". Length: "+length+" - "+lengthGuide[length]+" Platform style: "+platformCtx+" Reply ONLY with JSON: {\"hook\":\"punchy line under 10 words\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\",\"tag6\",\"tag7\"]}";
     callAPI(prompt, 900).then(function(full) {
       const parsed = extractJSON(full);
-      if (parsed&&parsed.hook&&parsed.captions) { setResult(parsed); }
+      if (parsed&&parsed.hook&&parsed.captions) {
+        setResult(parsed);
+        try {
+          var uid = window.__virlUserId||null;
+          logEvent(uid,"caption_generated",{platform:platform,tone:tone,length:length});
+        } catch(e){}
+      }
       else { setError("Almost there - tap generate again for a second pass."); }
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
   }
@@ -942,7 +973,22 @@ function VIRLScan({profile,onSaveCaption}) {
     const out = [];
     var i = 0;
     function next() {
-      if (i>=files.length) { setResults(out); setScanning(false); return; }
+      if (i>=files.length) {
+        setResults(out);
+        setScanning(false);
+        try {
+          var scores = out.filter(function(r){return r.score;}).map(function(r){
+            var m=String(r.score).match(/(\d+\.?\d*)/); return m?parseFloat(m[1]):0;
+          });
+          var avg = scores.length?Math.round((scores.reduce(function(a,b){return a+b;},0)/scores.length)*10)/10:null;
+          logEvent(window.__virlUserId||null,"scan_completed",{
+            file_count:out.length,
+            avg_score:avg,
+            has_video:out.some(function(r){return r.isVideo;}),
+          });
+        } catch(e){}
+        return;
+      }
       var file = files[i]; i++; setCurrent(i);
       var isVideo = file.type.startsWith("video/");
       if (isVideo) {
@@ -1519,18 +1565,23 @@ function App() {
   const [cards,setCards] = useState(function(){
     try {
       var p = JSON.parse(localStorage.getItem("virl_saved_plan")||"null");
-      if (p && p.expiresAt && Date.now() < p.expiresAt) return p.cards;
-    } catch(e){}
+      if (p && p.expiresAt && Date.now() < p.expiresAt && Array.isArray(p.cards) && p.cards.length > 0) return p.cards;
+    } catch(e){ try { localStorage.removeItem("virl_saved_plan"); } catch(e2){} }
     return null;
   });
   const [stats,setStats] = useState(function(){
     try {
       var p = JSON.parse(localStorage.getItem("virl_saved_plan")||"null");
-      if (p && p.expiresAt && Date.now() < p.expiresAt) return p.stats||null;
+      if (p && p.expiresAt && Date.now() < p.expiresAt && p.stats) return p.stats;
     } catch(e){}
     return null;
   });
-  const [showVaultReminder,setShowVaultReminder] = useState(false);
+  const [showVaultReminder,setShowVaultReminder] = useState(function(){
+    try {
+      var p = JSON.parse(localStorage.getItem("virl_saved_plan")||"null");
+      return !!(p && p.expiresAt && Date.now() < p.expiresAt && Array.isArray(p.cards) && p.cards.length > 0);
+    } catch(e){ return false; }
+  });
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
   const [results,setResults] = useState(stored.results||[]);
@@ -1564,6 +1615,8 @@ function App() {
       if (row) setSbCredits(row);
       setCreditsLoaded(true);
     });
+    // Expose userId globally for child component event logging
+    window.__virlUserId = userId;
   }, [session]);
 
   function refreshCredits() {
@@ -1629,20 +1682,60 @@ function App() {
         "apikey": SUPABASE_ANON_KEY,
         "Authorization": "Bearer "+SUPABASE_ANON_KEY,
       };
-      // Fetch credits table — plan, credits, stripe_customer_id, created_at
+      // Fetch credits table
       const credRes = await fetch(
         SUPABASE_URL+"/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id,updated_at&order=updated_at.desc",
         {headers}
       );
       const credits = await credRes.json();
 
-      // Aggregate stats
+      // Fetch events table — last 500
+      const evRes = await fetch(
+        SUPABASE_URL+"/rest/v1/events?select=user_id,event_name,properties,created_at&order=created_at.desc&limit=500",
+        {headers}
+      );
+      const events = await evRes.json();
+
+      // Aggregate user stats
       const total = credits.length;
       const paid = credits.filter(function(r){return r.plan==="standard"||r.plan==="founding";}).length;
       const free = credits.filter(function(r){return r.plan==="free";}).length;
       const mrr = paid * 19;
 
-      setAdminData({credits, total, paid, free, mrr});
+      // Aggregate event stats
+      const evArr = Array.isArray(events) ? events : [];
+      function countEv(name) { return evArr.filter(function(e){return e.event_name===name;}).length; }
+      function uniqueUsers(name) { return new Set(evArr.filter(function(e){return e.event_name===name;}).map(function(e){return e.user_id;})).size; }
+
+      const planEvents = evArr.filter(function(e){return e.event_name==="plan_generated";});
+      const scanEvents = evArr.filter(function(e){return e.event_name==="scan_completed";});
+      const avgScore = scanEvents.length ? (scanEvents.reduce(function(sum,e){
+        return sum + (e.properties&&e.properties.avg_score ? e.properties.avg_score : 0);
+      },0) / scanEvents.length).toFixed(1) : "—";
+
+      // Platform frequency from plans
+      const platCounts = {};
+      planEvents.forEach(function(e){
+        if (e.properties&&Array.isArray(e.properties.platforms)) {
+          e.properties.platforms.forEach(function(p){ platCounts[p]=(platCounts[p]||0)+1; });
+        }
+      });
+      const topPlatforms = Object.entries(platCounts).sort(function(a,b){return b[1]-a[1];}).slice(0,3);
+
+      const eventStats = {
+        plans: countEv("plan_generated"),
+        plansUsers: uniqueUsers("plan_generated"),
+        captions: countEv("caption_generated"),
+        remixes: countEv("caption_remixed"),
+        scans: countEv("scan_completed"),
+        scripts: countEv("script_generated"),
+        vaultSaves: countEv("vault_saved"),
+        results: countEv("result_logged"),
+        avgScanScore: avgScore,
+        topPlatforms: topPlatforms,
+      };
+
+      setAdminData({credits, total, paid, free, mrr, eventStats});
     } catch(e) {
       console.error("Admin load error:", e);
     }
@@ -1756,6 +1849,14 @@ function App() {
       if (parsed&&Array.isArray(parsed)&&parsed.length>0) {
         setCards(parsed);
         setShowVaultReminder(true);
+        // Log event
+        logEvent(session&&session.user?session.user.id:null, "plan_generated", {
+          platforms: platforms,
+          niche: niche,
+          goal: goal,
+          post_count: parsed.length,
+          is_regen: !!(cards),
+        }, userToken);
         // Persist plan + stats until next Monday
         try {
           var planStats = null;
@@ -1802,9 +1903,11 @@ function App() {
     const id = card.title+card.day;
     if (vault.some(function(v){return v.id===id;})) return;
     setVault(function(v){return [{id,type:"plan",title:card.title,platform:card.platform,postTime:card.postTime,savedAt:fmtDate(),result:null}].concat(v);});
+    logEvent(session&&session.user?session.user.id:null,"vault_saved",{type:"plan_card",platform:card.platform},userToken);
   }
   function saveCaption(cap) {
     setVault(function(v){return [{id:"cap_"+Date.now(),type:"caption",title:cap.title,preview:cap.preview,savedAt:fmtDate()}].concat(v);});
+    logEvent(session&&session.user?session.user.id:null,"vault_saved",{type:"caption"},userToken);
   }
   function deleteFromVault(id) {
     setVault(function(v){return v.filter(function(x){return x.id!==id;});});
@@ -1818,6 +1921,12 @@ function App() {
       if (idx>=0) { const n=r.slice(); n[idx]=entry; return n; }
       return r.concat([entry]);
     });
+    logEvent(session&&session.user?session.user.id:null,"result_logged",{
+      platform:card.platform,
+      views:parseInt(result.views)||0,
+      likes:parseInt(result.likes)||0,
+      saves:parseInt(result.saves)||0,
+    },userToken);
   }
   function dismissExplainer() {
     setHasSeenExplainer(true);
@@ -2264,6 +2373,7 @@ function App() {
                   <div style={{flex:1,height:1,background:B.border}}/>
                 </div>
                 {cards.reduce(function(acc,card,i){
+                  if (!card||typeof card!=="object"||!card.title) return acc;
                   const prevDay = i>0?cards[i-1].day:"";
                   if (card.day!==prevDay) {
                     acc.push(
@@ -2525,12 +2635,47 @@ function App() {
                 </div>
 
                 {/* ── Conversion rate ── */}
-                <div style={{background:B.navySoft,borderRadius:14,padding:"16px 18px",marginBottom:20,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div style={{background:B.navySoft,borderRadius:14,padding:"16px 18px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.navy}}>Trial to paid conversion</div>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.navy}}>
                     {adminData.total>0?Math.round((adminData.paid/adminData.total)*100)+"%":"—"}
                   </div>
                 </div>
+
+                {/* ── Feature usage ── */}
+                {adminData.eventStats&&(
+                  <div style={{marginBottom:20}}>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>Feature usage</div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:12}}>
+                      {[
+                        {label:"Plans generated",   value:adminData.eventStats.plans,       sub:adminData.eventStats.plansUsers+" users"},
+                        {label:"Captions generated", value:adminData.eventStats.captions,    sub:adminData.eventStats.remixes+" remixed"},
+                        {label:"Scans completed",    value:adminData.eventStats.scans,       sub:"avg score "+adminData.eventStats.avgScanScore},
+                        {label:"Scripts generated",  value:adminData.eventStats.scripts,     sub:""},
+                        {label:"Vault saves",        value:adminData.eventStats.vaultSaves,  sub:""},
+                        {label:"Results logged",     value:adminData.eventStats.results,     sub:""},
+                      ].map(function(m,i){return (
+                        <div key={i} style={{background:B.card,borderRadius:12,padding:"14px 14px",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>{m.label}</div>
+                          <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.navy,lineHeight:1}}>{m.value}</div>
+                          {m.sub&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,marginTop:3}}>{m.sub}</div>}
+                        </div>
+                      );})}
+                    </div>
+                    {adminData.eventStats.topPlatforms.length>0&&(
+                      <div style={{background:B.navySoft,borderRadius:12,padding:"14px 16px"}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.navy,marginBottom:8}}>Top platforms in plans</div>
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                          {adminData.eventStats.topPlatforms.map(function(p,i){return (
+                            <div key={i} style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,background:B.white,borderRadius:99,padding:"4px 12px"}}>
+                              {p[0]+" ("+p[1]+")"}
+                            </div>
+                          );})}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* ── User table ── */}
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>
