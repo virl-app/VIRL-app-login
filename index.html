@@ -2059,6 +2059,82 @@ function PreLaunchGate() {
   );
 }
 
+// [TASK 5] In-product referral modal — fires at plan-count milestones (3/7/15)
+// as a moment-of-success virality prompt. Modal is dismissible and each
+// milestone shows at most once (tracked via virl_referral_shown_N flags).
+function ReferralModal({milestone, userId, onDismiss}) {
+  var referralCode = (userId || "").slice(0, 8);
+  var referralUrl  = "https://app.govirl.ai?ref=" + referralCode;
+  var shareText    = "I'm using VIRL to plan my social content – it actually sounds like me. Try it free with my link:";
+
+  function shareX() {
+    var url = "https://twitter.com/intent/tweet?text=" + encodeURIComponent(shareText) + "&url=" + encodeURIComponent(referralUrl);
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+  function shareInstagram() {
+    // No direct Stories URL scheme from the web. Use the share sheet when the
+    // browser supports it; otherwise drop the caption + link on the clipboard
+    // so the user can paste into the IG app.
+    if (navigator.share) {
+      navigator.share({title:"Try VIRL", text:shareText, url:referralUrl}).catch(function(){});
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(shareText + " " + referralUrl);
+    }
+  }
+  function dismiss() {
+    try { localStorage.setItem("virl_referral_shown_" + milestone, "1"); } catch(e) {}
+    onDismiss();
+  }
+
+  var headlines = {
+    3:  {eyebrow:"3 plans down",    title:"You're finding your rhythm."},
+    7:  {eyebrow:"7 plans in",      title:"You're officially hooked."},
+    15: {eyebrow:"15 plans strong", title:"Your content game is unstoppable."}
+  };
+  var h = headlines[milestone] || headlines[3];
+
+  var shareBtnStyle = {fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 10px",background:B.navySoft,color:B.navy,border:"none",borderRadius:12,cursor:"pointer"};
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.88)",zIndex:500,display:"flex",alignItems:"flex-end",justifyContent:"center"}}
+      onClick={dismiss}>
+      <div onClick={function(e){ e.stopPropagation(); }}
+        style={{background:B.white,width:"100%",maxWidth:480,borderRadius:"24px 24px 0 0",padding:"32px 26px 28px",boxShadow:"0 -8px 40px rgba(0,0,0,0.25)"}}>
+        <div style={{width:40,height:4,background:B.border,borderRadius:99,margin:"0 auto 24px"}}/>
+
+        <div style={{textAlign:"center",marginBottom:22}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.coral,marginBottom:8}}>{h.eyebrow}</div>
+          <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.1,marginBottom:12}}>{h.title}</div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.65}}>
+            Share VIRL with a creator friend and you both get 2 weeks free.
+          </div>
+        </div>
+
+        {/* Referral link row */}
+        <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:12,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
+          <div style={{flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",fontSize:12,color:B.ink,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{referralUrl}</div>
+          <CopyBtn text={referralUrl} label="Copy link"/>
+        </div>
+
+        {/* Share buttons */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+          <button onClick={shareX} style={shareBtnStyle}>Share on X</button>
+          <button onClick={shareInstagram} style={shareBtnStyle}>Instagram Stories</button>
+        </div>
+
+        {/* TODO: backend referral credit on signup — wire /api/referral-credit
+            to grant 2 weeks of credits to both users when a new signup carries
+            ?ref=XXXXXXXX and resolves to an existing userId. */}
+
+        <button onClick={dismiss}
+          style={{width:"100%",background:"none",border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,cursor:"pointer",padding:"10px 8px 2px",textDecoration:"underline",textDecorationColor:"rgba(100,116,139,0.3)",textUnderlineOffset:"3px"}}>
+          Maybe later
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function App() {
 
   // [TASK 2] Gate everything behind the launch timestamp + beta code. The
@@ -2140,6 +2216,9 @@ function App() {
   const [hasGenerated,setHasGenerated] = useState(function(){
     try { return localStorage.getItem("virl_has_generated")==="1"; } catch(e) { return false; }
   });
+  // [TASK 5] Referral-modal milestone. 0 = hidden; 3/7/15 = show the prompt
+  // for that milestone. Counter lives in localStorage.virl_plans_completed.
+  const [referralMilestone,setReferralMilestone] = useState(0);
 
   // Clear expired plan on mount — plans reset with the credit week
   useEffect(function() {
@@ -2446,6 +2525,19 @@ function App() {
         // [TASK 4] Mark first-plan milestone so the sample-plan CTA hides forever.
         try { localStorage.setItem("virl_has_generated","1"); } catch(e) {}
         setHasGenerated(true);
+        // [TASK 5] Bump lifetime plan counter and fire the referral modal the
+        // first time the user hits 3, 7, or 15 plans. Only when signed in —
+        // anonymous sessions have no user.id to build a referral link from.
+        try {
+          var prevCount = parseInt(localStorage.getItem("virl_plans_completed") || "0", 10);
+          var newCount  = (isNaN(prevCount) ? 0 : prevCount) + 1;
+          localStorage.setItem("virl_plans_completed", String(newCount));
+          if (session && (newCount === 3 || newCount === 7 || newCount === 15)) {
+            if (localStorage.getItem("virl_referral_shown_" + newCount) !== "1") {
+              setReferralMilestone(newCount);
+            }
+          }
+        } catch(e) {}
         // Persist plan to localStorage — lives until next Monday reset
         var parsedStats = null;
         if (parts[1]) {
@@ -2591,6 +2683,13 @@ return (
             </div>
           </div>
         </div>
+      )}
+
+      {/* [TASK 5] Referral modal — only renders when a milestone fires and the
+          user is signed in. Dismissing sets the per-milestone shown flag. */}
+      {referralMilestone>0&&session&&(
+        <ReferralModal milestone={referralMilestone} userId={session.user.id}
+          onDismiss={function(){ setReferralMilestone(0); }}/>
       )}
 
       {showUpgrade&&(
