@@ -2251,6 +2251,11 @@ function App() {
   // [TASK 5] Referral-modal milestone. 0 = hidden; 3/7/15 = show the prompt
   // for that milestone. Counter lives in localStorage.virl_plans_completed.
   const [referralMilestone,setReferralMilestone] = useState(0);
+  // [TASK 7] Dismissal flag for the trial countdown banner. Per-session so the
+  // banner reappears on the user's next visit.
+  const [trialBannerDismissed,setTrialBannerDismissed] = useState(function(){
+    try { return sessionStorage.getItem("virl_trial_banner_dismissed")==="1"; } catch(e) { return false; }
+  });
 
   // Clear expired plan on mount — plans reset with the credit week
   useEffect(function() {
@@ -2875,6 +2880,30 @@ return (
       </nav>
 
       <div id="virl-main" style={{maxWidth:760,margin:"0 auto",padding:"28px 16px 80px"}}><div className="virl-main-inner">
+
+        {/* [TASK 7] Trial countdown banner — layered urgency for days 11-13 of
+            the 14-day trial. Dismissal is per-session via sessionStorage, so
+            the banner reappears the next time the user opens the app. */}
+        {!isFoundingOrPro&&!trialExpired&&daysIntoTrial>=11&&daysIntoTrial<14&&!trialBannerDismissed&&(
+          <div style={{background:B.coralSoft,borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:12}}>
+            <div style={{flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",fontSize:13,color:B.coral,lineHeight:1.5}}>
+              {daysIntoTrial===11&&(<span><span style={{fontWeight:700}}>3 days left</span> in your free trial</span>)}
+              {daysIntoTrial===12&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – lock in 20% off your first year"}</span>)}
+              {daysIntoTrial===13&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – continue for $20/mo (save $60 year one)"}</span>)}
+            </div>
+            <button onClick={function(){ setUpgradeReason("trial"); setShowUpgrade(true); }}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"8px 14px",background:B.coral,color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
+              Upgrade now
+            </button>
+            <button onClick={function(){
+                try { sessionStorage.setItem("virl_trial_banner_dismissed","1"); } catch(e) {}
+                setTrialBannerDismissed(true);
+              }} aria-label="Dismiss"
+              style={{fontFamily:"'Jost',sans-serif",fontSize:20,fontWeight:400,color:B.coral,background:"none",border:"none",cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0}}>
+              {"×"}
+            </button>
+          </div>
+        )}
 
         {/* ── Low credit banner ──────────────────────────────────────────── */}
         {showLowCreditBanner&&(
