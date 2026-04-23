@@ -57,6 +57,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Supabase profile helpers
+// [TASK 1] Returns true/false so the UI can reflect sync state (Syncing/Synced/Failed).
 async function saveProfileToSupabase(profile, userId) {
   try {
     const { error } = await supabaseClient.from("profiles").upsert({
@@ -81,8 +82,9 @@ async function saveProfileToSupabase(profile, userId) {
       content_length: profile.contentLength||null,
       worked_well: profile.workedWell||null
     });
-    if (error) console.error("Profile save error:", error.message);
-  } catch(e) { console.error("Profile save failed:", e.message); }
+    if (error) { console.error("Profile save error:", error.message); return false; }
+    return true;
+  } catch(e) { console.error("Profile save failed:", e.message); return false; }
 }
 
 async function loadProfileFromSupabase(userId) {
@@ -1267,7 +1269,7 @@ function VIRLScan({profile,onSaveCaption,userToken}) {
 }
 
 
-function CreatorProfile({profile,onSave}) {
+function CreatorProfile({profile,syncState,onSave}) {
   const [myPlatforms,setMyPlatforms] = useState(profile.myPlatforms||[]);
   const [name,setName] = useState(profile.name||"");
   const [audience,setAudience] = useState(profile.audience||"");
@@ -1499,6 +1501,22 @@ function CreatorProfile({profile,onSave}) {
         style={{width:"100%",background:saved?B.green:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,marginBottom:8,transition:"all .3s",boxShadow:saved?"0 4px 12px rgba(16,185,129,0.3)":"0 4px 12px rgba(31,58,138,0.25)"}}>
         {saved?"Profile saved":"Save my profile"}
       </button>
+      {/* [TASK 1] Sync indicator — signals Supabase round-trip so users know their data is safe across devices. */}
+      {syncState==="syncing"&&(
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,color:B.muted,textAlign:"center",marginBottom:8}}>
+          Syncing to your account…
+        </div>
+      )}
+      {syncState==="synced"&&(
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:500,color:B.green,textAlign:"center",marginBottom:8}}>
+          {"Synced ✓ — safe across your devices"}
+        </div>
+      )}
+      {syncState==="failed"&&(
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:500,color:B.coral,textAlign:"center",marginBottom:8}}>
+          {"Saved locally. Couldn't reach sync – try again in a moment."}
+        </div>
+      )}
       {totalSecs===4&&(
         <div style={{background:B.navy,borderRadius:12,padding:"18px 20px",marginTop:4}}>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>How VIRL uses your profile</div>
@@ -1813,6 +1831,15 @@ function App() {
     // Listen for auth state changes
     var listener = supabaseClient.auth.onAuthStateChange(function(event, s) {
       setSession(s);
+      // [TASK 1] Clear cached profile on sign-out so the next user on this browser starts clean.
+      if (event === "SIGNED_OUT") {
+        try {
+          var current = JSON.parse(localStorage.getItem(KEY) || "{}");
+          delete current.profile;
+          localStorage.setItem(KEY, JSON.stringify(current));
+        } catch(e) {}
+        setProfile({});
+      }
     });
     return function() { listener.data.subscription.unsubscribe(); };
   }, []);
@@ -1851,6 +1878,8 @@ function App() {
   const [profile,setProfile] = useState(stored.profile||{});
   const [creditState,setCreditState] = useState(getCredits);
   const [sbCredits,setSbCredits]     = useState(null); // Supabase credits row
+  // [TASK 1] Sync state for profile save: "idle" | "syncing" | "synced" | "failed"
+  const [profileSync,setProfileSync] = useState("idle");
 
   const [hasSeenExplainer,setHasSeenExplainer] = useState(function(){
     try { return localStorage.getItem("virl_seen_explainer")==="1"; } catch(e) { return false; }
@@ -1884,9 +1913,17 @@ function App() {
   useEffect(function() {
     if (!session) return;
     var userId = session.user.id;
-    // Load profile
+    // [TASK 1] Hydrate profile from Supabase; if none exists, migrate any local-only
+    // profile up so legacy users don't lose their voice/audience/off-limits on sign-in.
     loadProfileFromSupabase(userId).then(function(p) {
-      if (p&&p.name) setProfile(p);
+      if (p && p.name) {
+        setProfile(p);
+      } else {
+        var localProfile = (load() || {}).profile;
+        if (localProfile && localProfile.name) {
+          saveProfileToSupabase(localProfile, userId);
+        }
+      }
     });
     // Load credits
     loadCreditsFromSupabase(userId, session.access_token).then(function(row) {
@@ -2484,9 +2521,16 @@ return (
                 Fill this in once. Every plan and caption VIRL generates will sound authentically like you - not generic AI.
               </div>
             </div>
-            <CreatorProfile profile={profile} onSave={function(p){
+            <CreatorProfile profile={profile} syncState={profileSync} onSave={function(p){
               setProfile(p);
-              if(session)saveProfileToSupabase(p,session.user.id);
+              // [TASK 1] Track the Supabase round-trip so CreatorProfile can show Synced/Syncing/Failed.
+              if (session) {
+                setProfileSync("syncing");
+                saveProfileToSupabase(p, session.user.id).then(function(ok){
+                  setProfileSync(ok ? "synced" : "failed");
+                  setTimeout(function(){ setProfileSync("idle"); }, 3000);
+                });
+              }
             }}/>
 
             {/* ── Danger zone — subtle, at the very bottom ────────────── */}
