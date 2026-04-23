@@ -513,6 +513,20 @@ const Label = ({children}) => (
   </div>
 );
 
+// [TASK 6] Small inline pill that tags a field with the profile tier it
+// unlocks. Used inside <Label> so it sits next to the field's label text.
+function TierBadge({tier}) {
+  var labels = {basic:"+Basic", dialed:"+Dialed", elite:"+Elite"};
+  var colors = {basic:B.amber, dialed:B.blue,    elite:B.green };
+  var label  = labels[tier];
+  if (!label) return null;
+  return (
+    <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.08em",color:colors[tier],textTransform:"uppercase",padding:"2px 7px",borderRadius:99,border:"1px solid "+colors[tier],lineHeight:1}}>
+      {label}
+    </span>
+  );
+}
+
 const SherpaTip = ({children}) => (
   <div style={{background:B.navySoft,borderRadius:10,padding:"12px 16px",marginBottom:16,display:"flex",gap:10,alignItems:"flex-start"}}>
     <div style={{fontSize:14,flexShrink:0}}>{"💡"}</div>
@@ -1328,6 +1342,20 @@ function CreatorProfile({profile,syncState,onSave}) {
 
   const profileComplete = !!(name&&audience&&voice);
   const optionalCount = [purpose,offLimits,inspiration,journey,knownFor,workedWell,postFreq].filter(Boolean).length;
+
+  // [TASK 6] Tier-based completeness meter. The brief spec names "audience" but
+  // the current form captures audience per platform via platformAudiences, so
+  // the Basic requirement is satisfied by either the legacy audience text OR
+  // any non-empty platformAudiences entry.
+  var hasAudienceSignal = !!audience || (platformAudiences && Object.keys(platformAudiences).some(function(k){ return !!platformAudiences[k]; }));
+  var basicDone  = !!(name && hasAudienceSignal);
+  var dialedDone = !!(basicDone && voice && (vibes||[]).length>0 && knownFor);
+  var eliteDone  = !!(dialedDone && offLimits && inspiration && sampleCaption);
+  var tierInfo;
+  if (eliteDone)       tierInfo = {label:"Elite",  percent:100, color:B.green, copy:"Your plans are fully personalized. ✦"};
+  else if (dialedDone) tierInfo = {label:"Dialed", percent:66,  color:B.blue,  copy:"Plans will sound like you. Add off-limits to make them precise."};
+  else if (basicDone)  tierInfo = {label:"Basic",  percent:33,  color:B.amber, copy:"VIRL has the foundation. Add voice to make plans sound like you."};
+  else                 tierInfo = {label:"Getting started", percent:8, color:B.muted, copy:"Share your name and platforms to unlock the Basic tier."};
   const inputStyle = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"10px 12px",fontSize:14,color:B.ink};
   const textareaStyle = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,fontStyle:"italic",padding:"11px 14px",resize:"vertical",lineHeight:1.6};
   const sec = {padding:"20px 24px",borderBottom:"1px solid "+B.divider};
@@ -1358,18 +1386,22 @@ function CreatorProfile({profile,syncState,onSave}) {
 
   return (
     <div>
-      {/* Progress bar */}
+      {/* [TASK 6] Tier-based completeness meter — replaces the section-count
+          progress bar so the user sees exactly what each field unlocks. */}
       <div style={{background:B.card,borderRadius:14,padding:"16px 20px",marginBottom:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.ink}}>{totalSecs===4?"Profile complete":"Build your strategy profile"}</div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted}}>{totalSecs+" of 4 sections"}</div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,gap:10}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.ink}}>Profile tier</div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:tierInfo.color,border:"1px solid "+tierInfo.color,padding:"2px 9px",borderRadius:99,lineHeight:1.4,whiteSpace:"nowrap"}}>{tierInfo.label}</div>
+          </div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,flexShrink:0}}>{tierInfo.percent+"%"}</div>
         </div>
         <div style={{background:B.bg,borderRadius:99,height:6,overflow:"hidden"}}>
-          <div style={{width:(totalSecs/4*100)+"%",height:"100%",background:totalSecs===4?B.green:B.blue,borderRadius:99,transition:"width .4s ease"}}/>
+          <div style={{width:tierInfo.percent+"%",height:"100%",background:tierInfo.color,borderRadius:99,transition:"width .4s ease, background .4s ease"}}/>
         </div>
-        {totalSecs===4&&(
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.green,marginTop:8}}>Every output now sounds like you. The more you add, the sharper VIRL gets.</div>
-        )}
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:eliteDone?B.green:B.muted,marginTop:10,lineHeight:1.55}}>
+          {tierInfo.copy}
+        </div>
       </div>
 
       {/* ── Section 1: You ─────────────────────────────────────────────────── */}
@@ -1379,7 +1411,7 @@ function CreatorProfile({profile,syncState,onSave}) {
         </div>
         <div style={{borderTop:"1px solid "+B.divider}}>
           <div style={sec}>
-            <Label>Your first name</Label>
+            <Label>Your first name <TierBadge tier="basic"/></Label>
             <input value={name} onChange={function(e){setName(e.target.value);}} placeholder="What should VIRL call you?" style={inputStyle}/>
           </div>
           <div style={sec}>
@@ -1408,7 +1440,7 @@ function CreatorProfile({profile,syncState,onSave}) {
           </div>
           {myPlatforms.length>0&&(
             <div style={sec}>
-              <Label>Your handles + audience per platform</Label>
+              <Label>Your handles + audience per platform <TierBadge tier="basic"/></Label>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:16}}>Your handle helps VIRL reference your real presence. Your audience note makes every output platform-specific.</div>
               {myPlatforms.map(function(p){return (
                 <div key={p} style={{marginBottom:16,paddingBottom:16,borderBottom:"1px solid "+B.divider}}>
@@ -1447,22 +1479,22 @@ function CreatorProfile({profile,syncState,onSave}) {
         </div>
         <div style={{borderTop:"1px solid "+B.divider}}>
           <div style={sec}>
-            <Label>Your content vibe</Label>
+            <Label>Your content vibe <TierBadge tier="dialed"/></Label>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Pick everything that feels like you.</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{VIBES.map(function(v){return <Chip key={v} active={vibes.includes(v)} onClick={function(){setVibes(tog(vibes,v));}}>{v}</Chip>;})}</div>
           </div>
           <div style={sec}>
-            <Label>Describe your voice in your own words <span style={{color:B.coral,fontSize:10,fontWeight:600,letterSpacing:0,textTransform:"none"}}>most important field</span></Label>
+            <Label>Describe your voice in your own words <span style={{color:B.coral,fontSize:10,fontWeight:600,letterSpacing:0,textTransform:"none"}}>most important field</span> <TierBadge tier="dialed"/></Label>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Write like you would describe yourself to a friend. VIRL uses this for every single output it generates for you.</div>
             <textarea value={voice} onChange={function(e){setVoice(e.target.value);}} placeholder="e.g. Real, a little funny, never preachy. I talk to my audience like they are my group chat." style={Object.assign({},textareaStyle,{minHeight:88})}/>
           </div>
           <div style={sec}>
-            <Label>Paste a caption you love</Label>
+            <Label>Paste a caption you love <TierBadge tier="elite"/></Label>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Your style, your words, your energy. VIRL uses this to match your exact tone.</div>
             <textarea value={sampleCaption} onChange={function(e){setSample(e.target.value);}} placeholder="Paste a caption from one of your posts that felt totally like you..." style={Object.assign({},textareaStyle,{minHeight:88})}/>
           </div>
           <div style={sec}>
-            <Label>A creator whose style you admire</Label>
+            <Label>A creator whose style you admire <TierBadge tier="elite"/></Label>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Not to copy them - to give VIRL a reference point for tone and format.</div>
             <input value={inspiration} onChange={function(e){setInspiration(e.target.value);}} placeholder="e.g. @aliabdaal - explains complex ideas in plain language" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
@@ -1486,7 +1518,7 @@ function CreatorProfile({profile,syncState,onSave}) {
         </div>
         <div style={{borderTop:"1px solid "+B.divider}}>
           <div style={sec}>
-            <Label>One thing you want to be known for</Label>
+            <Label>One thing you want to be known for <TierBadge tier="dialed"/></Label>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Complete this: "I want to be the creator who..." - VIRL uses this as your north star.</div>
             <input value={knownFor} onChange={function(e){setKnownFor(e.target.value);}} placeholder="e.g. makes busy moms feel like they have their life together" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
@@ -1508,7 +1540,7 @@ function CreatorProfile({profile,syncState,onSave}) {
               style={Object.assign({},textareaStyle,{minHeight:66})}/>
           </div>
           <div style={{padding:"20px 24px"}}>
-            <Label>What do you never want to talk about?</Label>
+            <Label>What do you never want to talk about? <TierBadge tier="elite"/></Label>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>VIRL will never suggest content in these areas.</div>
             <input value={offLimits} onChange={function(e){setOffLimits(e.target.value);}} placeholder="e.g. politics, my relationship, diet culture" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
