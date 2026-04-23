@@ -310,12 +310,37 @@ const fmtDate = () => new Date().toLocaleDateString("en-US",{month:"short",day:"
 
 function extractJSON(text) {
   if (!text) return null;
+  // Try fenced code block first
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fence) { try { return JSON.parse(fence[1].trim()); } catch(e) {} }
+  // Try full array match
   const arr = text.match(/\[[\s\S]*\]/);
   if (arr) { try { return JSON.parse(arr[0]); } catch(e) {} }
+  // Try full object match
   const obj = text.match(/\{[\s\S]*\}/);
   if (obj) { try { return JSON.parse(obj[0]); } catch(e) {} }
+  // Recovery: response may have been truncated mid-array.
+  // Try to find the last complete object inside an opening [
+  var openIdx = text.indexOf("[");
+  if (openIdx >= 0) {
+    var depth = 0, lastValidEnd = -1, inString = false, escape = false;
+    for (var i = openIdx; i < text.length; i++) {
+      var ch = text[i];
+      if (escape) { escape = false; continue; }
+      if (ch === "\\") { escape = true; continue; }
+      if (ch === '"' && !escape) { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) lastValidEnd = i;
+      }
+    }
+    if (lastValidEnd > openIdx) {
+      var candidate = text.substring(openIdx, lastValidEnd + 1) + "]";
+      try { return JSON.parse(candidate); } catch(e) {}
+    }
+  }
   return null;
 }
 
@@ -1068,7 +1093,7 @@ function VIRLScan({profile,onSaveCaption,userToken}) {
                 +"\"tip\":\"one specific tip to maximize this post\","
                 +"\"analysis\":\"2 sentences on why this will perform\","
                 +"\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
-              return callAPI(prompt, 800, fd.b64, "image/jpeg", cost, userToken, MODEL_SONNET, scanSystem)
+              return callAPI(prompt, 1500, fd.b64, "image/jpeg", cost, userToken, MODEL_SONNET, scanSystem)
                 .then(function(text) {
                   var parsed = extractJSON(text);
                   if (parsed && parsed.score) {
@@ -1101,7 +1126,7 @@ function VIRLScan({profile,onSaveCaption,userToken}) {
             +"\"analysis\":\"2 sentences on why this will perform\"}";
           fileToBase64(file)
             .then(function(b64) {
-              return callAPI(prompt, 800, b64, file.type, cost, userToken, MODEL_SONNET, scanSystem);
+              return callAPI(prompt, 1500, b64, file.type, cost, userToken, MODEL_SONNET, scanSystem);
             })
             .then(function(text) {
               var parsed = extractJSON(text);
@@ -1929,31 +1954,29 @@ function App() {
     if (!isAdmin) return;
     setAdminLoading(true);
     try {
-      const headers = {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": "Bearer "+SUPABASE_ANON_KEY,
-      };
-      // Fetch credits table
-      const credRes = await fetch(
-        SUPABASE_URL+"/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id,updated_at&order=updated_at.desc",
-        {headers}
-      );
-      const creditsRaw = await credRes.json();
+      // Call our server-side admin endpoint — uses service_role key
+      // to bypass RLS and read all user data. Passes the user's access
+      // token so the server can verify they are the admin email.
+      const res = await fetch("/api/admin-stats", {
+        headers: {
+          "Authorization": "Bearer "+(session ? session.access_token : ""),
+        },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(function(){return{};});
+        console.error("Admin fetch failed:", res.status, err);
+        setAdminLoading(false);
+        return;
+      }
+      const {credits:creditsRaw, events:eventsRaw} = await res.json();
       const credits = Array.isArray(creditsRaw) ? creditsRaw : [];
-
-      // Fetch events table — last 500
-      const evRes = await fetch(
-        SUPABASE_URL+"/rest/v1/events?select=user_id,event_name,properties,created_at&order=created_at.desc&limit=500",
-        {headers}
-      );
-      const eventsRaw = await evRes.json();
       const events = Array.isArray(eventsRaw) ? eventsRaw : [];
 
       // Aggregate user stats
       const total = credits.length;
       const paid = credits.filter(function(r){return r.plan==="standard"||r.plan==="founding";}).length;
       const free = credits.filter(function(r){return r.plan==="free";}).length;
-      const mrr = paid * 19;
+      const mrr = paid * 25;
 
       // Aggregate event stats
       const evArr = events; // already guarded above
@@ -2103,7 +2126,7 @@ function App() {
     }
     refreshCredits();
     setLoading(true); setError(""); setCards(null); setStats(null);
-    callAPI(planPrompt, 3000, null, null, cost, userToken, MODEL_SONNET, planSystemPrompt).then(function(full) {
+    callAPI(planPrompt, 6000, null, null, cost, userToken, MODEL_SONNET, planSystemPrompt).then(function(full) {
       const parts = full.split(/STATS/i);
       const parsed = extractJSON(parts[0]||full);
       if (parsed&&Array.isArray(parsed)&&parsed.length>0) {
@@ -2124,7 +2147,7 @@ function App() {
           current.planExpiresAt = getNextMonday();
           localStorage.setItem(KEY, JSON.stringify(current));
         } catch(e){}
-      } else { setError("Your strategy hit a snag - tap Generate again. VIRL usually nails it on the second run."); }
+      } else { setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers."); }
     }).then(function(){
       // Refresh credits from Supabase after successful generation
       if (session) {
