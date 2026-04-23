@@ -16,6 +16,14 @@ body{background:#F8FAFC;-webkit-font-smoothing:antialiased;font-family:'Jost',sa
 @keyframes spin{to{transform:rotate(360deg)}}
 .su{animation:slideUp .25s ease both}
 .spin{animation:spin .75s linear infinite}
+/* [TASK 2] Pre-launch gate — staggered plan preview fade-in to mirror the landing page. */
+@keyframes gateCardIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+.gate-card{animation:gateCardIn .8s cubic-bezier(.2,.7,.2,1) both}
+.gate-card-1{animation-delay:.2s}
+.gate-card-2{animation-delay:.6s}
+.gate-card-3{animation-delay:1.0s}
+.gate-hero{background-image:radial-gradient(circle at 1px 1px,rgba(255,255,255,0.07) 1px,transparent 0);background-size:24px 24px}
+@media(min-width:900px){.gate-main{display:grid!important;grid-template-columns:1.05fr 1fr!important;gap:64px!important;align-items:center!important}}
 button:disabled{opacity:.35;cursor:not-allowed!important}
 textarea,select,input{font-family:'Jost',sans-serif;}
 textarea:focus,select:focus,input:focus{outline:none;}
@@ -145,6 +153,27 @@ const B = {
   white:"#FFFFFF", black:"#000000",
   amber:"#F59E0B"
 };
+
+// [TASK 2] Pre-launch gate constants + access check.
+const LAUNCH_TIMESTAMP = new Date("2026-05-15T09:00:00-05:00").getTime();
+const BETA_CODE = "LETSGOVIRL";
+function checkAccess() {
+  if (Date.now() >= LAUNCH_TIMESTAMP) return true;
+  try {
+    if (localStorage.getItem("virl_beta_access") === "1") return true;
+  } catch(e) {}
+  try {
+    var url = new URL(window.location.href);
+    var beta = url.searchParams.get("beta");
+    if (beta && beta.toUpperCase() === BETA_CODE) {
+      try { localStorage.setItem("virl_beta_access", "1"); } catch(e) {}
+      url.searchParams.delete("beta");
+      window.history.replaceState({}, "", url.toString());
+      return true;
+    }
+  } catch(e) {}
+  return false;
+}
 
 const PLATFORMS = ["TikTok","Instagram","Facebook","YouTube","LinkedIn","X","Pinterest"];
 const NICHES = ["Lifestyle","Fitness","Food & Recipes","Finance","Beauty","Travel","Education","Parenting","Home & Family","Wellness","Small Business","Real Estate","Gaming","Tech","Sports","Fashion"];
@@ -1815,7 +1844,229 @@ function GateScreen({onAuth}) {
 // ErrorBoundary removed — static class methods not supported in Babel standalone
 // Error handling done via try/catch inside App
 
+// [TASK 2] Pre-launch gate screen — shown when checkAccess() returns false.
+// Aesthetic mirrors the live govirl.ai landing page: navy hero with dotted texture,
+// white CTAs with navy text, Italiana headlines, green-dot feature pills, and a
+// sample-plan section using the landing page's "VIRL Plan" card style.
+// Auto-deactivates once Date.now() >= LAUNCH_TIMESTAMP — no manual step needed.
+function PreLaunchGate() {
+  const [now,setNow]           = useState(Date.now());
+  const [codeOpen,setCodeOpen] = useState(false);
+  const [code,setCode]         = useState("");
+  const [codeError,setCodeError] = useState("");
+  const [submitting,setSubmitting] = useState(false);
+
+  useEffect(function(){
+    var t = setInterval(function(){ setNow(Date.now()); }, 1000);
+    return function(){ clearInterval(t); };
+  }, []);
+
+  var remaining = Math.max(0, LAUNCH_TIMESTAMP - now);
+  var days  = Math.floor(remaining / 86400000);
+  var hours = Math.floor((remaining % 86400000) / 3600000);
+  var mins  = Math.floor((remaining % 3600000) / 60000);
+  var secs  = Math.floor((remaining % 60000) / 1000);
+  function pad(n) { return (n<10?"0":"") + n; }
+
+  function submitCode() {
+    if (submitting) return;
+    setSubmitting(true);
+    var entered = (code||"").trim().toUpperCase();
+    if (entered === BETA_CODE) {
+      try { localStorage.setItem("virl_beta_access", "1"); } catch(e) {}
+      window.location.reload();
+      return;
+    }
+    setCodeError("That code didn't work. Double-check with whoever invited you.");
+    setSubmitting(false);
+  }
+
+  var WAITLIST_URL = "https://govirl.ai/waitlist";
+
+  // Plan preview cards mirror the "VIRL Plan" card structure shown on the live
+  // landing page — eyebrow line "DAY · TIME · PLATFORM", Italiana white title,
+  // small format/length descriptor, and an italic "Why this works:" reason.
+  var previewCards = [
+    {day:"MONDAY",   time:"7:00 AM", platform:"TIKTOK",    title:"The thing nobody tells you about posting daily", format:"Talking-head video · 30-45 seconds", why:"Curiosity gap hook – your audience needs the answer in the first 3 seconds."},
+    {day:"WEDNESDAY",time:"12:30 PM",platform:"INSTAGRAM", title:"The caption I almost didn't post",                format:"Carousel · 6 slides",                  why:"Midweek IG saves spike at lunch. Soft-hook carousels outperform Reels for your audience."},
+    {day:"FRIDAY",   time:"8:00 PM", platform:"YOUTUBE",   title:"Why I quit optimizing every single thing",       format:"Long-form · 8-12 minutes",             why:"Friday-night long-form gets 22% more watch time. Counterintuitive takes hold viewers past 30s."}
+  ];
+
+  // Reusable styles
+  var primaryCtaWhite = {display:"inline-block",background:B.white,color:B.navy,textDecoration:"none",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"18px 36px",borderRadius:99,boxShadow:"0 12px 28px rgba(15,23,42,0.18)"};
+  var primaryCtaNavy  = {display:"inline-block",background:B.navy,color:B.white,textDecoration:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"12px 22px",borderRadius:99};
+  var featurePill = {display:"inline-flex",alignItems:"center",gap:8,padding:"8px 16px",borderRadius:99,background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.18)",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,color:B.white};
+  var greenDot    = {width:6,height:6,borderRadius:"50%",background:B.green,flexShrink:0};
+
+  return (
+    <div style={{minHeight:"100vh",background:B.white,fontFamily:"'Jost',sans-serif",color:B.ink}}>
+
+      {/* Top nav — VIRL wordmark + waitlist CTA, matches landing page nav. */}
+      <div style={{position:"sticky",top:0,zIndex:30,background:B.white,borderBottom:"1px solid "+B.divider}}>
+        <div style={{maxWidth:1180,margin:"0 auto",padding:"18px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{fontFamily:"'Italiana',serif",fontSize:28,letterSpacing:"0.16em",color:B.navy,lineHeight:1}}>VIRL</div>
+          <a href={WAITLIST_URL} style={primaryCtaNavy}>Join Waitlist</a>
+        </div>
+      </div>
+
+      {/* ── Hero ──────────────────────────────────────────────────────────── */}
+      <div className="gate-hero" style={{background:B.navy,color:B.white,padding:"72px 24px 96px",position:"relative"}}>
+        <div className="gate-main" style={{maxWidth:1120,margin:"0 auto",display:"block"}}>
+
+          {/* Left: headline + countdown + CTA + beta code */}
+          <div>
+            {/* Eyebrow chip */}
+            <div style={{display:"inline-flex",alignItems:"center",gap:8,padding:"8px 18px",borderRadius:99,background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.18)",marginBottom:28}}>
+              <span style={greenDot}/>
+              <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.22em",textTransform:"uppercase",color:B.white}}>Launching May 15</span>
+            </div>
+
+            {/* Headline */}
+            <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(44px,7vw,76px)",lineHeight:1.0,letterSpacing:"-0.01em",color:B.white,marginBottom:22}}>
+              Finally, a strategy<br/>that sounds like you.
+            </div>
+
+            {/* Subhead */}
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:17,fontWeight:300,color:"rgba(255,255,255,0.78)",lineHeight:1.65,maxWidth:540,marginBottom:36}}>
+              VIRL launches May 15 at 9 AM CDT. Your voice, your audience, your full week of content – built in 60 seconds.
+            </div>
+
+            {/* Countdown */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:36,maxWidth:480}}>
+              {[[days,"DAYS"],[hours,"HRS"],[mins,"MIN"],[secs,"SEC"]].map(function(b){
+                return (
+                  <div key={b[1]} style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.16)",borderRadius:14,padding:"18px 10px",textAlign:"center",backdropFilter:"blur(6px)"}}>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:38,color:B.white,lineHeight:1}}>{pad(b[0])}</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.24em",color:"rgba(255,255,255,0.65)",marginTop:6}}>{b[1]}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Feature pills */}
+            <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:36}}>
+              {["Sounds like you, not a robot","Full week in 60 seconds","Strategy in every post"].map(function(t){
+                return (
+                  <div key={t} style={featurePill}>
+                    <span style={greenDot}/>
+                    <span>{t}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Primary CTA */}
+            <a href={WAITLIST_URL} style={primaryCtaWhite}>{"Join the waitlist →"}</a>
+
+            {/* Founding member micro-copy */}
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.65)",marginTop:14}}>
+              First 100 founding members get $5 off / month for the first year.
+            </div>
+
+            {/* Beta code toggle */}
+            <div style={{marginTop:24}}>
+              {!codeOpen ? (
+                <button onClick={function(){ setCodeOpen(true); }}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,color:"rgba(255,255,255,0.7)",background:"none",border:"none",cursor:"pointer",textDecoration:"underline",textDecorationColor:"rgba(255,255,255,0.35)",textUnderlineOffset:"4px"}}>
+                  {"Have a beta code? →"}
+                </button>
+              ) : (
+                <div style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.18)",borderRadius:14,padding:"14px 16px",maxWidth:420}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.7)",marginBottom:8}}>Beta code</div>
+                  <div style={{display:"flex",gap:8}}>
+                    <input value={code}
+                      onChange={function(e){ setCode(e.target.value); setCodeError(""); }}
+                      onKeyDown={function(e){ if (e.key === "Enter") submitCode(); }}
+                      placeholder="Enter your code"
+                      autoFocus
+                      style={{flex:1,background:"rgba(255,255,255,0.92)",border:"none",borderRadius:10,padding:"10px 12px",fontSize:14,color:B.ink,fontFamily:"'Jost',sans-serif"}}/>
+                    <button onClick={submitCode} disabled={submitting}
+                      style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 18px",background:B.white,color:B.navy,border:"none",borderRadius:10,cursor:"pointer"}}>
+                      Enter
+                    </button>
+                  </div>
+                  {codeError && (
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.coralSoft,marginTop:8}}>{codeError}</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right column reserved for symmetry on desktop — content lives in the
+              section below for a stronger "scroll to see what you're getting" feel. */}
+          <div style={{display:"none"}}/>
+        </div>
+      </div>
+
+      {/* ── Sneak peek — animated plan preview matching landing's "VIRL Plan" card style ── */}
+      <div style={{background:B.bg,padding:"72px 24px 88px"}}>
+        <div style={{maxWidth:880,margin:"0 auto"}}>
+          {/* Section eyebrow — matches landing's "01 - Voice" pattern */}
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.blue,marginBottom:18,letterSpacing:"0.04em"}}>
+            {"01 – Sneak peek"}
+          </div>
+          <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(34px,5.5vw,52px)",lineHeight:1.05,letterSpacing:"-0.01em",color:B.navy,marginBottom:14}}>
+            Here's what your first<br/>week with VIRL looks like.
+          </div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:15,fontWeight:300,color:B.muted,lineHeight:1.7,maxWidth:600,marginBottom:36}}>
+            Each card lands the platform, time, hook, and the strategic reason it'll work for your specific audience. Captions and scripts are one tap away.
+          </div>
+
+          {/* Animated plan cards — navy with translucent inner card, like landing page. */}
+          <div>
+            {previewCards.map(function(c,i){
+              return (
+                <div key={i} className={"gate-card gate-card-"+(i+1)}
+                  style={{background:B.navy,borderRadius:18,padding:"28px 28px 26px",marginBottom:14,boxShadow:"0 12px 32px rgba(31,58,138,0.18)"}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.22em",color:"rgba(165,180,252,0.95)",marginBottom:8}}>{"0"+(i+1)}</div>
+                  <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.1,marginBottom:18}}>{c.title}</div>
+                  <div style={{background:"rgba(0,0,0,0.18)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:"18px 20px"}}>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.22em",color:"rgba(165,180,252,0.95)",marginBottom:10}}>
+                      {c.day+" · "+c.time+" · "+c.platform}
+                    </div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.78)",marginBottom:12}}>{c.format}</div>
+                    <div style={{borderTop:"1px solid rgba(255,255,255,0.12)",paddingTop:12}}>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.white}}>Why this works: </span>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:"rgba(255,255,255,0.72)"}}>{c.why}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Footer ────────────────────────────────────────────────────────── */}
+      <div style={{background:B.white,padding:"32px 24px 110px",textAlign:"center"}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted}}>
+          © VIRL · <a href="/privacy" style={{color:B.muted,textDecoration:"underline"}}>Privacy</a> · <a href="/terms" style={{color:B.muted,textDecoration:"underline"}}>Terms</a>
+        </div>
+      </div>
+
+      {/* Sticky bottom bar — matches landing's "Ready to go VIRL?" treatment. */}
+      <div style={{position:"fixed",left:0,right:0,bottom:0,background:B.navy,padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:14,zIndex:40,boxShadow:"0 -6px 18px rgba(0,0,0,0.18)"}}>
+        <div style={{minWidth:0}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.white}}>Ready to go VIRL?</div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.7)"}}>Founding member spots are limited.</div>
+        </div>
+        <a href={WAITLIST_URL} style={{flexShrink:0,background:B.white,color:B.navy,textDecoration:"none",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"12px 22px",borderRadius:99}}>
+          Join Waitlist
+        </a>
+      </div>
+    </div>
+  );
+}
+
 function App() {
+
+  // [TASK 2] Gate everything behind the launch timestamp + beta code. The
+  // lazy useState initializer runs checkAccess() once, and it doesn't flip
+  // until a reload (either via beta code submit or calendar rolling past
+  // LAUNCH_TIMESTAMP), which is exactly what the brief specifies.
+  const [hasAccess] = useState(checkAccess);
+  if (!hasAccess) return <PreLaunchGate/>;
 
 // ── Supabase session state ──────────────────────────────────────────────
   const [session,setSession]         = useState(null);
