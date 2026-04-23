@@ -593,14 +593,38 @@ function ScriptGenerator({card,onClose,profile}) {
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
   }
 
-  function copyScript() {
-    if (!script) return;
+  function buildFullScript() {
+    if (!script) return "";
     const sections = (script.sections||[]).map(function(s,i){
       return "SECTION "+(i+1)+" - "+s.title+":\n"+s.script+(s.tip?"\nTIP: "+s.tip:"");
     }).join("\n\n");
-    const full = "HOOK: "+script.hook+"\n\n"+sections+"\n\nCTA: "+script.cta
-      +(script.onScreenText?"\n\nON-SCREEN TEXT: "+script.onScreenText.join(" | "):"");
-    navigator.clipboard&&navigator.clipboard.writeText(full);
+    return "=== "+card.title+" ===\n"
+      +card.platform+" - "+(script.duration||"")+"\n"
+      +(script.audioSuggestion?"Audio: "+script.audioSuggestion+"\n":"")
+      +"\n---\n\n"
+      +"HOOK: "+script.hook+"\n\n"
+      +sections+"\n\n"
+      +"CTA: "+script.cta
+      +(script.onScreenText&&script.onScreenText.length?"\n\nON-SCREEN TEXT: "+script.onScreenText.join(" | "):"");
+  }
+
+  function copyScript() {
+    if (!script) return;
+    navigator.clipboard&&navigator.clipboard.writeText(buildFullScript());
+  }
+
+  function downloadScript() {
+    if (!script) return;
+    var text = buildFullScript();
+    var blob = new Blob([text], {type:"text/plain;charset=utf-8"});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "VIRL-script-"+card.title.replace(/[^a-z0-9]/gi,"-").slice(0,40).toLowerCase()+".txt";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(url);},100);
   }
 
   useEffect(function(){generate();},[]);
@@ -664,10 +688,16 @@ function ScriptGenerator({card,onClose,profile}) {
                   </div>
                 </div>
               )}
-              <button onClick={copyScript}
-                style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.ink,color:B.white,border:"none",cursor:"pointer",borderRadius:14,marginBottom:8}}>
-                Copy Full Script
-              </button>
+              <div style={{display:"flex",gap:8,marginBottom:8}}>
+                <button onClick={copyScript}
+                  style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.ink,color:B.white,border:"none",cursor:"pointer",borderRadius:14}}>
+                  Copy Full
+                </button>
+                <button onClick={downloadScript}
+                  style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.navy,color:B.white,border:"none",cursor:"pointer",borderRadius:14}}>
+                  Download .txt
+                </button>
+              </div>
               <button onClick={generate}
                 style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"12px 18px",background:B.bg,color:B.muted,border:"1px solid "+B.border,cursor:"pointer",borderRadius:14}}>
                 Regenerate Script
@@ -965,20 +995,21 @@ function CaptionGen({profile,onSaveCaption}) {
   );
 }
 
-function VIRLScan({profile,onSaveCaption}) {
-  const [files,setFiles] = useState([]);
-  const [results,setResults] = useState([]);
-  const [scanning,setScanning] = useState(false);
-  const [current,setCurrent] = useState(0);
-  const [error,setError] = useState("");
-  const [consented,setConsented] = useState(function(){
+function VIRLScan({profile,onSaveCaption,userToken}) {
+  var [files,setFiles]       = useState([]);
+  var [results,setResults]   = useState([]);
+  var [scanning,setScanning] = useState(false);
+  var [current,setCurrent]   = useState(0);
+  var [total,setTotal]       = useState(0);
+  var [error,setError]       = useState("");
+  var [consented,setConsented] = useState(function(){
     try { return localStorage.getItem("virl_scan_consent")==="true"; } catch(e) { return false; }
   });
-  const inputRef = useRef(null);
+  var inputRef = useRef(null);
 
   function scoreColor(s) {
-    const m = String(s).match(/(\d+\.?\d*)/);
-    const n = m ? parseFloat(m[1]) : 0;
+    var m = String(s).match(/(\d+\.?\d*)/);
+    var n = m ? parseFloat(m[1]) : 0;
     return n>=8?B.green:n>=6?B.amber:B.muted;
   }
 
@@ -988,71 +1019,111 @@ function VIRLScan({profile,onSaveCaption}) {
   }
 
   function handleFiles(e) {
-    setFiles(Array.from(e.target.files||[]).slice(0,5));
-    setResults([]); setError("");
+    var selected = Array.from(e.target.files||[]).slice(0,5);
+    setFiles(selected); setResults([]); setError("");
   }
 
   function scan() {
     if (!files.length) return;
-    const cost = files.length * CREDIT_COSTS.scan;
-    // Credit check handled server-side
-    setScanning(true); setResults([]); setError(""); setCurrent(0);
-    // System prompt (cached) — VIRL persona + full creator profile
+    var cost = CREDIT_COSTS.scan;
     var scanSystem = buildSystemPrompt(profile, "content strategist and viral potential analyst");
-    var profileCtx = buildProfileCtx(profile); // kept for inline prompt refs
-    const out = [];
-    var i = 0;
-    function next() {
-      if (i>=files.length) {
-        setResults(out);
-        setScanning(false);
-        try {
-          var scores = out.filter(function(r){return r.score;}).map(function(r){
-            var m=String(r.score).match(/(\d+\.?\d*)/); return m?parseFloat(m[1]):0;
-          });
-          var avg = scores.length?Math.round((scores.reduce(function(a,b){return a+b;},0)/scores.length)*10)/10:null;
-          logEvent(window.__virlUserId||null,"scan_completed",{
-            file_count:out.length,
-            avg_score:avg,
-            has_video:out.some(function(r){return r.isVideo;}),
-          });
-        } catch(e){}
-        return;
+    setScanning(true); setResults([]); setError("");
+    setTotal(files.length); setCurrent(0);
+
+    // Process files sequentially using a self-contained async loop
+    // Each file is processed independently — errors on one file don't stop others
+    var processAll = function() {
+      var out = [];
+      var idx = 0;
+
+      function processNext() {
+        if (idx >= files.length) {
+          setResults(out);
+          setScanning(false);
+          try {
+            var scores = out.filter(function(r){return !r.error&&r.score;})
+              .map(function(r){ var m=String(r.score).match(/(\d+\.?\d*)/); return m?parseFloat(m[1]):0; });
+            var avg = scores.length ? Math.round((scores.reduce(function(a,b){return a+b;},0)/scores.length)*10)/10 : null;
+            logEvent(window.__virlUserId||null,"scan_completed",{file_count:out.length,avg_score:avg});
+          } catch(e){}
+          return;
+        }
+
+        var file = files[idx];
+        idx++;
+        setCurrent(idx);
+
+        var isVideo = file.type.startsWith("video/");
+
+        if (isVideo) {
+          extractVideoFrame(file, 1)
+            .then(function(fd) {
+              var prompt = "Analyze this video frame for social media viral potential. "
+                +"Reply ONLY with valid JSON (no markdown): "
+                +"{\"score\":\"X.X out of 10\","
+                +"\"platform\":\"best platform\","
+                +"\"hook\":\"scroll-stopping opening line under 10 words\","
+                +"\"caption\":\"full ready-to-post caption\","
+                +"\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],"
+                +"\"tip\":\"one specific tip to maximize this post\","
+                +"\"analysis\":\"2 sentences on why this will perform\","
+                +"\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
+              return callAPI(prompt, 800, fd.b64, "image/jpeg", cost, userToken, MODEL_SONNET, scanSystem)
+                .then(function(text) {
+                  var parsed = extractJSON(text);
+                  if (parsed && parsed.score) {
+                    out.push(Object.assign({name:file.name,isVideo:true,duration:fd.dur}, parsed));
+                  } else {
+                    out.push({name:file.name,isVideo:true,error:"Analysis returned an unexpected format. Try again or use a screenshot."});
+                  }
+                })
+                .catch(function(e) {
+                  out.push({name:file.name,isVideo:true,error:"Could not analyze this video: "+(e.message||"unknown error")+". Try screenshotting your best frame."});
+                });
+            })
+            .catch(function() {
+              out.push({name:file.name,isVideo:true,error:"Could not read this video file. Try screenshotting your best moment and scanning that instead."});
+            })
+            .then(function() {
+              // .then() after .catch() always runs (like finally) — safe in all browsers
+              processNext();
+            });
+        } else {
+          var imageUrl = URL.createObjectURL(file);
+          var prompt = "Analyze this image for social media viral potential. "
+            +"Reply ONLY with valid JSON (no markdown): "
+            +"{\"score\":\"X.X out of 10\","
+            +"\"platform\":\"best platform\","
+            +"\"hook\":\"scroll-stopping opening line under 10 words\","
+            +"\"caption\":\"full ready-to-post caption\","
+            +"\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],"
+            +"\"tip\":\"one specific tip to maximize this post\","
+            +"\"analysis\":\"2 sentences on why this will perform\"}";
+          fileToBase64(file)
+            .then(function(b64) {
+              return callAPI(prompt, 800, b64, file.type, cost, userToken, MODEL_SONNET, scanSystem);
+            })
+            .then(function(text) {
+              var parsed = extractJSON(text);
+              if (parsed && parsed.score) {
+                out.push(Object.assign({name:file.name,url:imageUrl}, parsed));
+              } else {
+                out.push({name:file.name,url:imageUrl,error:"Analysis returned an unexpected format. Try again."});
+              }
+            })
+            .catch(function(e) {
+              out.push({name:file.name,url:imageUrl,error:"Could not analyze: "+(e.message||"unknown error")+". Try screenshotting the image first."});
+            })
+            .then(function() {
+              processNext();
+            });
+        }
       }
-      var file = files[i]; i++; setCurrent(i);
-      var isVideo = file.type.startsWith("video/");
-      if (isVideo) {
-        extractVideoFrame(file,1).then(function(fd) {
-          var prompt = "Analyze this video frame for social media viral potential. Reply ONLY with JSON: {\"score\":\"X.X out of 10\",\"platform\":\"best platform\",\"hook\":\"scroll-stopping opening line under 10 words\",\"caption\":\"full ready-to-post caption\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"tip\":\"one tip to maximize this post\",\"analysis\":\"2 sentences on why this will perform\",\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
-          return callAPI(prompt,700,fd.b64,"image/jpeg",null,null,MODEL_SONNET,scanSystem).then(function(text) {
-            var parsed = extractJSON(text);
-            if (parsed) { out.push(Object.assign({name:file.name,isVideo:true,duration:fd.dur},parsed)); }
-            else { out.push({name:file.name,isVideo:true,error:"Could not analyze this video. Try a screenshot of your best moment instead."}); }
-          }).catch(function() {
-            out.push({name:file.name,isVideo:true,error:"Could not analyze this video. Try screenshotting your best moment and scanning that instead."});
-          });
-        }).catch(function() {
-          out.push({name:file.name,isVideo:true,error:"Could not extract a frame from this video. Try screenshotting your best moment and scanning that instead."});
-        }).finally(function() {
-          next();
-        });
-      } else {
-        var imageUrl = URL.createObjectURL(file);
-        fileToBase64(file).then(function(b64) {
-          var prompt = "Analyze this image for viral potential. Reply ONLY with JSON: {\"score\":\"X.X out of 10\",\"platform\":\"best platform\",\"hook\":\"scroll-stopping opening line under 10 words\",\"caption\":\"full ready-to-post caption\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"tip\":\"one tip to maximize this post\",\"analysis\":\"2 sentences on why this will perform\"}";
-          return callAPI(prompt,700,b64,file.type,null,null,MODEL_SONNET,scanSystem).then(function(text) {
-            var parsed = extractJSON(text);
-            if (parsed) { out.push(Object.assign({name:file.name,url:imageUrl},parsed)); }
-            else { out.push({name:file.name,error:"Could not analyze. Try screenshotting it first to reduce file size."}); }
-          });
-        }).catch(function(e) {
-          out.push({name:file.name,error:"Scan failed - try screenshotting the image first to reduce file size."});
-        }).finally(function() {
-          next();
-        });
-      }
-    }
-    next();
+
+      processNext();
+    };
+
+    processAll();
   }
 
   if (!consented) return (
@@ -1071,7 +1142,7 @@ function VIRLScan({profile,onSaveCaption}) {
 
   return (
     <div>
-      <SherpaTip>Drop photos or videos and VIRL scores each one out of 10 for viral potential, recommends the best platform, and writes a ready-to-post caption you can edit and remix before saving to your Vault.</SherpaTip>
+      <SherpaTip>Drop photos or videos and VIRL scores each one out of 10 for viral potential, recommends the best platform, and writes a ready-to-post caption you can edit and save to your Vault.</SherpaTip>
       <div style={{background:B.card,border:"2px dashed "+B.border,borderRadius:20,padding:"32px 24px",textAlign:"center",marginBottom:8,cursor:"pointer"}}
         onClick={function(){inputRef.current&&inputRef.current.click();}}>
         <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.sky,marginBottom:8}}>{"📷"}</div>
@@ -1082,14 +1153,15 @@ function VIRLScan({profile,onSaveCaption}) {
         </div>
         <input ref={inputRef} type="file" accept="image/*,video/*" multiple onChange={handleFiles} style={{display:"none"}}/>
       </div>
+
       {files.length>0&&!scanning&&!results.length&&(
         <div style={{background:B.card,borderRadius:14,padding:"16px 20px",marginBottom:8}}>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:12}}>
             {files.length+" file"+(files.length>1?"s":"")+" selected"}
           </div>
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:16}}>
-            {files.map(function(f,i){return (
-              <div key={i} style={{background:B.bg,borderRadius:99,padding:"5px 12px",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.sub}}>
+            {files.map(function(f,idx){return (
+              <div key={idx} style={{background:B.bg,borderRadius:99,padding:"5px 12px",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.sub}}>
                 {(f.type.startsWith("video/")?"🎬 ":"🖼 ")+f.name.slice(0,24)}
               </div>
             );})}
@@ -1097,22 +1169,36 @@ function VIRLScan({profile,onSaveCaption}) {
           <GenBtn onClick={scan} loading={scanning}>Scan for viral potential</GenBtn>
         </div>
       )}
-      {scanning&&<Spinner text={"Analyzing file "+current+" of "+files.length+" - about 60 seconds* each."}/>}
+
+      {scanning&&(
+        <div style={{background:B.card,borderRadius:14,padding:"24px",textAlign:"center",marginBottom:8}}>
+          <Spinner/>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,marginTop:12}}>
+            {"Analyzing "+(total>1?"file "+current+" of "+total:"your file")+" - about 30-60 seconds..."}
+          </div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:4,fontStyle:"italic"}}>
+            Sit tight while VIRL checks the viral potential.
+          </div>
+        </div>
+      )}
+
       <ErrBox msg={error}/>
+
       {results.length>0&&!scanning&&(
-        <button onClick={scan}
+        <button onClick={function(){setFiles([]);setResults([]);setError("");}}
           style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"12px 18px",background:B.bg,color:B.muted,border:"1px solid "+B.border,cursor:"pointer",marginBottom:8,borderRadius:14}}>
-          Scan again with same files
+          Scan different files
         </button>
       )}
-      {results.map(function(r,i){return (
-        <div key={i} className="su" style={{background:B.card,borderRadius:14,padding:"22px",marginBottom:8,animationDelay:(i*0.08)+"s",borderLeft:"3px solid "+(r.error?B.border:B.blue)}}>
+
+      {results.map(function(r,idx){return (
+        <div key={idx} className="su" style={{background:B.card,borderRadius:14,padding:"22px",marginBottom:8,animationDelay:(idx*0.08)+"s",borderLeft:"3px solid "+(r.error?B.border:B.blue)}}>
           {r.error?(
             <div>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.ink,marginBottom:6}}>{r.name}</div>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,color:B.muted,marginBottom:10}}>{r.error}</div>
-              <div style={{background:B.skySoft,borderRadius:10,padding:"8px 12px",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.blue}}>
-                Quick fix: open in Photos, take a screenshot, then scan the screenshot instead.
+              <div style={{background:B.navySoft,borderRadius:10,padding:"8px 12px",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.navy}}>
+                Tip: open in Photos, take a screenshot, then scan the screenshot instead.
               </div>
             </div>
           ):(
@@ -1143,6 +1229,7 @@ function VIRLScan({profile,onSaveCaption}) {
           )}
         </div>
       );})}
+
       {!files.length&&!results.length&&(
         <div style={{background:B.card,borderRadius:16,padding:"48px 32px",textAlign:"center",marginTop:8}}>
           <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.sky,marginBottom:12}}>{"📱"}</div>
@@ -1153,6 +1240,7 @@ function VIRLScan({profile,onSaveCaption}) {
     </div>
   );
 }
+
 
 function CreatorProfile({profile,onSave}) {
   const [myPlatforms,setMyPlatforms] = useState(profile.myPlatforms||[]);
@@ -1487,6 +1575,21 @@ function GateScreen({onAuth}) {
   const [authError,setAuthError] = useState("");
   const [ageConfirmed,setAgeConfirmed] = useState(false);
   const [emailSent,setEmailSent] = useState(false);
+  const [resetMode,setResetMode] = useState(false);
+  const [resetSent,setResetSent] = useState(false);
+
+  function handlePasswordReset() {
+    if (!email.trim()) { setAuthError("Enter your email address first."); return; }
+    setAuthLoading(true); setAuthError("");
+    supabaseClient.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: "https://app.govirl.ai"
+    }).then(function(result) {
+      setAuthLoading(false);
+      if (result.error) { setAuthError(result.error.message); return; }
+      setResetSent(true);
+    }).catch(function(e){ setAuthLoading(false); setAuthError(e.message); });
+  }
+
   function handleEmailAuth() {
     if (!email.trim()||!password.trim()) return;
     if (mode==="signup"&&!ageConfirmed) { setAuthError("Please confirm you are 18 or older to create an account."); return; }
@@ -1543,6 +1646,52 @@ function GateScreen({onAuth}) {
     </div>
   );
 
+  if (resetSent) return (
+    <div style={{minHeight:"100vh",background:B.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
+      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:48}}>Finally, a strategy that sounds like you.</div>
+      <div style={{width:"100%",maxWidth:380,background:B.white,borderRadius:24,padding:"44px 36px",boxShadow:"0 4px 32px rgba(0,0,0,0.08)"}}>
+        <div style={{width:56,height:56,borderRadius:"50%",background:B.navySoft,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px"}}>
+          <div style={{fontSize:26}}>{"🔑"}</div>
+        </div>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.navy,marginBottom:10}}>Check your email</div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75,marginBottom:28}}>
+          {"We sent a password reset link to "}
+          <span style={{fontWeight:600,color:B.navy}}>{email}</span>
+          {". Click the link to set a new password, then sign in here."}
+        </div>
+        <button onClick={function(){setResetSent(false);setResetMode(false);setMode("login");}}
+          style={{width:"100%",background:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,boxShadow:"0 4px 14px rgba(31,58,138,0.3)"}}>
+          Back to sign in
+        </button>
+      </div>
+    </div>
+  );
+
+  if (resetMode) return (
+    <div style={{minHeight:"100vh",background:B.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
+      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:40}}>Finally, a strategy that sounds like you.</div>
+      <div style={{width:"100%",maxWidth:340,background:B.white,borderRadius:24,padding:"36px 28px",boxShadow:"0 4px 24px rgba(0,0,0,0.08)"}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.3em",textTransform:"uppercase",color:B.muted,marginBottom:16,textAlign:"center"}}>Reset your password</div>
+        <input value={email} onChange={function(e){setEmail(e.target.value);setAuthError("");}}
+          placeholder="Email address" type="email"
+          style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:12,color:B.ink,fontFamily:"'Jost',sans-serif",fontSize:15,padding:"13px 16px",marginBottom:12,outline:"none"}}/>
+        {authError&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.coral,textAlign:"center",marginBottom:10,lineHeight:1.5}}>{authError}</div>}
+        <button onClick={handlePasswordReset} disabled={authLoading||!email.trim()}
+          style={{width:"100%",background:authLoading?B.muted:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,marginBottom:12,boxShadow:authLoading?"none":"0 4px 14px rgba(31,58,138,0.3)",transition:"all .2s"}}>
+          {authLoading?"Sending...":"Send reset link"}
+        </button>
+        <div style={{textAlign:"center"}}>
+          <button onClick={function(){setResetMode(false);setAuthError("");}}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.blue,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
+            Back to sign in
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
       <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
@@ -1561,6 +1710,14 @@ function GateScreen({onAuth}) {
             placeholder="Password" type="password"
             style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:12,color:B.ink,fontFamily:"'Jost',sans-serif",fontSize:15,padding:"13px 16px",marginBottom:12,outline:"none"}}/>
           {authError&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:mode==="signup"&&authError.includes("Check")?B.blue:B.coral,textAlign:"center",marginBottom:10,lineHeight:1.5}}>{authError}</div>}
+          {mode==="login"&&(
+            <div style={{textAlign:"right",marginBottom:10,marginTop:-4}}>
+              <button onClick={function(){setResetMode(true);setAuthError("");}}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:500,color:B.muted,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",textUnderlineOffset:"2px"}}>
+                Forgot password?
+              </button>
+            </div>
+          )}
           {mode==="signup"&&(
             <div style={{display:"flex",alignItems:"flex-start",gap:10,marginBottom:12,padding:"10px 14px",background:ageConfirmed?B.navySoft:B.bg,border:"1px solid "+(ageConfirmed?B.blue:B.border),borderRadius:10,cursor:"pointer",transition:"all .2s"}}
               onClick={function(){setAgeConfirmed(function(v){return !v;});}}>
@@ -1646,8 +1803,23 @@ function App() {
   const [trending,setTrending] = useState("");
   const [context,setContext] = useState("");
   const [loading,setLoading] = useState(false);
-  const [cards,setCards] = useState(null);
-  const [stats,setStats] = useState(null);
+  // Plan persists for the week — cleared when credit week resets
+  const [cards,setCards] = useState(function(){
+    try {
+      if (stored.plan && stored.planExpiresAt && Date.now() < stored.planExpiresAt) {
+        return stored.plan;
+      }
+    } catch(e){}
+    return null;
+  });
+  const [stats,setStats] = useState(function(){
+    try {
+      if (stored.planStats && stored.planExpiresAt && Date.now() < stored.planExpiresAt) {
+        return stored.planStats;
+      }
+    } catch(e){}
+    return null;
+  });
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
   const [results,setResults] = useState(stored.results||[]);
@@ -1658,6 +1830,21 @@ function App() {
   const [hasSeenExplainer,setHasSeenExplainer] = useState(function(){
     try { return localStorage.getItem("virl_seen_explainer")==="1"; } catch(e) { return false; }
   });
+
+  // Clear expired plan on mount — plans reset with the credit week
+  useEffect(function() {
+    try {
+      var currentStored = JSON.parse(localStorage.getItem(KEY)||"{}");
+      if (currentStored.plan && currentStored.planExpiresAt && Date.now() >= currentStored.planExpiresAt) {
+        delete currentStored.plan;
+        delete currentStored.planStats;
+        delete currentStored.planExpiresAt;
+        localStorage.setItem(KEY, JSON.stringify(currentStored));
+        setCards(null);
+        setStats(null);
+      }
+    } catch(e){}
+  }, []);
 
   // Handle post-checkout redirect
   useEffect(function() {
@@ -1731,6 +1918,9 @@ function App() {
   // ── Account deletion ─────────────────────────────────────────────────
   const [showDeleteConfirm,setShowDeleteConfirm] = useState(false);
   const [deleteLoading,setDeleteLoading] = useState(false);
+  const [showWelcome,setShowWelcome] = useState(function(){
+    try { return localStorage.getItem("virl_welcomed")!=="1"; } catch(e) { return false; }
+  });
   const [adminData,setAdminData] = useState(null);
   const [adminLoading,setAdminLoading] = useState(false);
 
@@ -1918,10 +2108,22 @@ function App() {
       const parsed = extractJSON(parts[0]||full);
       if (parsed&&Array.isArray(parsed)&&parsed.length>0) {
         setCards(parsed);
+        // Persist plan to localStorage — lives until next Monday reset
+        var parsedStats = null;
         if (parts[1]) {
           const m = parts[1].match(/reach=([\d,K+]+).*?rate=([\d.]+).*?earn=([^\s\n]+)/i);
-          if (m) setStats({reach:m[1],engagement:m[2]+"%",earnings:m[3]});
+          if (m) {
+            parsedStats = {reach:m[1],engagement:m[2]+"%",earnings:m[3]};
+            setStats(parsedStats);
+          }
         }
+        try {
+          var current = JSON.parse(localStorage.getItem(KEY)||"{}");
+          current.plan = parsed;
+          current.planStats = parsedStats;
+          current.planExpiresAt = getNextMonday();
+          localStorage.setItem(KEY, JSON.stringify(current));
+        } catch(e){}
       } else { setError("Your strategy hit a snag - tap Generate again. VIRL usually nails it on the second run."); }
     }).then(function(){
       // Refresh credits from Supabase after successful generation
@@ -2008,6 +2210,38 @@ return (
     <div id="virl-shell" style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",fontWeight:300,color:B.ink}}>
 
       {/* ── Upgrade Modal ────────────────────────────────────────────────── */}
+      {showWelcome&&daysIntoTrial===0&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.7)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}}>
+          <div style={{background:B.white,borderRadius:24,padding:"40px 32px",maxWidth:420,width:"100%",boxShadow:"0 24px 64px rgba(0,0,0,0.2)",textAlign:"center"}}>
+            <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.navy,letterSpacing:"0.06em",marginBottom:4}}>VIRL</div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:28}}>Finally, a strategy that sounds like you.</div>
+            <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink,marginBottom:12,lineHeight:1.1}}>Welcome. Let's build your first plan.</div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75,marginBottom:28}}>
+              {"VIRL works best when it knows your voice. Start by filling in your Creator Profile - it takes 2 minutes and makes every plan, caption, and script sound like you."}
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <button onClick={function(){
+                try{localStorage.setItem("virl_welcomed","1");}catch(e){}
+                setShowWelcome(false); setTab("profile");
+              }}
+                style={{width:"100%",background:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,boxShadow:"0 4px 14px rgba(31,58,138,0.3)"}}>
+                Set up my profile first
+              </button>
+              <button onClick={function(){
+                try{localStorage.setItem("virl_welcomed","1");}catch(e){}
+                setShowWelcome(false); setTab("plan");
+              }}
+                style={{width:"100%",background:"transparent",color:B.muted,border:"1px solid "+B.border,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,padding:"14px 24px",cursor:"pointer",borderRadius:14}}>
+                Skip to plan generator
+              </button>
+            </div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:16}}>
+              {"You have 14 days and 20 credits per week - free, no card needed."}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showUpgrade&&(
         <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.88)",zIndex:500,display:"flex",alignItems:"flex-end",justifyContent:"center",padding:"0 0 0 0"}}>
           <div style={{background:B.white,width:"100%",maxWidth:480,borderRadius:"24px 24px 0 0",padding:"36px 28px 48px",boxShadow:"0 -8px 40px rgba(0,0,0,0.25)"}}>
@@ -2099,6 +2333,17 @@ return (
           );})}
         </div>
         <div style={{padding:"14px 16px",borderTop:"1px solid rgba(255,255,255,0.08)"}}>
+          {!isFoundingOrPro&&!trialExpired&&daysIntoTrial<14&&(
+            <div style={{background:"rgba(255,255,255,0.06)",borderRadius:8,padding:"8px 10px",marginBottom:10}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:3}}>Free trial</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.6)"}}>
+                {(14-daysIntoTrial)+" day"+(14-daysIntoTrial===1?"":"s")+" remaining"}
+              </div>
+              <div style={{background:"rgba(255,255,255,0.1)",borderRadius:99,height:3,marginTop:6}}>
+                <div style={{background:14-daysIntoTrial<=3?B.coral:B.sky,height:3,borderRadius:99,width:(daysIntoTrial/14*100)+"%",transition:"width .3s"}}/>
+              </div>
+            </div>
+          )}
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
             <div style={{display:"flex",alignItems:"center",gap:6}}>
               <div style={{width:5,height:5,borderRadius:"50%",background:credits<=5?"#F43F5E":"#3B82F6"}}/>
@@ -2221,20 +2466,18 @@ return (
               if(session)saveProfileToSupabase(p,session.user.id);
             }}/>
 
-            {/* ── Account settings ───────────────────────────────────── */}
-            <div style={{marginTop:32,paddingTop:24,borderTop:"1px solid "+B.divider}}>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:16}}>Account</div>
+            {/* ── Danger zone — subtle, at the very bottom ────────────── */}
+            <div style={{marginTop:48,paddingTop:20,borderTop:"1px solid "+B.divider,textAlign:"center"}}>
               {!showDeleteConfirm?(
                 <button onClick={function(){setShowDeleteConfirm(true);}}
-                  style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.coral,background:"none",border:"1px solid rgba(244,63,94,0.2)",borderRadius:10,padding:"10px 16px",cursor:"pointer",width:"100%",textAlign:"left",display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{fontSize:14}}>{"⚠"}</span>
-                  {"Delete my account"}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,color:B.muted,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",textDecorationColor:"rgba(100,116,139,0.4)",textUnderlineOffset:"3px"}}>
+                  Delete account
                 </button>
               ):(
-                <div style={{background:"rgba(244,63,94,0.05)",border:"1px solid rgba(244,63,94,0.25)",borderRadius:14,padding:"20px"}}>
-                  <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.coral,marginBottom:8}}>Delete your account?</div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.7,marginBottom:16}}>
-                    {"This will permanently delete your Creator Profile, Vault content, and all saved plans. Your subscription (if active) will not be automatically cancelled — please cancel in Stripe before deleting. This action cannot be undone."}
+                <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:14,padding:"20px",textAlign:"left"}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.ink,marginBottom:8}}>Delete your account?</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.7,marginBottom:16}}>
+                    {"This permanently deletes your Creator Profile, Vault, and all saved plans. Your subscription will not be automatically cancelled - please cancel in Stripe first. This cannot be undone."}
                   </div>
                   <div style={{display:"flex",gap:10}}>
                     <button onClick={function(){setShowDeleteConfirm(false);}}
@@ -2243,7 +2486,7 @@ return (
                     </button>
                     <button onClick={handleDeleteAccount} disabled={deleteLoading}
                       style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,color:B.white,background:deleteLoading?B.muted:B.coral,border:"none",borderRadius:10,padding:"12px",cursor:"pointer",transition:"all .2s"}}>
-                      {deleteLoading?"Deleting...":"Yes, delete my account"}
+                      {deleteLoading?"Deleting...":"Yes, delete"}
                     </button>
                   </div>
                 </div>
@@ -2409,11 +2652,47 @@ return (
                     <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,marginBottom:4}}>Your week is planned.</div>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:"rgba(255,255,255,0.6)"}}>Now go make it happen.</div>
                   </div>
-                  <button onClick={generate}
-                    style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:B.sky,color:B.white,border:"none",cursor:"pointer",borderRadius:99}}>
-                    Regenerate
-                  </button>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    <button onClick={function(){
+                      var text = (cards||[]).map(function(card){
+                        var lines = [];
+                        lines.push(card.day+" | "+card.postTime+" | "+card.platform);
+                        lines.push(card.title);
+                        lines.push(card.description);
+                        if (card.why) lines.push("Why: "+card.why);
+                        lines.push("Format: "+card.format+" | Trend: "+card.trend);
+                        lines.push("Hashtags: "+(card.hashtags||[]).join(" "));
+                        return lines.join("\n");
+                      }).join("\n\n---\n\n");
+                      navigator.clipboard&&navigator.clipboard.writeText(text).then(function(){
+                        alert("Full plan copied to clipboard.");
+                      });
+                    }}
+                      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:"rgba(255,255,255,0.12)",color:B.white,border:"1px solid rgba(255,255,255,0.2)",cursor:"pointer",borderRadius:99}}>
+                      Copy all
+                    </button>
+                    <button onClick={generate}
+                      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:B.sky,color:B.white,border:"none",cursor:"pointer",borderRadius:99}}>
+                      Regenerate
+                    </button>
+                  </div>
                 </div>
+                {!isFoundingOrPro&&!trialExpired&&(
+                  <div style={{background:"linear-gradient(135deg,"+B.navy+" 0%,"+B.blue+" 100%)",borderRadius:16,padding:"22px 24px",marginTop:8,marginBottom:4}}>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.5)",marginBottom:6}}>{"✦ While you have this plan in front of you"}</div>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.white,marginBottom:6,lineHeight:1.1}}>Like what you see?</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.6,marginBottom:16}}>
+                      {"Upgrade for 150 credits per week - enough for a full plan, captions, scripts, and scans every single week."}
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                      <button onClick={function(){setUpgradeReason("plan");setShowUpgrade(true);}}
+                        style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 22px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
+                        Upgrade - $25/mo
+                      </button>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.4)"}}>or $249/yr - saves $51</span>
+                    </div>
+                  </div>
+                )}
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.65,textAlign:"center",padding:"12px 4px"}}>
                   {"Content generated by VIRL is a suggestion only. You are solely responsible for reviewing, editing, and ensuring anything you post complies with each platform's community guidelines and terms of service. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest."}
                 </div>
@@ -2454,7 +2733,7 @@ return (
                 Upload photos or videos. VIRL scores each for viral potential out of 10, recommends the best platform, and writes a ready-to-post caption you can edit and save.
               </div>
             </div>
-            <VIRLScan profile={profile} onSaveCaption={saveCaption}/>
+            <VIRLScan profile={profile} onSaveCaption={saveCaption} userToken={userToken}/>
           </div>
         )}
 
