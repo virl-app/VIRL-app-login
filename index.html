@@ -1028,23 +1028,27 @@ function VIRLScan({profile,onSaveCaption}) {
             var parsed = extractJSON(text);
             if (parsed) { out.push(Object.assign({name:file.name,isVideo:true,duration:fd.dur},parsed)); }
             else { out.push({name:file.name,isVideo:true,error:"Could not analyze this video. Try a screenshot of your best moment instead."}); }
-            next();
+          }).catch(function() {
+            out.push({name:file.name,isVideo:true,error:"Could not analyze this video. Try screenshotting your best moment and scanning that instead."});
           });
         }).catch(function() {
           out.push({name:file.name,isVideo:true,error:"Could not extract a frame from this video. Try screenshotting your best moment and scanning that instead."});
+        }).finally(function() {
           next();
         });
       } else {
+        var imageUrl = URL.createObjectURL(file);
         fileToBase64(file).then(function(b64) {
           var prompt = "Analyze this image for viral potential. Reply ONLY with JSON: {\"score\":\"X.X out of 10\",\"platform\":\"best platform\",\"hook\":\"scroll-stopping opening line under 10 words\",\"caption\":\"full ready-to-post caption\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"tip\":\"one tip to maximize this post\",\"analysis\":\"2 sentences on why this will perform\"}";
-          return callAPI(prompt,700,b64,file.type,null,null,MODEL_SONNET,scanSystem);
-        }).then(function(text) {
-          var parsed = extractJSON(text);
-          if (parsed) { out.push(Object.assign({name:file.name,url:URL.createObjectURL(file)},parsed)); }
-          else { out.push({name:file.name,error:"Could not analyze. Try screenshotting it first to reduce file size."}); }
-          next();
+          return callAPI(prompt,700,b64,file.type,null,null,MODEL_SONNET,scanSystem).then(function(text) {
+            var parsed = extractJSON(text);
+            if (parsed) { out.push(Object.assign({name:file.name,url:imageUrl},parsed)); }
+            else { out.push({name:file.name,error:"Could not analyze. Try screenshotting it first to reduce file size."}); }
+          });
         }).catch(function(e) {
-          out.push({name:file.name,error:e.message+" - Try screenshotting first."}); next();
+          out.push({name:file.name,error:"Scan failed - try screenshotting the image first to reduce file size."});
+        }).finally(function() {
+          next();
         });
       }
     }
@@ -1367,9 +1371,20 @@ function CreatorProfile({profile,onSave}) {
         </div>
       </div>
 
+      {saved&&(
+        <div style={{background:B.green,borderRadius:12,padding:"14px 20px",marginBottom:12,display:"flex",alignItems:"center",gap:12,animation:"slideUp .3s ease"}}>
+          <div style={{width:28,height:28,borderRadius:"50%",background:"rgba(255,255,255,0.25)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+            <span style={{color:B.white,fontSize:14,fontWeight:700}}>{"✓"}</span>
+          </div>
+          <div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white,marginBottom:2}}>Profile saved</div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.8)"}}>Every VIRL output will now be built around your voice.</div>
+          </div>
+        </div>
+      )}
       <button onClick={handleSave}
         style={{width:"100%",background:saved?B.green:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,marginBottom:8,transition:"all .3s",boxShadow:saved?"0 4px 12px rgba(16,185,129,0.3)":"0 4px 12px rgba(31,58,138,0.25)"}}>
-        {saved?"Profile saved.":"Save my profile"}
+        {saved?"Profile saved":"Save my profile"}
       </button>
       {totalSecs===4&&(
         <div style={{background:B.navy,borderRadius:12,padding:"18px 20px",marginTop:4}}>
@@ -1471,6 +1486,7 @@ function GateScreen({onAuth}) {
   const [authLoading,setAuthLoading] = useState(false);
   const [authError,setAuthError] = useState("");
   const [ageConfirmed,setAgeConfirmed] = useState(false);
+  const [emailSent,setEmailSent] = useState(false);
   function handleEmailAuth() {
     if (!email.trim()||!password.trim()) return;
     if (mode==="signup"&&!ageConfirmed) { setAuthError("Please confirm you are 18 or older to create an account."); return; }
@@ -1482,8 +1498,7 @@ function GateScreen({onAuth}) {
       setAuthLoading(false);
       if (result.error) { setAuthError(result.error.message); return; }
       if (mode==="signup") {
-        setAuthError("Check your email to confirm your account, then sign in.");
-        setMode("login"); setPassword("");
+        setEmailSent(true);
       } else {
         onAuth(result.data.session);
       }
@@ -1497,6 +1512,36 @@ function GateScreen({onAuth}) {
       options:{redirectTo:"https://app.govirl.ai"}
     }).catch(function(){ setAuthLoading(false); setAuthError("Google sign-in failed. Try email instead."); });
   }
+
+  if (emailSent) return (
+    <div style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
+      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:48}}>Finally, a strategy that sounds like you.</div>
+      <div style={{width:"100%",maxWidth:380,background:B.white,borderRadius:24,padding:"44px 36px",boxShadow:"0 4px 32px rgba(0,0,0,0.08)"}}>
+        <div style={{width:56,height:56,borderRadius:"50%",background:B.navySoft,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px"}}>
+          <div style={{fontSize:26}}>{"✉"}</div>
+        </div>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.navy,marginBottom:10}}>Check your email</div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75,marginBottom:28}}>
+          {"We sent a confirmation link to "}
+          <span style={{fontWeight:600,color:B.navy}}>{email}</span>
+          {". Click the link in that email to activate your account, then come back here to sign in."}
+        </div>
+        <button onClick={function(){setEmailSent(false);setMode("login");setPassword("");}}
+          style={{width:"100%",background:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,boxShadow:"0 4px 14px rgba(31,58,138,0.3)"}}>
+          Back to sign in
+        </button>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:16,lineHeight:1.6}}>
+          {"Didn't get it? Check your spam folder or "}
+          <button onClick={function(){setEmailSent(false);setPassword("");}}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.blue,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>
+            try again
+          </button>
+          {"."}
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
