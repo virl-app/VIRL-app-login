@@ -69,10 +69,11 @@ const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Supabase profile helpers
 // [TASK 1] Returns true/false so the UI can reflect sync state (Syncing/Synced/Failed).
+// PK column is user_id (matches the migration in the launch brief and the credits table).
 async function saveProfileToSupabase(profile, userId) {
   try {
     const { error } = await supabaseClient.from("profiles").upsert({
-      id: userId,
+      user_id: userId,
       name: profile.name||null,
       audience: profile.audience||null,
       voice: profile.voice||null,
@@ -101,7 +102,7 @@ async function saveProfileToSupabase(profile, userId) {
 async function loadProfileFromSupabase(userId) {
   try {
     const { data, error } = await supabaseClient
-      .from("profiles").select("*").eq("id", userId).single();
+      .from("profiles").select("*").eq("user_id", userId).single();
     if (error || !data) return {};
     return {
       name: data.name||"",
@@ -389,6 +390,21 @@ const CREDIT_COSTS = {plan:3, script:2, caption:1, scan:2, regen:1};
 
 const load = () => { try { return JSON.parse(localStorage.getItem(KEY)||"{}"); } catch(e) { return {}; } };
 const save = (d) => { try { localStorage.setItem(KEY,JSON.stringify(d)); } catch(e) {} };
+
+// [TASK 1] Wipe all per-user localStorage on sign-out so the next user signing in
+// on the same browser doesn't inherit profile/credits/onboarding flags. Browser-level
+// keys (beta access) are preserved so the gate stays unlocked for that browser.
+function clearLocalUserData() {
+  try {
+    const keep = ["virl_beta_access"];
+    const toRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.indexOf("virl_") === 0 && keep.indexOf(k) === -1) toRemove.push(k);
+    }
+    toRemove.forEach(function(k){ localStorage.removeItem(k); });
+  } catch(e) {}
+}
 
 function getNextMonday() {
   const d = new Date();
@@ -2448,9 +2464,16 @@ function App() {
     var userId = session.user.id;
     // [TASK 1] Hydrate profile from Supabase; if none exists, migrate any local-only
     // profile up so legacy users don't lose their voice/audience/off-limits on sign-in.
+    // Mirror the Supabase profile back to localStorage so the cache stays consistent
+    // and a refresh can paint instantly before the round-trip resolves.
     loadProfileFromSupabase(userId).then(function(p) {
       if (p && p.name) {
         setProfile(p);
+        try {
+          var current = load() || {};
+          current.profile = p;
+          save(current);
+        } catch(e) {}
       } else {
         var localProfile = (load() || {}).profile;
         if (localProfile && localProfile.name) {
@@ -2508,7 +2531,7 @@ function App() {
     } catch (err) { alert("Something went wrong. Please try again."); }
   }
 
-  function handleSignOut() { supabaseClient.auth.signOut(); }
+  function handleSignOut() { clearLocalUserData(); supabaseClient.auth.signOut(); }
 
   // ── Account deletion ─────────────────────────────────────────────────
   const [showDeleteConfirm,setShowDeleteConfirm] = useState(false);
@@ -2600,6 +2623,7 @@ function App() {
       });
     } catch(e) { console.error("Delete error:", e); }
     // Sign out regardless — Supabase auth deletion requires service key on server
+    clearLocalUserData();
     await supabaseClient.auth.signOut();
     setDeleteLoading(false);
     setShowDeleteConfirm(false);
@@ -3071,7 +3095,7 @@ return (
               <div style={{width:5,height:5,borderRadius:"50%",background:credits<=5?B.coral:B.sky}}/>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:credits<=5?B.coral:B.white}}>{credits+" credits"}</div>
             </div>
-            <button onClick={function(){supabaseClient.auth.signOut();}}
+            <button onClick={function(){clearLocalUserData();supabaseClient.auth.signOut();}}
               style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"5px 10px",background:"rgba(255,255,255,0.07)",color:"rgba(255,255,255,0.45)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:6,cursor:"pointer"}}>
               Sign out
             </button>
