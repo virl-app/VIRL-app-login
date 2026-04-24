@@ -69,11 +69,10 @@ const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Supabase profile helpers
 // [TASK 1] Returns true/false so the UI can reflect sync state (Syncing/Synced/Failed).
-// PK column is user_id (matches the migration in the launch brief and the credits table).
 async function saveProfileToSupabase(profile, userId) {
   try {
     const { error } = await supabaseClient.from("profiles").upsert({
-      user_id: userId,
+      id: userId,
       name: profile.name||null,
       audience: profile.audience||null,
       voice: profile.voice||null,
@@ -102,7 +101,7 @@ async function saveProfileToSupabase(profile, userId) {
 async function loadProfileFromSupabase(userId) {
   try {
     const { data, error } = await supabaseClient
-      .from("profiles").select("*").eq("user_id", userId).single();
+      .from("profiles").select("*").eq("id", userId).single();
     if (error || !data) return {};
     return {
       name: data.name||"",
