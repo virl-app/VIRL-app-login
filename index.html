@@ -2660,8 +2660,24 @@ function App() {
     }
   }, [trialExpired, isFoundingOrPro]);
 
+  // [TASK 1] Merge into existing virl_v5 instead of overwriting. The plan lives
+  // in the same localStorage key (plan, planStats, planExpiresAt) and gets written
+  // by the generate-plan flow. A plain save() here would silently drop those fields
+  // the moment vault/results/profile changed — so the weekly plan would disappear
+  // on refresh the instant the user saved a card or logged a result.
   useEffect(function(){
-    save({platforms,niche,goal,formats,followers,vault,results,profile});
+    try {
+      var current = JSON.parse(localStorage.getItem(KEY)||"{}");
+      current.platforms = platforms;
+      current.niche = niche;
+      current.goal = goal;
+      current.formats = formats;
+      current.followers = followers;
+      current.vault = vault;
+      current.results = results;
+      current.profile = profile;
+      localStorage.setItem(KEY, JSON.stringify(current));
+    } catch(e){}
   },[platforms,niche,goal,formats,followers,vault,results,profile]);
 
   const profileCtx = profile.name
