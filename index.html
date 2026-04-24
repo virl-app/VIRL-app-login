@@ -2324,12 +2324,14 @@ function SundayLogModal({unloggedCards, onLog, onClose}) {
 
 function App() {
 
-  // [TASK 2] Gate everything behind the launch timestamp + beta code. The
-  // lazy useState initializer runs checkAccess() once, and it doesn't flip
-  // until a reload (either via beta code submit or calendar rolling past
-  // LAUNCH_TIMESTAMP), which is exactly what the brief specifies.
-  const [hasAccess] = useState(checkAccess);
-  if (!hasAccess) return <PreLaunchGate/>;
+  // [TASK 2] Pre-launch gate disabled — the standard sign-in screen is now
+  // the only entry point. Beta testers reach the app via the gated landing
+  // on govirl.ai; that unlock lives in a different origin's localStorage and
+  // doesn't carry across, so a second gate here was blocking them. Re-enable
+  // by uncommenting the two lines below; checkAccess() and PreLaunchGate are
+  // still defined for that purpose.
+  // const [hasAccess] = useState(checkAccess);
+  // if (!hasAccess) return <PreLaunchGate/>;
 
 // ── Supabase session state ──────────────────────────────────────────────
   const [session,setSession]         = useState(null);
