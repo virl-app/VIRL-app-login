@@ -351,12 +351,25 @@ function extractJSON(text) {
   // Try fenced code block first
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fence) { try { return JSON.parse(fence[1].trim()); } catch(e) {} }
-  // Try full array match
-  const arr = text.match(/\[[\s\S]*\]/);
-  if (arr) { try { return JSON.parse(arr[0]); } catch(e) {} }
-  // Try full object match
-  const obj = text.match(/\{[\s\S]*\}/);
-  if (obj) { try { return JSON.parse(obj[0]); } catch(e) {} }
+  // Pick the outer shape by whichever structural char appears first. The
+  // previous order ran the array regex before the object regex, which
+  // greedily returned a nested array whenever the response was an object
+  // containing an array field — Scan's {score, hashtags:[...]} shape hit
+  // this and surfaced as "Analysis returned an unexpected format" in the UI.
+  const firstObj = text.indexOf("{");
+  const firstArr = text.indexOf("[");
+  const outerIsObj = firstObj >= 0 && (firstArr < 0 || firstObj < firstArr);
+  if (outerIsObj) {
+    const lastBrace = text.lastIndexOf("}");
+    if (lastBrace > firstObj) {
+      try { return JSON.parse(text.substring(firstObj, lastBrace + 1)); } catch(e) {}
+    }
+  } else if (firstArr >= 0) {
+    const lastBracket = text.lastIndexOf("]");
+    if (lastBracket > firstArr) {
+      try { return JSON.parse(text.substring(firstArr, lastBracket + 1)); } catch(e) {}
+    }
+  }
   // Recovery: response may have been truncated mid-array.
   // Try to find the last complete object inside an opening [
   var openIdx = text.indexOf("[");
