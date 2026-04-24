@@ -24,6 +24,9 @@ body{background:#F8FAFC;-webkit-font-smoothing:antialiased;font-family:'Jost',sa
 .gate-card-3{animation-delay:1.0s}
 .gate-hero{background-image:radial-gradient(circle at 1px 1px,rgba(255,255,255,0.07) 1px,transparent 0);background-size:24px 24px}
 @media(min-width:900px){.gate-main{display:grid!important;grid-template-columns:1.05fr 1fr!important;gap:64px!important;align-items:center!important}}
+/* [TASK 9] Generic-AI vs VIRL compare card — stacks on mobile, 2-col on tablet+. */
+.virl-compare-grid{display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:640px){.virl-compare-grid{grid-template-columns:1fr 1fr}}
 button:disabled{opacity:.35;cursor:not-allowed!important}
 textarea,select,input{font-family:'Jost',sans-serif;}
 textarea:focus,select:focus,input:focus{outline:none;}
@@ -2260,6 +2263,12 @@ function App() {
   const [trialBannerDismissed,setTrialBannerDismissed] = useState(function(){
     try { return sessionStorage.getItem("virl_trial_banner_dismissed")==="1"; } catch(e) { return false; }
   });
+  // [TASK 9] Tracks whether the first-plan generic-AI vs VIRL comparison has
+  // ever been shown. Persists to localStorage so it fires exactly once per
+  // user, on the first plan they ever see.
+  const [firstPlanShown,setFirstPlanShown] = useState(function(){
+    try { return localStorage.getItem("virl_first_plan_shown")==="1"; } catch(e) { return false; }
+  });
   // [TASK 7] Live count of founding-plan members. Loaded once on mount via a
   // Supabase RPC (see get_founding_count() migration in PR description). Fails
   // open — when null, we treat founding as available so a missing migration
@@ -3169,6 +3178,49 @@ return (
                       style={{background:"none",border:"none",color:B.muted,fontSize:18,cursor:"pointer",flexShrink:0,padding:0,lineHeight:1}}>
                       {"×"}
                     </button>
+                  </div>
+                )}
+                {/* [TASK 9] Generic AI vs VIRL comparison — fires exactly once,
+                    the first time the user ever sees a generated plan. Shows
+                    hardcoded generic-AI copy next to the first plan card's
+                    description so the "wow, VIRL actually sounds like me"
+                    moment lands without them having to read 10 plan cards. */}
+                {!firstPlanShown&&cards[0]&&(
+                  <div style={{background:B.card,borderRadius:14,padding:"20px 22px",marginBottom:16,boxShadow:"0 2px 8px rgba(0,0,0,0.06)",border:"1px solid "+B.divider}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:14}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.coral,marginBottom:6}}>See the difference</div>
+                        <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.2}}>{"Here's what a generic AI would have written."}</div>
+                      </div>
+                      <button onClick={function(){
+                          try { localStorage.setItem("virl_first_plan_shown","1"); } catch(e) {}
+                          setFirstPlanShown(true);
+                        }} aria-label="Dismiss"
+                        style={{background:"none",border:"none",color:B.muted,fontSize:20,cursor:"pointer",padding:"2px 4px",lineHeight:1,flexShrink:0}}>
+                        {"×"}
+                      </button>
+                    </div>
+                    <div className="virl-compare-grid" style={{marginBottom:12}}>
+                      <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",opacity:0.65}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>Generic AI</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.55,fontStyle:"italic"}}>
+                          {"Loving this morning routine ✨ Start your day right! 🌅 #morningvibes #selfcare #inspiration"}
+                        </div>
+                      </div>
+                      <div style={{background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:10,padding:"12px 14px"}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.coral,marginBottom:8}}>VIRL</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.ink,lineHeight:1.55}}>
+                          {cards[0].description||cards[0].title}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:12}}>
+                      {"Every post in your plan is written like this – built on your voice, audience, and goals."}
+                    </div>
+                    <div style={{display:"flex",justifyContent:"flex-end"}}>
+                      <CopyBtn label="Copy comparison"
+                        text={"Generic AI:\n\"Loving this morning routine ✨ Start your day right! 🌅 #morningvibes #selfcare #inspiration\"\n\nVIRL:\n\""+(cards[0].description||cards[0].title)+"\"\n\nEvery post in my VIRL plan is built on my voice, audience, and goals."}/>
+                    </div>
                   </div>
                 )}
                 {(function() {
