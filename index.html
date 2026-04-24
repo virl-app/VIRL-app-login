@@ -580,6 +580,34 @@ const Spinner = ({text}) => (
   </div>
 );
 
+// [TASK 11] Placeholder creator testimonials for in-product social proof.
+// Replace with real beta-user quotes post-launch.
+const TESTIMONIALS = [
+  {name:"Maya R.",  handle:"lifestyle creator · 28K", quote:"I cancelled three other AI tools after VIRL."},
+  {name:"Jordan K.",handle:"business creator · 12K",  quote:"Sunday planning went from 3 hours to 10 minutes."},
+  {name:"Sam T.",   handle:"wellness creator · 41K",  quote:"It picked up on my voice faster than I could explain it."}
+];
+
+// [TASK 11] Rotating testimonial card — picks one at random on mount so every
+// impression feels fresh. Meant to drop into the upgrade modal header and the
+// Results tab empty state.
+function Testimonial({tone}) {
+  const [idx] = useState(function(){ return Math.floor(Math.random() * TESTIMONIALS.length); });
+  var t = TESTIMONIALS[idx] || TESTIMONIALS[0];
+  var onDark = tone === "dark";
+  return (
+    <div style={{textAlign:"center",padding:"6px 4px"}}>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.amber,letterSpacing:"0.15em",marginBottom:8}}>{"★★★★★"}</div>
+      <div style={{fontFamily:"'Italiana',serif",fontSize:18,fontStyle:"italic",color:onDark?"rgba(255,255,255,0.9)":B.ink,lineHeight:1.3,marginBottom:10}}>
+        {"“"+t.quote+"”"}
+      </div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:onDark?"rgba(255,255,255,0.55)":B.muted}}>
+        {t.name+" · "+t.handle}
+      </div>
+    </div>
+  );
+}
+
 // [TASK 10] Extract platform/format patterns from the Vault so VIRL can weight
 // similar styles in future plans. Only counts plan-type saves (captions have
 // no platform/format metadata). Format is optional on legacy items, so the
@@ -1661,7 +1689,11 @@ function Results({results}) {
     <div style={{background:B.card,borderRadius:16,padding:"56px 32px",textAlign:"center"}}>
       <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.sky,marginBottom:14}}>{"📊"}</div>
       <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:8}}>No results yet</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted}}>Log results on any plan card to track performance here.</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:28}}>Log results on any plan card to track performance here.</div>
+      {/* [TASK 11] Social proof while the empty state is up. */}
+      <div style={{borderTop:"1px solid "+B.divider,paddingTop:24}}>
+        <Testimonial/>
+      </div>
     </div>
   );
   const tv = results.reduce(function(a,r){return a+(parseInt((r.result&&r.result.views))||0);},0);
@@ -2825,6 +2857,10 @@ return (
                 </div>
               </div>
             )}
+            {/* [TASK 11] Social proof right at the decision moment. */}
+            <div style={{padding:"16px 4px 20px",borderTop:"1px solid "+B.divider,borderBottom:"1px solid "+B.divider,marginBottom:20}}>
+              <Testimonial/>
+            </div>
             <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
 
               {/* [TASK 7] Annual — best value, shown first. Pricing + "saves"
