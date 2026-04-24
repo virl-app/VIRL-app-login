@@ -157,6 +157,10 @@ const B = {
 // [TASK 2] Pre-launch gate constants + access check.
 const LAUNCH_TIMESTAMP = new Date("2026-05-15T09:00:00-05:00").getTime();
 const BETA_CODE = "LETSGOVIRL";
+// [TASK 7] Founding-member cap. Once this many users are on the "founding" plan,
+// the app swaps all pricing copy to standard pricing. Server-side Stripe price
+// selection should mirror this flag.
+const FOUNDING_CAP = 100;
 function checkAccess() {
   if (Date.now() >= LAUNCH_TIMESTAMP) return true;
   try {
@@ -2256,6 +2260,12 @@ function App() {
   const [trialBannerDismissed,setTrialBannerDismissed] = useState(function(){
     try { return sessionStorage.getItem("virl_trial_banner_dismissed")==="1"; } catch(e) { return false; }
   });
+  // [TASK 7] Live count of founding-plan members. Loaded once on mount via a
+  // Supabase RPC (see get_founding_count() migration in PR description). Fails
+  // open — when null, we treat founding as available so a missing migration
+  // doesn't silently hide the offer.
+  const [foundingCount,setFoundingCount] = useState(null);
+  var foundingAvailable = (foundingCount === null) || (foundingCount < FOUNDING_CAP);
 
   // Clear expired plan on mount — plans reset with the credit week
   useEffect(function() {
@@ -2279,6 +2289,23 @@ function App() {
       alert('Welcome to VIRL Standard! Your credits have been upgraded to 150 per week.');
       window.history.replaceState({}, '', window.location.pathname);
     }
+  }, []);
+
+  // [TASK 7] Load the founding-plan count once on mount. Uses an RPC that
+  // returns only an integer, so no personal data is exposed. Silent failure
+  // keeps the default "founding available" fallback in place.
+  useEffect(function() {
+    fetch(SUPABASE_URL + "/rest/v1/rpc/get_founding_count", {
+      method: "POST",
+      headers: {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+        "Content-Type": "application/json"
+      },
+      body: "{}"
+    }).then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(n){ if (typeof n === "number") setFoundingCount(n); })
+      .catch(function(){});
   }, []);
 
   // Load profile + credits from Supabase when session is available
@@ -2750,35 +2777,36 @@ return (
             )}
             <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
 
-              {/* Annual — best value, shown first */}
+              {/* [TASK 7] Annual — best value, shown first. Pricing + "saves"
+                  copy swap between founding and standard based on foundingAvailable. */}
               <div style={{background:B.navy,borderRadius:16,padding:"16px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"}}
                 onClick={function(){handleCheckout("annual");}}>
                 <div style={{flex:1}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>Annual</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:"#10B981",color:"white",borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"}}>2 months free</div>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>{foundingAvailable?"Founding annual":"Annual"}</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:B.green,color:"white",borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"}}>{foundingAvailable?"3 months free":"2 months free"}</div>
                   </div>
                   <div style={{display:"flex",alignItems:"baseline",gap:6}}>
-                    <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:"white",lineHeight:1}}>$190</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)"}}>/year &middot; saves $38</div>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:"white",lineHeight:1}}>{foundingAvailable?"$225":"$249"}</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)"}}>{foundingAvailable?"/year · first year · saves $75":"/year · saves $51"}</div>
                   </div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)",marginTop:2}}>150 credits/week &middot; all features</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)",marginTop:2}}>{foundingAvailable?"Then $249/yr · 150 credits/week · all features":"150 credits/week · all features"}</div>
                 </div>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:"white",background:"rgba(255,255,255,0.12)",padding:"8px 14px",borderRadius:99,flexShrink:0}}>
                   Get started
                 </div>
               </div>
 
-              {/* Monthly */}
+              {/* [TASK 7] Monthly. */}
               <div style={{background:B.bg,borderRadius:16,padding:"16px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",border:"1px solid "+B.border}}
                 onClick={function(){handleCheckout("monthly");}}>
                 <div style={{flex:1}}>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>Monthly</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>{foundingAvailable?"Founding monthly":"Monthly"}</div>
                   <div style={{display:"flex",alignItems:"baseline",gap:6}}>
-                    <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.ink,lineHeight:1}}>$19</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>/month &middot; cancel anytime</div>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.ink,lineHeight:1}}>{foundingAvailable?"$20":"$25"}</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>{foundingAvailable?"/month · first year · then $25":"/month · cancel anytime"}</div>
                   </div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:2}}>150 credits/week &middot; all features</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:2}}>{foundingAvailable?"Save $60 over the first year · 150 credits/week":"150 credits/week · all features"}</div>
                 </div>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:B.navy,background:B.navySoft,padding:"8px 14px",borderRadius:99,flexShrink:0}}>
                   Get started
@@ -2888,8 +2916,10 @@ return (
           <div style={{background:B.coralSoft,borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:12}}>
             <div style={{flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",fontSize:13,color:B.coral,lineHeight:1.5}}>
               {daysIntoTrial===11&&(<span><span style={{fontWeight:700}}>3 days left</span> in your free trial</span>)}
-              {daysIntoTrial===12&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – lock in 20% off your first year"}</span>)}
-              {daysIntoTrial===13&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – continue for $20/mo (save $60 year one)"}</span>)}
+              {daysIntoTrial===12&&foundingAvailable&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – lock in 20% off your first year"}</span>)}
+              {daysIntoTrial===12&&!foundingAvailable&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – pick a plan to keep your momentum"}</span>)}
+              {daysIntoTrial===13&&foundingAvailable&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – continue for $20/mo (save $60 year one)"}</span>)}
+              {daysIntoTrial===13&&!foundingAvailable&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – continue for $25/mo or $249/yr (2 months free)"}</span>)}
             </div>
             <button onClick={function(){ setUpgradeReason("trial"); setShowUpgrade(true); }}
               style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"8px 14px",background:B.coral,color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
@@ -3219,9 +3249,9 @@ return (
                     <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                       <button onClick={function(){setUpgradeReason("plan");setShowUpgrade(true);}}
                         style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 22px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
-                        Upgrade - $25/mo
+                        {foundingAvailable?"Upgrade – $20/mo":"Upgrade – $25/mo"}
                       </button>
-                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.4)"}}>or $249/yr - saves $51</span>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.4)"}}>{foundingAvailable?"or $225/yr – 3 months free":"or $249/yr – 2 months free"}</span>
                     </div>
                   </div>
                 )}
@@ -3495,7 +3525,7 @@ return (
                 </div>
 
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:12,textAlign:"center"}}>
-                  {"Est. MRR assumes $19/mo per paid user. Founding members counted at $19 equivalent. Data from Supabase credits table only."}
+                  {"Est. MRR assumes $25/mo per paid user. Founding members counted at $20 equivalent for first year. Data from Supabase credits table only."}
                 </div>
               </div>
             )}
