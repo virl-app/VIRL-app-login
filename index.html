@@ -580,6 +580,28 @@ const Spinner = ({text}) => (
   </div>
 );
 
+// [TASK 10] Extract platform/format patterns from the Vault so VIRL can weight
+// similar styles in future plans. Only counts plan-type saves (captions have
+// no platform/format metadata). Format is optional on legacy items, so the
+// helper falls back to platform when format data isn't available.
+function getVaultPatterns(vault) {
+  if (!vault || !vault.length) return {count:0, topPlatform:null, topFormat:null};
+  var planItems = vault.filter(function(v){ return v.type === "plan"; });
+  if (!planItems.length) return {count:0, topPlatform:null, topFormat:null};
+  var platformCounts = {};
+  var formatCounts = {};
+  planItems.forEach(function(v) {
+    if (v.platform) platformCounts[v.platform] = (platformCounts[v.platform]||0) + 1;
+    if (v.format)   formatCounts[v.format]     = (formatCounts[v.format]||0)     + 1;
+  });
+  function top(counts) {
+    var best = null, max = 0;
+    Object.keys(counts).forEach(function(k){ if (counts[k] > max) { max = counts[k]; best = k; } });
+    return best;
+  }
+  return {count:planItems.length, topPlatform:top(platformCounts), topFormat:top(formatCounts)};
+}
+
 function CopyBtn({text,label}) {
   label = label||"Copy";
   const [copied,setCopied] = useState(false);
@@ -2540,6 +2562,22 @@ function App() {
     ...(isAdmin?[{key:"admin", label:"Dashboard"}]:[]),
   ];
 
+  // [TASK 10] Build a vault-pattern sentence for the system prompt so VIRL
+  // can weight similar styles to what the creator has already saved.
+  var vaultPatterns = getVaultPatterns(vault);
+  var vaultCtx = "";
+  if (vaultPatterns.count > 0) {
+    vaultCtx = " The creator has saved " + vaultPatterns.count + " posts they love.";
+    if (vaultPatterns.topPlatform && vaultPatterns.topFormat) {
+      vaultCtx += " They lean toward " + vaultPatterns.topPlatform + " and " + vaultPatterns.topFormat + ".";
+    } else if (vaultPatterns.topPlatform) {
+      vaultCtx += " They lean toward " + vaultPatterns.topPlatform + ".";
+    } else if (vaultPatterns.topFormat) {
+      vaultCtx += " They lean toward " + vaultPatterns.topFormat + " content.";
+    }
+    vaultCtx += " Weight similar styles higher in this week's plan.";
+  }
+
   // planSystemPrompt — the stable VIRL persona + creator profile.
   // This is passed as a system block with cache_control in chat.js,
   // so Anthropic caches it server-side for 1 hour. Subsequent plan
@@ -2547,7 +2585,8 @@ function App() {
   const planSystemPrompt = "You are VIRL, an AI content strategist and creative director. "
     +"Your job is to create highly personalised 7-day social media content plans. "
     +"Always return valid JSON arrays only — no markdown, no preamble, no explanation. "
-    +(profileCtx ? "Creator context: "+profileCtx : "No creator profile set — generate a general plan.");
+    +(profileCtx ? "Creator context: "+profileCtx : "No creator profile set — generate a general plan.")
+    +vaultCtx;
 
   // planPrompt is now built inside generate() so the sample-plan path can pass
   // profile-derived overrides without mutating state before the request fires.
@@ -2661,7 +2700,9 @@ function App() {
   function saveToVault(card) {
     const id = card.title+card.day;
     if (vault.some(function(v){return v.id===id;})) return;
-    setVault(function(v){return [{id,type:"plan",title:card.title,platform:card.platform,postTime:card.postTime,savedAt:fmtDate(),result:null}].concat(v);});
+    // [TASK 10] Persist card.format alongside platform so getVaultPatterns()
+    // can weight similar styles in future plan generations.
+    setVault(function(v){return [{id,type:"plan",title:card.title,platform:card.platform,format:card.format||null,postTime:card.postTime,savedAt:fmtDate(),result:null}].concat(v);});
 
   }
   function saveCaption(cap) {
@@ -3178,6 +3219,20 @@ return (
                       style={{background:"none",border:"none",color:B.muted,fontSize:18,cursor:"pointer",flexShrink:0,padding:0,lineHeight:1}}>
                       {"×"}
                     </button>
+                  </div>
+                )}
+                {/* [TASK 10] "Based on your Vault" banner — signals that VIRL
+                    is learning from saved posts. Renders only when the vault
+                    has 3+ plan-type items with a discernible pattern. */}
+                {vaultPatterns.count>=3&&(vaultPatterns.topFormat||vaultPatterns.topPlatform)&&(
+                  <div style={{background:B.navySoft,borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",gap:12,alignItems:"flex-start"}}>
+                    <div style={{fontSize:16,flexShrink:0,color:B.navy,marginTop:1}}>{"✦"}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.navy,lineHeight:1.2,marginBottom:4}}>Learning from your Vault.</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.navy,lineHeight:1.55}}>
+                        {"Based on your "+vaultPatterns.count+" saved post"+(vaultPatterns.count===1?"":"s")+", VIRL is weighing "+(vaultPatterns.topFormat||vaultPatterns.topPlatform)+" content higher this week."}
+                      </div>
+                    </div>
                   </div>
                 )}
                 {/* [TASK 9] Generic AI vs VIRL comparison — fires exactly once,
