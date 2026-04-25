@@ -687,7 +687,7 @@ function SharePlanCard({card}) {
   );
 }
 
-function ScriptGenerator({card,onClose,profile}) {
+function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed}) {
   const [script,setScript] = useState(null);
   const [loading,setLoading] = useState(false);
   const [error,setError] = useState("");
@@ -713,9 +713,12 @@ function ScriptGenerator({card,onClose,profile}) {
       +"Platform: "+card.platform+" — format guide: "+guide+" "
       +"Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences in creator voice\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script in creator voice\",\"tip\":\"one filming tip\"}],\"cta\":\"closing call to action in creator voice\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe that matches creator aesthetic\"}";
     const tokenMap = {YouTube:2500,LinkedIn:1500};
-    callAPI(prompt, tokenMap[card.platform]||1000, null, null, null, null, MODEL_SONNET, scriptSystem).then(function(text) {
+    callAPI(prompt, tokenMap[card.platform]||1000, null, null, CREDIT_COSTS.script, userToken, MODEL_SONNET, scriptSystem).then(function(text) {
       const parsed = extractJSON(text);
-      if (parsed&&parsed.hook) { setScript(parsed); }
+      if (parsed&&parsed.hook) {
+        setScript(parsed);
+        if (onCreditsUsed) onCreditsUsed();
+      }
       else { setError("Script generation takes a moment - tap Try Again."); }
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
   }
@@ -851,7 +854,7 @@ const MTag = ({type,children}) => {
   return <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"3px 10px",borderRadius:99,...s}}>{children}</span>;
 };
 
-function PlanCard({card,idx,onSave,onLog,saved,result,profile}) {
+function PlanCard({card,idx,onSave,onLog,saved,result,profile,userToken,onCreditsUsed}) {
   const bl = card.priority==="HIGH"?B.navy:card.priority==="MED"?B.blue:B.border;
   const [showLog,setShowLog] = useState(false);
   const [showScript,setShowScript] = useState(false);
@@ -864,7 +867,7 @@ function PlanCard({card,idx,onSave,onLog,saved,result,profile}) {
 
   return (
     <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:"3px solid "+bl,padding:"20px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s"}}>
-      {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile}/>}
+      {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>}
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:10}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.28em",textTransform:"uppercase",color:B.muted}}>{card.day}</div>
         <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -935,7 +938,7 @@ function PlanCard({card,idx,onSave,onLog,saved,result,profile}) {
   );
 }
 
-function RemixCaption({text,onSelect,profile}) {
+function RemixCaption({text,onSelect,profile,userToken,onCreditsUsed}) {
   const [open,setOpen] = useState(false);
   const [loading,setLoading] = useState(false);
   const [variants,setVariants] = useState(null);
@@ -951,11 +954,12 @@ function RemixCaption({text,onSelect,profile}) {
       +"Each version must sound like the creator — same voice, different approach. "
       +"Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"}} "
       +"Caption to remix: "+text;
-    callAPI(prompt, 800, null, null, null, null, MODEL_HAIKU, remixSystem).then(function(raw) {
+    callAPI(prompt, 800, null, null, CREDIT_COSTS.regen, userToken, MODEL_HAIKU, remixSystem).then(function(raw) {
       const parsed = extractJSON(raw);
       if (parsed&&parsed.shorter) {
         setVariants(parsed);
         try { logEvent(window.__virlUserId||null,"caption_remixed",{}); } catch(e){}
+        if (onCreditsUsed) onCreditsUsed();
       }
       else { setError("Try again in a moment."); }
     }).catch(function(){ setError("Connection issue - try again."); }).finally(function(){ setLoading(false); });
@@ -990,7 +994,7 @@ function RemixCaption({text,onSelect,profile}) {
   );
 }
 
-function EditableCaption({caption,idx,topic,onSave,profile}) {
+function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUsed}) {
   const [editing,setEditing] = useState(false);
   const [text,setText] = useState(caption.text);
   const [saved,setSaved] = useState(false);
@@ -1023,12 +1027,12 @@ function EditableCaption({caption,idx,topic,onSave,profile}) {
       ):(
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-line"}}>{text}</div>
       )}
-      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(t);}} profile={profile}/>}
+      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(t);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>}
     </div>
   );
 }
 
-function CaptionGen({profile,onSaveCaption}) {
+function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
   const [topic,setTopic] = useState("");
   const [platform,setPlatform] = useState("TikTok");
   const [tone,setTone] = useState("Warm & relatable");
@@ -1058,7 +1062,7 @@ function CaptionGen({profile,onSaveCaption}) {
       +"Tone: "+tone+". Length: "+length+" — "+lengthGuide[length]+" "
       +"Platform style: "+platformCtx+" "
       +"Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\",\"tag6\",\"tag7\"]}";
-    callAPI(prompt, 900, null, null, null, null, MODEL_HAIKU, captionSystem).then(function(full) {
+    callAPI(prompt, 900, null, null, CREDIT_COSTS.caption, userToken, MODEL_HAIKU, captionSystem).then(function(full) {
       const parsed = extractJSON(full);
       if (parsed&&parsed.hook&&parsed.captions) {
         setResult(parsed);
@@ -1066,6 +1070,7 @@ function CaptionGen({profile,onSaveCaption}) {
           var uid = window.__virlUserId||null;
           logEvent(uid,"caption_generated",{platform:platform,tone:tone,length:length});
         } catch(e){}
+        if (onCreditsUsed) onCreditsUsed();
       }
       else { setError("Almost there - tap generate again for a second pass."); }
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
@@ -1109,7 +1114,7 @@ function CaptionGen({profile,onSaveCaption}) {
             <CopyBtn text={result.hook} label="Copy hook"/>
           </div>
           {(result.captions||[]).map(function(cap,i){return (
-            <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile}/>
+            <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
           );})}
           <HashtagRow hashtags={result.hashtags}/>
           <button onClick={generate} disabled={loading}
@@ -1122,7 +1127,64 @@ function CaptionGen({profile,onSaveCaption}) {
   );
 }
 
-function VIRLScan({profile,onSaveCaption,userToken}) {
+function EditableScanCaption({captionText,platform,onSave}) {
+  const [editing,setEditing] = useState(false);
+  const [text,setText] = useState(captionText||"");
+  const [saved,setSaved] = useState(false);
+
+  function handleSave() {
+    if (!text.trim()) return;
+    onSave({title:platform+" caption", preview:text.slice(0,100)});
+    setEditing(false); setSaved(true);
+    setTimeout(function(){setSaved(false);},2000);
+  }
+
+  return (
+    <div style={{background:B.bg,borderRadius:12,padding:"14px 16px",marginBottom:12}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.blue}}>Caption</div>
+        <div style={{display:"flex",gap:6}}>
+          {!editing&&<CopyBtn text={text} label="Copy"/>}
+          <button onClick={function(){setEditing(function(v){return !v;});}}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:editing?B.ink:B.card,color:editing?B.white:B.muted,border:"none",borderRadius:99,cursor:"pointer"}}>
+            {editing?"Cancel":"Edit"}
+          </button>
+          <button onClick={handleSave}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:saved?B.greenSoft:editing?B.blue:B.card,color:saved?B.green:editing?B.white:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
+            {saved?"Saved":"Save"}
+          </button>
+        </div>
+      </div>
+      {editing?(
+        <textarea value={text} onChange={function(e){setText(e.target.value);}}
+          style={{width:"100%",background:B.card,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,padding:"11px 14px",resize:"vertical",minHeight:100,lineHeight:1.8}}/>
+      ):(
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-line"}}>{text}</div>
+      )}
+    </div>
+  );
+}
+
+function ShareScoreCard({score,platform,hook}) {
+  const [copied,setCopied] = useState(false);
+  function shareScore() {
+    const text = "🎯 VIRL viral score: "+score
+      +"\n📱 Best for: "+platform
+      +(hook?"\n\n💬 \""+hook+"\"":"")
+      +"\n\nScored by VIRL · govirl.ai";
+    navigator.clipboard&&navigator.clipboard.writeText(text).then(function() {
+      setCopied(true); setTimeout(function(){setCopied(false);},2000);
+    });
+  }
+  return (
+    <button onClick={shareScore}
+      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginTop:12,padding:"8px 16px",background:copied?B.greenSoft:B.skySoft,color:copied?B.green:B.sky,border:"none",borderRadius:99,cursor:"pointer",transition:"all .2s"}}>
+      {copied?"Copied!":"Share my score"}
+    </button>
+  );
+}
+
+function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
   var [files,setFiles]       = useState([]);
   var [results,setResults]   = useState([]);
   var [scanning,setScanning] = useState(false);
@@ -1173,6 +1235,7 @@ function VIRLScan({profile,onSaveCaption,userToken}) {
             var avg = scores.length ? Math.round((scores.reduce(function(a,b){return a+b;},0)/scores.length)*10)/10 : null;
             logEvent(window.__virlUserId||null,"scan_completed",{file_count:out.length,avg_score:avg});
           } catch(e){}
+          if (onCreditsUsed) onCreditsUsed();
           return;
         }
 
@@ -2400,11 +2463,6 @@ function App() {
   const [hasSeenExplainer,setHasSeenExplainer] = useState(function(){
     try { return localStorage.getItem("virl_seen_explainer")==="1"; } catch(e) { return false; }
   });
-  // [TASK 4] Tracks whether this user has ever generated a plan. Used to hide
-  // the "skip the form" sample-plan CTA once they've seen the magic.
-  const [hasGenerated,setHasGenerated] = useState(function(){
-    try { return localStorage.getItem("virl_has_generated")==="1"; } catch(e) { return false; }
-  });
   // [TASK 5] Referral-modal milestone. 0 = hidden; 3/7/15 = show the prompt
   // for that milestone. Counter lives in localStorage.virl_plans_completed.
   const [referralMilestone,setReferralMilestone] = useState(0);
@@ -2739,29 +2797,8 @@ function App() {
     +(profileCtx ? "Creator context: "+profileCtx : "No creator profile set — generate a general plan.")
     +vaultCtx;
 
-  // planPrompt is now built inside generate() so the sample-plan path can pass
-  // profile-derived overrides without mutating state before the request fires.
-
-  function generate(overrides) {
-    // [TASK 4] Optional overrides let the sample-plan button skip the form with
-    // profile-derived defaults. Without overrides, we use the live form state.
-    var _platforms = (overrides && overrides.platforms) || platforms;
-    var _niche     = (overrides && overrides.niche)     || niche;
-    var _goal      = (overrides && overrides.goal)      || goal;
-    var _formats   = (overrides && overrides.formats)   || formats;
-    var _followers = (overrides && overrides.followers) || followers;
-    var _trending  = overrides ? "" : trending;
-    var _context   = overrides ? "" : context;
-    if (!_platforms.length||!_formats.length) return;
-    // [TASK 4] If sample-plan defaults were used, mirror them into the form so
-    // the user can see what was chosen and tweak without starting from scratch.
-    if (overrides) {
-      setPlatforms(_platforms);
-      setNiche(_niche);
-      setGoal(_goal);
-      setFormats(_formats);
-      setFollowers(_followers);
-    }
+  function generate() {
+    if (!platforms.length||!formats.length) return;
     const cost = cards ? CREDIT_COSTS.regen : CREDIT_COSTS.plan;
     // Block generation if trial expired or out of credits
     if (!isFoundingOrPro && trialExpired) {
@@ -2773,10 +2810,10 @@ function App() {
     refreshCredits();
     setLoading(true); setError(""); setCards(null); setStats(null);
     var effectivePrompt = "Generate a 7-day content plan with these settings: "
-      +"platforms="+_platforms.join(",")+" niche="+_niche+" goal="+_goal
-      +" formats="+_formats.join(",")+" followers="+_followers
-      +(_trending?" TRENDING THIS WEEK - incorporate these where natural: "+_trending:"")
-      +(_context?" Extra context: "+_context:"")
+      +"platforms="+platforms.join(",")+" niche="+niche+" goal="+goal
+      +" formats="+formats.join(",")+" followers="+followers
+      +(trending?" TRENDING THIS WEEK - incorporate these where natural: "+trending:"")
+      +(context?" Extra context: "+context:"")
       +" Create 10-14 total posts (1-3 per day). Spread across ALL selected platforms. Vary posting times realistically. For each post: description is 2 punchy sentences max. Include a why field — one sentence on the strategic reason this post will perform well for this creator's specific audience."
       +" Return ONLY a JSON array of 10-14 objects: [{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\",\"tag6\"]}]"
       +" Multiple objects can share the same day. After the JSON array write: STATS reach=45000 rate=6.2 earn=$120-$400";
@@ -2785,9 +2822,6 @@ function App() {
       const parsed = extractJSON(parts[0]||full);
       if (parsed&&Array.isArray(parsed)&&parsed.length>0) {
         setCards(parsed);
-        // [TASK 4] Mark first-plan milestone so the sample-plan CTA hides forever.
-        try { localStorage.setItem("virl_has_generated","1"); } catch(e) {}
-        setHasGenerated(true);
         // [TASK 5] Bump lifetime plan counter and fire the referral modal the
         // first time the user hits 3, 7, or 15 plans. Only when signed in —
         // anonymous sessions have no user.id to build a referral link from.
@@ -2820,11 +2854,7 @@ function App() {
       } else { setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers."); }
     }).then(function(){
       // Refresh credits from Supabase after successful generation
-      if (session) {
-        loadCreditsFromSupabase(session.user.id, session.access_token).then(function(row){
-          if (row) setSbCredits(row);
-        });
-      }
+      refreshCredits();
     }).catch(function(e){
       if (e.message&&e.message.includes("credits")) {
         setUpgradeReason("credits"); setShowUpgrade(true);
@@ -2833,19 +2863,6 @@ function App() {
       }
     })
     .finally(function(){ setLoading(false); });
-  }
-
-  // [TASK 4] One-tap shortcut: generate a plan from profile-derived defaults so
-  // first-time users see the magic in 30 seconds instead of filling a form.
-  function generateSamplePlan() {
-    var sampleFormats = (formats && formats.length) ? formats : ["Talking-head video","Day in my life"];
-    generate({
-      platforms: (profile.myPlatforms && profile.myPlatforms.length) ? profile.myPlatforms : ["TikTok","Instagram"],
-      niche:     profile.niche || "Lifestyle",
-      goal:      "Grow my following",
-      formats:   sampleFormats,
-      followers: "1K-5K"
-    });
   }
 
   function saveToVault(card) {
@@ -3294,20 +3311,6 @@ return (
               )}
             </div>
             <SherpaTip>Tell VIRL your setup and it builds your entire week across your platforms - 10 to 14 posts with timing, trend angles, and the strategic reason behind every post. Tap Write Script on any card to go even deeper.</SherpaTip>
-            {/* [TASK 4] Sample plan shortcut — first-time users only. Generates
-                a plan from profile-derived defaults so they see the magic in
-                30 seconds instead of filling the form. */}
-            {!hasGenerated&&!loading&&!cards&&(
-              <div style={{marginBottom:12}}>
-                <button onClick={generateSamplePlan} disabled={loading}
-                  style={{width:"100%",background:B.white,color:B.coral,border:"1.5px solid "+B.coral,fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 20px",cursor:"pointer",borderRadius:12,transition:"background .2s"}}>
-                  {"Skip the form – show me a sample plan first"}
-                </button>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,textAlign:"center",marginTop:8}}>
-                  {"Uses "+CREDIT_COSTS.plan+" credits · You have "+credits+" this week · Customize after"}
-                </div>
-              </div>
-            )}
             <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
               {[
                 {lbl:"Your platforms",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={platforms.includes(p)} onClick={function(){setPlatforms(tog(platforms,p));}}>{p}</Chip>;})}</div>},
@@ -3481,6 +3484,8 @@ return (
                       saved={vault.some(function(v){return v.id===card.title+card.day;})}
                       result={results.find(function(r){return r.id===card.title+card.day;})}
                       profile={profile}
+                      userToken={userToken}
+                      onCreditsUsed={refreshCredits}
                     />
                   );
                   return acc;
@@ -3556,7 +3561,7 @@ return (
               </div>
               {profileComplete&&<div style={{background:B.navySoft,borderRadius:10,padding:"10px 16px",fontFamily:"'Jost',sans-serif",fontSize:13,color:B.navy}}>{"Writing in "+profile.name+"'s voice - tuned to your platform's style."}</div>}
             </div>
-            <CaptionGen profile={profile} onSaveCaption={saveCaption}/>
+            <CaptionGen profile={profile} onSaveCaption={saveCaption} userToken={userToken} onCreditsUsed={refreshCredits}/>
           </div>
         )}
 
@@ -3571,7 +3576,7 @@ return (
                 Upload photos or videos. VIRL scores each for viral potential out of 10, recommends the best platform, and writes a ready-to-post caption you can edit and save.
               </div>
             </div>
-            <VIRLScan profile={profile} onSaveCaption={saveCaption} userToken={userToken}/>
+            <VIRLScan profile={profile} onSaveCaption={saveCaption} userToken={userToken} onCreditsUsed={refreshCredits}/>
           </div>
         )}
 
