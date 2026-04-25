@@ -1166,20 +1166,166 @@ function EditableScanCaption({captionText,platform,onSave}) {
 }
 
 function ShareScoreCard({score,platform,hook}) {
-  const [copied,setCopied] = useState(false);
-  function shareScore() {
-    const text = "🎯 VIRL viral score: "+score
-      +"\n📱 Best for: "+platform
-      +(hook?"\n\n💬 \""+hook+"\"":"")
-      +"\n\nScored by VIRL · govirl.ai";
-    navigator.clipboard&&navigator.clipboard.writeText(text).then(function() {
-      setCopied(true); setTimeout(function(){setCopied(false);},2000);
-    });
+  const [busy,setBusy] = useState(false);
+  const [done,setDone] = useState(false);
+
+  function wrapText(ctx, text, maxWidth) {
+    var words = String(text||"").split(/\s+/);
+    var lines = [], line = "";
+    for (var i=0; i<words.length; i++) {
+      var test = line ? line+" "+words[i] : words[i];
+      if (ctx.measureText(test).width > maxWidth && line) {
+        lines.push(line); line = words[i];
+      } else { line = test; }
+    }
+    if (line) lines.push(line);
+    return lines;
   }
+
+  async function downloadCard() {
+    setBusy(true);
+    try {
+      // Pre-load the webfonts at the sizes we'll draw at — without this the
+      // first click renders with a serif/sans fallback because the FontFace
+      // hasn't been requested yet.
+      try {
+        await Promise.all([
+          document.fonts.load("400 120px 'Italiana'"),
+          document.fonts.load("400 360px 'Italiana'"),
+          document.fonts.load("italic 400 56px 'Italiana'"),
+          document.fonts.load("700 28px 'Jost'"),
+          document.fonts.load("italic 300 32px 'Jost'"),
+        ]);
+      } catch(e) {}
+
+      var W = 1080, H = 1920;
+      var c = document.createElement("canvas");
+      c.width = W; c.height = H;
+      var ctx = c.getContext("2d");
+
+      // Navy gradient background
+      var grad = ctx.createLinearGradient(0,0,0,H);
+      grad.addColorStop(0, "#1F3A8A");
+      grad.addColorStop(1, "#0B1840");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0,0,W,H);
+
+      ctx.textAlign = "center";
+
+      // VIRL wordmark
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = "400 120px 'Italiana', serif";
+      ctx.fillText("VIRL", W/2, 240);
+
+      // Tagline
+      ctx.font = "italic 300 32px 'Jost', sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      ctx.fillText("Finally, a strategy that sounds like you.", W/2, 296);
+
+      // Eyebrow
+      ctx.font = "700 28px 'Jost', sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      ctx.fillText("VIRAL POTENTIAL", W/2, 600);
+
+      // Score number — extract numeric portion, color by tier
+      var raw = String(score||"");
+      var m = raw.match(/(\d+\.?\d*)/);
+      var scoreText = m ? m[1] : raw;
+      var n = m ? parseFloat(m[1]) : 0;
+      var sColor = n>=8 ? "#10B981" : n>=6 ? "#F59E0B" : "#94A3B8";
+      ctx.font = "400 360px 'Italiana', serif";
+      ctx.fillStyle = sColor;
+      ctx.fillText(scoreText, W/2, 920);
+
+      // "out of 10"
+      ctx.font = "300 44px 'Jost', sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.fillText("out of 10", W/2, 1000);
+
+      // Platform pill
+      if (platform) {
+        var pillText = "→ "+platform;
+        ctx.font = "600 36px 'Jost', sans-serif";
+        var pillW = ctx.measureText(pillText).width + 80;
+        var pillH = 78;
+        var pillX = W/2 - pillW/2;
+        var pillY = 1080;
+        var pr = pillH/2;
+        ctx.fillStyle = "rgba(59,130,246,0.28)";
+        ctx.beginPath();
+        ctx.moveTo(pillX+pr, pillY);
+        ctx.arcTo(pillX+pillW, pillY, pillX+pillW, pillY+pillH, pr);
+        ctx.arcTo(pillX+pillW, pillY+pillH, pillX, pillY+pillH, pr);
+        ctx.arcTo(pillX, pillY+pillH, pillX, pillY, pr);
+        ctx.arcTo(pillX, pillY, pillX+pillW, pillY, pr);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#FFFFFF";
+        ctx.textBaseline = "middle";
+        ctx.fillText(pillText, W/2, pillY+pillH/2);
+        ctx.textBaseline = "alphabetic";
+      }
+
+      // Divider
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(W/2-160, 1260);
+      ctx.lineTo(W/2+160, 1260);
+      ctx.stroke();
+
+      // Hook quote (truncate to 4 lines for layout safety)
+      if (hook) {
+        ctx.font = "italic 400 56px 'Italiana', serif";
+        ctx.fillStyle = "#FFFFFF";
+        var lines = wrapText(ctx, "“"+hook+"”", W-200);
+        if (lines.length > 4) {
+          lines = lines.slice(0,4);
+          lines[3] = lines[3].replace(/\s*”?\s*$/, "") + "…”";
+        }
+        var lineH = 78;
+        var startY = 1380;
+        for (var i=0; i<lines.length; i++) {
+          ctx.fillText(lines[i], W/2, startY + i*lineH);
+        }
+      }
+
+      // Footer
+      ctx.font = "600 32px 'Jost', sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.fillText("Scored by VIRL", W/2, H-180);
+      ctx.font = "400 28px 'Jost', sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      ctx.fillText("govirl.ai", W/2, H-130);
+
+      await new Promise(function(resolve) {
+        c.toBlob(function(blob) {
+          if (!blob) { resolve(); return; }
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = url;
+          var pSlug = String(platform||"score").toLowerCase().replace(/[^a-z0-9]/g,"-");
+          var sSlug = scoreText.replace(/[^0-9]/g,"");
+          a.download = "virl-score-"+pSlug+(sSlug?"-"+sSlug:"")+".png";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(function(){URL.revokeObjectURL(url);}, 200);
+          resolve();
+        }, "image/png");
+      });
+
+      setDone(true);
+      setTimeout(function(){setDone(false);}, 2000);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <button onClick={shareScore}
-      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginTop:12,padding:"8px 16px",background:copied?B.greenSoft:B.skySoft,color:copied?B.green:B.sky,border:"none",borderRadius:99,cursor:"pointer",transition:"all .2s"}}>
-      {copied?"Copied!":"Share my score"}
+    <button onClick={downloadCard} disabled={busy}
+      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginTop:12,padding:"8px 16px",background:done?B.greenSoft:B.skySoft,color:done?B.green:B.sky,border:"none",borderRadius:99,cursor:busy?"default":"pointer",opacity:busy?0.6:1,transition:"all .2s"}}>
+      {busy?"Building image...":done?"Downloaded!":"Download story card"}
     </button>
   );
 }
