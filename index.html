@@ -2203,7 +2203,7 @@ function PreLaunchGate() {
       <div style={{position:"sticky",top:0,zIndex:30,background:B.white,borderBottom:"1px solid "+B.divider}}>
         <div style={{maxWidth:1180,margin:"0 auto",padding:"18px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{fontFamily:"'Italiana',serif",fontSize:28,letterSpacing:"0.16em",color:B.navy,lineHeight:1}}>VIRL</div>
-          <a href={WAITLIST_URL} style={primaryCtaNavy}>Join Waitlist</a>
+          <a href={WAITLIST_URL} target="_blank" rel="noopener noreferrer" style={primaryCtaNavy}>Join Waitlist</a>
         </div>
       </div>
 
@@ -2254,7 +2254,7 @@ function PreLaunchGate() {
             </div>
 
             {/* Primary CTA */}
-            <a href={WAITLIST_URL} style={primaryCtaWhite}>{"Join the waitlist →"}</a>
+            <a href={WAITLIST_URL} target="_blank" rel="noopener noreferrer" style={primaryCtaWhite}>{"Join the waitlist →"}</a>
 
             {/* Founding member micro-copy */}
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.65)",marginTop:14}}>
@@ -2349,7 +2349,7 @@ function PreLaunchGate() {
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.white}}>Ready to go VIRL?</div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.7)"}}>Founding member spots are limited.</div>
         </div>
-        <a href={WAITLIST_URL} style={{flexShrink:0,background:B.white,color:B.navy,textDecoration:"none",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"12px 22px",borderRadius:99}}>
+        <a href={WAITLIST_URL} target="_blank" rel="noopener noreferrer" style={{flexShrink:0,background:B.white,color:B.navy,textDecoration:"none",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"12px 22px",borderRadius:99}}>
           Join Waitlist
         </a>
       </div>
@@ -4009,11 +4009,6 @@ return (
                 {link.termly?(
                   <a href="#"
                     className="termly-display-preferences"
-                    onClick={function(e){
-                      e.preventDefault();
-                      if (window.displayPreferenceModal) { window.displayPreferenceModal(); }
-                      else if (window.Termly && window.Termly.openCcpa) { window.Termly.openCcpa(); }
-                    }}
                     style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,color:B.muted,textDecoration:"none",padding:"4px 6px",borderRadius:6,transition:"color .15s",cursor:"pointer"}}
                     onMouseOver={function(e){e.currentTarget.style.color=B.navy;}}
                     onMouseOut={function(e){e.currentTarget.style.color=B.muted;}}>
