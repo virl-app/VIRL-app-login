@@ -1579,7 +1579,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
 }
 
 
-function CreatorProfile({profile,syncState,onSave}) {
+function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   const [myPlatforms,setMyPlatforms] = useState(profile.myPlatforms||[]);
   const [name,setName] = useState(profile.name||"");
   const [audience,setAudience] = useState(profile.audience||"");
@@ -1601,10 +1601,35 @@ function CreatorProfile({profile,syncState,onSave}) {
   const [workedWell,setWorkedWell] = useState(profile.workedWell||"");
   const [saved,setSaved] = useState(false);
 
+  // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
+  // Auto-expand Phase 2 for returning users who already have any optional data
+  // so they don't have to re-discover it.
+  const [showPhase2,setShowPhase2] = useState(function(){
+    var hasOptional =
+      (profile.vibes && profile.vibes.length) ||
+      (profile.pillars && profile.pillars.length) ||
+      profile.topics || profile.workedWell || profile.purpose ||
+      profile.knownFor || profile.journey || profile.offLimits ||
+      profile.inspiration || profile.sampleCaption ||
+      profile.postFreq || profile.contentLength ||
+      (profile.emojiPref && profile.emojiPref !== "Sometimes") ||
+      (profile.handles && Object.keys(profile.handles).length) ||
+      (profile.platformAudiences && Object.keys(profile.platformAudiences).length);
+    return !!hasOptional;
+  });
+  const [phase1Saved,setPhase1Saved] = useState(false);
+
   function handleSave() {
     onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
+  }
+
+  // [CHANGE 1] Phase 1 save persists its success UI (no auto-clear) so the user
+  // can choose between "Generate my first plan" and "Make VIRL even sharper".
+  function handleSavePhase1() {
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell});
+    setPhase1Saved(true);
   }
 
   const profileComplete = !!(name&&audience&&voice);
@@ -1627,29 +1652,11 @@ function CreatorProfile({profile,syncState,onSave}) {
   const textareaStyle = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,fontStyle:"italic",padding:"11px 14px",resize:"vertical",lineHeight:1.6};
   const sec = {padding:"20px 24px",borderBottom:"1px solid "+B.divider};
 
-  // Section completion checks
-  var sec1Done = !!(name&&journey&&purpose);
-  var sec2Done = !!(myPlatforms.length&&voice&&vibes.length);
-  var sec3Done = !!(voice&&vibes.length&&emojiPref);
-  var sec4Done = !!(knownFor||topics||pillars.length);
-  var totalSecs = [sec1Done,sec2Done,sec3Done,sec4Done].filter(Boolean).length;
-
-  // Section header component
-  function SectionHeader(props) {
-    var pct = props.done ? 100 : 0;
-    return (
-      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:props.open?0:0}}>
-        <div style={{width:28,height:28,borderRadius:"50%",background:props.done?B.green:B.navy,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.white}}>{props.done?"✓":props.num}</div>
-        </div>
-        <div style={{flex:1}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:props.done?B.green:B.ink}}>{props.title}</div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>{props.subtitle}</div>
-        </div>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted}}>{props.done?"Complete":"→"}</div>
-      </div>
-    );
-  }
+  // [CHANGE 1] Phase 2 sub-section header — soft muted eyebrow over each
+  // optional field group.
+  const subhead = {fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted,marginTop:24,marginBottom:14};
+  const phase1Title = "Quick Setup — 90 seconds";
+  const phase1CTA = "Generate my first plan →";
 
   return (
     <div>
@@ -1671,44 +1678,121 @@ function CreatorProfile({profile,syncState,onSave}) {
         </div>
       </div>
 
-      {/* ── Section 1: You ─────────────────────────────────────────────────── */}
-      <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden",borderLeft:"3px solid "+(sec1Done?B.green:B.navy)}}>
-        <div style={{padding:"18px 20px 16px"}}>
-          <SectionHeader num="1" title="You" subtitle="The basics VIRL needs to get started" done={sec1Done}/>
+      {/* [CHANGE 1] Phase 1 — the four required fields a user needs to generate
+          their first plan. No section chrome, just labels + inputs. */}
+      <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,padding:"24px 24px 22px"}}>
+        <Eyebrow>{phase1Title}</Eyebrow>
+
+        <div style={{marginBottom:18}}>
+          <Label>Your first name <TierBadge tier="basic"/></Label>
+          <input value={name} onChange={function(e){setName(e.target.value);}} placeholder="What should VIRL call you?" style={inputStyle}/>
         </div>
-        <div style={{borderTop:"1px solid "+B.divider}}>
-          <div style={sec}>
-            <Label>Your first name <TierBadge tier="basic"/></Label>
-            <input value={name} onChange={function(e){setName(e.target.value);}} placeholder="What should VIRL call you?" style={inputStyle}/>
-          </div>
-          <div style={sec}>
-            <Label>Where are you in your creator journey?</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>VIRL adjusts its strategy based on where you are right now.</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{JOURNEYS.map(function(j){return <Chip key={j} active={journey===j} onClick={function(){setJourney(journey===j?"":j);}}>{j}</Chip>;})}</div>
-          </div>
-          <div style={{padding:"20px 24px"}}>
-            <Label>When you show up, you are...</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Pick the one that feels most true. This shapes the intent behind every piece of content VIRL builds.</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PURPOSES.map(function(p){return <Chip key={p} active={purpose===p} onClick={function(){setPurpose(purpose===p?"":p);}}>{p}</Chip>;})}</div>
-          </div>
+
+        <div style={{marginBottom:18}}>
+          <Label>Describe your voice in your own words <span style={{color:B.coral,fontSize:10,fontWeight:600,letterSpacing:0,textTransform:"none"}}>most important field</span> <TierBadge tier="dialed"/></Label>
+          <textarea value={voice} onChange={function(e){setVoice(e.target.value);}}
+            placeholder="e.g. Real, a little funny, never preachy. I talk to my audience like they are my group chat."
+            style={Object.assign({},textareaStyle,{minHeight:88})}/>
         </div>
+
+        <div style={{marginBottom:18}}>
+          <Label>Who is your audience? <TierBadge tier="basic"/></Label>
+          <textarea value={audience} onChange={function(e){setAudience(e.target.value);}}
+            placeholder="e.g. Millennial moms 28-38 who want real talk about parenting and home life"
+            style={Object.assign({},textareaStyle,{minHeight:72})}/>
+        </div>
+
+        <div style={{marginBottom:phase1Saved?16:4}}>
+          <Label>Where do you post?</Label>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={myPlatforms.includes(p)} onClick={function(){setMyPlatforms(tog(myPlatforms,p));}}>{p}</Chip>;})}</div>
+        </div>
+
+        {!phase1Saved && (
+          <button onClick={handleSavePhase1}
+            style={{width:"100%",background:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,marginTop:12,transition:"all .3s",boxShadow:"0 4px 12px rgba(31,58,138,0.25)"}}>
+            Save and start planning
+          </button>
+        )}
+
+        {phase1Saved && (
+          <div>
+            <div style={{background:B.green,borderRadius:12,padding:"14px 20px",marginBottom:12,display:"flex",alignItems:"center",gap:12,animation:"slideUp .3s ease"}}>
+              <div style={{width:28,height:28,borderRadius:"50%",background:"rgba(255,255,255,0.25)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                <span style={{color:B.white,fontSize:14,fontWeight:700}}>{"✓"}</span>
+              </div>
+              <div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white,marginBottom:2}}>Profile saved</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.8)"}}>{"You're ready to generate your first plan."}</div>
+              </div>
+            </div>
+            <button onClick={function(){ if (onNavigateToPlan) onNavigateToPlan(); }}
+              style={{width:"100%",background:B.coral,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,marginBottom:10,transition:"all .15s",boxShadow:"0 4px 14px rgba(244,63,94,0.3)"}}>
+              {phase1CTA}
+            </button>
+            <button onClick={function(){ setShowPhase2(true); }}
+              style={{width:"100%",background:"transparent",color:B.navy,border:"1px solid "+B.navy,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,transition:"all .15s"}}>
+              Make VIRL even sharper
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* ── Section 2: Your Platforms ───────────────────────────────────────── */}
-      <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden",borderLeft:"3px solid "+(sec2Done?B.green:B.navy)}}>
-        <div style={{padding:"18px 20px 16px"}}>
-          <SectionHeader num="2" title="Your Platforms" subtitle="Where you post and who you are reaching" done={sec2Done}/>
-        </div>
-        <div style={{borderTop:"1px solid "+B.divider}}>
-          <div style={sec}>
-            <Label>Where do you post?</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:12}}>Select all that apply. VIRL uses this to tailor every plan, caption, and script to where your audience lives.</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={myPlatforms.includes(p)} onClick={function(){setMyPlatforms(tog(myPlatforms,p));}}>{p}</Chip>;})}</div>
+      {/* [CHANGE 1] Phase 2 — optional depth, collapsed by default for new users.
+          Auto-expanded for returning users with any optional data. */}
+      {showPhase2 && (
+        <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,padding:"22px 24px"}}>
+          <div style={{marginBottom:6,fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.15}}>Make VIRL even sharper (optional)</div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,marginBottom:4}}>{optionalCount+" of 7 optional fields added"}</div>
+
+          <div style={subhead}>Your style</div>
+          <div style={{marginBottom:18}}>
+            <Label>Your content vibe <TierBadge tier="dialed"/></Label>
+            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{VIBES.map(function(v){return <Chip key={v} active={vibes.includes(v)} onClick={function(){setVibes(tog(vibes,v));}}>{v}</Chip>;})}</div>
           </div>
-          {myPlatforms.length>0&&(
-            <div style={sec}>
-              <Label>Your handles + audience per platform <TierBadge tier="basic"/></Label>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:16}}>Your handle helps VIRL reference your real presence. Your audience note makes every output platform-specific.</div>
+          <div style={{marginBottom:18}}>
+            <Label>Emoji usage</Label>
+            <div style={{display:"flex",gap:8}}>{EMOJI_PREFS.map(function(e){return <Chip key={e} active={emojiPref===e} onClick={function(){setEmojiPref(e);}}>{e}</Chip>;})}</div>
+          </div>
+          <div style={{marginBottom:18}}>
+            <Label>Preferred content length</Label>
+            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{CONTENT_LENGTH.map(function(l){return <Chip key={l} active={contentLength===l} onClick={function(){setContentLength(contentLength===l?"":l);}}>{l}</Chip>;})}</div>
+          </div>
+          <div style={{marginBottom:18}}>
+            <Label>How often do you post?</Label>
+            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{POST_FREQ.map(function(f){return <Chip key={f} active={postFreq===f} onClick={function(){setPostFreq(postFreq===f?"":f);}}>{f}</Chip>;})}</div>
+          </div>
+          <div style={{marginBottom:4}}>
+            <Label>When you show up, you are...</Label>
+            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PURPOSES.map(function(p){return <Chip key={p} active={purpose===p} onClick={function(){setPurpose(purpose===p?"":p);}}>{p}</Chip>;})}</div>
+          </div>
+
+          <div style={subhead}>Your strategy</div>
+          <div style={{marginBottom:18}}>
+            <Label>One thing you want to be known for <TierBadge tier="dialed"/></Label>
+            <input value={knownFor} onChange={function(e){setKnownFor(e.target.value);}} placeholder="e.g. makes busy moms feel like they have their life together" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
+          </div>
+          <div style={{marginBottom:18}}>
+            <Label>Your content pillars</Label>
+            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PILLARS.map(function(p){return <Chip key={p} active={pillars.includes(p)} onClick={function(){setPillars(tog(pillars,p));}}>{p}</Chip>;})}</div>
+          </div>
+          <div style={{marginBottom:18}}>
+            <Label>Topics you love to create about</Label>
+            <textarea value={topics} onChange={function(e){setTopics(e.target.value);}} placeholder="e.g. morning routines, productivity hacks, meal prep, workouts, tutorials, personal growth" style={Object.assign({},textareaStyle,{minHeight:66})}/>
+          </div>
+          <div style={{marginBottom:18}}>
+            <Label>What has worked well for you before?</Label>
+            <textarea value={workedWell} onChange={function(e){setWorkedWell(e.target.value);}}
+              placeholder="e.g. tutorial videos, behind-the-scenes content, hot takes, personal stories..."
+              style={Object.assign({},textareaStyle,{minHeight:66})}/>
+          </div>
+          <div style={{marginBottom:4}}>
+            <Label>Where are you in your creator journey?</Label>
+            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{JOURNEYS.map(function(j){return <Chip key={j} active={journey===j} onClick={function(){setJourney(journey===j?"":j);}}>{j}</Chip>;})}</div>
+          </div>
+
+          {myPlatforms.length>0 && (
+            <div>
+              <div style={subhead}>Your platforms in detail</div>
               {myPlatforms.map(function(p){return (
                 <div key={p} style={{marginBottom:16,paddingBottom:16,borderBottom:"1px solid "+B.divider}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.navy,marginBottom:8}}>{p}</div>
@@ -1732,103 +1816,44 @@ function CreatorProfile({profile,syncState,onSave}) {
               );})}
             </div>
           )}
-          <div style={{padding:"20px 24px"}}>
-            <Label>How often do you post?</Label>
-            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{POST_FREQ.map(function(f){return <Chip key={f} active={postFreq===f} onClick={function(){setPostFreq(postFreq===f?"":f);}}>{f}</Chip>;})}</div>
-          </div>
-        </div>
-      </div>
 
-      {/* ── Section 3: Your Voice ───────────────────────────────────────────── */}
-      <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden",borderLeft:"3px solid "+(sec3Done?B.green:B.navy)}}>
-        <div style={{padding:"18px 20px 16px"}}>
-          <SectionHeader num="3" title="Your Voice" subtitle="The most important section - shapes every single output"/>
-        </div>
-        <div style={{borderTop:"1px solid "+B.divider}}>
-          <div style={sec}>
-            <Label>Your content vibe <TierBadge tier="dialed"/></Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Pick everything that feels like you.</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{VIBES.map(function(v){return <Chip key={v} active={vibes.includes(v)} onClick={function(){setVibes(tog(vibes,v));}}>{v}</Chip>;})}</div>
-          </div>
-          <div style={sec}>
-            <Label>Describe your voice in your own words <span style={{color:B.coral,fontSize:10,fontWeight:600,letterSpacing:0,textTransform:"none"}}>most important field</span> <TierBadge tier="dialed"/></Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Write like you would describe yourself to a friend. VIRL uses this for every single output it generates for you.</div>
-            <textarea value={voice} onChange={function(e){setVoice(e.target.value);}} placeholder="e.g. Real, a little funny, never preachy. I talk to my audience like they are my group chat." style={Object.assign({},textareaStyle,{minHeight:88})}/>
-          </div>
-          <div style={sec}>
-            <Label>Paste a caption you love <TierBadge tier="elite"/></Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Your style, your words, your energy. VIRL uses this to match your exact tone.</div>
-            <textarea value={sampleCaption} onChange={function(e){setSample(e.target.value);}} placeholder="Paste a caption from one of your posts that felt totally like you..." style={Object.assign({},textareaStyle,{minHeight:88})}/>
-          </div>
-          <div style={sec}>
-            <Label>A creator whose style you admire <TierBadge tier="elite"/></Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Not to copy them - to give VIRL a reference point for tone and format.</div>
-            <input value={inspiration} onChange={function(e){setInspiration(e.target.value);}} placeholder="e.g. @aliabdaal - explains complex ideas in plain language" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
-          </div>
-          <div style={sec}>
-            <Label>Emoji usage</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>VIRL matches your emoji style in every output.</div>
-            <div style={{display:"flex",gap:8}}>{EMOJI_PREFS.map(function(e){return <Chip key={e} active={emojiPref===e} onClick={function(){setEmojiPref(e);}}>{e}</Chip>;})}</div>
-          </div>
-          <div style={{padding:"20px 24px"}}>
-            <Label>Preferred content length</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Applies to captions and scripts VIRL writes for you.</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{CONTENT_LENGTH.map(function(l){return <Chip key={l} active={contentLength===l} onClick={function(){setContentLength(contentLength===l?"":l);}}>{l}</Chip>;})}</div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Section 4: Your Content Strategy ───────────────────────────────── */}
-      <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden",borderLeft:"3px solid "+(sec4Done?B.green:B.navy)}}>
-        <div style={{padding:"18px 20px 16px"}}>
-          <SectionHeader num="4" title="Your Content Strategy" subtitle="Depth signals that make every plan razor-sharp" done={sec4Done}/>
-        </div>
-        <div style={{borderTop:"1px solid "+B.divider}}>
-          <div style={sec}>
-            <Label>One thing you want to be known for <TierBadge tier="dialed"/></Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>Complete this: "I want to be the creator who..." - VIRL uses this as your north star.</div>
-            <input value={knownFor} onChange={function(e){setKnownFor(e.target.value);}} placeholder="e.g. makes busy moms feel like they have their life together" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
-          </div>
-          <div style={sec}>
-            <Label>Topics you love to create about</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>The more specific, the better VIRL can generate ideas you actually want to make.</div>
-            <textarea value={topics} onChange={function(e){setTopics(e.target.value);}} placeholder="e.g. morning routines, productivity hacks, meal prep, workouts, tutorials, personal growth" style={Object.assign({},textareaStyle,{minHeight:66})}/>
-          </div>
-          <div style={sec}>
-            <Label>Your content pillars</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:12}}>VIRL balances these across your weekly plan so it is a real strategy, not just 7 random posts.</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PILLARS.map(function(p){return <Chip key={p} active={pillars.includes(p)} onClick={function(){setPillars(tog(pillars,p));}}>{p}</Chip>;})}</div>
-          </div>
-          <div style={sec}>
-            <Label>What has worked well for you before?</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>VIRL leans into what already resonates with your specific audience.</div>
-            <textarea value={workedWell} onChange={function(e){setWorkedWell(e.target.value);}}
-              placeholder="e.g. tutorial videos, behind-the-scenes content, hot takes, personal stories..."
-              style={Object.assign({},textareaStyle,{minHeight:66})}/>
-          </div>
-          <div style={{padding:"20px 24px"}}>
+          <div style={subhead}>Your boundaries</div>
+          <div style={{marginBottom:18}}>
             <Label>What do you never want to talk about? <TierBadge tier="elite"/></Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:10}}>VIRL will never suggest content in these areas.</div>
             <input value={offLimits} onChange={function(e){setOffLimits(e.target.value);}} placeholder="e.g. politics, my relationship, diet culture" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
-        </div>
-      </div>
+          <div style={{marginBottom:18}}>
+            <Label>A creator whose style you admire <TierBadge tier="elite"/></Label>
+            <input value={inspiration} onChange={function(e){setInspiration(e.target.value);}} placeholder="e.g. @aliabdaal - explains complex ideas in plain language" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
+          </div>
+          <div style={{marginBottom:20}}>
+            <Label>Paste a caption you love <TierBadge tier="elite"/></Label>
+            <textarea value={sampleCaption} onChange={function(e){setSample(e.target.value);}} placeholder="Paste a caption from one of your posts that felt totally like you..." style={Object.assign({},textareaStyle,{minHeight:88})}/>
+          </div>
 
-      {saved&&(
-        <div style={{background:B.green,borderRadius:12,padding:"14px 20px",marginBottom:12,display:"flex",alignItems:"center",gap:12,animation:"slideUp .3s ease"}}>
-          <div style={{width:28,height:28,borderRadius:"50%",background:"rgba(255,255,255,0.25)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-            <span style={{color:B.white,fontSize:14,fontWeight:700}}>{"✓"}</span>
-          </div>
-          <div>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white,marginBottom:2}}>Profile saved</div>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.8)"}}>Every VIRL output will now be built around your voice.</div>
-          </div>
+          {saved && (
+            <div style={{background:B.green,borderRadius:12,padding:"14px 20px",marginBottom:12,display:"flex",alignItems:"center",gap:12,animation:"slideUp .3s ease"}}>
+              <div style={{width:28,height:28,borderRadius:"50%",background:"rgba(255,255,255,0.25)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                <span style={{color:B.white,fontSize:14,fontWeight:700}}>{"✓"}</span>
+              </div>
+              <div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white,marginBottom:2}}>Profile saved</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.8)"}}>Every VIRL output will now be built around your voice.</div>
+              </div>
+            </div>
+          )}
+          <button onClick={handleSave}
+            style={{
+              width:"100%",
+              background:saved?B.green:B.navy,
+              color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,transition:"all .3s",
+              boxShadow:saved?"0 4px 12px rgba(16,185,129,0.3)":"0 4px 12px rgba(31,58,138,0.25)"
+            }}>
+            {saved?"Profile saved":"Save my profile"}
+          </button>
         </div>
       )}
-      <button onClick={handleSave}
-        style={{width:"100%",background:saved?B.green:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,marginBottom:8,transition:"all .3s",boxShadow:saved?"0 4px 12px rgba(16,185,129,0.3)":"0 4px 12px rgba(31,58,138,0.25)"}}>
-        {saved?"Profile saved":"Save my profile"}
-      </button>
+
       {/* [TASK 1] Sync indicator — signals Supabase round-trip so users know their data is safe across devices. */}
       {syncState==="syncing"&&(
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,color:B.muted,textAlign:"center",marginBottom:8}}>
@@ -1845,7 +1870,7 @@ function CreatorProfile({profile,syncState,onSave}) {
           {"Saved locally. Couldn't reach sync – try again in a moment."}
         </div>
       )}
-      {totalSecs===4&&(
+      {eliteDone && (
         <div style={{background:B.navy,borderRadius:12,padding:"18px 20px",marginTop:4}}>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>How VIRL uses your profile</div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.75}}>
@@ -3385,7 +3410,11 @@ return (
                 Fill this in once. Every plan and caption VIRL generates will sound authentically like you - not generic AI.
               </div>
             </div>
-            <CreatorProfile profile={profile} syncState={profileSync} onSave={function(p){
+            <CreatorProfile profile={profile} syncState={profileSync}
+              // [CHANGE 1] Lets Phase 1 success state navigate to the plan tab,
+              // mirroring how the welcome modal hands off to plan.
+              onNavigateToPlan={function(){setTab("plan");}}
+              onSave={function(p){
               setProfile(p);
               // [TASK 1] Track the Supabase round-trip so CreatorProfile can show Synced/Syncing/Failed.
               if (session) {
