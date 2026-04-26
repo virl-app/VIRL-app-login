@@ -724,7 +724,7 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed}) {
       const parsed = extractJSON(text);
       if (parsed&&parsed.hook) {
         setScript(parsed);
-        if (onCreditsUsed) onCreditsUsed();
+        if (onCreditsUsed) onCreditsUsed({cost: CREDIT_COSTS.script});
       }
       else { setError("Script generation takes a moment - tap Try Again."); }
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
@@ -966,7 +966,7 @@ function RemixCaption({text,onSelect,profile,userToken,onCreditsUsed}) {
       if (parsed&&parsed.shorter) {
         setVariants(parsed);
         try { logEvent(window.__virlUserId||null,"caption_remixed",{}); } catch(e){}
-        if (onCreditsUsed) onCreditsUsed();
+        if (onCreditsUsed) onCreditsUsed({cost: CREDIT_COSTS.regen});
       }
       else { setError("Try again in a moment."); }
     }).catch(function(){ setError("Connection issue - try again."); }).finally(function(){ setLoading(false); });
@@ -1077,7 +1077,7 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
           var uid = window.__virlUserId||null;
           logEvent(uid,"caption_generated",{platform:platform,tone:tone,length:length});
         } catch(e){}
-        if (onCreditsUsed) onCreditsUsed();
+        if (onCreditsUsed) onCreditsUsed({cost: CREDIT_COSTS.caption});
       }
       else { setError("Almost there - tap generate again for a second pass."); }
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
@@ -1378,6 +1378,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
     var processAll = function() {
       var out = [];
       var idx = 0;
+      var apiCallCount = 0;
 
       function processNext() {
         if (idx >= files.length) {
@@ -1389,7 +1390,9 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
             var avg = scores.length ? Math.round((scores.reduce(function(a,b){return a+b;},0)/scores.length)*10)/10 : null;
             logEvent(window.__virlUserId||null,"scan_completed",{file_count:out.length,avg_score:avg});
           } catch(e){}
-          if (onCreditsUsed) onCreditsUsed();
+          // Server deducts `cost` per file the API actually saw, so report
+          // the same multiple to the parent for the optimistic UI tick.
+          if (onCreditsUsed) onCreditsUsed({cost: cost * apiCallCount});
           return;
         }
 
@@ -1412,6 +1415,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
                 +"\"tip\":\"one specific tip to maximize this post\","
                 +"\"analysis\":\"2 sentences on why this will perform\","
                 +"\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
+              apiCallCount++;
               return callAPI(prompt, 1500, fd.b64, "image/jpeg", cost, userToken, MODEL_SONNET, scanSystem)
                 .then(function(text) {
                   var parsed = extractJSON(text);
@@ -1445,6 +1449,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
             +"\"analysis\":\"2 sentences on why this will perform\"}";
           fileToBase64(file)
             .then(function(b64) {
+              apiCallCount++;
               return callAPI(prompt, 1500, b64, file.type, cost, userToken, MODEL_SONNET, scanSystem);
             })
             .then(function(text) {
@@ -2692,10 +2697,13 @@ function App() {
     }
   }, []);
 
-  // [TASK 7] Load the founding-plan count once on mount. Uses an RPC that
-  // returns only an integer, so no personal data is exposed. Silent failure
-  // keeps the default "founding available" fallback in place.
-  useEffect(function() {
+  // [TASK 7] Load the founding-plan count. Fires once on mount and again
+  // whenever the upgrade modal opens, so a user who leaves a tab open during
+  // the launch window sees an accurate spots-remaining count rather than the
+  // stale value cached at first paint. Uses an RPC that returns only an
+  // integer, so no personal data is exposed. Silent failure keeps the default
+  // "founding available" fallback in place.
+  function loadFoundingCount() {
     fetch(SUPABASE_URL + "/rest/v1/rpc/get_founding_count", {
       method: "POST",
       headers: {
@@ -2703,11 +2711,13 @@ function App() {
         "Authorization": "Bearer " + SUPABASE_ANON_KEY,
         "Content-Type": "application/json"
       },
-      body: "{}"
+      body: "{}",
+      cache: "no-store"
     }).then(function(r){ return r.ok ? r.json() : null; })
       .then(function(n){ if (typeof n === "number") setFoundingCount(n); })
       .catch(function(){});
-  }, []);
+  }
+  useEffect(function() { loadFoundingCount(); }, []);
 
   // Load profile + credits from Supabase when session is available
   useEffect(function() {
@@ -2739,8 +2749,23 @@ function App() {
 
   }, [session]);
 
-  function refreshCredits() {
+  function refreshCredits(opts) {
     setCreditState(getCredits());
+    // Optimistically tick the displayed Supabase credits down by `cost` so
+    // the UI reflects the spend immediately. Without this, the user has to
+    // wait for the Supabase GET round-trip to repaint — and in private/
+    // incognito browsers a stale-cache or read-replica lag means the GET
+    // sometimes returns the pre-deduction row, leaving the counter frozen.
+    // The follow-up GET below still runs and reconciles to the canonical
+    // server value.
+    var cost = opts && typeof opts.cost === "number" ? opts.cost : 0;
+    if (cost > 0) {
+      setSbCredits(function(prev) {
+        if (!prev) return prev;
+        if (prev.plan === "founding" || prev.plan === "pro") return prev;
+        return Object.assign({}, prev, { credits: Math.max(0, (prev.credits||0) - cost) });
+      });
+    }
     if (session) {
       loadCreditsFromSupabase(session.user.id, session.access_token).then(function(row) {
         if (row) setSbCredits(row);
@@ -2759,6 +2784,11 @@ function App() {
   // ── Trial + upgrade state ────────────────────────────────────────────────
   const [showUpgrade,setShowUpgrade] = useState(false);
   const [upgradeReason,setUpgradeReason] = useState("credits");
+
+  // Re-fetch the founding count whenever the upgrade modal opens so a tab
+  // that's been open for a while shows an up-to-date "X of 100 spots left"
+  // figure (rather than the stale value cached at first paint).
+  useEffect(function() { if (showUpgrade) loadFoundingCount(); }, [showUpgrade]);
 
   // [CHANGE 2a] Annual/monthly toggle inside the upgrade modal. Annual is the
   // default because it's the better value (2 months free vs $25/mo).
@@ -3059,8 +3089,12 @@ function App() {
         } catch(e){}
       } else { setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers."); }
     }).then(function(){
-      // Refresh credits from Supabase after successful generation
-      refreshCredits();
+      // Refresh credits from Supabase after successful generation. Pass the
+      // cost so the displayed counter ticks down immediately rather than
+      // waiting on the Supabase round-trip (which can be slow or stale-cached
+      // in private/incognito browsers). The follow-up GET reconciles to the
+      // canonical server value.
+      refreshCredits({cost: cost});
     }).catch(function(e){
       if (e.message&&e.message.includes("credits")) {
         setUpgradeReason("credits"); setShowUpgrade(true);
@@ -3229,24 +3263,55 @@ return (
                   boxShadow:selectedPlan==="annual"?"0 1px 3px rgba(0,0,0,0.08)":"none",
                   transition:"all .15s"
                 }}>
-                {"Annual — save $51"}
+                {foundingAvailable?"Annual — 3 months free":"Annual — save $51"}
               </button>
             </div>
 
+            {foundingAvailable&&(
+              <div style={{background:B.navySoft,borderRadius:12,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founding</div>
+                <div style={{flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,lineHeight:1.4}}>
+                  {foundingCount!==null
+                    ? "Founding member rate — only " + (FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " spots left"
+                    : "Founding member rate — limited to the first " + FOUNDING_CAP}
+                </div>
+              </div>
+            )}
+
             <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
-              {/* [CHANGE 2a] Single price card driven by selectedPlan. */}
+              {/* [CHANGE 2a] Single price card driven by selectedPlan.
+                  Founding pricing is shown alongside struck-through standard
+                  pricing whenever a founding spot is still open, so users see
+                  the same number on Stripe's checkout page (the founding
+                  coupon is applied server-side in api/create-checkout.js). */}
               <div style={{background:B.navy,borderRadius:16,padding:"18px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"}}
                 onClick={function(){handleCheckout(selectedPlan);}}>
                 <div style={{flex:1}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>{selectedPlan==="annual"?"Annual":"Monthly"}</div>
+                    {foundingAvailable&&(
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:"rgba(255,255,255,0.18)",color:B.white,borderRadius:99,letterSpacing:"0.15em",textTransform:"uppercase"}}>Founding</div>
+                    )}
                     {selectedPlan==="annual"&&(
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:B.green,color:"white",borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"}}>2 months free</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:B.green,color:"white",borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"}}>{foundingAvailable?"3 months free":"2 months free"}</div>
                     )}
                   </div>
-                  <div style={{display:"flex",alignItems:"baseline",gap:6}}>
-                    <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:"white",lineHeight:1}}>{selectedPlan==="annual"?"$249/yr":"$25/mo"}</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.55)"}}>{selectedPlan==="annual"?"saves $51":"cancel anytime"}</div>
+                  <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:"white",lineHeight:1}}>
+                      {selectedPlan==="annual"
+                        ? (foundingAvailable?"$225/yr":"$249/yr")
+                        : (foundingAvailable?"$20/mo":"$25/mo")}
+                    </div>
+                    {foundingAvailable&&(
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.45)",textDecoration:"line-through"}}>
+                        {selectedPlan==="annual"?"$249/yr":"$25/mo"}
+                      </div>
+                    )}
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.55)"}}>
+                      {selectedPlan==="annual"
+                        ? (foundingAvailable?"saves $75 vs monthly":"saves $51")
+                        : "cancel anytime"}
+                    </div>
                   </div>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)",marginTop:4}}>150 credits/week · all features</div>
                 </div>
@@ -3598,22 +3663,34 @@ return (
                 {!isFoundingOrPro&&!trialExpired&&!planNudgeDismissed&&(
                   <div style={{background:B.navySoft,borderLeft:"3px solid "+B.blue,borderRadius:12,padding:"16px 20px",marginBottom:16}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
-                      <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy,lineHeight:1.2}}>{"✦ Loving this plan?"}</div>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy,lineHeight:1.2}}>{"✦ Loving this plan?"}</div>
+                        {foundingAvailable&&(
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founding</div>
+                        )}
+                      </div>
                       <button onClick={function(){ setPlanNudgeDismissed(true); }} aria-label="Dismiss"
                         style={{background:"none",border:"none",color:B.muted,fontSize:18,cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0}}>
                         {"×"}
                       </button>
                     </div>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,marginTop:6,lineHeight:1.55}}>
-                      {"Upgrade to Standard — 150 credits every week. Plans, captions, scans, and scripts, every single week."}
+                      {foundingAvailable
+                        ? "Lock in founding pricing — 150 credits every week. Plans, captions, scans, and scripts, every single week."
+                        : "Upgrade to Standard — 150 credits every week. Plans, captions, scans, and scripts, every single week."}
                     </div>
+                    {foundingAvailable&&foundingCount!==null&&(
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",color:B.blue,marginTop:6}}>
+                        {(FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " founding spots left"}
+                      </div>
+                    )}
                     <div style={{display:"flex",alignItems:"center",gap:14,marginTop:12,flexWrap:"wrap"}}>
                       <button onClick={function(){
                           setUpgradeReason("post-plan");
                           setShowUpgrade(true);
                         }}
                         style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-                        {"Upgrade for $25/mo →"}
+                        {foundingAvailable?"Upgrade for $225/yr →":"Upgrade for $249/yr →"}
                       </button>
                       <button onClick={function(){ setPlanNudgeDismissed(true); }}
                         style={{background:"none",border:"none",color:B.muted,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,cursor:"pointer",padding:0}}>
@@ -3778,18 +3855,49 @@ return (
                 </div>
                 {!isFoundingOrPro&&!trialExpired&&(
                   <div style={{background:"linear-gradient(135deg,"+B.navy+" 0%,"+B.blue+" 100%)",borderRadius:16,padding:"22px 24px",marginTop:8,marginBottom:4}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.5)",marginBottom:6}}>{"✦ While you have this plan in front of you"}</div>
+                    <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.5)"}}>{"✦ While you have this plan in front of you"}</div>
+                      {foundingAvailable&&(
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:"rgba(255,255,255,0.18)",color:B.white,borderRadius:99}}>Founding</div>
+                      )}
+                    </div>
                     <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.white,marginBottom:6,lineHeight:1.1}}>Like what you see?</div>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.6,marginBottom:16}}>
-                      {"Upgrade for 150 credits per week - enough for a full plan, captions, scripts, and scans every single week."}
+                      {foundingAvailable
+                        ? "Lock in founding pricing — 150 credits per week, every week. Plans, captions, scripts, and scans."
+                        : "Upgrade for 150 credits per week - enough for a full plan, captions, scripts, and scans every single week."}
                     </div>
-                    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                      <button onClick={function(){setUpgradeReason("plan");setShowUpgrade(true);}}
-                        style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 22px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
-                        {foundingAvailable?"Upgrade – $20/mo":"Upgrade – $25/mo"}
-                      </button>
-                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.4)"}}>{foundingAvailable?"or $225/yr – 3 months free":"or $249/yr – 2 months free"}</span>
-                    </div>
+                    {foundingAvailable?(
+                      <div>
+                        <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap",marginBottom:4}}>
+                          <span style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.white,lineHeight:1}}>$225/yr</span>
+                          <span style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.45)",textDecoration:"line-through"}}>$249/yr</span>
+                          <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"2px 8px",background:B.green,color:B.white,borderRadius:99}}>3 months free</span>
+                        </div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.55)",marginBottom:14}}>
+                          {"or $20/mo "}<span style={{textDecoration:"line-through",opacity:0.7}}>$25/mo</span>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                          <button onClick={function(){setUpgradeReason("plan");setShowUpgrade(true);}}
+                            style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 22px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
+                            Claim founding rate
+                          </button>
+                          {foundingCount!==null&&(
+                            <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",color:"rgba(255,255,255,0.7)"}}>
+                              {(FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " spots left"}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ):(
+                      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                        <button onClick={function(){setUpgradeReason("plan");setShowUpgrade(true);}}
+                          style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 22px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
+                          {"Upgrade – $249/yr"}
+                        </button>
+                        <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.4)"}}>{"or $25/mo – 2 months free annual"}</span>
+                      </div>
+                    )}
                   </div>
                 )}
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.65,textAlign:"center",padding:"12px 4px"}}>
