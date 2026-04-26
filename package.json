@@ -1,0 +1,9 @@
+{
+  "name": "virl-app-login",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VIRL app — single-page React frontend (index.html via Babel standalone) plus Vercel serverless API functions in /api.",
+  "dependencies": {
+    "stripe": "^14.0.0"
+  }
+}
