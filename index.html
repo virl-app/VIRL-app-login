@@ -2753,6 +2753,17 @@ function App() {
   const [showUpgrade,setShowUpgrade] = useState(false);
   const [upgradeReason,setUpgradeReason] = useState("credits");
 
+  // [CHANGE 2a] Annual/monthly toggle inside the upgrade modal. Annual is the
+  // default because it's the better value (2 months free vs $25/mo).
+  const [selectedPlan,setSelectedPlan] = useState("annual");
+
+  // [CHANGE 2b] Post-plan upgrade nudge — dismissible inline card shown above
+  // plan results. Session-deduplicated so it appears at most once per browser
+  // session (sessionStorage), and immediately hidden if the user dismisses.
+  const [planNudgeDismissed,setPlanNudgeDismissed] = useState(function(){
+    try { return sessionStorage.getItem("virl_plan_nudge_shown")==="1"; } catch(e) { return false; }
+  });
+
 
 
 
@@ -2887,6 +2898,14 @@ function App() {
   // Show low-credit banner when 5 or fewer remain (not expired, not pro)
   var showLowCreditBanner = !isFoundingOrPro && !trialExpired && credits <= 5 && credits > 0;
 
+  // [CHANGE 2c] Sidebar upgrade CTA copy escalates with trial day count so
+  // urgency rises as the user nears the end of the free window.
+  var upgradeCtaText = daysIntoTrial <= 7
+    ? "Upgrade anytime — 150 credits/week"
+    : daysIntoTrial <= 11
+      ? (14 - daysIntoTrial) + " days left — don't lose your plans"
+      : "Last chance — lock in founding rate";
+
   // [TASK 13] Sunday nudge — when it's Sunday and the current plan still has
   // unlogged cards, surface a batch-log banner so users can close out the week
   // in one sitting. "Unlogged" = no matching entry in results[] by title+day.
@@ -2904,6 +2923,14 @@ function App() {
       setShowUpgrade(true);
     }
   }, [trialExpired, isFoundingOrPro]);
+
+  // [CHANGE 2b] Mark sessionStorage when the post-plan nudge becomes visible
+  // so a page reload in the same session won't show it again.
+  useEffect(function() {
+    if (cards && !isFoundingOrPro && !trialExpired && !planNudgeDismissed) {
+      try { sessionStorage.setItem("virl_plan_nudge_shown","1"); } catch(e) {}
+    }
+  }, [cards, isFoundingOrPro, trialExpired, planNudgeDismissed]);
 
   useEffect(function(){
     save({platforms,niche,goal,formats,followers,vault,results,profile});
@@ -3171,44 +3198,55 @@ return (
                 </div>
               </div>
             )}
-            <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
+            {/* [CHANGE 2a] Annual/monthly toggle. Annual is highlighted by
+                default; the price card below mirrors the selection. Both CTAs
+                in this modal pass selectedPlan to handleCheckout(). */}
+            <div style={{display:"flex",background:B.bg,border:"1px solid "+B.border,borderRadius:99,padding:4,marginBottom:18}}>
+              <button onClick={function(){ setSelectedPlan("monthly"); }}
+                style={{
+                  flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:selectedPlan==="monthly"?700:500,letterSpacing:"0.06em",textTransform:"uppercase",
+                  background:selectedPlan==="monthly"?B.white:"transparent",
+                  color:selectedPlan==="monthly"?B.navy:B.muted,
+                  border:"none",borderRadius:99,padding:"8px 12px",cursor:"pointer",
+                  boxShadow:selectedPlan==="monthly"?"0 1px 3px rgba(0,0,0,0.08)":"none",
+                  transition:"all .15s"
+                }}>
+                Monthly
+              </button>
+              <button onClick={function(){ setSelectedPlan("annual"); }}
+                style={{
+                  flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:selectedPlan==="annual"?700:500,letterSpacing:"0.06em",textTransform:"uppercase",
+                  background:selectedPlan==="annual"?B.white:"transparent",
+                  color:selectedPlan==="annual"?B.navy:B.muted,
+                  border:"none",borderRadius:99,padding:"8px 12px",cursor:"pointer",
+                  boxShadow:selectedPlan==="annual"?"0 1px 3px rgba(0,0,0,0.08)":"none",
+                  transition:"all .15s"
+                }}>
+                {"Annual — save $51"}
+              </button>
+            </div>
 
-              {/* [TASK 7] Annual — best value, shown first. Pricing + "saves"
-                  copy swap between founding and standard based on foundingAvailable. */}
-              <div style={{background:B.navy,borderRadius:16,padding:"16px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"}}
-                onClick={function(){handleCheckout("annual");}}>
+            <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
+              {/* [CHANGE 2a] Single price card driven by selectedPlan. */}
+              <div style={{background:B.navy,borderRadius:16,padding:"18px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"}}
+                onClick={function(){handleCheckout(selectedPlan);}}>
                 <div style={{flex:1}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>{foundingAvailable?"Founding annual":"Annual"}</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:B.green,color:"white",borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"}}>{foundingAvailable?"3 months free":"2 months free"}</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>{selectedPlan==="annual"?"Annual":"Monthly"}</div>
+                    {selectedPlan==="annual"&&(
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:B.green,color:"white",borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"}}>2 months free</div>
+                    )}
                   </div>
                   <div style={{display:"flex",alignItems:"baseline",gap:6}}>
-                    <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:"white",lineHeight:1}}>{foundingAvailable?"$225":"$249"}</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)"}}>{foundingAvailable?"/year · first year · saves $75":"/year · saves $51"}</div>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:"white",lineHeight:1}}>{selectedPlan==="annual"?"$249/yr":"$25/mo"}</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.55)"}}>{selectedPlan==="annual"?"saves $51":"cancel anytime"}</div>
                   </div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)",marginTop:2}}>{foundingAvailable?"Then $249/yr · 150 credits/week · all features":"150 credits/week · all features"}</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)",marginTop:4}}>150 credits/week · all features</div>
                 </div>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:"white",background:"rgba(255,255,255,0.12)",padding:"8px 14px",borderRadius:99,flexShrink:0}}>
                   Get started
                 </div>
               </div>
-
-              {/* [TASK 7] Monthly. */}
-              <div style={{background:B.bg,borderRadius:16,padding:"16px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",border:"1px solid "+B.border}}
-                onClick={function(){handleCheckout("monthly");}}>
-                <div style={{flex:1}}>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>{foundingAvailable?"Founding monthly":"Monthly"}</div>
-                  <div style={{display:"flex",alignItems:"baseline",gap:6}}>
-                    <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.ink,lineHeight:1}}>{foundingAvailable?"$20":"$25"}</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>{foundingAvailable?"/month · first year · then $25":"/month · cancel anytime"}</div>
-                  </div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:2}}>{foundingAvailable?"Save $60 over the first year · 150 credits/week":"150 credits/week · all features"}</div>
-                </div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:B.navy,background:B.navySoft,padding:"8px 14px",borderRadius:99,flexShrink:0}}>
-                  Get started
-                </div>
-              </div>
-
             </div>
             {upgradeReason!=="trial"&&(
               <button onClick={function(){setShowUpgrade(false);}}
@@ -3261,12 +3299,6 @@ return (
                 <div style={{width:5,height:5,borderRadius:"50%",background:credits<=5?"#F43F5E":"#3B82F6"}}/>
                 <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.5)"}}>{credits+" credit"+(credits===1?"":"s")}</span>
               </div>
-              {!isFoundingOrPro&&(
-                <button onClick={function(){setUpgradeReason("sidebar");setShowUpgrade(true);}}
-                  style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",background:"rgba(255,255,255,0.1)",color:"rgba(255,255,255,0.6)",border:"none",borderRadius:99,padding:"4px 10px",cursor:"pointer"}}>
-                  Upgrade
-                </button>
-              )}
               {isFoundingOrPro&&<span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:"#10B981"}}>Pro</span>}
             </div>
             {/* [TASK 8] Friendly credit counter — translates raw credits into
@@ -3278,6 +3310,16 @@ return (
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.35)",marginTop:4,marginLeft:11,lineHeight:1.35}}>
                 {"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans, "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions, "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
               </div>
+            )}
+            {/* [CHANGE 2c] Time-aware sidebar upgrade CTA. Copy escalates as
+                the trial winds down. The full CTA text needs more room than
+                the original "Upgrade" pill, so it's promoted to its own
+                full-width line below the credits row. Click handler unchanged. */}
+            {!isFoundingOrPro&&(
+              <button onClick={function(){setUpgradeReason("sidebar");setShowUpgrade(true);}}
+                style={{display:"block",width:"100%",marginTop:10,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.02em",textAlign:"left",background:"rgba(255,255,255,0.08)",color:"rgba(255,255,255,0.8)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:8,padding:"8px 12px",cursor:"pointer",lineHeight:1.4}}>
+                {upgradeCtaText}
+              </button>
             )}
           </div>
           <button onClick={handleSignOut}
@@ -3542,6 +3584,37 @@ return (
 
             {cards&&(
               <div>
+                {/* [CHANGE 2b] Inline post-plan upgrade nudge. Renders above
+                    the result cards. Hidden for paid users + expired trials,
+                    and once dismissed (state) or shown earlier this session
+                    (sessionStorage). */}
+                {!isFoundingOrPro&&!trialExpired&&!planNudgeDismissed&&(
+                  <div style={{background:B.navySoft,borderLeft:"3px solid "+B.blue,borderRadius:12,padding:"16px 20px",marginBottom:16}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy,lineHeight:1.2}}>{"✦ Loving this plan?"}</div>
+                      <button onClick={function(){ setPlanNudgeDismissed(true); }} aria-label="Dismiss"
+                        style={{background:"none",border:"none",color:B.muted,fontSize:18,cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0}}>
+                        {"×"}
+                      </button>
+                    </div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,marginTop:6,lineHeight:1.55}}>
+                      {"Upgrade to Standard — 150 credits every week. Plans, captions, scans, and scripts, every single week."}
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:14,marginTop:12,flexWrap:"wrap"}}>
+                      <button onClick={function(){
+                          setUpgradeReason("post-plan");
+                          setShowUpgrade(true);
+                        }}
+                        style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+                        {"Upgrade for $25/mo →"}
+                      </button>
+                      <button onClick={function(){ setPlanNudgeDismissed(true); }}
+                        style={{background:"none",border:"none",color:B.muted,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,cursor:"pointer",padding:0}}>
+                        Maybe later
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {!hasSeenExplainer&&(
                   <div style={{background:B.navySoft,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",gap:14,alignItems:"flex-start"}}>
                     <div style={{fontSize:20,flexShrink:0}}>{"✦"}</div>
