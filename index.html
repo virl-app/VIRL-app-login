@@ -2697,10 +2697,13 @@ function App() {
     }
   }, []);
 
-  // [TASK 7] Load the founding-plan count once on mount. Uses an RPC that
-  // returns only an integer, so no personal data is exposed. Silent failure
-  // keeps the default "founding available" fallback in place.
-  useEffect(function() {
+  // [TASK 7] Load the founding-plan count. Fires once on mount and again
+  // whenever the upgrade modal opens, so a user who leaves a tab open during
+  // the launch window sees an accurate spots-remaining count rather than the
+  // stale value cached at first paint. Uses an RPC that returns only an
+  // integer, so no personal data is exposed. Silent failure keeps the default
+  // "founding available" fallback in place.
+  function loadFoundingCount() {
     fetch(SUPABASE_URL + "/rest/v1/rpc/get_founding_count", {
       method: "POST",
       headers: {
@@ -2708,11 +2711,13 @@ function App() {
         "Authorization": "Bearer " + SUPABASE_ANON_KEY,
         "Content-Type": "application/json"
       },
-      body: "{}"
+      body: "{}",
+      cache: "no-store"
     }).then(function(r){ return r.ok ? r.json() : null; })
       .then(function(n){ if (typeof n === "number") setFoundingCount(n); })
       .catch(function(){});
-  }, []);
+  }
+  useEffect(function() { loadFoundingCount(); }, []);
 
   // Load profile + credits from Supabase when session is available
   useEffect(function() {
@@ -2779,6 +2784,11 @@ function App() {
   // ── Trial + upgrade state ────────────────────────────────────────────────
   const [showUpgrade,setShowUpgrade] = useState(false);
   const [upgradeReason,setUpgradeReason] = useState("credits");
+
+  // Re-fetch the founding count whenever the upgrade modal opens so a tab
+  // that's been open for a while shows an up-to-date "X of 100 spots left"
+  // figure (rather than the stale value cached at first paint).
+  useEffect(function() { if (showUpgrade) loadFoundingCount(); }, [showUpgrade]);
 
   // [CHANGE 2a] Annual/monthly toggle inside the upgrade modal. Annual is the
   // default because it's the better value (2 months free vs $25/mo).
