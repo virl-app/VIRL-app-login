@@ -11,7 +11,7 @@
 // Returns: { url } — the Stripe Checkout URL to redirect the user to
 // ─────────────────────────────────────────────────────────────────────────────
 
-const Stripe = require("stripe");
+import Stripe from "stripe";
 
 const FOUNDING_CAP = 100;
 
@@ -39,7 +39,7 @@ async function getPaidUserCount(supabaseUrl, supabaseServiceKey) {
   }
 }
 
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -125,4 +125,4 @@ module.exports = async function handler(req, res) {
       message: "Something went wrong. Please try again.",
     });
   }
-};
+}
