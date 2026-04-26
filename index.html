@@ -724,7 +724,7 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed}) {
       const parsed = extractJSON(text);
       if (parsed&&parsed.hook) {
         setScript(parsed);
-        if (onCreditsUsed) onCreditsUsed();
+        if (onCreditsUsed) onCreditsUsed({cost: CREDIT_COSTS.script});
       }
       else { setError("Script generation takes a moment - tap Try Again."); }
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
@@ -966,7 +966,7 @@ function RemixCaption({text,onSelect,profile,userToken,onCreditsUsed}) {
       if (parsed&&parsed.shorter) {
         setVariants(parsed);
         try { logEvent(window.__virlUserId||null,"caption_remixed",{}); } catch(e){}
-        if (onCreditsUsed) onCreditsUsed();
+        if (onCreditsUsed) onCreditsUsed({cost: CREDIT_COSTS.regen});
       }
       else { setError("Try again in a moment."); }
     }).catch(function(){ setError("Connection issue - try again."); }).finally(function(){ setLoading(false); });
@@ -1077,7 +1077,7 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
           var uid = window.__virlUserId||null;
           logEvent(uid,"caption_generated",{platform:platform,tone:tone,length:length});
         } catch(e){}
-        if (onCreditsUsed) onCreditsUsed();
+        if (onCreditsUsed) onCreditsUsed({cost: CREDIT_COSTS.caption});
       }
       else { setError("Almost there - tap generate again for a second pass."); }
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
@@ -1378,6 +1378,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
     var processAll = function() {
       var out = [];
       var idx = 0;
+      var apiCallCount = 0;
 
       function processNext() {
         if (idx >= files.length) {
@@ -1389,7 +1390,9 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
             var avg = scores.length ? Math.round((scores.reduce(function(a,b){return a+b;},0)/scores.length)*10)/10 : null;
             logEvent(window.__virlUserId||null,"scan_completed",{file_count:out.length,avg_score:avg});
           } catch(e){}
-          if (onCreditsUsed) onCreditsUsed();
+          // Server deducts `cost` per file the API actually saw, so report
+          // the same multiple to the parent for the optimistic UI tick.
+          if (onCreditsUsed) onCreditsUsed({cost: cost * apiCallCount});
           return;
         }
 
@@ -1412,6 +1415,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
                 +"\"tip\":\"one specific tip to maximize this post\","
                 +"\"analysis\":\"2 sentences on why this will perform\","
                 +"\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
+              apiCallCount++;
               return callAPI(prompt, 1500, fd.b64, "image/jpeg", cost, userToken, MODEL_SONNET, scanSystem)
                 .then(function(text) {
                   var parsed = extractJSON(text);
@@ -1445,6 +1449,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
             +"\"analysis\":\"2 sentences on why this will perform\"}";
           fileToBase64(file)
             .then(function(b64) {
+              apiCallCount++;
               return callAPI(prompt, 1500, b64, file.type, cost, userToken, MODEL_SONNET, scanSystem);
             })
             .then(function(text) {
@@ -2739,8 +2744,23 @@ function App() {
 
   }, [session]);
 
-  function refreshCredits() {
+  function refreshCredits(opts) {
     setCreditState(getCredits());
+    // Optimistically tick the displayed Supabase credits down by `cost` so
+    // the UI reflects the spend immediately. Without this, the user has to
+    // wait for the Supabase GET round-trip to repaint — and in private/
+    // incognito browsers a stale-cache or read-replica lag means the GET
+    // sometimes returns the pre-deduction row, leaving the counter frozen.
+    // The follow-up GET below still runs and reconciles to the canonical
+    // server value.
+    var cost = opts && typeof opts.cost === "number" ? opts.cost : 0;
+    if (cost > 0) {
+      setSbCredits(function(prev) {
+        if (!prev) return prev;
+        if (prev.plan === "founding" || prev.plan === "pro") return prev;
+        return Object.assign({}, prev, { credits: Math.max(0, (prev.credits||0) - cost) });
+      });
+    }
     if (session) {
       loadCreditsFromSupabase(session.user.id, session.access_token).then(function(row) {
         if (row) setSbCredits(row);
@@ -3059,8 +3079,12 @@ function App() {
         } catch(e){}
       } else { setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers."); }
     }).then(function(){
-      // Refresh credits from Supabase after successful generation
-      refreshCredits();
+      // Refresh credits from Supabase after successful generation. Pass the
+      // cost so the displayed counter ticks down immediately rather than
+      // waiting on the Supabase round-trip (which can be slow or stale-cached
+      // in private/incognito browsers). The follow-up GET reconciles to the
+      // canonical server value.
+      refreshCredits({cost: cost});
     }).catch(function(e){
       if (e.message&&e.message.includes("credits")) {
         setUpgradeReason("credits"); setShowUpgrade(true);
