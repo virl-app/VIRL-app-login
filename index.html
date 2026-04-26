@@ -135,10 +135,16 @@ async function loadCreditsFromSupabase(userId, accessToken) {
       "apikey": SUPABASE_ANON_KEY,
       "Authorization": "Bearer " + (accessToken || SUPABASE_ANON_KEY),
       "Content-Type": "application/json",
+      // Some browsers (notably private/incognito modes) aggressively cache
+      // GETs to the Supabase REST API, so a refetch right after a server-side
+      // credit deduction can return the stale pre-deduction row. Force a
+      // network round-trip every time.
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache",
     };
     const res = await fetch(
-      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at&user_id=eq." + userId + "&limit=1",
-      { headers }
+      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at&user_id=eq." + userId + "&limit=1&_=" + Date.now(),
+      { headers, cache: "no-store" }
     );
     if (!res.ok) return null;
     const rows = await res.json();
@@ -605,7 +611,7 @@ const ErrBox = ({msg}) => msg ? (
 const Spinner = ({text}) => (
   <div style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",padding:"18px 20px",fontFamily:"'Jost',sans-serif",fontSize:13,fontStyle:"italic",color:B.muted,marginTop:12,display:"flex",alignItems:"center",gap:12}}>
     <svg className="spin" width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={B.blue} strokeWidth={2}><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-    {text||"Building your strategy..."}
+    {text||"Strategizing..."}
   </div>
 );
 
@@ -1128,7 +1134,7 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
   );
 }
 
-function EditableScanCaption({captionText,platform,onSave}) {
+function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCreditsUsed}) {
   const [editing,setEditing] = useState(false);
   const [text,setText] = useState(captionText||"");
   const [saved,setSaved] = useState(false);
@@ -1162,6 +1168,7 @@ function EditableScanCaption({captionText,platform,onSave}) {
       ):(
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-line"}}>{text}</div>
       )}
+      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(t);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>}
     </div>
   );
 }
@@ -1558,7 +1565,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
                 <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,flex:1,lineHeight:1.3}}>{"\""+r.hook+"\""}</div>
                 <CopyBtn text={r.hook||""} label="Copy hook"/>
               </div>
-              <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile}/>
+              <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
               <HashtagRow hashtags={r.hashtags}/>
               {r.tip&&<div style={{background:B.blueSoft,borderRadius:10,padding:"10px 14px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.blue,lineHeight:1.6,marginTop:8}}>{"✦ "+r.tip}</div>}
               <ShareScoreCard score={r.score} platform={r.platform} hook={r.hook||""}/>
@@ -3557,7 +3564,7 @@ return (
               </div>
             </div>
             <GenBtn onClick={generate} loading={loading} disabled={!platforms.length||!formats.length}>
-              {loading?"Building your strategy...":"Generate my 7-day plan"}
+              {loading?"Strategizing...":"Generate my 7-day plan"}
             </GenBtn>
             <ErrBox msg={error}/>
             {loading&&!cards&&<Spinner/>}
