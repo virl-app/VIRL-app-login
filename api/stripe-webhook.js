@@ -13,10 +13,43 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Stripe from "stripe";
+import { sendEmail } from "./_lib/email-send.js";
+import {
+  subscriptionWelcome,
+  paymentFailed,
+  subscriptionCancelled,
+} from "./_lib/email-templates.js";
 
 // [CHANGE 3b] Disable Vercel's body parser so Stripe gets the exact raw bytes
 // it signed — any reformatting would invalidate the signature.
 export const config = { api: { bodyParser: false } };
+
+// Best-effort lookup for personalized greetings — never blocks the webhook.
+async function fetchUserContext(userId) {
+  const out = { email: null, name: "" };
+  if (!userId) return out;
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !serviceKey) return out;
+  try {
+    const userRes = await fetch(`${supabaseUrl}/auth/v1/admin/users/${userId}`, {
+      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` },
+    });
+    if (userRes.ok) {
+      const u = await userRes.json();
+      out.email = u.email || null;
+    }
+    const profRes = await fetch(
+      `${supabaseUrl}/rest/v1/profiles?id=eq.${userId}&select=name`,
+      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+    );
+    if (profRes.ok) {
+      const rows = await profRes.json();
+      if (rows[0] && rows[0].name) out.name = rows[0].name;
+    }
+  } catch (e) { /* non-fatal */ }
+  return out;
+}
 
 async function readRawBody(req) {
   return await new Promise(function (resolve, reject) {
@@ -97,6 +130,18 @@ export default async function handler(req, res) {
             stripe_customer_id: obj.customer || null,
           });
           console.log("[webhook] User " + userId + " upgraded to " + plan);
+          // Subscription welcome — dedupe by stripe subscription id so a
+          // resubscribe creates a new send, but a webhook replay does not.
+          const subId = obj.subscription || obj.id || "session";
+          const ctx   = await fetchUserContext(userId);
+          if (ctx.email) {
+            const tpl = subscriptionWelcome({ name: ctx.name, plan });
+            await sendEmail({
+              userId, to: ctx.email, template: "subscription_welcome",
+              dedupeKey: "sub_" + subId,
+              subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
+            });
+          }
         } else {
           console.warn("[webhook] checkout.session.completed missing userId in metadata");
         }
@@ -112,6 +157,19 @@ export default async function handler(req, res) {
         if (status === "past_due" || status === "unpaid") {
           await patchUserPlan(userId, { plan: "past_due" });
           console.log("[webhook] User " + userId + " marked past_due");
+          // Payment failed email — dedupe by stripe sub id + month so the
+          // user gets at most one nudge per billing cycle, even if Stripe
+          // flips status back and forth on retries.
+          const ymKey = new Date().toISOString().slice(0, 7); // YYYY-MM
+          const ctx   = await fetchUserContext(userId);
+          if (ctx.email) {
+            const tpl = paymentFailed({ name: ctx.name });
+            await sendEmail({
+              userId, to: ctx.email, template: "payment_failed",
+              dedupeKey: `past_due_${obj.id || "sub"}_${ymKey}`,
+              subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
+            });
+          }
         } else if (status === "active") {
           const plan = meta.isFoundingMember === "true" ? "founding" : "standard";
           await patchUserPlan(userId, { plan: plan });
@@ -129,6 +187,15 @@ export default async function handler(req, res) {
         // resubscribe and we want their vault, profile, and history intact.
         await patchUserPlan(userId, { plan: "cancelled" });
         console.log("[webhook] User " + userId + " cancelled");
+        const ctx = await fetchUserContext(userId);
+        if (ctx.email) {
+          const tpl = subscriptionCancelled({ name: ctx.name });
+          await sendEmail({
+            userId, to: ctx.email, template: "subscription_cancelled",
+            dedupeKey: "cancel_" + (obj.id || "sub"),
+            subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
+          });
+        }
         break;
       }
 

@@ -4,6 +4,7 @@
   "private": true,
   "description": "VIRL app — single-page React frontend (index.html via Babel standalone) plus Vercel serverless API functions in /api.",
   "dependencies": {
+    "resend": "^4.0.0",
     "stripe": "^14.0.0"
   }
 }
