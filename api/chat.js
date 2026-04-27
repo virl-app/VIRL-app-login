@@ -19,6 +19,10 @@ export default async function handler(req, res) {
   const ALLOWED_MODELS = ['claude-sonnet-4-6', 'claude-haiku-4-5-20251001'];
   const selectedModel  = ALLOWED_MODELS.includes(model) ? model : 'claude-sonnet-4-6';
 
+  // Free trial length in days. Mirrored in index.html — keep in sync.
+  const TRIAL_DAYS = 14;
+  const PAID_PLANS = ['founding', 'pro', 'standard'];
+
   // ── Credit check & deduction ───────────────────────────────────────────────
   // Fail closed: every generation must be tied to an authenticated user so the
   // weekly cap is enforced. Without this, a caller could bypass the limit by
@@ -39,7 +43,8 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: 'Sign in required.' });
     }
 
-    const { id: userId } = await userRes.json();
+    const userJson = await userRes.json();
+    const { id: userId, created_at: createdAt } = userJson;
 
     const credRes = await fetch(
       `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan,credits`,
@@ -57,9 +62,25 @@ export default async function handler(req, res) {
 
     const { plan, credits: currentCredits } = row;
     const creditCost = cost || 1;
-    const isPro = ['founding','pro','standard'].includes(plan);
+    const isPaid = PAID_PLANS.includes(plan);
 
-    if (!isPro && currentCredits < creditCost) {
+    // Trial enforcement: free users get TRIAL_DAYS from signup. The client
+    // already blocks generation past day 14, but the cap is meaningless if
+    // the API doesn't enforce it too — anyone hitting the endpoint directly
+    // could keep generating until their weekly credits hit zero. Fail open
+    // when created_at is missing so a malformed auth row doesn't lock real
+    // users out; the client warning surfaces it for triage.
+    if (!isPaid && createdAt) {
+      const signupMs = Date.parse(createdAt);
+      if (!Number.isNaN(signupMs)) {
+        const daysSinceSignup = Math.floor((Date.now() - signupMs) / 86400000);
+        if (daysSinceSignup >= TRIAL_DAYS) {
+          return res.status(402).json({ error: 'Your free trial has ended.' });
+        }
+      }
+    }
+
+    if (!isPaid && currentCredits < creditCost) {
       return res.status(402).json({ error: 'Not enough credits this week.' });
     }
 
