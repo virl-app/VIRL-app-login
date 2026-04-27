@@ -4338,6 +4338,14 @@ return (
                 style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:adminLoading?B.muted:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",transition:"all .2s"}}>
                 {adminLoading?"Loading...":"Refresh data"}
               </button>
+              <button onClick={function(){
+                  if (!session) return;
+                  var url = "/api/email/preview?t=" + encodeURIComponent(session.access_token);
+                  window.open(url, "_blank", "noopener");
+                }}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:"transparent",color:B.navy,border:"1px solid "+B.navy,borderRadius:99,cursor:"pointer",marginLeft:8}}>
+                Email previews
+              </button>
             </div>
 
             {!adminData&&!adminLoading&&(
