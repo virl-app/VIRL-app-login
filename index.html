@@ -197,6 +197,42 @@ async function deletePlanFromSupabase(userId) {
   try { await supabaseClient.from("plans").delete().eq("user_id", userId); } catch(e) {}
 }
 
+// user_data table: one row per user with persistent vault + results jsonb.
+// Distinct from plans (which expires weekly) — vault and results survive
+// the Monday reset and stay tied to the account for the lifetime of the
+// membership. Helpers fail open: if the table isn't provisioned yet, the
+// app silently falls back to localStorage-only.
+async function loadUserDataFromSupabase(userId) {
+  try {
+    const { data, error } = await supabaseClient
+      .from("user_data").select("vault,results").eq("user_id", userId).maybeSingle();
+    if (error || !data) return null;
+    return data;
+  } catch(e) { return null; }
+}
+async function saveUserDataToSupabase(userId, vault, results) {
+  try {
+    const { error } = await supabaseClient.from("user_data").upsert({
+      user_id:    userId,
+      vault:      vault   || [],
+      results:    results || [],
+      updated_at: new Date().toISOString(),
+    });
+    if (error) { console.error("User-data save error:", error.message); return false; }
+    return true;
+  } catch(e) { return false; }
+}
+function cachedUserDataKey(userId) { return "virl_user_data_" + userId; }
+function loadCachedUserData(userId) {
+  try {
+    var raw = localStorage.getItem(cachedUserDataKey(userId));
+    return raw ? JSON.parse(raw) : null;
+  } catch(e) { return null; }
+}
+function saveCachedUserData(userId, vault, results) {
+  try { localStorage.setItem(cachedUserDataKey(userId), JSON.stringify({vault:vault||[], results:results||[]})); } catch(e) {}
+}
+
 const B = {
   bg:"#F8FAFC", card:"#FFFFFF", cardAlt:"#F1F5F9",
   ink:"#0F172A", sub:"#334155", muted:"#64748B",
@@ -2649,6 +2685,9 @@ function App() {
           localStorage.setItem(KEY, JSON.stringify(current));
         } catch(e) {}
         setProfile({});
+        setVault([]);
+        setResults([]);
+        setUserDataHydrated(false);
       }
     });
     return function() { listener.data.subscription.unsubscribe(); };
@@ -2694,6 +2733,11 @@ function App() {
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
   const [results,setResults] = useState(stored.results||[]);
+  // Tracks whether user_data has been read from Supabase (or determined to
+  // be missing). Auto-save to Supabase is gated on this so an empty new
+  // browser/incognito state can't overwrite a fresh user's remote data
+  // during the load window.
+  const [userDataHydrated,setUserDataHydrated] = useState(false);
   const [profile,setProfile] = useState(stored.profile||{});
   const [sbCredits,setSbCredits]     = useState(null); // Supabase credits row (authoritative)
   // [TASK 1] Sync state for profile save: "idle" | "syncing" | "synced" | "failed"
@@ -2841,6 +2885,36 @@ function App() {
           save(stale);
         } catch(e) {}
       }
+    });
+
+    // Hydrate vault + results from the user_data table (or migrate any
+    // local-only data up if the remote row is missing). Paint the local
+    // cache first for instant display, then reconcile with the network.
+    var cachedUserData = loadCachedUserData(userId);
+    if (cachedUserData) {
+      if (Array.isArray(cachedUserData.vault))   setVault(cachedUserData.vault);
+      if (Array.isArray(cachedUserData.results)) setResults(cachedUserData.results);
+    }
+    loadUserDataFromSupabase(userId).then(function(row) {
+      if (row && (Array.isArray(row.vault) || Array.isArray(row.results))) {
+        // Supabase is authoritative when a row exists.
+        var nextVault   = Array.isArray(row.vault)   ? row.vault   : [];
+        var nextResults = Array.isArray(row.results) ? row.results : [];
+        setVault(nextVault);
+        setResults(nextResults);
+        saveCachedUserData(userId, nextVault, nextResults);
+      } else {
+        // No remote row yet — migrate any local-only data up so existing
+        // users don't lose what's already saved in their browser.
+        var localData    = load() || {};
+        var localVault   = Array.isArray(localData.vault)   ? localData.vault   : [];
+        var localResults = Array.isArray(localData.results) ? localData.results : [];
+        if (localVault.length || localResults.length) {
+          saveUserDataToSupabase(userId, localVault, localResults);
+          saveCachedUserData(userId, localVault, localResults);
+        }
+      }
+      setUserDataHydrated(true);
     });
 
   }, [session]);
@@ -3082,6 +3156,15 @@ function App() {
   useEffect(function(){
     save({platforms,niche,goal,formats,followers,vault,results,profile});
   },[platforms,niche,goal,formats,followers,vault,results,profile]);
+
+  // Persist vault + results to Supabase whenever they change. Gated on
+  // userDataHydrated so the empty initial state of an incognito browser
+  // can't overwrite a fresh user's remote data during the load window.
+  useEffect(function() {
+    if (!session || !userDataHydrated) return;
+    saveUserDataToSupabase(session.user.id, vault, results);
+    saveCachedUserData(session.user.id, vault, results);
+  }, [vault, results, session, userDataHydrated]);
 
   const profileCtx = profile.name
     ? "Creator: "+profile.name+"."
