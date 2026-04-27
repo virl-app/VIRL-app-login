@@ -168,6 +168,35 @@ function saveCachedSbCredits(userId, row) {
   try { localStorage.setItem(cachedSbCreditsKey(userId), JSON.stringify(row)); } catch(e) {}
 }
 
+// Plans table: one row per user. Cards + stats persist for the week so a
+// refresh on any device lands the user back on their current plan rather
+// than the empty profile screen. Helpers fail open — if the table isn't
+// provisioned yet, the app silently falls back to localStorage-only.
+async function loadPlanFromSupabase(userId) {
+  try {
+    const { data, error } = await supabaseClient
+      .from("plans").select("cards,stats,expires_at").eq("user_id", userId).maybeSingle();
+    if (error || !data) return null;
+    return data;
+  } catch(e) { return null; }
+}
+async function savePlanToSupabase(userId, cards, stats, expiresAt) {
+  try {
+    const { error } = await supabaseClient.from("plans").upsert({
+      user_id: userId,
+      cards: cards,
+      stats: stats || null,
+      expires_at: new Date(expiresAt).toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    if (error) { console.error("Plan save error:", error.message); return false; }
+    return true;
+  } catch(e) { return false; }
+}
+async function deletePlanFromSupabase(userId) {
+  try { await supabaseClient.from("plans").delete().eq("user_id", userId); } catch(e) {}
+}
+
 const B = {
   bg:"#F8FAFC", card:"#FFFFFF", cardAlt:"#F1F5F9",
   ink:"#0F172A", sub:"#334155", muted:"#64748B",
@@ -423,7 +452,16 @@ const WEEKLY_CREDITS = 20;
 const CREDIT_COSTS = {plan:3, script:2, caption:1, scan:2, regen:1};
 
 const load = () => { try { return JSON.parse(localStorage.getItem(KEY)||"{}"); } catch(e) { return {}; } };
-const save = (d) => { try { localStorage.setItem(KEY,JSON.stringify(d)); } catch(e) {} };
+// Merge into the existing object instead of overwriting: plan/planStats/
+// planExpiresAt are written by a separate effect, so a full overwrite here
+// (when only platforms/profile/etc change) would wipe the active plan from
+// localStorage and force a re-fetch on the next refresh.
+const save = (d) => {
+  try {
+    const current = JSON.parse(localStorage.getItem(KEY)||"{}");
+    localStorage.setItem(KEY, JSON.stringify(Object.assign({}, current, d)));
+  } catch(e) {}
+};
 
 // [TASK 1] Wipe all per-user localStorage on sign-out so the next user signing in
 // on the same browser doesn't inherit profile/credits/onboarding flags. Browser-level
@@ -683,10 +721,17 @@ function SharePlanCard({card}) {
   );
 }
 
-function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed}) {
-  const [script,setScript] = useState(null);
+function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScript}) {
+  // If a script was previously saved on this card, show it instead of
+  // burning credits to regenerate. The user can still hit Regenerate.
+  const initialSaved = card && card.savedScript ? card.savedScript : null;
+  const [script,setScript] = useState(initialSaved);
   const [loading,setLoading] = useState(false);
   const [error,setError] = useState("");
+  // Tracks whether the script currently shown matches what's on the card.
+  // Starts true if we opened with a saved script; flips false when the user
+  // regenerates and back true when they save the new one.
+  const [savedOnCard,setSavedOnCard] = useState(!!initialSaved);
 
   const platformGuide = {
     YouTube:"long-form YouTube video 8-15 minutes. Include intro hook, 4-5 sections with timestamps, CTA to subscribe.",
@@ -713,6 +758,7 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed}) {
       const parsed = extractJSON(text);
       if (parsed&&parsed.hook) {
         setScript(parsed);
+        setSavedOnCard(false);
         if (onCreditsUsed) onCreditsUsed({cost: CREDIT_COSTS.script});
       }
       else { setError("Script generation takes a moment - tap Try Again."); }
@@ -753,7 +799,8 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed}) {
     setTimeout(function(){URL.revokeObjectURL(url);},100);
   }
 
-  useEffect(function(){generate();},[]);
+  // Only auto-generate on open when there's no saved script for this card.
+  useEffect(function(){ if (!initialSaved) generate(); },[]);
 
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.85)",zIndex:200,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"20px 16px",overflowY:"auto"}}>
@@ -814,6 +861,13 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed}) {
                   </div>
                 </div>
               )}
+              {onSaveScript&&(
+                <button onClick={function(){ onSaveScript(script); setSavedOnCard(true); }}
+                  disabled={savedOnCard}
+                  style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:savedOnCard?B.greenSoft:B.green,color:savedOnCard?B.green:B.white,border:"none",cursor:savedOnCard?"default":"pointer",borderRadius:14,marginBottom:8}}>
+                  {savedOnCard?"Saved to this card":"Save script to card"}
+                </button>
+              )}
               <div style={{display:"flex",gap:8,marginBottom:8}}>
                 <button onClick={copyScript}
                   style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.ink,color:B.white,border:"none",cursor:"pointer",borderRadius:14}}>
@@ -850,7 +904,7 @@ const MTag = ({type,children}) => {
   return <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"3px 10px",borderRadius:99,...s}}>{children}</span>;
 };
 
-function PlanCard({card,idx,onSave,onLog,saved,result,profile,userToken,onCreditsUsed}) {
+function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userToken,onCreditsUsed}) {
   const bl = card.priority==="HIGH"?B.navy:card.priority==="MED"?B.blue:B.border;
   const [showLog,setShowLog] = useState(false);
   const [showScript,setShowScript] = useState(false);
@@ -858,15 +912,17 @@ function PlanCard({card,idx,onSave,onLog,saved,result,profile,userToken,onCredit
   const [likes,setLikes] = useState((result&&result.likes)||"");
   const [saves2,setSaves2] = useState((result&&result.saves)||"");
   const reminder = "VIRL "+card.day+": "+card.title+" - Post at "+card.postTime+" on "+card.platform;
+  const hasSavedScript = !!card.savedScript;
 
   function saveResults() { onLog(card,{views,likes,saves:saves2}); setShowLog(false); }
 
   return (
     <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:"3px solid "+bl,padding:"20px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s"}}>
-      {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>}
+      {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:10}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.28em",textTransform:"uppercase",color:B.muted}}>{card.day}</div>
         <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {hasSavedScript&&<MTag type="result">Script saved</MTag>}
           {result&&<MTag type="result">Logged</MTag>}
           <PBadge p={card.priority}/>
         </div>
@@ -2598,7 +2654,16 @@ function App() {
 
   // ── App data state ──────────────────────────────────────────────────────
   const stored = load();
-  const [tab,setTab] = useState("profile");
+  // Land on the plan tab when a current plan exists in the local cache, so
+  // refreshes don't bounce the user back to the profile screen. Cross-device
+  // hydration runs in a useEffect below and will switch to "plan" once the
+  // Supabase row arrives, even if the local cache is empty.
+  const [tab,setTab] = useState(function() {
+    try {
+      if (stored.plan && stored.planExpiresAt && Date.now() < stored.planExpiresAt) return "plan";
+    } catch(e) {}
+    return "profile";
+  });
   const [platforms,setPlatforms] = useState(stored.platforms||["TikTok","Instagram"]);
   const [niche,setNiche] = useState(stored.niche||"Lifestyle");
   const [goal,setGoal] = useState(stored.goal||"Grow my following");
@@ -2661,7 +2726,10 @@ function App() {
   const [foundingCount,setFoundingCount] = useState(null);
   var foundingAvailable = (foundingCount === null) || (foundingCount < FOUNDING_CAP);
 
-  // Clear expired plan on mount — plans reset with the credit week
+  // Clear expired plan on mount — plans reset with the credit week.
+  // Only touches the local cache here; the Supabase row is reconciled in the
+  // session-load effect below (so a fresh server-side plan isn't accidentally
+  // deleted before the cross-device hydrate fetch resolves).
   useEffect(function() {
     try {
       var currentStored = JSON.parse(localStorage.getItem(KEY)||"{}");
@@ -2739,6 +2807,37 @@ function App() {
       if (row) {
         setSbCredits(row);
         saveCachedSbCredits(userId, row);
+      }
+    });
+    // Hydrate the user's current plan from Supabase so it's available across
+    // devices and on a fresh browser. Supabase is authoritative once the
+    // session is up: a fresh row hydrates state and the local cache; an
+    // expired row is cleaned from both. A missing row leaves the local cache
+    // alone (could be a never-generated user, or one whose plan was just
+    // cleared elsewhere).
+    loadPlanFromSupabase(userId).then(function(row) {
+      if (!row || !row.cards || !row.expires_at) return;
+      var expiresAt = new Date(row.expires_at).getTime();
+      if (expiresAt > Date.now()) {
+        setCards(row.cards);
+        if (row.stats) setStats(row.stats);
+        setTab(function(t) { return t === "profile" ? "plan" : t; });
+        try {
+          var current = load() || {};
+          current.plan = row.cards;
+          current.planStats = row.stats || null;
+          current.planExpiresAt = expiresAt;
+          save(current);
+        } catch(e) {}
+      } else {
+        deletePlanFromSupabase(userId);
+        setCards(null);
+        setStats(null);
+        try {
+          var stale = load() || {};
+          delete stale.plan; delete stale.planStats; delete stale.planExpiresAt;
+          save(stale);
+        } catch(e) {}
       }
     });
 
@@ -3080,13 +3179,15 @@ function App() {
             setStats(parsedStats);
           }
         }
+        var planExpiresAt = getNextMonday();
         try {
           var current = JSON.parse(localStorage.getItem(KEY)||"{}");
           current.plan = parsed;
           current.planStats = parsedStats;
-          current.planExpiresAt = getNextMonday();
+          current.planExpiresAt = planExpiresAt;
           localStorage.setItem(KEY, JSON.stringify(current));
         } catch(e){}
+        if (session) savePlanToSupabase(session.user.id, parsed, parsedStats, planExpiresAt);
       } else { setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers."); }
     }).then(function(){
       // Refresh credits from Supabase after successful generation. Pass the
@@ -3130,6 +3231,28 @@ function App() {
       return r.concat([entry]);
     });
 
+  }
+
+  // Attach a generated script to its plan card so it stays tagged across
+  // refreshes and devices. Pass `null` to clear. Persists alongside the plan
+  // (Supabase + localStorage) using the existing weekly expiry.
+  function saveScriptForCard(cardIdx, script) {
+    setCards(function(prev) {
+      if (!prev || !Array.isArray(prev) || cardIdx < 0 || cardIdx >= prev.length) return prev;
+      var next = prev.slice();
+      next[cardIdx] = Object.assign({}, prev[cardIdx], { savedScript: script });
+      var expiresAt;
+      try {
+        var current = JSON.parse(localStorage.getItem(KEY)||"{}");
+        expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
+          ? current.planExpiresAt : getNextMonday();
+        current.plan = next;
+        current.planExpiresAt = expiresAt;
+        localStorage.setItem(KEY, JSON.stringify(current));
+      } catch(e) { expiresAt = getNextMonday(); }
+      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt);
+      return next;
+    });
   }
   function dismissExplainer() {
     setHasSeenExplainer(true);
@@ -3814,6 +3937,7 @@ return (
                   acc.push(
                     <PlanCard key={i} card={card} idx={i}
                       onSave={saveToVault} onLog={logResult}
+                      onSaveScript={saveScriptForCard}
                       saved={vault.some(function(v){return v.id===card.title+card.day;})}
                       result={results.find(function(r){return r.id===card.title+card.day;})}
                       profile={profile}
