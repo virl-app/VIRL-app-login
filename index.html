@@ -449,6 +449,8 @@ function extractJSON(text) {
 
 const KEY = "virl_v5";
 const WEEKLY_CREDITS = 20;
+// Free trial length in days. Mirrored in api/chat.js — keep in sync.
+const TRIAL_DAYS = 14;
 const CREDIT_COSTS = {plan:3, script:2, caption:1, scan:2, regen:1};
 
 const load = () => { try { return JSON.parse(localStorage.getItem(KEY)||"{}"); } catch(e) { return {}; } };
@@ -3023,15 +3025,21 @@ function App() {
     setShowDeleteConfirm(false);
   }
 
-  // Calculate trial status — only after Supabase credits have loaded
-  // This prevents a flash where sbPlan defaults to "free" before Supabase responds,
-  // causing trial expiry to incorrectly fire for founding/pro users.
+  // Calculate trial status only after Supabase credits have loaded — until
+  // then `isFoundingOrPro` defaults to false and would briefly fire trial
+  // expiry on real Pro users. If created_at is missing or unparseable we
+  // fail open client-side (treat as in-trial); the API still enforces the
+  // cap when it can read the auth row.
   var trialExpired = false;
   var daysIntoTrial = 0;
-  if (session && !isFoundingOrPro) {
-    var signupDate = new Date(session.user.created_at);
-    daysIntoTrial = Math.floor((Date.now() - signupDate.getTime()) / 86400000);
-    trialExpired = daysIntoTrial >= 14;
+  if (session && creditsLoaded && !isFoundingOrPro) {
+    var signupMs = Date.parse(session.user.created_at);
+    if (!isNaN(signupMs)) {
+      daysIntoTrial = Math.floor((Date.now() - signupMs) / 86400000);
+      trialExpired = daysIntoTrial >= TRIAL_DAYS;
+    } else {
+      console.warn("VIRL: missing or invalid session.user.created_at — trial enforcement deferred to server");
+    }
   }
 
   // Show low-credit banner when 5 or fewer remain (not expired, not pro)
@@ -3042,7 +3050,7 @@ function App() {
   var upgradeCtaText = daysIntoTrial <= 7
     ? "Upgrade anytime — 150 credits/week"
     : daysIntoTrial <= 11
-      ? (14 - daysIntoTrial) + " days left — don't lose your plans"
+      ? (TRIAL_DAYS - daysIntoTrial) + " days left — don't lose your plans"
       : "Last chance — lock in founding rate";
 
   // [TASK 13] Sunday nudge — when it's Sunday and the current plan still has
@@ -3324,7 +3332,7 @@ return (
               </button>
             </div>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:16}}>
-              {"You have 14 days and 20 credits per week - free, no card needed."}
+              {"You have "+TRIAL_DAYS+" days and "+WEEKLY_CREDITS+" credits per week - free, no card needed."}
             </div>
           </div>
         </div>
@@ -3486,14 +3494,14 @@ return (
           );})}
         </div>
         <div style={{padding:"14px 16px",borderTop:"1px solid rgba(255,255,255,0.08)"}}>
-          {!isFoundingOrPro&&!trialExpired&&daysIntoTrial<14&&(
+          {!isFoundingOrPro&&!trialExpired&&daysIntoTrial<TRIAL_DAYS&&(
             <div style={{background:"rgba(255,255,255,0.06)",borderRadius:8,padding:"8px 10px",marginBottom:10}}>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:3}}>Free trial</div>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.6)"}}>
-                {(14-daysIntoTrial)+" day"+(14-daysIntoTrial===1?"":"s")+" remaining"}
+                {(TRIAL_DAYS-daysIntoTrial)+" day"+(TRIAL_DAYS-daysIntoTrial===1?"":"s")+" remaining"}
               </div>
               <div style={{background:"rgba(255,255,255,0.1)",borderRadius:99,height:3,marginTop:6}}>
-                <div style={{background:14-daysIntoTrial<=3?B.coral:B.sky,height:3,borderRadius:99,width:(daysIntoTrial/14*100)+"%",transition:"width .3s"}}/>
+                <div style={{background:TRIAL_DAYS-daysIntoTrial<=3?B.coral:B.sky,height:3,borderRadius:99,width:(daysIntoTrial/TRIAL_DAYS*100)+"%",transition:"width .3s"}}/>
               </div>
             </div>
           )}
@@ -3566,7 +3574,7 @@ return (
         {/* [TASK 7] Trial countdown banner — layered urgency for days 11-13 of
             the 14-day trial. Dismissal is per-session via sessionStorage, so
             the banner reappears the next time the user opens the app. */}
-        {!isFoundingOrPro&&!trialExpired&&daysIntoTrial>=11&&daysIntoTrial<14&&!trialBannerDismissed&&(
+        {!isFoundingOrPro&&!trialExpired&&daysIntoTrial>=11&&daysIntoTrial<TRIAL_DAYS&&!trialBannerDismissed&&(
           <div style={{background:B.coralSoft,borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:12}}>
             <div style={{flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",fontSize:13,color:B.coral,lineHeight:1.5}}>
               {daysIntoTrial===11&&(<span><span style={{fontWeight:700}}>3 days left</span> in your free trial</span>)}
