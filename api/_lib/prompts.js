@@ -17,6 +17,98 @@ export const ALLOWED_MODELS  = [MODEL_SONNET, MODEL_HAIKU];
 // ── Credit costs (server is the source of truth) ──────────────────────────
 export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1 };
 
+// ── Playbook helpers ──────────────────────────────────────────────────────
+// `playbook` is a map keyed by platform: { TikTok: {cadence, peak_times, ...} }.
+// Loaded by api/chat.js via loadPlaybook() and threaded into every builder.
+// The helpers below render the relevant slice for each generation type into
+// a compact, LLM-friendly block.
+function arr(v) { return Array.isArray(v) ? v : []; }
+
+function platformPlaybookBlock(entry) {
+  if (!entry) return "";
+  const lines = [];
+  if (entry.cadence)         lines.push("  Cadence: "         + entry.cadence);
+  if (entry.peak_times)      lines.push("  Peak times: "      + entry.peak_times);
+  if (entry.duration)        lines.push("  Duration: "        + entry.duration);
+  if (entry.hook_window)     lines.push("  Hook window: "     + entry.hook_window);
+  if (entry.hashtag_count)   lines.push("  Hashtags: "        + entry.hashtag_count + (entry.hashtag_mix ? " (" + entry.hashtag_mix + ")" : ""));
+  if (entry.caption_limit)   lines.push("  Caption limit: "   + entry.caption_limit + " chars");
+  if (arr(entry.top_signals).length)     lines.push("  Top signals: "     + entry.top_signals.join(", "));
+  if (arr(entry.format_priority).length) lines.push("  Format priority: " + entry.format_priority.join(", "));
+  if (entry.notes)           lines.push("  Notes: "           + entry.notes);
+  return lines.join("\n");
+}
+
+function planPlaybookContext(playbook, selectedPlatforms) {
+  if (!playbook || !selectedPlatforms || !selectedPlatforms.length) return "";
+  const blocks = [];
+  for (const p of selectedPlatforms) {
+    const entry = playbook[p];
+    if (!entry) continue;
+    const block = platformPlaybookBlock(entry);
+    if (block) blocks.push("PLATFORM PLAYBOOK FOR " + p + ":\n" + block);
+  }
+  if (!blocks.length) return "";
+  return "\n\nFollow these per-platform rules when picking post counts, posting times, hashtag counts, formats, and what each post optimises for:\n\n" + blocks.join("\n\n");
+}
+
+function scriptPlaybookContext(playbook, platform) {
+  const entry = playbook && playbook[platform];
+  if (!entry) return "";
+  const lines = [];
+  if (entry.duration)    lines.push("Duration: "    + entry.duration);
+  if (entry.hook_window) lines.push("Hook window: " + entry.hook_window);
+  if (arr(entry.top_signals).length)     lines.push("Optimise for these signals: " + entry.top_signals.join(", "));
+  if (arr(entry.format_priority).length) lines.push("Preferred formats: "          + entry.format_priority.join(", "));
+  if (!lines.length) return "";
+  return " " + platform.toUpperCase() + " PLAYBOOK: " + lines.join(" | ") + ".";
+}
+
+function captionPlaybookContext(playbook, platform) {
+  const entry = playbook && playbook[platform];
+  if (!entry) return "";
+  const lines = [];
+  if (entry.caption_limit)             lines.push("hard caption character limit " + entry.caption_limit);
+  if (entry.hashtag_count)             lines.push(entry.hashtag_count + " hashtags" + (entry.hashtag_mix ? " (" + entry.hashtag_mix + ")" : ""));
+  if (arr(entry.top_signals).length)   lines.push("optimise for " + entry.top_signals.join(", "));
+  if (!lines.length) return "";
+  return " " + platform.toUpperCase() + " PLAYBOOK: " + lines.join("; ") + ".";
+}
+
+function scanPlaybookContext(playbook) {
+  if (!playbook) return "";
+  const platforms = Object.keys(playbook);
+  if (!platforms.length) return "";
+  const lines = [];
+  for (const p of platforms) {
+    const entry = playbook[p];
+    if (!entry) continue;
+    const signals = arr(entry.top_signals).join(", ");
+    const formats = arr(entry.format_priority).join(", ");
+    lines.push("- " + p + ": rewards " + (signals || "engagement") + (formats ? "; favours " + formats : "") + ".");
+  }
+  return "\n\nPLATFORM SIGNALS (use to inform your best-platform recommendation):\n" + lines.join("\n");
+}
+
+// Hashtag count for the prompt's JSON schema. Falls back to a sensible
+// default when the playbook entry isn't present. Range strings like "3-5"
+// resolve to the upper bound so the model has enough hashtags to pick from.
+function hashtagSlots(playbook, platform, fallback) {
+  const entry = playbook && playbook[platform];
+  if (!entry || !entry.hashtag_count) return fallback;
+  const matches = String(entry.hashtag_count).match(/(\d+)/g);
+  if (!matches || !matches.length) return fallback;
+  const upper = parseInt(matches[matches.length - 1], 10);
+  if (Number.isNaN(upper)) return fallback;
+  return Math.max(1, Math.min(15, upper));
+}
+
+function hashtagSchema(slots) {
+  const tags = [];
+  for (let i = 1; i <= slots; i++) tags.push('"tag' + i + '"');
+  return "[" + tags.join(",") + "]";
+}
+
 // ── Internal lookup tables (kept server-side) ─────────────────────────────
 const PLATFORM_TONE = {
   TikTok:    "Short, punchy, conversational. Hook in first line. Emojis natural. End with question or CTA.",
@@ -116,8 +208,9 @@ function buildSystemPrompt(profile, role) {
 
 // ── Builders, one per generation type ──────────────────────────────────────
 
-function buildPlan(params, profile, vaultPatterns) {
-  const platforms = (params.platforms || []).join(",");
+function buildPlan(params, profile, vaultPatterns, playbook) {
+  const platformsArr = params.platforms || [];
+  const platforms = platformsArr.join(",");
   const formats   = (params.formats   || []).join(",");
   const niche     = params.niche     || "";
   const goal      = params.goal      || "";
@@ -125,6 +218,7 @@ function buildPlan(params, profile, vaultPatterns) {
   const trending  = params.trending  || "";
   const context   = params.context   || "";
   const isRegen   = !!params.isRegen;
+  const playbookCtx = planPlaybookContext(playbook, platformsArr);
 
   // Vault patterns: server-derived from the user's user_data row, so the
   // client never has to disclose its vault on every plan generation.
@@ -154,9 +248,12 @@ function buildPlan(params, profile, vaultPatterns) {
     + " formats=" + formats + " followers=" + followers
     + (trending ? " TRENDING THIS WEEK - incorporate these where natural: " + trending : "")
     + (context  ? " Extra context: " + context : "")
-    + " Create 10-14 total posts (1-3 per day). Spread across ALL selected platforms. Vary posting times realistically. For each post: description is 2 punchy sentences max. Include a why field — one sentence on the strategic reason this post will perform well for this creator's specific audience."
-    + " Return ONLY a JSON array of 10-14 objects: [{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\",\"tag6\"]}]"
-    + " Multiple objects can share the same day. After the JSON array write: STATS reach=45000 rate=6.2 earn=$120-$400";
+    + " Create 10-14 total posts. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + " For each post: description is 2 punchy sentences max. Include a why field — one sentence on the strategic reason this post will perform well for this creator's specific audience, citing the platform signal it optimises for."
+    + " Return ONLY a JSON array of 10-14 objects: [{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}]"
+    + " Hashtags array length per post should match the target platform's hashtag_count (range upper bound)."
+    + " Multiple objects can share the same day. After the JSON array write: STATS reach=45000 rate=6.2 earn=$120-$400"
+    + playbookCtx;
 
   return {
     systemPrompt,
@@ -167,35 +264,39 @@ function buildPlan(params, profile, vaultPatterns) {
   };
 }
 
-function buildScript(params, profile) {
+function buildScript(params, profile, _vaultPatterns, playbook) {
   const card = params.card || {};
-  const guide = SCRIPT_PLATFORM_GUIDE[card.platform] || "short-form social video 60 seconds.";
+  const platform = card.platform || "TikTok";
+  const guide = SCRIPT_PLATFORM_GUIDE[platform] || "short-form social video 60 seconds.";
   const systemPrompt = buildSystemPrompt(profile, "content scriptwriter");
   const userPrompt = "Write a complete ready-to-film script for this post: " + (card.title || "") + ". "
-    + "Platform: " + (card.platform || "TikTok") + " — format guide: " + guide + " "
+    + "Platform: " + platform + " — format guide: " + guide
+    + scriptPlaybookContext(playbook, platform) + " "
     + "Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences in creator voice\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script in creator voice\",\"tip\":\"one filming tip\"}],\"cta\":\"closing call to action in creator voice\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe that matches creator aesthetic\"}";
   return {
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    maxTokens: SCRIPT_TOKEN_MAP[card.platform] || 1000,
+    maxTokens: SCRIPT_TOKEN_MAP[platform] || 1000,
     cost:      CREDIT_COSTS.script,
   };
 }
 
-function buildCaption(params, profile) {
+function buildCaption(params, profile, _vaultPatterns, playbook) {
   const platform = params.platform || "TikTok";
   const tone     = params.tone     || "Warm & relatable";
   const length   = params.length   || "Medium";
   const topic    = (params.topic   || "").trim();
   const lengthRule = CAPTION_LENGTH_GUIDE[length] || CAPTION_LENGTH_GUIDE.Medium;
   const platformCtx = PLATFORM_TONE[platform] || "";
+  const slots = hashtagSlots(playbook, platform, 7);
 
   const systemPrompt = buildSystemPrompt(profile, "caption writer and content strategist");
   const userPrompt = "Generate 3 caption options for a " + platform + " post about: " + topic + ". "
     + "Tone: " + tone + ". Length: " + length + " — " + lengthRule + " "
-    + "Platform style: " + platformCtx + " "
-    + "Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\",\"tag6\",\"tag7\"]}";
+    + "Platform style: " + platformCtx
+    + captionPlaybookContext(playbook, platform) + " "
+    + "Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":" + hashtagSchema(slots) + "}";
   return {
     systemPrompt,
     userPrompt,
@@ -221,17 +322,18 @@ function buildCaptionRemix(params, profile) {
   };
 }
 
-function buildScanImage(params, profile) {
+function buildScanImage(params, profile, _vaultPatterns, playbook) {
   const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
-  const userPrompt = "Analyze this image for social media viral potential. "
-    + "Reply ONLY with valid JSON (no markdown): "
+  const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
+    + scanPlaybookContext(playbook)
+    + "\n\nReply ONLY with valid JSON (no markdown): "
     + "{\"score\":\"X.X out of 10\","
     + "\"platform\":\"best platform\","
     + "\"hook\":\"scroll-stopping opening line under 10 words\","
-    + "\"caption\":\"full ready-to-post caption\","
+    + "\"caption\":\"full ready-to-post caption sized to the platform's caption_limit\","
     + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],"
-    + "\"tip\":\"one specific tip to maximize this post\","
-    + "\"analysis\":\"2 sentences on why this will perform\"}";
+    + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
+    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\"}";
   return {
     systemPrompt,
     userPrompt,
@@ -241,17 +343,18 @@ function buildScanImage(params, profile) {
   };
 }
 
-function buildScanVideoFrame(params, profile) {
+function buildScanVideoFrame(params, profile, _vaultPatterns, playbook) {
   const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
-  const userPrompt = "Analyze this video frame for social media viral potential. "
-    + "Reply ONLY with valid JSON (no markdown): "
+  const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
+    + scanPlaybookContext(playbook)
+    + "\n\nReply ONLY with valid JSON (no markdown): "
     + "{\"score\":\"X.X out of 10\","
     + "\"platform\":\"best platform\","
     + "\"hook\":\"scroll-stopping opening line under 10 words\","
-    + "\"caption\":\"full ready-to-post caption\","
+    + "\"caption\":\"full ready-to-post caption sized to the platform's caption_limit\","
     + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],"
-    + "\"tip\":\"one specific tip to maximize this post\","
-    + "\"analysis\":\"2 sentences on why this will perform\","
+    + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
+    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\","
     + "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
   return {
     systemPrompt,
@@ -280,9 +383,11 @@ export function requiresImage(t) {
 }
 
 // Top-level entry. Returns { systemPrompt, userPrompt, model, maxTokens, cost }
-// or throws on unknown type.
-export function dispatch(generationType, params, profile, vaultPatterns) {
+// or throws on unknown type. `playbook` is the platform → entry map from
+// loadPlaybook(); pass an empty {} when unavailable and the builders skip
+// playbook injection gracefully.
+export function dispatch(generationType, params, profile, vaultPatterns, playbook) {
   const builder = BUILDERS[generationType];
   if (!builder) throw new Error("Unknown generationType: " + generationType);
-  return builder(params || {}, profile || {}, vaultPatterns);
+  return builder(params || {}, profile || {}, vaultPatterns, playbook || {});
 }
