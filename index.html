@@ -284,68 +284,156 @@ const EMOJI_PREFS = ["Never","Sometimes","Always"];
 const POST_FREQ = ["Daily","A few times a week","Weekly","Sporadically"];
 const CONTENT_LENGTH = ["Short & punchy","Medium - balanced","Long-form & detailed"];
 
-const ALGO_TIPS = {
-  TikTok:[
-    {tip:"Post 1-4x per day. Consistency beats quality in the early growth phase.", icon:"📅"},
-    {tip:"The first 0.5 seconds decide everything. Lead with motion, text, or a surprising visual.", icon:"⚡"},
-    {tip:"7-second watch time signals the algorithm to push. Design your hook to get them past 7 seconds.", icon:"⏱"},
-    {tip:"Videos between 21-34 seconds get the highest completion rates on average.", icon:"📏"},
-    {tip:"Reply to every comment in the first hour. Engagement velocity is a major ranking signal.", icon:"💬"},
-    {tip:"Use 3-5 hashtags max. Mix one broad (#fitness), one niche (#homegymworkout), one trending.", icon:"#"},
-    {tip:"Repost your best content 2-4 weeks later. TikTok shows it to a new audience each time.", icon:"🔄"},
-  ],
-  Instagram:[
-    {tip:"Reels get 3x more reach than carousels or static posts. Lead with Reels for growth.", icon:"🎬"},
-    {tip:"Post 4-7 Reels per week for growth phase. 3-4 for maintenance.", icon:"📅"},
-    {tip:"The first frame of your Reel is your thumbnail - treat it like a billboard.", icon:"🖼"},
-    {tip:"Carousels average 3x more saves than single images. Saves are the highest-value engagement signal.", icon:"🔖"},
-    {tip:"Stories daily keeps you top of mind without affecting feed algorithm.", icon:"⭕"},
-    {tip:"Captions under 138 characters show in full without a 'more' tap. Keep hooks short.", icon:"📏"},
-    {tip:"Post within 2 hours of your audience's peak activity. Check Insights > Audience > Most Active Times.", icon:"⏰"},
-  ],
-  LinkedIn:[
-    {tip:"Text-only posts consistently outperform posts with links or images on LinkedIn.", icon:"📝"},
-    {tip:"Post 3-5x per week. More than that and engagement per post drops sharply.", icon:"📅"},
-    {tip:"The algorithm hides external links. Put your link in the first comment, not the post.", icon:"🔗"},
-    {tip:"Posts that get 10+ comments in the first hour get pushed to second-degree connections.", icon:"💬"},
-    {tip:"Tuesday, Wednesday, Thursday 8-10am are peak times. Avoid weekends.", icon:"⏰"},
-    {tip:"Start with a one-line hook that creates a gap: 'I made a mistake that cost me $50K. Here is what I learned.'", icon:"⚡"},
-    {tip:"End every post with a direct question. Questions drive comments. Comments drive reach.", icon:"❓"},
-  ],
-  YouTube:[
-    {tip:"Click-through rate (CTR) is the #1 ranking signal. Invest 30% of your time in thumbnails and titles.", icon:"🖼"},
-    {tip:"The first 30 seconds of your video determine if people stay. No slow intros.", icon:"⚡"},
-    {tip:"Videos over 8 minutes allow mid-roll ads and get algorithmic preference.", icon:"📏"},
-    {tip:"Upload 1-2x per week consistently for 90 days before expecting algorithmic traction.", icon:"📅"},
-    {tip:"End screen + pinned comment with a question = more watch time signals.", icon:"💬"},
-    {tip:"'This video is for people who...' in the first line of your description helps YouTube categorize you.", icon:"📋"},
-    {tip:"Chapters (timestamps in description) increase average view duration by reducing drop-off.", icon:"🗂"},
-  ],
-  Facebook:[
-    {tip:"Native video gets 10x more organic reach than shared YouTube links.", icon:"🎬"},
-    {tip:"Posts with questions get 100% more comments. Comments are the highest-value signal on Facebook.", icon:"💬"},
-    {tip:"The sweet spot for Facebook video length is 3-5 minutes - long enough for engagement, short enough to watch.", icon:"📏"},
-    {tip:"1pm-3pm and 7pm-9pm are peak engagement windows on weekdays.", icon:"⏰"},
-    {tip:"Facebook Groups outperform Pages for organic reach. Engage in groups before promoting.", icon:"👥"},
-    {tip:"Subtitles increase video views by 12% - most Facebook video is watched on mute.", icon:"🔇"},
-  ],
-  X:[
-    {tip:"Tweet threads get 6x more engagement than single tweets on average.", icon:"🧵"},
-    {tip:"Post 3-5x per day for growth. X rewards volume more than any other platform.", icon:"📅"},
-    {tip:"Replies to large accounts drive significant follower growth. Add value, don't just agree.", icon:"💬"},
-    {tip:"Images increase retweet rate by 150%. Use them even for text-heavy content.", icon:"🖼"},
-    {tip:"Avoid external links in tweets - they suppress reach. Put links in replies instead.", icon:"🔗"},
-    {tip:"9am-11am EST and 6pm-9pm EST are peak engagement windows.", icon:"⏰"},
-  ],
-  Pinterest:[
-    {tip:"Pinterest is a search engine. Put your keyword in the first 100 characters of every description.", icon:"🔍"},
-    {tip:"Vertical pins (2:3 ratio, 1000x1500px) get 60% more repins than square pins.", icon:"📐"},
-    {tip:"Pin 10-25 times per day across multiple boards. Scheduling tools are essential here.", icon:"📅"},
-    {tip:"Fresh Pins (new images, not repins) get priority in the algorithm since 2021.", icon:"✨"},
-    {tip:"Idea Pins (video) are Pinterest's TikTok push - they get dramatically more reach right now.", icon:"🎬"},
-    {tip:"Add text overlay to every pin. 60% of Pinterest users are influenced by text on the image.", icon:"📝"},
-  ]
-};
+// Algorithm playbook is now stored in Supabase (`playbook` table) so it's
+// editable without a code deploy and so server-side prompt builders can
+// inject the same data into every Anthropic call. The Algo tab below
+// fetches it on mount via loadPlaybook(); see api/_lib/playbook.js for the
+// server-side counterpart used during prompt construction.
+async function loadPlaybook() {
+  try {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/playbook?select=*", {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: "Bearer " + SUPABASE_ANON_KEY },
+    });
+    if (!res.ok) return {};
+    const rows = await res.json();
+    const byPlatform = {};
+    for (const r of rows) if (r && r.platform) byPlatform[r.platform] = r;
+    return byPlatform;
+  } catch (e) { return {}; }
+}
+
+// Field metadata used by the Algo-tab renderer (and admin editor) so the
+// server schema and the UI labels stay in lockstep.
+const PLAYBOOK_FIELDS = [
+  { key: "cadence",         label: "Cadence",         icon: "📅", kind: "text"   },
+  { key: "peak_times",      label: "Peak times",      icon: "⏰", kind: "text"   },
+  { key: "duration",        label: "Duration",        icon: "📏", kind: "text"   },
+  { key: "hook_window",     label: "Hook window",     icon: "⚡", kind: "text"   },
+  { key: "hashtag_count",   label: "Hashtags",        icon: "#",  kind: "text"   },
+  { key: "hashtag_mix",     label: "Hashtag mix",     icon: "✨", kind: "text"   },
+  { key: "caption_limit",   label: "Caption limit",   icon: "📝", kind: "number" },
+  { key: "top_signals",     label: "Top signals",     icon: "📊", kind: "list"   },
+  { key: "format_priority", label: "Format priority", icon: "🎬", kind: "list"   },
+  { key: "notes",           label: "Notes",           icon: "📋", kind: "text"   },
+];
+
+// Admin-only inline editor for one platform's playbook row. Saves through
+// /api/admin/playbook-update which whitelist-checks fields and verifies the
+// caller's bearer token belongs to the admin email. On success, refreshes
+// the parent's playbook map so the rest of the app sees the new values.
+function PlaybookEditor({platform, entry, token, onSaved}) {
+  const initial = entry || {platform: platform};
+  const toForm = function(e){
+    return PLAYBOOK_FIELDS.reduce(function(acc, f){
+      var v = e[f.key];
+      if (f.kind === "list" && Array.isArray(v)) acc[f.key] = v.join(", ");
+      else if (v === null || v === undefined) acc[f.key] = "";
+      else acc[f.key] = String(v);
+      return acc;
+    }, {});
+  };
+  const [form, setForm] = useState(toForm(initial));
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
+
+  function update(k, v) { setForm(Object.assign({}, form, {[k]: v})); }
+
+  function save() {
+    if (saving) return;
+    setSaving(true); setStatus("");
+    var payload = {platform: platform};
+    for (var i = 0; i < PLAYBOOK_FIELDS.length; i++) {
+      var f = PLAYBOOK_FIELDS[i];
+      var v = form[f.key];
+      if (f.kind === "list") {
+        payload[f.key] = (v || "").split(",").map(function(s){return s.trim();}).filter(Boolean);
+      } else if (f.kind === "number") {
+        var n = parseInt(v, 10);
+        payload[f.key] = Number.isNaN(n) ? null : n;
+      } else {
+        payload[f.key] = v || null;
+      }
+    }
+    fetch("/api/admin/playbook-update", {
+      method: "POST",
+      headers: {"Content-Type":"application/json", "Authorization":"Bearer "+token},
+      body: JSON.stringify(payload),
+    }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+      .then(function(res){
+        if (res.ok) { setStatus("Saved."); if (onSaved) onSaved(); }
+        else { setStatus("Error: " + (res.body && res.body.error || "save failed")); }
+      })
+      .catch(function(e){ setStatus("Error: " + e.message); })
+      .finally(function(){ setSaving(false); });
+  }
+
+  return (
+    <div style={{background:B.card,borderRadius:14,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+      <div style={{background:B.navy,padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white}}>{platform}</div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.sky}}>edit</div>
+      </div>
+      <div style={{padding:"14px 18px"}}>
+        {PLAYBOOK_FIELDS.map(function(f){
+          var multiline = f.key === "notes";
+          var commonStyle = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:8,padding:"8px 10px",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.ink};
+          return (
+            <div key={f.key} style={{marginBottom:10}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>
+                {f.icon} {f.label}{f.kind === "list" ? " (comma-separated)" : ""}
+              </div>
+              {multiline
+                ? <textarea value={form[f.key]||""} onChange={function(e){update(f.key, e.target.value);}} rows={3} style={Object.assign({}, commonStyle, {resize:"vertical"})}/>
+                : <input value={form[f.key]||""} onChange={function(e){update(f.key, e.target.value);}} style={commonStyle}/>}
+            </div>
+          );
+        })}
+        <div style={{display:"flex",alignItems:"center",gap:12,marginTop:6}}>
+          <button onClick={save} disabled={saving}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"9px 18px",background:saving?B.muted:B.navy,color:B.white,border:"none",borderRadius:99,cursor:saving?"default":"pointer"}}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+          {status && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:status.indexOf("Error") === 0 ? B.coral : B.green}}>{status}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Render one platform's playbook card. Pure presentation — no edit affordance.
+function PlaybookCard({platform, entry, blurred}) {
+  const fields = PLAYBOOK_FIELDS.filter(function(f){
+    var v = entry && entry[f.key];
+    if (Array.isArray(v)) return v.length > 0;
+    return v !== null && v !== undefined && v !== "";
+  });
+  return (
+    <div style={{background:B.card,borderRadius:14,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",opacity:blurred?0.6:1,position:"relative"}}>
+      <div style={{background:B.navy,padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white}}>{platform}</div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.sky}}>{fields.length+" signals"}</div>
+      </div>
+      <div style={{padding:"16px 18px",filter:blurred?"blur(3px)":"none",userSelect:blurred?"none":"auto",pointerEvents:blurred?"none":"auto"}}>
+        {fields.length === 0 && (
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,fontStyle:"italic"}}>Loading playbook…</div>
+        )}
+        {fields.map(function(f, i){
+          var v = entry[f.key];
+          var display = Array.isArray(v) ? v.join(", ") : (f.kind === "number" ? String(v) + " chars" : String(v));
+          return (
+            <div key={f.key} style={{display:"flex",gap:12,marginBottom:i<fields.length-1?14:0,paddingBottom:i<fields.length-1?14:0,borderBottom:i<fields.length-1?"1px solid "+B.divider:"none"}}>
+              <div style={{fontSize:18,flexShrink:0,marginTop:1}}>{f.icon}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:3}}>{f.label}</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65}}>{display}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 // Prompt templates, platform tone tables, and the system-prompt + profile-
 // context builders all live in api/_lib/prompts.js now (server-side). The
@@ -2639,6 +2727,14 @@ function App() {
   const [foundingCount,setFoundingCount] = useState(null);
   var foundingAvailable = (foundingCount === null) || (foundingCount < FOUNDING_CAP);
 
+  // Platform playbook (loaded from Supabase on mount). Empty {} until the
+  // network round-trip resolves; the Algo tab renders a thin "loading"
+  // empty state in the meantime.
+  const [playbook,setPlaybook] = useState({});
+  useEffect(function() {
+    loadPlaybook().then(function(map){ setPlaybook(map); });
+  }, []);
+
   // Clear expired plan on mount — plans reset with the credit week.
   // Only touches the local cache here; the Supabase row is reconciled in the
   // session-load effect below (so a fresh server-side plan isn't accidentally
@@ -4038,7 +4134,7 @@ return (
                 Beat the<br/><span style={{color:B.navy}}>algorithm.</span>
               </div>
               <div style={{fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75}}>
-                What the platforms actually reward - updated based on current algorithm behavior.
+                What the platforms actually reward — the same playbook VIRL injects into every plan, script, caption, and scan.
               </div>
             </div>
             {!isFoundingOrPro&&(
@@ -4048,34 +4144,10 @@ return (
                   <button onClick={function(){setUpgradeReason("algo");setShowUpgrade(true);}}
                     style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:B.white,background:B.navy,border:"none",borderRadius:99,padding:"6px 14px",cursor:"pointer"}}>Upgrade</button>
                 </div>
-                <div style={{background:B.card,borderRadius:14,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
-                  <div style={{background:B.navy,padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white}}>TikTok</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.sky}}>{(ALGO_TIPS.TikTok||[]).length+" tips"}</div>
-                  </div>
-                  <div style={{padding:"16px 18px"}}>
-                    {(ALGO_TIPS.TikTok||[]).map(function(t,i,arr){return (
-                      <div key={i} style={{display:"flex",gap:12,marginBottom:i<arr.length-1?14:0,paddingBottom:i<arr.length-1?14:0,borderBottom:i<arr.length-1?"1px solid "+B.divider:"none"}}>
-                        <div style={{fontSize:18,flexShrink:0,marginTop:1}}>{t.icon}</div>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65}}>{t.tip}</div>
-                      </div>
-                    );})}
-                  </div>
-                </div>
+                <PlaybookCard platform="TikTok" entry={playbook.TikTok} blurred={false}/>
                 {PLATFORMS.filter(function(p){return p!=="TikTok";}).map(function(platform){return (
-                  <div key={platform} style={{background:B.card,borderRadius:14,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",opacity:0.6,position:"relative"}}>
-                    <div style={{background:B.navy,padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white}}>{platform}</div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.sky,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase"}}>Standard</div>
-                    </div>
-                    <div style={{padding:"16px 18px",filter:"blur(3px)",userSelect:"none",pointerEvents:"none"}}>
-                      {(ALGO_TIPS[platform]||[]).slice(0,2).map(function(t,i){return (
-                        <div key={i} style={{display:"flex",gap:12,marginBottom:10}}>
-                          <div style={{fontSize:18,flexShrink:0}}>{t.icon}</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65}}>{t.tip}</div>
-                        </div>
-                      );})}
-                    </div>
+                  <div key={platform} style={{position:"relative"}}>
+                    <PlaybookCard platform={platform} entry={playbook[platform]} blurred={true}/>
                     <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(248,250,252,0.5)"}}>
                       <button onClick={function(){setUpgradeReason("algo");setShowUpgrade(true);}}
                         style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 20px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",boxShadow:"0 4px 12px rgba(31,58,138,0.3)"}}>
@@ -4089,28 +4161,12 @@ return (
             {isFoundingOrPro&&(
               <div>
                 {PLATFORMS.map(function(platform){
-                  var tips = ALGO_TIPS[platform]||[];
-                  if (!tips.length) return null;
-                  return (
-                    <div key={platform} style={{background:B.card,borderRadius:14,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
-                      <div style={{background:B.navy,padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white}}>{platform}</div>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.sky}}>{tips.length+" tips"}</div>
-                      </div>
-                      <div style={{padding:"16px 18px"}}>
-                        {tips.map(function(t,i){return (
-                          <div key={i} style={{display:"flex",gap:12,marginBottom:i<tips.length-1?14:0,paddingBottom:i<tips.length-1?14:0,borderBottom:i<tips.length-1?"1px solid "+B.divider:"none"}}>
-                            <div style={{fontSize:18,flexShrink:0,marginTop:1}}>{t.icon}</div>
-                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65}}>{t.tip}</div>
-                          </div>
-                        );})}
-                      </div>
-                    </div>
-                  );
+                  if (!playbook[platform]) return null;
+                  return <PlaybookCard key={platform} platform={platform} entry={playbook[platform]} blurred={false}/>;
                 })}
                 <div style={{background:B.navySoft,borderRadius:12,padding:"14px 18px",marginTop:8}}>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy,marginBottom:4}}>These tips are updated regularly</div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.6}}>Platform algorithms shift constantly. VIRL tracks what is actually working right now so your strategy stays ahead.</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy,marginBottom:4}}>The same intel powers every VIRL generation</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.6}}>Platforms shift constantly. Anything you see here is what VIRL is silently following when it builds a plan, writes a script, or scans a photo.</div>
                 </div>
               </div>
             )}
@@ -4268,6 +4324,25 @@ return (
                 </div>
               </div>
             )}
+
+            {/* Playbook editor — admin-only inline form for each platform.
+                Saves through /api/admin/playbook-update. Edits propagate
+                everywhere (Algo tab + every Anthropic prompt). */}
+            <div style={{marginTop:32,paddingTop:24,borderTop:"1px solid "+B.divider}}>
+              <Eyebrow>Platform Playbook</Eyebrow>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,marginBottom:8,lineHeight:1.2}}>The rules VIRL follows.</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:18}}>
+                Edits save instantly to Supabase and reach the LLM on the next generation. Lists are comma-separated.
+              </div>
+              {PLATFORMS.map(function(p){
+                return <PlaybookEditor key={p} platform={p} entry={playbook[p]} token={session ? session.access_token : ""}
+                         onSaved={function(){
+                           // Re-fetch the playbook so the rest of the app
+                           // (Algo tab card preview) sees the new values.
+                           loadPlaybook().then(function(map){ setPlaybook(map); });
+                         }}/>;
+              })}
+            </div>
           </div>
         )}
 
