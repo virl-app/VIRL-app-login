@@ -20,50 +20,64 @@ export default async function handler(req, res) {
   const selectedModel  = ALLOWED_MODELS.includes(model) ? model : 'claude-sonnet-4-6';
 
   // ── Credit check & deduction ───────────────────────────────────────────────
-  if (token && SUPABASE_URL && SUPABASE_SERVICE_KEY) {
-    try {
-      const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-        headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_SERVICE_KEY },
-      });
+  // Fail closed: every generation must be tied to an authenticated user so the
+  // weekly cap is enforced. Without this, a caller could bypass the limit by
+  // simply not sending a token (e.g. hitting the endpoint directly).
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    return res.status(500).json({ error: 'Server misconfigured.' });
+  }
+  if (!token) {
+    return res.status(401).json({ error: 'Sign in required.' });
+  }
 
-      if (userRes.ok) {
-        const { id: userId } = await userRes.json();
+  try {
+    const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_SERVICE_KEY },
+    });
 
-        const credRes = await fetch(
-          `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan,credits`,
-          { headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_SERVICE_KEY } }
-        );
-
-        if (credRes.ok) {
-          const [row] = await credRes.json();
-          if (row) {
-            const { plan, credits: currentCredits } = row;
-            const creditCost = cost || 1;
-            const isPro = ['founding','pro','standard'].includes(plan);
-
-            if (!isPro && currentCredits < creditCost) {
-              return res.status(402).json({ error: 'Not enough credits this week.' });
-            }
-
-            if (!['founding','pro'].includes(plan)) {
-              await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
-                method: 'PATCH',
-                headers: {
-                  'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-                  'apikey': SUPABASE_SERVICE_KEY,
-                  'Content-Type': 'application/json',
-                  'Prefer': 'return=minimal',
-                },
-                body: JSON.stringify({ credits: Math.max(0, currentCredits - creditCost) }),
-              });
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Credit deduction error:', e.message);
-      // Non-fatal — never block generation
+    if (!userRes.ok) {
+      return res.status(401).json({ error: 'Sign in required.' });
     }
+
+    const { id: userId } = await userRes.json();
+
+    const credRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan,credits`,
+      { headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_SERVICE_KEY } }
+    );
+
+    if (!credRes.ok) {
+      return res.status(500).json({ error: 'Could not verify credits.' });
+    }
+
+    const [row] = await credRes.json();
+    if (!row) {
+      return res.status(402).json({ error: 'Not enough credits this week.' });
+    }
+
+    const { plan, credits: currentCredits } = row;
+    const creditCost = cost || 1;
+    const isPro = ['founding','pro','standard'].includes(plan);
+
+    if (!isPro && currentCredits < creditCost) {
+      return res.status(402).json({ error: 'Not enough credits this week.' });
+    }
+
+    if (!['founding','pro'].includes(plan)) {
+      await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+          'apikey': SUPABASE_SERVICE_KEY,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify({ credits: Math.max(0, currentCredits - creditCost) }),
+      });
+    }
+  } catch (e) {
+    console.error('Credit check error:', e.message);
+    return res.status(500).json({ error: 'Could not verify credits.' });
   }
 
   // ── Build Anthropic request ────────────────────────────────────────────────
