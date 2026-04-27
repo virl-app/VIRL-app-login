@@ -11,9 +11,44 @@ import { loadPlaybook } from "./_lib/playbook.js";
 const TRIAL_DAYS = 14;
 const PAID_PLANS = ['founding', 'pro', 'standard'];
 
+// Rate-limit ceilings for /api/chat. Tunable; the credit cap is the wallet
+// limit, these only catch burst abuse and runaway scripts. Both windows are
+// well above any plausible real usage.
+const RATE_LIMIT_PER_MINUTE = 5;
+const RATE_LIMIT_PER_HOUR   = 30;
+
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const ANTHROPIC_API_KEY    = process.env.ANTHROPIC_API_KEY;
+
+// Atomically check both windows and record the request if both pass.
+// Returns { ok: true } on success, { ok: false, kind: 'minute'|'hour' }
+// when limited. Fails open on infra errors — a Supabase blip should never
+// lock paying users out of the product.
+async function checkChatRateLimit(userId) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/check_and_record_rate_limits`, {
+      method: "POST",
+      headers: {
+        apikey:        SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        p_user_id:     userId,
+        p_endpoint:    "chat",
+        p_minute_max:  RATE_LIMIT_PER_MINUTE,
+        p_hour_max:    RATE_LIMIT_PER_HOUR,
+      }),
+    });
+    if (!res.ok) return { ok: true };
+    const result = await res.json();
+    if (result === "ok") return { ok: true };
+    return { ok: false, kind: result };
+  } catch (e) {
+    return { ok: true };
+  }
+}
 
 // Lightweight per-user vault summary used to ground the plan generator.
 // Same logic the client used to compute via getVaultPatterns(), now read
@@ -129,6 +164,24 @@ export default async function handler(req, res) {
     createdAt = userJson.created_at;
   } catch (e) {
     return res.status(401).json({ error: 'Sign in required.' });
+  }
+
+  // ── Rate limit (burst protection) ─────────────────────────────────────────
+  // Runs before credit deduction + the Anthropic call so a flood is rejected
+  // cheaply. The credit cap is still the wallet limit; these windows only
+  // catch buggy clients and scripted abuse.
+  const rate = await checkChatRateLimit(userId);
+  if (!rate.ok) {
+    if (rate.kind === "minute") {
+      res.setHeader("Retry-After", "60");
+      return res.status(429).json({
+        error: `Slow down — ${RATE_LIMIT_PER_MINUTE} generations per minute max. Try again in a moment.`,
+      });
+    }
+    res.setHeader("Retry-After", "3600");
+    return res.status(429).json({
+      error: `You've hit ${RATE_LIMIT_PER_HOUR} generations this hour. Try again later.`,
+    });
   }
 
   // ── Build the prompt server-side ──────────────────────────────────────────
