@@ -3343,25 +3343,41 @@ return (
           onClose={function(){ setSundayLogModalOpen(false); }}/>
       )}
 
-      {showUpgrade&&(
+      {showUpgrade&&(() => {
+        // Drive modal copy from actual state, not from upgradeReason — the
+        // reason is kept for analytics, but headline/sub/dismiss reflect
+        // whether the user is in trial, out of credits, low, or has plenty.
+        var modalState = trialExpired
+          ? "trial"
+          : (credits <= 0 ? "noCredits" : (credits <= 5 ? "lowCredits" : "hasCredits"));
+        var headline, sub, dismiss;
+        if (modalState === "trial") {
+          headline = "Your free trial has ended.";
+          sub      = "You've had 2 weeks to put VIRL through its paces. Ready to make it permanent?";
+          dismiss  = "Browse my vault instead";
+        } else if (modalState === "noCredits") {
+          headline = "You're out of credits.";
+          sub      = "Your " + WEEKLY_CREDITS + " weekly credits are used up. They reset Monday - or upgrade now for 150 credits per week.";
+          dismiss  = "Wait for Monday's reset";
+        } else if (modalState === "lowCredits") {
+          headline = "You're running low on credits.";
+          sub      = "Just " + credits + " credit" + (credits === 1 ? "" : "s") + " left this week. Upgrade to 150/week and never wait for Monday.";
+          dismiss  = "Maybe later";
+        } else {
+          headline = "Ready for more out of VIRL?";
+          sub      = "Upgrade to 150 credits a week and unlock every feature.";
+          dismiss  = "Maybe later";
+        }
+        return (
         <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.88)",zIndex:500,display:"flex",alignItems:"flex-end",justifyContent:"center",padding:"0 0 0 0"}}>
           <div style={{background:B.white,width:"100%",maxWidth:480,borderRadius:"24px 24px 0 0",padding:"36px 28px 48px",boxShadow:"0 -8px 40px rgba(0,0,0,0.25)"}}>
             <div style={{width:40,height:4,background:B.border,borderRadius:99,margin:"0 auto 28px"}}/>
-            {upgradeReason==="trial"?(
-              <div style={{textAlign:"center",marginBottom:24}}>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.navy,marginBottom:8}}>Your free trial has ended.</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.7}}>
-                  {"You've had 2 weeks to put VIRL through its paces. Ready to make it permanent?"}
-                </div>
+            <div style={{textAlign:"center",marginBottom:24}}>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.navy,marginBottom:8}}>{headline}</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.7}}>
+                {sub}
               </div>
-            ):(
-              <div style={{textAlign:"center",marginBottom:24}}>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.navy,marginBottom:8}}>{"You're out of credits."}</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.7}}>
-                  Your 20 weekly credits are used up. They reset Monday - or upgrade now for 150 credits per week.
-                </div>
-              </div>
-            )}
+            </div>
             {/* [CHANGE 2a] Annual/monthly toggle. Annual is highlighted by
                 default; the price card below mirrors the selection. Both CTAs
                 in this modal pass selectedPlan to handleCheckout(). */}
@@ -3443,21 +3459,14 @@ return (
                 </div>
               </div>
             </div>
-            {upgradeReason!=="trial"&&(
-              <button onClick={function(){setShowUpgrade(false);}}
-                style={{width:"100%",background:"none",border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,cursor:"pointer",padding:"8px"}}>
-                {"Wait for Monday's reset"}
-              </button>
-            )}
-            {upgradeReason==="trial"&&(
-              <button onClick={function(){setShowUpgrade(false);}}
-                style={{width:"100%",background:"none",border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,cursor:"pointer",padding:"8px"}}>
-                {"Browse my vault instead"}
-              </button>
-            )}
+            <button onClick={function(){setShowUpgrade(false);}}
+              style={{width:"100%",background:"none",border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,cursor:"pointer",padding:"8px"}}>
+              {dismiss}
+            </button>
           </div>
         </div>
-      )}
+        );
+      })()}
 
 
       {/* ── Desktop Sidebar (hidden on mobile via CSS) ───────────────────── */}
