@@ -2825,6 +2825,16 @@ function App() {
   useEffect(function() {
     if (!session) return;
     var userId = session.user.id;
+    // Fire-and-forget welcome email. The endpoint dedupes server-side via
+    // email_sends, so a token refresh / repeated SIGNED_IN / multi-tab
+    // open all resolve to "already sent, skip" instead of duplicate mail.
+    // We don't await — sign-in stays snappy regardless of Resend latency.
+    try {
+      fetch("/api/email/welcome", {
+        method:  "POST",
+        headers: { "Authorization": "Bearer " + session.access_token },
+      }).catch(function(){});
+    } catch(e) {}
     // [TASK 1] Hydrate profile from Supabase; if none exists, migrate any local-only
     // profile up so legacy users don't lose their voice/audience/off-limits on sign-in.
     // Mirror the Supabase profile back to localStorage so the cache stays consistent
