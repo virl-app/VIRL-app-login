@@ -302,6 +302,21 @@ async function loadPlaybook() {
   } catch (e) { return {}; }
 }
 
+// Pending playbook drafts — admin-only fetch. Routes through a service-role
+// admin endpoint that verifies the bearer token belongs to the admin email,
+// so neither the table nor the data ever exposes to non-admin users.
+async function loadPendingPlaybookDrafts(accessToken) {
+  if (!accessToken) return [];
+  try {
+    const res = await fetch("/api/admin/playbook-drafts", {
+      headers: { Authorization: "Bearer " + accessToken },
+    });
+    if (!res.ok) return [];
+    const body = await res.json();
+    return Array.isArray(body.drafts) ? body.drafts : [];
+  } catch (e) { return []; }
+}
+
 // Field metadata used by the Algo-tab renderer (and admin editor) so the
 // server schema and the UI labels stay in lockstep.
 const PLAYBOOK_FIELDS = [
@@ -316,6 +331,106 @@ const PLAYBOOK_FIELDS = [
   { key: "format_priority", label: "Format priority", icon: "🎬", kind: "list"   },
   { key: "notes",           label: "Notes",           icon: "📋", kind: "text"   },
 ];
+
+// Helper: render a value as a human-readable string for the diff display.
+function fmtPlaybookValue(v) {
+  if (v === null || v === undefined || v === "") return "—";
+  if (Array.isArray(v)) return v.join(", ");
+  return String(v);
+}
+
+// Admin-only review UI for one pending playbook draft. Renders the diff,
+// the LLM's reasoning, and source URLs, with Approve / Reject buttons that
+// call /api/admin/playbook-draft-review.
+function PendingPlaybookDraft({draft, token, onResolved}) {
+  const [working,setWorking] = useState("");
+  const [error,setError]     = useState("");
+
+  function decide(action) {
+    if (working) return;
+    setWorking(action); setError("");
+    fetch("/api/admin/playbook-draft-review", {
+      method:  "POST",
+      headers: {"Content-Type":"application/json","Authorization":"Bearer "+token},
+      body:    JSON.stringify({ draft_id: draft.id, action }),
+    }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok,body:j}; }); })
+      .then(function(res){
+        if (res.ok) {
+          if (onResolved) onResolved(draft.id, action);
+        } else {
+          setError((res.body && res.body.error) || "Action failed");
+          setWorking("");
+        }
+      })
+      .catch(function(e){ setError(e.message); setWorking(""); });
+  }
+
+  const diff = draft.diff || {};
+  const fields = Object.keys(diff);
+  return (
+    <div style={{background:B.card,borderRadius:14,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+      <div style={{background:B.navy,padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.white}}>{draft.platform} · proposed update</div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.sky}}>{new Date(draft.created_at).toLocaleDateString()}</div>
+      </div>
+      <div style={{padding:"14px 18px"}}>
+        {draft.reasoning && (
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.6,marginBottom:14}}>
+            {draft.reasoning}
+          </div>
+        )}
+        {fields.length === 0 && (
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted}}>No diff data on this draft.</div>
+        )}
+        {fields.map(function(f){
+          var d = diff[f];
+          return (
+            <div key={f} style={{marginBottom:14,paddingBottom:12,borderBottom:"1px solid "+B.divider}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{f}</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.sub,lineHeight:1.55,marginBottom:4}}>
+                <span style={{color:B.coral,textDecoration:"line-through"}}>{fmtPlaybookValue(d.old)}</span>
+              </div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.ink,fontWeight:600,lineHeight:1.55,marginBottom:6}}>
+                <span style={{color:B.green}}>{"→ "}</span>{fmtPlaybookValue(d.new)}
+              </div>
+              {d.reason && (
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,lineHeight:1.55,marginBottom:4}}>{d.reason}</div>
+              )}
+              {d.source_url && (
+                <a href={d.source_url} target="_blank" rel="noopener noreferrer"
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.blue,textDecoration:"none"}}>
+                  Source ↗
+                </a>
+              )}
+            </div>
+          );
+        })}
+        {Array.isArray(draft.sources) && draft.sources.length > 0 && (
+          <div style={{marginBottom:14}}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>All cited sources</div>
+            {draft.sources.map(function(u, i){
+              return <div key={i}>
+                <a href={u} target="_blank" rel="noopener noreferrer"
+                   style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.blue,textDecoration:"none",lineHeight:1.6}}>{u}</a>
+              </div>;
+            })}
+          </div>
+        )}
+        {error && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.coral,marginBottom:8}}>{error}</div>}
+        <div style={{display:"flex",gap:8,marginTop:6}}>
+          <button onClick={function(){decide("approve");}} disabled={!!working}
+            style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:working==="approve"?B.muted:B.green,color:B.white,border:"none",borderRadius:99,cursor:working?"default":"pointer"}}>
+            {working==="approve" ? "Approving…" : "Approve"}
+          </button>
+          <button onClick={function(){decide("reject");}} disabled={!!working}
+            style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:"transparent",color:B.coral,border:"1px solid "+B.coral,borderRadius:99,cursor:working?"default":"pointer"}}>
+            {working==="reject" ? "Rejecting…" : "Reject"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // Admin-only inline editor for one platform's playbook row. Saves through
 // /api/admin/playbook-update which whitelist-checks fields and verifies the
@@ -2736,6 +2851,18 @@ function App() {
     loadPlaybook().then(function(map){ setPlaybook(map); });
   }, []);
 
+  // Pending playbook drafts staged by the monthly refresh cron. Admin-only
+  // — the fetcher returns [] for non-admin tokens. Kept in App-level state
+  // so the Approve/Reject buttons can update the list immediately.
+  const [pendingPlaybookDrafts,setPendingPlaybookDrafts] = useState([]);
+  function refreshPendingPlaybookDrafts() {
+    if (!session) return;
+    loadPendingPlaybookDrafts(session.access_token).then(function(list){
+      setPendingPlaybookDrafts(list);
+    });
+  }
+  useEffect(function(){ refreshPendingPlaybookDrafts(); }, [session]);
+
   // Clear expired plan on mount — plans reset with the credit week.
   // Only touches the local cache here; the Supabase row is reconciled in the
   // session-load effect below (so a fresh server-side plan isn't accidentally
@@ -4323,6 +4450,29 @@ return (
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:12,textAlign:"center"}}>
                   {"Est. MRR assumes $25/mo per paid user. Founding members counted at $20 equivalent for first year. Data from Supabase credits table only."}
                 </div>
+              </div>
+            )}
+
+            {/* Pending playbook drafts — staged by the monthly refresh
+                cron. One card per draft with diff + sources + Approve /
+                Reject. Hidden when there's nothing to review. */}
+            {pendingPlaybookDrafts.length > 0 && (
+              <div style={{marginTop:32,paddingTop:24,borderTop:"1px solid "+B.divider}}>
+                <Eyebrow>Pending Playbook Updates</Eyebrow>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,marginBottom:8,lineHeight:1.2}}>{pendingPlaybookDrafts.length} draft{pendingPlaybookDrafts.length===1?"":"s"} need review.</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:18}}>
+                  The monthly research cron found updates from trusted sources. Approve to commit a change to the live playbook (instantly affects every generation). Reject to archive.
+                </div>
+                {pendingPlaybookDrafts.map(function(draft){
+                  return <PendingPlaybookDraft key={draft.id} draft={draft} token={session ? session.access_token : ""}
+                    onResolved={function(id, action){
+                      // Optimistically remove from the list, then refresh
+                      // both lists so the live playbook editor below shows
+                      // the new values when an approve commits.
+                      setPendingPlaybookDrafts(function(prev){ return prev.filter(function(d){ return d.id !== id; }); });
+                      if (action === "approve") loadPlaybook().then(function(map){ setPlaybook(map); });
+                    }}/>;
+                })}
               </div>
             )}
 
