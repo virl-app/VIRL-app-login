@@ -7,6 +7,8 @@ import {
 } from "./_lib/prompts.js";
 import { loadPlaybook }      from "./_lib/playbook.js";
 import { loadLatestTrends }  from "./_lib/trends.js";
+import { sendEmail }         from "./_lib/email-send.js";
+import { firstPlanGenerated } from "./_lib/email-templates.js";
 
 // Free trial length in days. Mirrored in index.html — keep in sync.
 const TRIAL_DAYS = 14;
@@ -21,6 +23,51 @@ const RATE_LIMIT_PER_HOUR   = 30;
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const ANTHROPIC_API_KEY    = process.env.ANTHROPIC_API_KEY;
+
+// Best-effort fetch of the user's email + name for the inline onboarding
+// email. Returns nulls on any failure — the caller treats nulls as "skip".
+async function fetchUserContactForEmail(userId) {
+  const out = { email: null, name: "" };
+  if (!userId || !SUPABASE_URL || !SUPABASE_SERVICE_KEY) return out;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+    });
+    if (r.ok) {
+      const u = await r.json();
+      out.email = u.email || null;
+    }
+  } catch (e) { /* non-fatal */ }
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=name`,
+      { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    if (r.ok) {
+      const rows = await r.json();
+      if (rows[0] && rows[0].name) out.name = rows[0].name;
+    }
+  } catch (e) { /* non-fatal */ }
+  return out;
+}
+
+// Inline "first plan generated" send. Idempotent via the email_sends
+// dedupe table — only the very first plan triggers the mail.
+async function maybeSendFirstPlanEmail(userId) {
+  const ctx = await fetchUserContactForEmail(userId);
+  if (!ctx.email) return;
+  const tpl = firstPlanGenerated({ name: ctx.name });
+  await sendEmail({
+    userId,
+    to:        ctx.email,
+    template:  "first_plan_generated",
+    dedupeKey: "first_plan_generated",
+    subject:   tpl.subject,
+    html:      tpl.html,
+    text:      tpl.text,
+    marketing: false,
+  });
+}
 
 // Atomically check both windows and record the request if both pass.
 // Returns { ok: true } on success, { ok: false, kind: 'minute'|'hour' }
@@ -314,6 +361,14 @@ export default async function handler(req, res) {
     }
 
     const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+
+    // Fire-and-forget first-plan onboarding email. The send wrapper's
+    // dedupe table makes this idempotent — only the very first plan a
+    // user generates triggers the mail; every subsequent plan is a no-op.
+    if (generationType === "plan") {
+      maybeSendFirstPlanEmail(userId).catch(() => {});
+    }
+
     // `cost` flows back so the client can do an optimistic credit-counter
     // tick without needing to know the cost table itself.
     return res.status(200).json({ text, cost: creditCost });
