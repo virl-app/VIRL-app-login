@@ -600,6 +600,7 @@ async function callAPI(generationType, params, opts) {
   if (res.status===402) throw new Error(data.error||"Not enough credits this week.");
   if (res.status===401) throw new Error("Session expired - please sign out and sign in again.");
   if (res.status===400) throw new Error(data.error||"Bad request.");
+  if (res.status===429) throw new Error(data.error||"Slow down — too many requests. Try again in a moment.");
   if (res.status===500) throw new Error(data.error||"Server error - check your Vercel function logs.");
   if (!res.ok) throw new Error(data.error || "Server error "+res.status+" - please try again.");
   if (!data.text) throw new Error("Empty response from AI - please try again.");
