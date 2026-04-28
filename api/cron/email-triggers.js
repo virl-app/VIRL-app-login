@@ -72,8 +72,56 @@ async function fetchProfileName(userId) {
   } catch (e) { return ""; }
 }
 
+// Whether a plans row exists for this user (regardless of expires_at).
+// Used by the phase1-no-plan trigger to skip users who've already gotten
+// past the "first plan" hurdle.
+async function userHasEverGeneratedPlan(userId) {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/plans?user_id=eq.${userId}&select=user_id&limit=1`,
+      { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    if (!res.ok) return false;
+    const rows = await res.json();
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (e) { return false; }
+}
+
+// Pulls the user's current plan (cards + expires_at) plus their
+// user_data.results array so the Sunday log nudge can compute how many
+// cards still need results logged.
+async function fetchUnloggedCount(userId) {
+  try {
+    const [planRes, dataRes] = await Promise.all([
+      fetch(
+        `${SUPABASE_URL}/rest/v1/plans?user_id=eq.${userId}&select=cards,expires_at`,
+        { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/user_data?user_id=eq.${userId}&select=results`,
+        { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      ),
+    ]);
+    if (!planRes.ok || !dataRes.ok) return 0;
+    const planRows = await planRes.json();
+    const dataRows = await dataRes.json();
+    const plan = planRows[0];
+    if (!plan || !Array.isArray(plan.cards)) return 0;
+    if (plan.expires_at && Date.parse(plan.expires_at) <= Date.now()) return 0;
+    const results = (dataRows[0] && Array.isArray(dataRows[0].results)) ? dataRows[0].results : [];
+    const loggedIds = new Set(results.map(r => r && r.id).filter(Boolean));
+    let unlogged = 0;
+    for (const c of plan.cards) {
+      if (!c) continue;
+      const cardId = (c.title || "") + (c.day || "");
+      if (!loggedIds.has(cardId)) unlogged++;
+    }
+    return unlogged;
+  } catch (e) { return 0; }
+}
+
 // Per-user dispatch — figures out which (if any) trigger applies today.
-async function processUser(user, todayIsMonday) {
+async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
   const userId   = user.id;
   const email    = user.email;
   const days     = daysSince(user.created_at);
@@ -83,6 +131,7 @@ async function processUser(user, todayIsMonday) {
   const isPaid = PAID_PLANS.includes(plan);
   const name = await fetchProfileName(userId);
   const unsubToken = makeUnsubToken(userId);
+  const lastSignInDays = daysSince(user.last_sign_in_at);
 
   // Welcome safety-net: catches anyone the inline /api/email/welcome call
   // missed (network errors, function cold-start timeouts, etc).
@@ -125,9 +174,48 @@ async function processUser(user, todayIsMonday) {
   if (todayIsMonday && days >= 7) {
     const tpl = T.weeklyReset({ name, unsubscribeToken: unsubToken });
     await sendEmail({
-      userId, to: email, template: "weekly_reset", dedupeKey: `weekly_reset_${isoYearWeek(new Date())}`,
+      userId, to: email, template: "weekly_reset", dedupeKey: `weekly_reset_${weekKey}`,
       subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
     });
+  }
+
+  // Tier 2 — Phase 1 saved but no plan after 24h. Account is between
+  // 1 and 7 days old, profile name is set (Phase 1 done), and no plans
+  // row exists. One-time per user (dedupeKey: phase1_no_plan_24h).
+  if (days >= 1 && days <= 7 && name) {
+    const hasPlan = await userHasEverGeneratedPlan(userId);
+    if (!hasPlan) {
+      const tpl = T.phase1NoPlan({ name, unsubscribeToken: unsubToken });
+      await sendEmail({
+        userId, to: email, template: "phase1_no_plan_24h", dedupeKey: "phase1_no_plan_24h",
+        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
+      });
+    }
+  }
+
+  // Tier 2 — 7-day inactivity re-engagement. Last sign-in was 7-30 days
+  // ago and the account is past the trial-warning windows. Weekly dedupe
+  // so we don't send daily.
+  if (lastSignInDays !== null && lastSignInDays >= 7 && lastSignInDays <= 30 && days >= 14) {
+    const tpl = T.inactive7Day({ name, unsubscribeToken: unsubToken });
+    await sendEmail({
+      userId, to: email, template: "inactive_7d", dedupeKey: `inactive_7d_${weekKey}`,
+      subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
+    });
+  }
+
+  // Tier 2 — Sunday batch-log nudge. Today is Sunday, the user has a
+  // current plan, and at least one card hasn't been logged. Weekly dedupe
+  // so a re-run on the same Sunday is a no-op.
+  if (todayIsSunday) {
+    const unlogged = await fetchUnloggedCount(userId);
+    if (unlogged > 0) {
+      const tpl = T.sundayLogNudge({ name, unloggedCount: unlogged, unsubscribeToken: unsubToken });
+      await sendEmail({
+        userId, to: email, template: "sunday_log", dedupeKey: `sunday_log_${weekKey}`,
+        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
+      });
+    }
   }
 }
 
@@ -144,7 +232,10 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, skipped: "email_disabled" });
   }
 
-  const todayIsMonday = new Date().getUTCDay() === 1;
+  const now = new Date();
+  const todayIsMonday = now.getUTCDay() === 1;
+  const todayIsSunday = now.getUTCDay() === 0;
+  const weekKey       = isoYearWeek(now);
   let processed = 0, errors = 0;
   let page = 1;
   const perPage = 200;
@@ -154,7 +245,7 @@ export default async function handler(req, res) {
       const batch = await fetchUsersBatch(page, perPage);
       if (!batch.length) break;
       for (const u of batch) {
-        try { await processUser(u, todayIsMonday); processed++; }
+        try { await processUser(u, todayIsMonday, todayIsSunday, weekKey); processed++; }
         catch (e) { errors++; console.error("[cron/email] user error", u.id, e.message); }
       }
       if (batch.length < perPage) break;
@@ -165,5 +256,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ ok: false, error: e.message, processed, errors });
   }
 
-  return res.status(200).json({ ok: true, processed, errors, todayIsMonday });
+  return res.status(200).json({ ok: true, processed, errors, todayIsMonday, todayIsSunday });
 }

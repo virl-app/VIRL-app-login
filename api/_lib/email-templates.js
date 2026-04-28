@@ -211,3 +211,66 @@ export function playbookDraftsReady({ count, summaries }) {
   };
 }
 
+// 10. Profile saved, no plan generated within 24h — activation nudge.
+export function phase1NoPlan({ name, unsubscribeToken }) {
+  const headline = "Your profile's set. Now build your week.";
+  const body = `
+    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'ve given VIRL the foundation. The next step is the one that pays off — generating your first 7-day plan.</p>
+    <p style="margin:0 0 12px">It takes about 60 seconds. VIRL writes it in your voice, scoped to your audience, and timed to each platform's peak window.</p>
+    <p style="margin:0">If something's stopping you from clicking generate, hit reply and tell me why. Real person reads every reply.</p>`;
+  return {
+    subject: "Your VIRL profile's set — generate your first plan",
+    html:    layout({ headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Generate my first plan" }, unsubscribeToken }),
+    text:    `${headline}\n\nYou've given VIRL the foundation. Generating your first plan is the next step.\n\nTakes about 60 seconds.\n\n${APP_URL}/?tab=plan${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
+// 11. First plan generated — onboarding reinforcement, fired inline by /api/chat.
+export function firstPlanGenerated({ name }) {
+  const headline = name ? `Your first plan, ${name}.` : "Your first plan.";
+  const body = `
+    <p style="margin:0 0 12px">It's live. A few things to know now that you have one:</p>
+    <ul style="margin:0 0 16px;padding-left:18px">
+      <li><strong>Save the posts you love</strong> to your Vault — VIRL learns your taste from what you save and weights similar styles in next week's plan.</li>
+      <li><strong>Generate scripts</strong> from any plan card. The hook + sections + CTA all stay in your voice.</li>
+      <li><strong>Log results after you post</strong> (views, likes, saves). The Results tab is how VIRL learns what's actually working for <em>your</em> audience, not generic best practices.</li>
+    </ul>
+    <p style="margin:0">Plans reset Monday morning. Until then, this one's yours to refine and ship.</p>`;
+  return {
+    subject: "Your first VIRL plan, decoded",
+    html:    layout({ headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Open the plan" } }),
+    text:    `${headline}\n\nIt's live. Save posts you love to your Vault, generate scripts from any card, and log results once you post.\n\nPlans reset Monday morning.\n\n${APP_URL}/?tab=plan`,
+  };
+}
+
+// 12. 7-day inactivity — re-engagement.
+export function inactive7Day({ name, unsubscribeToken }) {
+  const headline = "Your VIRL plan's been waiting.";
+  const body = `
+    <p style="margin:0 0 12px">${name ? "Hey " + name + " — it" : "It"}'s been a week since you signed in. Your plan, vault, and saved scripts are still here exactly as you left them.</p>
+    <p style="margin:0 0 12px">If life got in the way, no judgment. If something about VIRL didn't click, I'd love to hear it — reply to this email.</p>
+    <p style="margin:0">Otherwise, the Monday reset is right around the corner. Worth a 60-second plan generation to put a fresh week on the calendar.</p>`;
+  return {
+    subject: "Your VIRL plan is waiting",
+    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
+    text:    `${headline}\n\nA week since you signed in. Your plan, vault, and saved scripts are still here.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
+// 13. Sunday batch-log nudge — mirrors the in-app SundayLogModal for users
+// who didn't open the app on Sunday. Marketing-opt-out-able.
+export function sundayLogNudge({ name, unloggedCount, unsubscribeToken }) {
+  const noun = unloggedCount === 1 ? "post" : "posts";
+  const headline = "How did this week go?";
+  const body = `
+    <p style="margin:0 0 12px">${name ? name + ", you" : "You"} have ${unloggedCount} ${noun} from this week's plan that ${unloggedCount === 1 ? "still needs" : "still need"} results logged. It takes 90 seconds.</p>
+    <p style="margin:0 0 12px">Why bother: VIRL learns what's working for <em>your</em> audience from these numbers. Logged results sharpen next week's plan in ways generic best practices can't.</p>
+    <p style="margin:0">Plans reset tomorrow morning, so this is the last good window to log this week.</p>`;
+  return {
+    subject: `Log this week's ${noun} — ${unloggedCount} pending`,
+    html:    layout({ headline, body, primaryCta: { href: APP_URL + "/?tab=results", label: "Log results" }, unsubscribeToken }),
+    text:    `${headline}\n\nYou have ${unloggedCount} ${noun} from this week's plan that need results logged. Takes 90 seconds.\n\nVIRL learns what's working for your audience from these numbers.\n\n${APP_URL}/?tab=results${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
+

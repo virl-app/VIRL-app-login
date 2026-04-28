@@ -29,6 +29,10 @@ const TEMPLATES = {
   payment_failed:         (uid) => T.paymentFailed({ name: "Lauren" }),
   subscription_cancelled: (uid) => T.subscriptionCancelled({ name: "Lauren" }),
   weekly_reset:           (uid) => T.weeklyReset({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
+  phase1_no_plan_24h:     (uid) => T.phase1NoPlan({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
+  first_plan_generated:   (uid) => T.firstPlanGenerated({ name: "Lauren" }),
+  inactive_7d:            (uid) => T.inactive7Day({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
+  sunday_log:             (uid) => T.sundayLogNudge({ name: "Lauren", unloggedCount: 4, unsubscribeToken: makeUnsubToken(uid) }),
 };
 
 async function verifyAdmin(token) {
