@@ -187,3 +187,27 @@ export function weeklyReset({ name, unsubscribeToken }) {
     text:    `${headline}\n\nHappy Monday. Your VIRL credits just refreshed.\n\nA 60-second plan generation sets the next seven days.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
+
+// 9. Playbook drafts ready — admin-only notification fired by the monthly
+// playbook-refresh cron when one or more drafts are pending review.
+export function playbookDraftsReady({ count, summaries }) {
+  const headline = count === 1
+    ? "One playbook draft is ready for review."
+    : `${count} playbook drafts are ready for review.`;
+  const summaryList = (summaries || [])
+    .map(s => `<li style="margin:6px 0"><strong>${s.platform}:</strong> ${s.summary || "Updates proposed."}</li>`)
+    .join("");
+  const summaryText = (summaries || [])
+    .map(s => `  - ${s.platform}: ${s.summary || "Updates proposed."}`)
+    .join("\n");
+  const body = `
+    <p style="margin:0 0 12px">VIRL's monthly playbook research surfaced ${count === 1 ? "a change" : "changes"} from trusted sources you should review before ${count === 1 ? "it" : "they"} reach the LLM.</p>
+    ${summaryList ? `<ul style="margin:0 0 16px;padding-left:18px">${summaryList}</ul>` : ""}
+    <p style="margin:0">Open the Dashboard to approve or reject each draft. Drafts that aren't approved stay archived without affecting the live playbook.</p>`;
+  return {
+    subject: count === 1 ? "1 VIRL playbook draft pending" : `${count} VIRL playbook drafts pending`,
+    html:    layout({ headline, body, primaryCta: { href: APP_URL + "/?tab=admin", label: "Review drafts" } }),
+    text:    `${headline}\n\nVIRL's monthly playbook research surfaced ${count === 1 ? "a change" : "changes"} from trusted sources.\n\n${summaryText}\n\nOpen ${APP_URL} → Dashboard to review.`,
+  };
+}
+
