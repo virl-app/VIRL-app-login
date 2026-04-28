@@ -302,6 +302,27 @@ async function loadPlaybook() {
   } catch (e) { return {}; }
 }
 
+// Latest trends per platform. Read is public (the trends table is
+// transparent — users see what VIRL is conditioning on every week).
+async function loadLatestTrends() {
+  try {
+    // Pull the last ~30 days, then group by platform → most-recent wins.
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    const url = SUPABASE_URL + "/rest/v1/trends"
+      + "?select=platform,summary,items,sources,fetched_at"
+      + "&fetched_at=gte." + encodeURIComponent(since)
+      + "&order=fetched_at.desc";
+    const res = await fetch(url, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: "Bearer " + SUPABASE_ANON_KEY },
+    });
+    if (!res.ok) return {};
+    const rows = await res.json();
+    const byPlatform = {};
+    for (const r of rows) if (r && r.platform && !byPlatform[r.platform]) byPlatform[r.platform] = r;
+    return byPlatform;
+  } catch (e) { return {}; }
+}
+
 // Pending playbook drafts — admin-only fetch. Routes through a service-role
 // admin endpoint that verifies the bearer token belongs to the admin email,
 // so neither the table nor the data ever exposes to non-admin users.
@@ -510,6 +531,52 @@ function PlaybookEditor({platform, entry, token, onSaved}) {
           </button>
           {status && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:status.indexOf("Error") === 0 ? B.coral : B.green}}>{status}</div>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Latest-trends card per platform. Renders the items list, summary, and
+// the date the row was fetched so users can judge freshness. Sources are
+// linked out via small "↗" anchors.
+function TrendsCard({platform, entry}) {
+  if (!entry) return null;
+  var items = Array.isArray(entry.items) ? entry.items : [];
+  var fetched;
+  try { fetched = new Date(entry.fetched_at).toLocaleDateString("en-US",{month:"short",day:"numeric"}); } catch(e) { fetched = ""; }
+  return (
+    <div style={{background:B.card,borderRadius:14,marginBottom:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",borderLeft:"3px solid "+B.sky}}>
+      <div style={{padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.navy}}>{platform} · this week</div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted}}>{fetched ? "as of "+fetched : ""}</div>
+      </div>
+      <div style={{padding:"4px 18px 14px"}}>
+        {entry.summary && (
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.6,marginBottom:items.length?12:0}}>
+            {entry.summary}
+          </div>
+        )}
+        {items.length === 0 && (
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted}}>No notable trends this week.</div>
+        )}
+        {items.map(function(it, i){
+          if (!it || !it.trend) return null;
+          return (
+            <div key={i} style={{marginBottom:i<items.length-1?12:0,paddingBottom:i<items.length-1?12:0,borderBottom:i<items.length-1?"1px solid "+B.divider:"none"}}>
+              <div style={{display:"flex",gap:8,alignItems:"baseline",flexWrap:"wrap",marginBottom:4}}>
+                {it.category && <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.sky,background:B.skySoft,padding:"2px 7px",borderRadius:99}}>{it.category}</span>}
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,color:B.ink,fontWeight:500,lineHeight:1.5,flex:1,minWidth:0}}>{it.trend}</div>
+              </div>
+              {it.reason && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginLeft:0}}>{it.reason}</div>}
+              {it.source_url && (
+                <a href={it.source_url} target="_blank" rel="noopener noreferrer"
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.blue,textDecoration:"none",marginTop:4,display:"inline-block"}}>
+                  Source ↗
+                </a>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -2851,6 +2918,14 @@ function App() {
     loadPlaybook().then(function(map){ setPlaybook(map); });
   }, []);
 
+  // Latest weekly trends per platform. Auto-published by /api/cron/trends-refresh
+  // and visible to all signed-in users on the Algo tab. Plan / scan /
+  // caption prompts also pull these server-side via loadLatestTrends().
+  const [trends,setTrends] = useState({});
+  useEffect(function() {
+    loadLatestTrends().then(function(map){ setTrends(map); });
+  }, []);
+
   // Pending playbook drafts staged by the monthly refresh cron. Admin-only
   // — the fetcher returns [] for non-admin tokens. Kept in App-level state
   // so the Approve/Reject buttons can update the list immediately.
@@ -4273,6 +4348,7 @@ return (
                     style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:B.white,background:B.navy,border:"none",borderRadius:99,padding:"6px 14px",cursor:"pointer"}}>Upgrade</button>
                 </div>
                 <PlaybookCard platform="TikTok" entry={playbook.TikTok} blurred={false}/>
+                {trends.TikTok && <TrendsCard platform="TikTok" entry={trends.TikTok}/>}
                 {PLATFORMS.filter(function(p){return p!=="TikTok";}).map(function(platform){return (
                   <div key={platform} style={{position:"relative"}}>
                     <PlaybookCard platform={platform} entry={playbook[platform]} blurred={true}/>
@@ -4290,7 +4366,12 @@ return (
               <div>
                 {PLATFORMS.map(function(platform){
                   if (!playbook[platform]) return null;
-                  return <PlaybookCard key={platform} platform={platform} entry={playbook[platform]} blurred={false}/>;
+                  return (
+                    <div key={platform}>
+                      <PlaybookCard platform={platform} entry={playbook[platform]} blurred={false}/>
+                      {trends[platform] && <TrendsCard platform={platform} entry={trends[platform]}/>}
+                    </div>
+                  );
                 })}
                 <div style={{background:B.navySoft,borderRadius:12,padding:"14px 18px",marginTop:8}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy,marginBottom:4}}>The same intel powers every VIRL generation</div>

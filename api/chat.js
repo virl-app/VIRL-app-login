@@ -5,7 +5,8 @@ import {
   ALLOWED_MODELS,
   MODEL_SONNET,
 } from "./_lib/prompts.js";
-import { loadPlaybook } from "./_lib/playbook.js";
+import { loadPlaybook }      from "./_lib/playbook.js";
+import { loadLatestTrends }  from "./_lib/trends.js";
 
 // Free trial length in days. Mirrored in index.html — keep in sync.
 const TRIAL_DAYS = 14;
@@ -185,19 +186,20 @@ export default async function handler(req, res) {
   }
 
   // ── Build the prompt server-side ──────────────────────────────────────────
-  // Profile + vault patterns + playbook come from Supabase, not the client,
-  // so the prompt template never has to be exposed in the browser. The
-  // playbook injection grounds every generation in current platform rules
-  // (cadence, peak times, hook windows, hashtag counts, top signals).
-  const [profile, vaultPatterns, playbook] = await Promise.all([
+  // Profile + vault patterns + playbook + trends all come from Supabase,
+  // not the client, so the prompt template never has to be exposed in the
+  // browser. Playbook = algorithm rules; trends = this week's specifics.
+  // Both fetches fail open: missing data simply skips that injection layer.
+  const [profile, vaultPatterns, playbook, trends] = await Promise.all([
     fetchProfile(userId),
     (generationType === "plan") ? fetchVaultPatterns(userId) : Promise.resolve(null),
     loadPlaybook(),
+    loadLatestTrends(),
   ]);
 
   let built;
   try {
-    built = dispatch(generationType, params, profile, vaultPatterns, playbook);
+    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends);
   } catch (e) {
     return res.status(400).json({ error: e.message || 'Bad request.' });
   }

@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/playbook-refresh",
       "schedule": "0 6 1 * *"
+    },
+    {
+      "path": "/api/cron/trends-refresh",
+      "schedule": "0 7 * * 1"
     }
   ]
 }
