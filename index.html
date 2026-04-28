@@ -94,9 +94,18 @@ async function saveProfileToSupabase(profile, userId) {
       content_length: profile.contentLength||null,
       worked_well: profile.workedWell||null
     });
-    if (error) { console.error("Profile save error:", error.message); return false; }
-    return true;
-  } catch(e) { console.error("Profile save failed:", e.message); return false; }
+    if (error) {
+      // Surface the full Supabase error to the console so a schema
+      // mismatch (missing column, RLS denial) is visible in devtools.
+      // The UI status indicator only knows ok/fail — the message lives here.
+      console.error("[VIRL] Profile save failed:", error);
+      return { ok: false, error: error.message || String(error) };
+    }
+    return { ok: true };
+  } catch(e) {
+    console.error("[VIRL] Profile save threw:", e);
+    return { ok: false, error: e.message || String(e) };
+  }
 }
 
 async function loadProfileFromSupabase(userId) {
@@ -917,9 +926,15 @@ function CopyBtn({text,label}) {
   );
 }
 
+// Strip a leading "#" if the model returned hashtags with the prefix already
+// — otherwise we render "##fitness". Belt-and-braces: the prompt also tells
+// the model not to include the "#", but we don't trust upstream to comply.
+const cleanHashtag = (h) => String(h || "").replace(/^#+/, "").trim();
 const HashtagRow = ({hashtags}) => {
   if (!hashtags||!hashtags.length) return null;
-  const text = hashtags.map(function(h){return "#"+h;}).join(" ");
+  const cleaned = hashtags.map(cleanHashtag).filter(Boolean);
+  if (!cleaned.length) return null;
+  const text = cleaned.map(function(h){return "#"+h;}).join(" ");
   return (
     <div style={{background:B.skySoft,borderRadius:12,padding:"14px 18px",marginBottom:12}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
@@ -927,7 +942,7 @@ const HashtagRow = ({hashtags}) => {
         <CopyBtn text={text} label="Copy all"/>
       </div>
       <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-        {hashtags.map(function(h){return (
+        {cleaned.map(function(h){return (
           <span key={h} style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:500,color:B.blue,padding:"4px 12px",background:B.card,borderRadius:99}}>{"#"+h}</span>
         );})}
       </div>
@@ -939,7 +954,7 @@ function SharePlanCard({card}) {
   const [copied,setCopied] = useState(false);
   function sharePost() {
     const tags = (card.hashtags&&card.hashtags.length)
-      ? "\n\n"+card.hashtags.map(function(h){return "#"+h;}).join(" ") : "";
+      ? "\n\n"+card.hashtags.map(cleanHashtag).filter(Boolean).map(function(h){return "#"+h;}).join(" ") : "";
     const text = "\ud83d\udcc5 "+card.day+" - "+card.platform
       +"\n\n\ud83d\udccc "+card.title
       +"\n\n"+card.description
@@ -1308,6 +1323,25 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
 
   const LENGTHS = ["Short","Medium","Long"];
 
+  // UI-only hints — the canonical platform/tone/length rules are in
+  // api/_lib/prompts.js (server-side). These shorter strings just give the
+  // user a feel for what each option means before they pick.
+  const platformHints = {
+    TikTok:    "Punchy, conversational. Hook in first line.",
+    Instagram: "Aspirational but real. First line is the hook.",
+    Facebook:  "Warm, community-focused. Conversational.",
+    YouTube:   "Context-rich, keyword-friendly.",
+    LinkedIn:  "Professional but human. Insight-led opening.",
+    X:         "Ultra short. One punchy idea.",
+    Pinterest: "Keyword-rich, searchable. Tutorial framing.",
+  };
+  const lengthHints = {
+    Short:  "1-3 lines. Punchy, no fluff.",
+    Medium: "4-6 lines. One idea with context and a CTA.",
+    Long:   "7-10 lines. Story-driven, conversational.",
+  };
+  const platformCtx = platformHints[platform] || "";
+
   function generate() {
     if (!topic.trim()) return;
     // Credit check + prompt construction handled server-side.
@@ -1348,7 +1382,7 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
         <div style={{padding:"22px 26px"}}>
           <Label>Caption length</Label>
           <div style={{display:"flex",gap:8,marginBottom:8}}>{LENGTHS.map(function(l){return <Chip key={l} active={length===l} onClick={function(){setLength(l);}}>{l}</Chip>;})}</div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted}}>{lengthGuide[length]}</div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted}}>{lengthHints[length]}</div>
         </div>
       </div>
       <GenBtn onClick={generate} loading={loading} disabled={!topic.trim()}>
@@ -2099,8 +2133,8 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
         </div>
       )}
       {syncState==="failed"&&(
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:500,color:B.coral,textAlign:"center",marginBottom:8}}>
-          {"Saved locally. Couldn't reach sync – try again in a moment."}
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:500,color:B.coral,textAlign:"center",marginBottom:8,lineHeight:1.5}}>
+          {"Saved locally, but couldn't sync to your account. Open devtools console for the exact error, or try again in a minute."}
         </div>
       )}
       {eliteDone && (
@@ -2822,6 +2856,7 @@ function App() {
           delete current.profile;
           localStorage.setItem(KEY, JSON.stringify(current));
         } catch(e) {}
+        try { sessionStorage.removeItem("virl_active_tab"); } catch(e) {}
         setProfile({});
         setVault([]);
         setResults([]);
@@ -2833,16 +2868,25 @@ function App() {
 
   // ── App data state ──────────────────────────────────────────────────────
   const stored = load();
-  // Land on the plan tab when a current plan exists in the local cache, so
-  // refreshes don't bounce the user back to the profile screen. Cross-device
-  // hydration runs in a useEffect below and will switch to "plan" once the
-  // Supabase row arrives, even if the local cache is empty.
+  // Restore the user's last-active tab on refresh. sessionStorage scoped so
+  // it resets when they close the browser. Falls back to "plan" when a
+  // current plan exists in the local cache (avoids bouncing to profile),
+  // otherwise "profile".
+  const ALLOWED_TABS = ["profile","plan","caption","scan","algo","vault","results","admin"];
   const [tab,setTab] = useState(function() {
+    try {
+      const remembered = sessionStorage.getItem("virl_active_tab");
+      if (remembered && ALLOWED_TABS.indexOf(remembered) >= 0) return remembered;
+    } catch(e) {}
     try {
       if (stored.plan && stored.planExpiresAt && Date.now() < stored.planExpiresAt) return "plan";
     } catch(e) {}
     return "profile";
   });
+  // Persist whenever the user changes tabs.
+  useEffect(function() {
+    try { sessionStorage.setItem("virl_active_tab", tab); } catch(e) {}
+  }, [tab]);
   const [platforms,setPlatforms] = useState(stored.platforms||["TikTok","Instagram"]);
   const [niche,setNiche] = useState(stored.niche||"Lifestyle");
   const [goal,setGoal] = useState(stored.goal||"Grow my following");
@@ -2911,11 +2955,16 @@ function App() {
   var foundingAvailable = (foundingCount === null) || (foundingCount < FOUNDING_CAP);
 
   // Platform playbook (loaded from Supabase on mount). Empty {} until the
-  // network round-trip resolves; the Algo tab renders a thin "loading"
-  // empty state in the meantime.
+  // network round-trip resolves; `playbookFetched` flips true regardless
+  // of whether the table had data, so the Algo tab can distinguish "still
+  // loading" from "loaded but empty" (table not seeded yet).
   const [playbook,setPlaybook] = useState({});
+  const [playbookFetched,setPlaybookFetched] = useState(false);
   useEffect(function() {
-    loadPlaybook().then(function(map){ setPlaybook(map); });
+    loadPlaybook().then(function(map){
+      setPlaybook(map || {});
+      setPlaybookFetched(true);
+    });
   }, []);
 
   // Latest weekly trends per platform. Auto-published by /api/cron/trends-refresh
@@ -3892,9 +3941,11 @@ return (
               // [TASK 1] Track the Supabase round-trip so CreatorProfile can show Synced/Syncing/Failed.
               if (session) {
                 setProfileSync("syncing");
-                saveProfileToSupabase(p, session.user.id).then(function(ok){
-                  setProfileSync(ok ? "synced" : "failed");
-                  setTimeout(function(){ setProfileSync("idle"); }, 3000);
+                saveProfileToSupabase(p, session.user.id).then(function(result){
+                  setProfileSync((result && result.ok) ? "synced" : "failed");
+                  // Failed states stay visible longer so the user has a chance
+                  // to notice. Console always carries the specific error.
+                  setTimeout(function(){ setProfileSync("idle"); }, (result && result.ok) ? 3000 : 8000);
                 });
               }
             }}/>
@@ -4364,7 +4415,20 @@ return (
             )}
             {isFoundingOrPro&&(
               <div>
-                {PLATFORMS.map(function(platform){
+                {!playbookFetched && (
+                  <div style={{background:B.card,borderRadius:14,padding:"40px 24px",textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,fontStyle:"italic"}}>Loading playbook…</div>
+                  </div>
+                )}
+                {playbookFetched && Object.keys(playbook).length === 0 && (
+                  <div style={{background:B.card,borderRadius:14,padding:"32px 24px",textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.navy,marginBottom:8}}>Playbook hasn't been seeded yet.</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,lineHeight:1.6,maxWidth:420,margin:"0 auto"}}>
+                      The platform playbook table is empty. The admin needs to run the seed migration; check the latest playbook PR description for the SQL.
+                    </div>
+                  </div>
+                )}
+                {playbookFetched && PLATFORMS.map(function(platform){
                   if (!playbook[platform]) return null;
                   return (
                     <div key={platform}>
@@ -4373,10 +4437,12 @@ return (
                     </div>
                   );
                 })}
-                <div style={{background:B.navySoft,borderRadius:12,padding:"14px 18px",marginTop:8}}>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy,marginBottom:4}}>The same intel powers every VIRL generation</div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.6}}>Platforms shift constantly. Anything you see here is what VIRL is silently following when it builds a plan, writes a script, or scans a photo.</div>
-                </div>
+                {playbookFetched && Object.keys(playbook).length > 0 && (
+                  <div style={{background:B.navySoft,borderRadius:12,padding:"14px 18px",marginTop:8}}>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy,marginBottom:4}}>The same intel powers every VIRL generation</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.6}}>Platforms shift constantly. Anything you see here is what VIRL is silently following when it builds a plan, writes a script, or scans a photo.</div>
+                  </div>
+                )}
               </div>
             )}
           </div>
