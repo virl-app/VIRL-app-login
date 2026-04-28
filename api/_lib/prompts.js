@@ -109,6 +109,66 @@ function hashtagSchema(slots) {
   return "[" + tags.join(",") + "]";
 }
 
+// ── Trends injection helpers ──────────────────────────────────────────────
+// `trends` is a map keyed by platform: { TikTok: { summary, items, sources,
+// fetched_at } }. Loaded by api/chat.js via loadLatestTrends() and threaded
+// into the plan / scan / caption builders. Always supplemental — the
+// playbook is the algorithm rules, trends are this week's specifics.
+
+function fmtTrendDate(iso) {
+  if (!iso) return "";
+  try { return new Date(iso).toISOString().slice(0, 10); } catch (e) { return ""; }
+}
+
+function singlePlatformTrendsBlock(platform, entry) {
+  if (!entry || !Array.isArray(entry.items) || entry.items.length === 0) return "";
+  const date = fmtTrendDate(entry.fetched_at);
+  const lines = entry.items.map(it => {
+    if (!it || !it.trend) return null;
+    const cat = it.category ? "[" + it.category + "] " : "";
+    const why = it.reason ? " — " + it.reason : "";
+    return "  - " + cat + it.trend + why;
+  }).filter(Boolean);
+  if (!lines.length) return "";
+  return "TRENDS ON " + platform.toUpperCase() + " (as of " + date + "):\n" + lines.join("\n");
+}
+
+function planTrendsContext(trends, selectedPlatforms) {
+  if (!trends || !selectedPlatforms || !selectedPlatforms.length) return "";
+  const blocks = [];
+  for (const p of selectedPlatforms) {
+    const block = singlePlatformTrendsBlock(p, trends[p]);
+    if (block) blocks.push(block);
+  }
+  if (!blocks.length) return "";
+  return "\n\nWeave these current trends into the plan where they fit naturally. Don't force them — skip a trend rather than retrofit it onto an off-brand post.\n\n" + blocks.join("\n\n");
+}
+
+function captionTrendsContext(trends, platform) {
+  const entry = trends && trends[platform];
+  const block = singlePlatformTrendsBlock(platform, entry);
+  if (!block) return "";
+  return "\n\n" + block + "\n\nIf any of these naturally apply to the topic, lean into them. Otherwise ignore.";
+}
+
+function scanTrendsContext(trends) {
+  if (!trends) return "";
+  const platforms = Object.keys(trends);
+  if (!platforms.length) return "";
+  const lines = [];
+  for (const p of platforms) {
+    const entry = trends[p];
+    if (!entry || !Array.isArray(entry.items) || !entry.items.length) continue;
+    // Compact form for scan — the model is also reading platform signals
+    // from the playbook context, so trends are a smaller supplementary
+    // layer.
+    const top = entry.items.slice(0, 3).map(it => it && it.trend).filter(Boolean).join("; ");
+    if (top) lines.push("- " + p + ": " + top);
+  }
+  if (!lines.length) return "";
+  return "\n\nThis week's trends (use to break ties when picking the best platform):\n" + lines.join("\n");
+}
+
 // ── Internal lookup tables (kept server-side) ─────────────────────────────
 const PLATFORM_TONE = {
   TikTok:    "Short, punchy, conversational. Hook in first line. Emojis natural. End with question or CTA.",
@@ -208,7 +268,7 @@ function buildSystemPrompt(profile, role) {
 
 // ── Builders, one per generation type ──────────────────────────────────────
 
-function buildPlan(params, profile, vaultPatterns, playbook) {
+function buildPlan(params, profile, vaultPatterns, playbook, trends) {
   const platformsArr = params.platforms || [];
   const platforms = platformsArr.join(",");
   const formats   = (params.formats   || []).join(",");
@@ -219,6 +279,7 @@ function buildPlan(params, profile, vaultPatterns, playbook) {
   const context   = params.context   || "";
   const isRegen   = !!params.isRegen;
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
+  const trendsCtx   = planTrendsContext(trends,   platformsArr);
 
   // Vault patterns: server-derived from the user's user_data row, so the
   // client never has to disclose its vault on every plan generation.
@@ -253,7 +314,8 @@ function buildPlan(params, profile, vaultPatterns, playbook) {
     + " Return ONLY a JSON array of 10-14 objects: [{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}]"
     + " Hashtags array length per post should match the target platform's hashtag_count (range upper bound)."
     + " Multiple objects can share the same day. After the JSON array write: STATS reach=45000 rate=6.2 earn=$120-$400"
-    + playbookCtx;
+    + playbookCtx
+    + trendsCtx;
 
   return {
     systemPrompt,
@@ -282,7 +344,7 @@ function buildScript(params, profile, _vaultPatterns, playbook) {
   };
 }
 
-function buildCaption(params, profile, _vaultPatterns, playbook) {
+function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
   const platform = params.platform || "TikTok";
   const tone     = params.tone     || "Warm & relatable";
   const length   = params.length   || "Medium";
@@ -295,7 +357,8 @@ function buildCaption(params, profile, _vaultPatterns, playbook) {
   const userPrompt = "Generate 3 caption options for a " + platform + " post about: " + topic + ". "
     + "Tone: " + tone + ". Length: " + length + " — " + lengthRule + " "
     + "Platform style: " + platformCtx
-    + captionPlaybookContext(playbook, platform) + " "
+    + captionPlaybookContext(playbook, platform)
+    + captionTrendsContext(trends, platform) + " "
     + "Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":" + hashtagSchema(slots) + "}";
   return {
     systemPrompt,
@@ -322,10 +385,11 @@ function buildCaptionRemix(params, profile) {
   };
 }
 
-function buildScanImage(params, profile, _vaultPatterns, playbook) {
+function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
   const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
   const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
     + scanPlaybookContext(playbook)
+    + scanTrendsContext(trends)
     + "\n\nReply ONLY with valid JSON (no markdown): "
     + "{\"score\":\"X.X out of 10\","
     + "\"platform\":\"best platform\","
@@ -343,10 +407,11 @@ function buildScanImage(params, profile, _vaultPatterns, playbook) {
   };
 }
 
-function buildScanVideoFrame(params, profile, _vaultPatterns, playbook) {
+function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends) {
   const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
   const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
     + scanPlaybookContext(playbook)
+    + scanTrendsContext(trends)
     + "\n\nReply ONLY with valid JSON (no markdown): "
     + "{\"score\":\"X.X out of 10\","
     + "\"platform\":\"best platform\","
@@ -383,11 +448,12 @@ export function requiresImage(t) {
 }
 
 // Top-level entry. Returns { systemPrompt, userPrompt, model, maxTokens, cost }
-// or throws on unknown type. `playbook` is the platform → entry map from
-// loadPlaybook(); pass an empty {} when unavailable and the builders skip
-// playbook injection gracefully.
-export function dispatch(generationType, params, profile, vaultPatterns, playbook) {
+// or throws on unknown type.
+//   - `playbook` — algorithm rules per platform (loadPlaybook())
+//   - `trends`   — this week's trending items per platform (loadLatestTrends())
+// Both default to {} on missing infra; builders skip injection gracefully.
+export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends) {
   const builder = BUILDERS[generationType];
   if (!builder) throw new Error("Unknown generationType: " + generationType);
-  return builder(params || {}, profile || {}, vaultPatterns, playbook || {});
+  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {});
 }
