@@ -5,10 +5,11 @@ import {
   ALLOWED_MODELS,
   MODEL_SONNET,
 } from "./_lib/prompts.js";
-import { loadPlaybook }      from "./_lib/playbook.js";
-import { loadLatestTrends }  from "./_lib/trends.js";
-import { sendEmail }         from "./_lib/email-send.js";
-import { firstPlanGenerated } from "./_lib/email-templates.js";
+import { loadPlaybook }              from "./_lib/playbook.js";
+import { loadLatestTrends }          from "./_lib/trends.js";
+import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
+import { sendEmail }                 from "./_lib/email-send.js";
+import { firstPlanGenerated }        from "./_lib/email-templates.js";
 
 // Free trial length in days. Mirrored in index.html — keep in sync.
 const TRIAL_DAYS = 14;
@@ -237,16 +238,20 @@ export default async function handler(req, res) {
   // not the client, so the prompt template never has to be exposed in the
   // browser. Playbook = algorithm rules; trends = this week's specifics.
   // Both fetches fail open: missing data simply skips that injection layer.
-  const [profile, vaultPatterns, playbook, trends] = await Promise.all([
+  // Plan generation also pulls the last 3 weeks of history so the LLM can
+  // build narratively week-over-week. Other generation types skip history
+  // since they're scoped to a single piece of content.
+  const [profile, vaultPatterns, playbook, trends, history] = await Promise.all([
     fetchProfile(userId),
-    (generationType === "plan") ? fetchVaultPatterns(userId) : Promise.resolve(null),
+    (generationType === "plan") ? fetchVaultPatterns(userId)        : Promise.resolve(null),
     loadPlaybook(),
     loadLatestTrends(),
+    (generationType === "plan") ? loadPlanHistoryForPrompt(userId,3): Promise.resolve([]),
   ]);
 
   let built;
   try {
-    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends);
+    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history);
   } catch (e) {
     return res.status(400).json({ error: e.message || 'Bad request.' });
   }
