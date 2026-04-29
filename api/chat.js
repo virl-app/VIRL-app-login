@@ -10,6 +10,7 @@ import { loadLatestTrends }          from "./_lib/trends.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { sendEmail }                 from "./_lib/email-send.js";
 import { firstPlanGenerated }        from "./_lib/email-templates.js";
+import { estimateCostUSD }           from "./_lib/pricing.js";
 
 // Free trial length in days. Mirrored in index.html — keep in sync.
 const TRIAL_DAYS = 14;
@@ -50,6 +51,42 @@ async function fetchUserContactForEmail(userId) {
     }
   } catch (e) { /* non-fatal */ }
   return out;
+}
+
+// Logs one row to public.usage_events for the admin cost/usage panel.
+// Fail-open: a missing table or a blip just disappears into the console.
+// Cost is estimated from Anthropic's published per-token pricing; the
+// admin UI labels the figure as estimate-only.
+async function recordUsageEvent(userId, usage) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !userId || !usage) return;
+  try {
+    const cost = estimateCostUSD(usage);
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/usage_events`, {
+      method: "POST",
+      headers: {
+        apikey:        SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer:        "return=minimal",
+      },
+      body: JSON.stringify({
+        user_id:            userId,
+        generation_type:    usage.generationType,
+        model:              usage.model,
+        input_tokens:       usage.input_tokens       || 0,
+        output_tokens:      usage.output_tokens      || 0,
+        cache_read_tokens:  usage.cache_read_tokens  || 0,
+        cache_write_tokens: usage.cache_write_tokens || 0,
+        est_cost_usd:       cost,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.warn("[usage_events] insert failed", res.status, text);
+    }
+  } catch (e) {
+    console.warn("[usage_events] insert threw", e.message);
+  }
 }
 
 // Inline "first plan generated" send. Idempotent via the email_sends
@@ -355,14 +392,18 @@ export default async function handler(req, res) {
     const data = await anthropicRes.json();
 
     if (data.usage) {
-      console.log('virl_usage', JSON.stringify({
+      const usage = {
         generationType,
         model:               selectedModel,
-        input_tokens:        data.usage.input_tokens,
-        output_tokens:       data.usage.output_tokens,
-        cache_read_tokens:   data.usage.cache_read_input_tokens || 0,
+        input_tokens:        data.usage.input_tokens        || 0,
+        output_tokens:       data.usage.output_tokens       || 0,
+        cache_read_tokens:   data.usage.cache_read_input_tokens     || 0,
         cache_write_tokens:  data.usage.cache_creation_input_tokens || 0,
-      }));
+      };
+      console.log('virl_usage', JSON.stringify(usage));
+      // Fire-and-forget insert so admin Dashboard can trend cost/usage.
+      // Failure is logged inside the helper; we never wait on it.
+      recordUsageEvent(userId, usage).catch(() => {});
     }
 
     const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
