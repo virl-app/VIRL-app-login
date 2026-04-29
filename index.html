@@ -181,26 +181,55 @@ function saveCachedSbCredits(userId, row) {
 // refresh on any device lands the user back on their current plan rather
 // than the empty profile screen. Helpers fail open — if the table isn't
 // provisioned yet, the app silently falls back to localStorage-only.
+// ISO date for the Monday of the calendar week containing `d`. Used as the
+// week_start key for plan_history rows so re-generations within the same
+// week update one row instead of creating duplicates.
+function weekStartISO(d) {
+  const date = new Date(d || Date.now());
+  const day = date.getDay() || 7; // Sunday=7
+  date.setHours(0,0,0,0);
+  date.setDate(date.getDate() - (day - 1));
+  return date.toISOString().slice(0, 10);
+}
+
 async function loadPlanFromSupabase(userId) {
   try {
     const { data, error } = await supabaseClient
-      .from("plans").select("cards,stats,expires_at").eq("user_id", userId).maybeSingle();
+      .from("plans").select("cards,stats,strategy,expires_at").eq("user_id", userId).maybeSingle();
     if (error || !data) return null;
     return data;
   } catch(e) { return null; }
 }
-async function savePlanToSupabase(userId, cards, stats, expiresAt) {
+async function savePlanToSupabase(userId, cards, stats, expiresAt, strategy) {
+  // Dual-write: current `plans` row (one per user, replaced on regenerate)
+  // PLUS a `plan_history` row keyed by (user_id, week_start) so past weeks
+  // accumulate. The history row is what the server reads on the next plan
+  // generation to build narratively week-over-week.
+  let ok = true;
   try {
     const { error } = await supabaseClient.from("plans").upsert({
-      user_id: userId,
-      cards: cards,
-      stats: stats || null,
+      user_id:    userId,
+      cards:      cards,
+      stats:      stats    || null,
+      strategy:   strategy || null,
       expires_at: new Date(expiresAt).toISOString(),
       updated_at: new Date().toISOString(),
     });
-    if (error) { console.error("Plan save error:", error.message); return false; }
-    return true;
-  } catch(e) { return false; }
+    if (error) { console.error("Plan save error:", error.message); ok = false; }
+  } catch(e) { ok = false; }
+  // History upsert — fail-open so the UI flow still works if plan_history
+  // hasn't been provisioned yet.
+  try {
+    const ws = weekStartISO(Date.now());
+    await supabaseClient.from("plan_history").upsert({
+      user_id:    userId,
+      week_start: ws,
+      cards:      cards,
+      stats:      stats    || null,
+      strategy:   strategy || null,
+    }, { onConflict: "user_id,week_start" });
+  } catch(e) { /* non-fatal */ }
+  return ok;
 }
 async function deletePlanFromSupabase(userId) {
   try { await supabaseClient.from("plans").delete().eq("user_id", userId); } catch(e) {}
@@ -2912,6 +2941,17 @@ function App() {
     } catch(e){}
     return null;
   });
+  // Strategy hero card (thesis / optimizing_for / audience_read /
+  // success_metric / the_bet) — produced by the plan generator alongside
+  // cards and stats. Lives for the same duration as the cards.
+  const [strategy,setStrategy] = useState(function(){
+    try {
+      if (stored.planStrategy && stored.planExpiresAt && Date.now() < stored.planExpiresAt) {
+        return stored.planStrategy;
+      }
+    } catch(e){}
+    return null;
+  });
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
   const [results,setResults] = useState(stored.results||[]);
@@ -2997,10 +3037,12 @@ function App() {
       if (currentStored.plan && currentStored.planExpiresAt && Date.now() >= currentStored.planExpiresAt) {
         delete currentStored.plan;
         delete currentStored.planStats;
+        delete currentStored.planStrategy;
         delete currentStored.planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(currentStored));
         setCards(null);
         setStats(null);
+        setStrategy(null);
       }
     } catch(e){}
   }, []);
@@ -3091,12 +3133,14 @@ function App() {
       var expiresAt = new Date(row.expires_at).getTime();
       if (expiresAt > Date.now()) {
         setCards(row.cards);
-        if (row.stats) setStats(row.stats);
+        if (row.stats)    setStats(row.stats);
+        if (row.strategy) setStrategy(row.strategy);
         setTab(function(t) { return t === "profile" ? "plan" : t; });
         try {
           var current = load() || {};
           current.plan = row.cards;
           current.planStats = row.stats || null;
+          current.planStrategy = row.strategy || null;
           current.planExpiresAt = expiresAt;
           save(current);
         } catch(e) {}
@@ -3104,9 +3148,10 @@ function App() {
         deletePlanFromSupabase(userId);
         setCards(null);
         setStats(null);
+        setStrategy(null);
         try {
           var stale = load() || {};
-          delete stale.plan; delete stale.planStats; delete stale.planExpiresAt;
+          delete stale.plan; delete stale.planStats; delete stale.planStrategy; delete stale.planExpiresAt;
           save(stale);
         } catch(e) {}
       }
@@ -3429,10 +3474,16 @@ function App() {
       isRegen:   !!cards,
     }, { token: userToken }).then(function(data) {
       appliedCost = data.cost || 0;
-      const parts = data.text.split(/STATS/i);
-      const parsed = extractJSON(parts[0]||data.text);
-      if (parsed&&Array.isArray(parsed)&&parsed.length>0) {
-        setCards(parsed);
+      // New response shape: { strategy, cards, stats }. The whole payload
+      // is one JSON object — no more STATS-line parsing.
+      const parsed = extractJSON(data.text);
+      const parsedCards    = parsed && Array.isArray(parsed.cards) ? parsed.cards : null;
+      const parsedStrategy = parsed && parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
+      const parsedStats    = parsed && parsed.stats    && typeof parsed.stats    === "object" ? parsed.stats    : null;
+      if (parsedCards && parsedCards.length > 0) {
+        setCards(parsedCards);
+        if (parsedStats)    setStats(parsedStats);
+        if (parsedStrategy) setStrategy(parsedStrategy);
         // [TASK 5] Bump lifetime plan counter and fire the referral modal the
         // first time the user hits 3, 7, or 15 plans. Only when signed in —
         // anonymous sessions have no user.id to build a referral link from.
@@ -3446,24 +3497,16 @@ function App() {
             }
           }
         } catch(e) {}
-        // Persist plan to localStorage — lives until next Monday reset
-        var parsedStats = null;
-        if (parts[1]) {
-          const m = parts[1].match(/reach=([\d,K+]+).*?rate=([\d.]+).*?earn=([^\s\n]+)/i);
-          if (m) {
-            parsedStats = {reach:m[1],engagement:m[2]+"%",earnings:m[3]};
-            setStats(parsedStats);
-          }
-        }
         var planExpiresAt = getNextMonday();
         try {
           var current = JSON.parse(localStorage.getItem(KEY)||"{}");
-          current.plan = parsed;
+          current.plan = parsedCards;
           current.planStats = parsedStats;
+          current.planStrategy = parsedStrategy;
           current.planExpiresAt = planExpiresAt;
           localStorage.setItem(KEY, JSON.stringify(current));
         } catch(e){}
-        if (session) savePlanToSupabase(session.user.id, parsed, parsedStats, planExpiresAt);
+        if (session) savePlanToSupabase(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy);
       } else { setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers."); }
     }).then(function(){
       // Refresh credits from Supabase after successful generation. Pass the
@@ -3526,7 +3569,7 @@ function App() {
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e) { expiresAt = getNextMonday(); }
-      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt);
+      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy);
       return next;
     });
   }
@@ -4207,6 +4250,45 @@ return (
                     </div>
                   );
                 })()}
+                {/* Strategy hero card — written by VIRL alongside the cards.
+                    Frames the week so the user sees the thesis + audience
+                    read + success metric + what VIRL is betting on, instead
+                    of a flat list of tasks. */}
+                {strategy && (strategy.thesis || strategy.the_bet) && (
+                  <div style={{background:B.navy,borderRadius:16,padding:"22px 24px",marginBottom:16,boxShadow:"0 4px 20px rgba(31,58,138,0.18)"}}>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.sky,marginBottom:10}}>This week's strategy</div>
+                    {strategy.thesis && (
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.25,marginBottom:18}}>{strategy.thesis}</div>
+                    )}
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))",gap:14}}>
+                      {strategy.the_bet && (
+                        <div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>The bet</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.9)",lineHeight:1.55}}>{strategy.the_bet}</div>
+                        </div>
+                      )}
+                      {strategy.optimizing_for && (
+                        <div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Optimizing for</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.9)",lineHeight:1.55}}>{strategy.optimizing_for}</div>
+                        </div>
+                      )}
+                      {strategy.audience_read && (
+                        <div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Audience read</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.9)",lineHeight:1.55}}>{strategy.audience_read}</div>
+                        </div>
+                      )}
+                      {strategy.success_metric && (
+                        <div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>Success looks like</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.white,lineHeight:1.55}}>{strategy.success_metric}</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:8}}>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink}}>Your <span style={{color:B.navy}}>week</span></div>
                   <div style={{flex:1,height:1,background:B.border}}/>

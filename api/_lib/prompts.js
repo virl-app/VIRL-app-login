@@ -151,6 +151,47 @@ function captionTrendsContext(trends, platform) {
   return "\n\n" + block + "\n\nIf any of these naturally apply to the topic, lean into them. Otherwise ignore.";
 }
 
+// Plan history → prompt context. Surfaces last 1-3 weeks' strategy + each
+// week's top performer (by views+likes×2+saves×4) + how many cards never
+// got logged. The LLM uses this to build narratively, double down on what
+// worked, retire what failed, and continue any series. Conservative-by-
+// design: when history is empty (week 1), returns "" so the prompt reads
+// as a fresh-start week without confusing references.
+function planHistoryContext(history) {
+  if (!history || !history.length) return "";
+  const blocks = history.map(w => {
+    const lines = [];
+    if (w.week_start) lines.push("  Week of " + w.week_start + ":");
+    if (w.strategy) {
+      const s = w.strategy;
+      if (s.thesis)         lines.push("    Strategy thesis: " + s.thesis);
+      if (s.the_bet)        lines.push("    The bet: " + s.the_bet);
+      if (s.success_metric) lines.push("    Success metric: " + s.success_metric);
+    }
+    if (w.top_performer) {
+      const tp = w.top_performer;
+      const metrics = [];
+      if (tp.views) metrics.push(tp.views + " views");
+      if (tp.likes) metrics.push(tp.likes + " likes");
+      if (tp.saves) metrics.push(tp.saves + " saves");
+      lines.push("    Top performer: \"" + (tp.title || "untitled") + "\" — " + (tp.platform || "?") + (metrics.length ? " — " + metrics.join(", ") : " — no result logged"));
+    } else {
+      lines.push("    Top performer: (nothing logged this week)");
+    }
+    if (typeof w.unlogged === "number" && w.unlogged > 0) {
+      lines.push("    Unlogged cards: " + w.unlogged);
+    }
+    return lines.join("\n");
+  }).filter(Boolean);
+  if (!blocks.length) return "";
+  return "\n\nPRIOR WEEKS (most recent first):\n" + blocks.join("\n\n")
+    + "\n\nUse this history to:"
+    + "\n  - Build narratively — extend successful threads, continue series the creator started."
+    + "\n  - Double down on formats / platforms / topics that drove the top performer."
+    + "\n  - Avoid repeating themes that didn't land or that the creator never logged."
+    + "\n  - Reference the prior week explicitly in strategy.the_bet when relevant.";
+}
+
 function scanTrendsContext(trends) {
   if (!trends) return "";
   const platforms = Object.keys(trends);
@@ -273,7 +314,7 @@ function buildSystemPrompt(profile, role) {
 
 // ── Builders, one per generation type ──────────────────────────────────────
 
-function buildPlan(params, profile, vaultPatterns, playbook, trends) {
+function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
   const platformsArr = params.platforms || [];
   const platforms = platformsArr.join(",");
   const formats   = (params.formats   || []).join(",");
@@ -285,6 +326,8 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends) {
   const isRegen   = !!params.isRegen;
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
+  const historyCtx  = planHistoryContext(history);
+  const weekNumber  = (history && history.length) ? (history.length + 1) : 1;
 
   // Vault patterns: server-derived from the user's user_data row, so the
   // client never has to disclose its vault on every plan generation.
@@ -303,23 +346,33 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends) {
 
   const profileCtx = buildProfileCtx(profile);
   const systemPrompt = "You are VIRL, an AI content strategist and creative director. "
-    + "Your job is to create highly personalized 7-day social media content plans. "
-    + "Always return valid JSON arrays only — no markdown, no preamble, no explanation. "
+    + "Your job is to create highly personalized 7-day social media content plans that build on each other week over week. "
+    + "Always return valid JSON only — no markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
     + LOCALE_LINE + " "
     + (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
     + vaultCtx;
 
-  const userPrompt = "Generate a 7-day content plan with these settings: "
+  const userPrompt = "This is week " + weekNumber + " of an ongoing plan. Generate this week's content plan with these settings: "
     + "platforms=" + platforms + " niche=" + niche + " goal=" + goal
     + " formats=" + formats + " followers=" + followers
     + (trending ? " TRENDING THIS WEEK - incorporate these where natural: " + trending : "")
     + (context  ? " Extra context: " + context : "")
-    + " Create 10-14 total posts. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
-    + " For each post: description is 2 punchy sentences max. Include a why field — one sentence on the strategic reason this post will perform well for this creator's specific audience, citing the platform signal it optimises for."
-    + " Return ONLY a JSON array of 10-14 objects: [{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}]"
-    + " Hashtags array length per post should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only (e.g. 'fitness', not '#fitness')."
-    + " Multiple objects can share the same day. After the JSON array write: STATS reach=45000 rate=6.2 earn=$120-$400"
+    + historyCtx
+    + " Create 10-14 total posts for THIS week. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + " Open the plan with a STRATEGY object that frames the week. The strategy must:"
+    + "  - State a one-sentence thesis for the week (specific to this creator, not generic)."
+    + "  - Name the dominant signal you're optimizing for (e.g. 'watch time + saves')."
+    + "  - Read the audience in one sentence so the user can verify."
+    + "  - Define a concrete success metric (e.g. '3 posts past 1K views or 50 saves')."
+    + "  - Articulate the bet — what you're leaning into this week and why, citing prior weeks if relevant."
+    + " For each post: description is 2 punchy sentences max. Include a why field — one sentence on the strategic reason this post will perform well for this creator's audience, citing the platform signal it optimizes for."
+    + " Return ONLY one JSON object with this exact shape: {"
+    + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"},"
+    + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
+    + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
+    + "}"
+    + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
     + playbookCtx
     + trendsCtx;
 
@@ -458,9 +511,11 @@ export function requiresImage(t) {
 // or throws on unknown type.
 //   - `playbook` — algorithm rules per platform (loadPlaybook())
 //   - `trends`   — this week's trending items per platform (loadLatestTrends())
-// Both default to {} on missing infra; builders skip injection gracefully.
-export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends) {
+//   - `history`  — last N weeks' plan history for week-over-week continuity
+//                  (loadPlanHistoryForPrompt(), plan generation only)
+// All default to empty / [] on missing infra; builders skip injection gracefully.
+export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history) {
   const builder = BUILDERS[generationType];
   if (!builder) throw new Error("Unknown generationType: " + generationType);
-  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {});
+  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {}, history || []);
 }
