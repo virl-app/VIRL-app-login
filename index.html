@@ -2173,6 +2173,36 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   else if (dialedDone) tierInfo = {label:"Dialed", percent:66,  color:B.blue,  copy:"Plans will sound like you. Add off-limits to make them precise."};
   else if (basicDone)  tierInfo = {label:"Basic",  percent:33,  color:B.amber, copy:"VIRL has the foundation. Add voice to make plans sound like you."};
   else                 tierInfo = {label:"Getting started", percent:8, color:B.muted, copy:"Share your name and platforms to unlock the Basic tier."};
+
+  // Walk the tier ladder and return the first incomplete field — what
+  // the "Make VIRL sharper →" button should jump to. Returns null when
+  // the user is at Elite (everything's filled out).
+  function nextSharperField() {
+    if (!name)                          return { id:"vp-name",          label:"Add your first name",                       tier:"Basic"  };
+    if (!hasAudienceSignal)              return { id:"vp-audience",      label:"Tell VIRL who your audience is",             tier:"Basic"  };
+    if (!voice)                          return { id:"vp-voice",         label:"Describe your voice in your own words",     tier:"Dialed" };
+    if (!(vibes||[]).length)             return { id:"vp-vibes",         label:"Pick the vibes that fit your content",       tier:"Dialed" };
+    if (!knownFor)                       return { id:"vp-knownFor",      label:"Name the one thing you want to be known for", tier:"Dialed" };
+    if (!offLimits)                      return { id:"vp-offLimits",     label:"List topics you'll never touch",             tier:"Elite"  };
+    if (!inspiration)                    return { id:"vp-inspiration",   label:"Add a creator whose style you admire",       tier:"Elite"  };
+    if (!sampleCaption)                  return { id:"vp-sampleCaption", label:"Paste one caption that sounds like you",    tier:"Elite"  };
+    return null;
+  }
+  function jumpToNextSharperField() {
+    var next = nextSharperField();
+    if (!next) return;
+    var el = document.getElementById(next.id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Focus the inner input/textarea after the scroll settles, so the
+    // user can start typing immediately. Brief delay lets the smooth
+    // scroll finish before focus pulls the viewport again.
+    setTimeout(function() {
+      var input = el.querySelector("input, textarea");
+      if (input) input.focus();
+    }, 350);
+  }
+  var sharperHint = nextSharperField();
   const inputStyle = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"10px 12px",fontSize:14,color:B.ink};
   const textareaStyle = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,fontStyle:"italic",padding:"11px 14px",resize:"vertical",lineHeight:1.6};
   const sec = {padding:"20px 24px",borderBottom:"1px solid "+B.divider};
@@ -2208,19 +2238,19 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
       <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,padding:"24px 24px 22px"}}>
         <Eyebrow>{phase1Title}</Eyebrow>
 
-        <div style={{marginBottom:18}}>
+        <div id="vp-name" style={{marginBottom:18}}>
           <Label>Your first name <TierBadge tier="basic"/></Label>
           <input value={name} onChange={function(e){setName(e.target.value);}} placeholder="What should VIRL call you?" style={inputStyle}/>
         </div>
 
-        <div style={{marginBottom:18}}>
+        <div id="vp-voice" style={{marginBottom:18}}>
           <Label>Describe your voice in your own words <span style={{color:B.coral,fontSize:10,fontWeight:600,letterSpacing:0,textTransform:"none"}}>most important field</span> <TierBadge tier="dialed"/></Label>
           <textarea value={voice} onChange={function(e){setVoice(e.target.value);}}
             placeholder="e.g. Real, a little funny, never preachy. I talk to my audience like they are my group chat."
             style={Object.assign({},textareaStyle,{minHeight:88})}/>
         </div>
 
-        <div style={{marginBottom:18}}>
+        <div id="vp-audience" style={{marginBottom:18}}>
           <Label>Who is your audience? <TierBadge tier="basic"/></Label>
           <textarea value={audience} onChange={function(e){setAudience(e.target.value);}}
             placeholder="e.g. Millennial moms 28-38 who want real talk about parenting and home life"
@@ -2270,7 +2300,7 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,marginBottom:4}}>{optionalCount+" of 7 optional fields added"}</div>
 
           <div style={subhead}>Your style</div>
-          <div style={{marginBottom:18}}>
+          <div id="vp-vibes" style={{marginBottom:18}}>
             <Label>Your content vibe <TierBadge tier="dialed"/></Label>
             <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{VIBES.map(function(v){return <Chip key={v} active={vibes.includes(v)} onClick={function(){setVibes(tog(vibes,v));}}>{v}</Chip>;})}</div>
           </div>
@@ -2292,7 +2322,7 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           </div>
 
           <div style={subhead}>Your strategy</div>
-          <div style={{marginBottom:18}}>
+          <div id="vp-knownFor" style={{marginBottom:18}}>
             <Label>One thing you want to be known for <TierBadge tier="dialed"/></Label>
             <input value={knownFor} onChange={function(e){setKnownFor(e.target.value);}} placeholder="e.g. makes busy moms feel like they have their life together" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
@@ -2343,15 +2373,15 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           )}
 
           <div style={subhead}>Your boundaries</div>
-          <div style={{marginBottom:18}}>
+          <div id="vp-offLimits" style={{marginBottom:18}}>
             <Label>What do you never want to talk about? <TierBadge tier="elite"/></Label>
             <input value={offLimits} onChange={function(e){setOffLimits(e.target.value);}} placeholder="e.g. politics, my relationship, diet culture" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
-          <div style={{marginBottom:18}}>
+          <div id="vp-inspiration" style={{marginBottom:18}}>
             <Label>A creator whose style you admire <TierBadge tier="elite"/></Label>
             <input value={inspiration} onChange={function(e){setInspiration(e.target.value);}} placeholder="e.g. @aliabdaal - explains complex ideas in plain language" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
-          <div style={{marginBottom:20}}>
+          <div id="vp-sampleCaption" style={{marginBottom:20}}>
             <Label>Paste a caption you love <TierBadge tier="elite"/></Label>
             <textarea value={sampleCaption} onChange={function(e){setSample(e.target.value);}} placeholder="Paste a caption from one of your posts that felt totally like you..." style={Object.assign({},textareaStyle,{minHeight:88})}/>
           </div>
@@ -2376,6 +2406,23 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
             }}>
             {saved?"Profile saved":"Save my profile"}
           </button>
+
+          {/* Make VIRL sharper — permanent secondary that scrolls to the
+              next field needed for the next tier. Hidden once everything's
+              filled out (Elite), since there's nothing left to sharpen. */}
+          {sharperHint && (
+            <button onClick={jumpToNextSharperField}
+              style={{
+                width:"100%",
+                background:"transparent",
+                color:B.navy,
+                border:"1px solid "+B.navy,
+                fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",
+                padding:"14px 24px",cursor:"pointer",borderRadius:14,marginTop:10,transition:"all .15s",
+              }}>
+              {"Make VIRL sharper → "}<span style={{fontWeight:400,opacity:0.75,letterSpacing:0,textTransform:"none"}}>{sharperHint.label}</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -3471,6 +3518,18 @@ function App() {
   var creditsLoaded = sbCredits != null;
   var sbPlan = sbCredits ? sbCredits.plan : "free";
   var credits = sbCredits ? sbCredits.credits : 0;
+  // Days until the user's per-user weekly reset. Computed from the
+  // sbCredits.reset_at field (set server-side by the lazy reset in
+  // /api/chat). Fallback: 7. Floor-rounded so a sub-day window still
+  // shows "1 day" rather than "0 days".
+  var daysUntilReset = (function(){
+    if (!sbCredits || !sbCredits.reset_at) return 7;
+    var ms = Date.parse(sbCredits.reset_at);
+    if (Number.isNaN(ms)) return 7;
+    var diff = ms - Date.now();
+    if (diff <= 0) return 1; // reset is overdue; will fire on next call
+    return Math.max(1, Math.ceil(diff / 86400000));
+  })();
   var creditsLabel = creditsLoaded ? String(credits) : "—";
   var isFoundingOrPro = sbPlan==="founding" || sbPlan==="pro";
 
@@ -3989,11 +4048,12 @@ return (
           dismiss  = "Browse my vault instead";
         } else if (modalState === "noCredits") {
           headline = "You're out of credits.";
-          sub      = "Your " + WEEKLY_CREDITS + " weekly credits are used up. They reset Monday - or upgrade now for 150 credits per week.";
-          dismiss  = "Wait for Monday's reset";
+          var reset = daysUntilReset === 1 ? "in 1 day" : ("in " + daysUntilReset + " days");
+          sub      = "Your " + WEEKLY_CREDITS + " weekly credits are used up. They reset " + reset + " — or upgrade now for 150 credits per week.";
+          dismiss  = daysUntilReset === 1 ? "Wait for tomorrow's reset" : ("Wait " + daysUntilReset + " days for reset");
         } else if (modalState === "lowCredits") {
           headline = "You're running low on credits.";
-          sub      = "Just " + credits + " credit" + (credits === 1 ? "" : "s") + " left this week. Upgrade to 150/week and never wait for Monday.";
+          sub      = "Just " + credits + " credit" + (credits === 1 ? "" : "s") + " left this week. Upgrade to 150/week and never wait for a reset.";
           dismiss  = "Maybe later";
         } else {
           headline = "Ready for more out of VIRL?";

@@ -348,7 +348,7 @@ export default async function handler(req, res) {
   // ── Credit check & deduction ──────────────────────────────────────────────
   try {
     const credRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan,credits`,
+      `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan,credits,reset_at`,
       { headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_SERVICE_KEY } }
     );
     if (!credRes.ok) return res.status(500).json({ error: 'Could not verify credits.' });
@@ -356,8 +356,33 @@ export default async function handler(req, res) {
     const [row] = await credRes.json();
     if (!row) return res.status(402).json({ error: 'Not enough credits this week.' });
 
-    const { plan, credits: currentCredits } = row;
+    const { plan, reset_at } = row;
+    let { credits: currentCredits } = row;
     const isPaid = PAID_PLANS.includes(plan);
+
+    // Lazy weekly credit reset — day-count-based per user, not calendar
+    // Mondays. If reset_at is null or in the past, top the user back up to
+    // their plan's weekly allotment and bump reset_at by 7 days. This way
+    // a user who signs up Wednesday gets a full Wednesday-to-Wednesday
+    // refill, not a partial half-week before the calendar Monday hits.
+    const resetMs = reset_at ? Date.parse(reset_at) : NaN;
+    const now     = Date.now();
+    if (!reset_at || Number.isNaN(resetMs) || resetMs <= now) {
+      // Founding / pro / standard get 150; free trial gets 20.
+      const newCredits = isPaid ? 150 : 20;
+      const newResetAt = new Date(now + 7 * 86400000).toISOString();
+      await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+          'apikey':        SUPABASE_SERVICE_KEY,
+          'Content-Type':  'application/json',
+          'Prefer':        'return=minimal',
+        },
+        body: JSON.stringify({ credits: newCredits, reset_at: newResetAt }),
+      });
+      currentCredits = newCredits;
+    }
 
     // Trial enforcement: free users get TRIAL_DAYS from signup. The client
     // already blocks past day 14, but the cap is meaningless if the API
