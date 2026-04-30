@@ -15,6 +15,8 @@
 body{background:#F8FAFC;-webkit-font-smoothing:antialiased;font-family:'Jost',sans-serif;color:#0F172A;}
 @keyframes slideUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.15);opacity:0.7}}
 .su{animation:slideUp .25s ease both}
 .spin{animation:spin .75s linear infinite}
 /* [TASK 2] Pre-launch gate — staggered plan preview fade-in to mirror the landing page. */
@@ -414,6 +416,47 @@ const UsageKPI = ({label, value, sub, color}) => (
 // optional sentiment chips, a free-text "what's on your mind" textarea,
 // and a secondary "book 15 min with the founder" link if the env var is
 // set. Submit POSTs to /api/feedback (auth-required server-side).
+// First-plan celebration overlay. Renders once after the very first plan
+// generates; the parent persists the seen-flag in localStorage on dismiss
+// so a refresh, navigation, or follow-up plan never re-fires it.
+function FirstPlanCelebration({onDismiss}) {
+  // Close on ESC for keyboard-savvy users.
+  useEffect(function() {
+    function onKey(e) { if (e.key === "Escape") onDismiss(); }
+    window.addEventListener("keydown", onKey);
+    return function() { window.removeEventListener("keydown", onKey); };
+  }, [onDismiss]);
+
+  return (
+    <div onClick={onDismiss}
+      style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.78)",zIndex:700,display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 16px",animation:"fadeIn .35s ease"}}>
+      <div onClick={function(e){ e.stopPropagation(); }}
+        style={{background:B.white,maxWidth:460,width:"100%",borderRadius:24,padding:"40px 32px 28px",textAlign:"center",boxShadow:"0 20px 60px rgba(0,0,0,0.4)",position:"relative"}}>
+        {/* Sparkle hero — pure CSS, no extra deps */}
+        <div style={{position:"relative",height:60,marginBottom:16}}>
+          <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:48,color:B.navy,animation:"pulse 2s ease-in-out infinite"}}>✦</div>
+          <div style={{position:"absolute",left:"30%",top:6,fontSize:18,color:B.coral,opacity:0.7,animation:"pulse 2s ease-in-out infinite",animationDelay:"0.3s"}}>✦</div>
+          <div style={{position:"absolute",right:"28%",top:10,fontSize:14,color:B.sky,opacity:0.6,animation:"pulse 2s ease-in-out infinite",animationDelay:"0.6s"}}>✦</div>
+          <div style={{position:"absolute",left:"38%",bottom:0,fontSize:12,color:B.amber,opacity:0.6,animation:"pulse 2s ease-in-out infinite",animationDelay:"0.9s"}}>✦</div>
+        </div>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.navy,lineHeight:1.15,marginBottom:12}}>Your first plan is live.</div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.7,marginBottom:24}}>
+          That's the hardest part. Save what you love, log what you post — VIRL learns from every move and gets sharper every week.
+        </div>
+        <button onClick={onDismiss}
+          style={{
+            width:"100%",
+            fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",
+            padding:"14px 24px",background:B.navy,color:B.white,border:"none",borderRadius:14,
+            cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)",
+          }}>
+          Show me the week →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function FeedbackWidget({sessionToken, activeContext, calendlyUrl}) {
   const [open,setOpen]           = useState(false);
   const [sentiment,setSentiment] = useState(null);
@@ -1538,7 +1581,18 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
     Medium: "4-6 lines. One idea with context and a CTA.",
     Long:   "7-10 lines. Story-driven, conversational.",
   };
+  // One-line example caption per tone — UI-only, gives the user a feel
+  // for what each option reads like before committing. The model never
+  // sees these.
+  const toneExamples = {
+    "Warm & relatable": "Just made the most embarrassing meal of my life. Show me yours.",
+    "Educational":      "The 7-second rule that doubled my completion rate, explained.",
+    "Funny & playful":  "Plot twist: my morning routine is just panicking with extra steps.",
+    "Inspirational":    "You don't need a perfect plan. You need to start the imperfect one.",
+    "Bold & direct":    "Stop posting carousels nobody saves. Here's what to post instead.",
+  };
   const platformCtx = platformHints[platform] || "";
+  const toneExample = toneExamples[tone]      || "";
 
   function generate() {
     if (!topic.trim()) return;
@@ -1576,6 +1630,12 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
         <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
           <Label>Tone</Label>
           <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{TONES.map(function(t){return <Chip key={t} active={tone===t} onClick={function(){setTone(t);}}>{t}</Chip>;})}</div>
+          {toneExample && (
+            <div style={{marginTop:10,padding:"8px 12px",background:B.bg,border:"1px solid "+B.divider,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:12,fontStyle:"italic",color:B.sub,lineHeight:1.5}}>
+              <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginRight:8,fontStyle:"normal"}}>Sounds like</span>
+              {'"' + toneExample + '"'}
+            </div>
+          )}
         </div>
         <div style={{padding:"22px 26px"}}>
           <Label>Caption length</Label>
@@ -2351,8 +2411,10 @@ function Vault({vault,onDelete}) {
   if (!vault.length) return (
     <div style={{background:B.card,borderRadius:16,padding:"56px 32px",textAlign:"center"}}>
       <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.sky,marginBottom:14}}>{"✦"}</div>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:8}}>Your vault is empty</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted}}>Save posts from your plan and captions you love - they live here.</div>
+      <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:8}}>Save 3 posts to unlock pattern-based plans.</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.7,maxWidth:380,margin:"0 auto"}}>
+        VIRL weights what you save heavier in next week's strategy. Three saves is the threshold where your plans start feeling like <em>yours</em>.
+      </div>
     </div>
   );
   return (
@@ -2388,8 +2450,10 @@ function Results({results}) {
   if (!results.length) return (
     <div style={{background:B.card,borderRadius:16,padding:"56px 32px",textAlign:"center"}}>
       <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.sky,marginBottom:14}}>{"📊"}</div>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:8}}>No results yet</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted}}>Log results on any plan card to track performance here.</div>
+      <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:8}}>Log one post and Results lights up.</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.7,maxWidth:380,margin:"0 auto"}}>
+        Log three posts and VIRL starts learning what's actually working for <em>your</em> audience. Open any plan card to drop in views, likes, and saves.
+      </div>
     </div>
   );
   const tv = results.reduce(function(a,r){return a+(parseInt((r.result&&r.result.views))||0);},0);
@@ -3140,6 +3204,10 @@ function App() {
   // [TASK 5] Referral-modal milestone. 0 = hidden; 3/7/15 = show the prompt
   // for that milestone. Counter lives in localStorage.virl_plans_completed.
   const [referralMilestone,setReferralMilestone] = useState(0);
+  // First-plan celebration. Fires once ever per browser, when the user
+  // generates their very first plan. Persists in localStorage so a refresh
+  // mid-session doesn't re-trigger.
+  const [showFirstPlanCelebration,setShowFirstPlanCelebration] = useState(false);
   // [TASK 7] Dismissal flag for the trial countdown banner. Per-session so the
   // banner reappears on the user's next visit.
   const [trialBannerDismissed,setTrialBannerDismissed] = useState(function(){
@@ -3716,6 +3784,12 @@ function App() {
               setReferralMilestone(newCount);
             }
           }
+          // First plan ever — surface the celebration overlay on top of
+          // the plan render. Per-browser one-shot so a re-install or a
+          // different device doesn't re-fire it gratuitously.
+          if (newCount === 1 && localStorage.getItem("virl_first_plan_celebrated") !== "1") {
+            setShowFirstPlanCelebration(true);
+          }
         } catch(e) {}
         var planExpiresAt = getNextMonday();
         try {
@@ -3874,6 +3948,15 @@ return (
       {referralMilestone>0&&session&&(
         <ReferralModal milestone={referralMilestone} userId={session.user.id}
           onDismiss={function(){ setReferralMilestone(0); }}/>
+      )}
+
+      {/* First-plan celebration. Single-shot per browser; the dismiss
+          path persists the flag so a refresh mid-session doesn't re-fire. */}
+      {showFirstPlanCelebration && (
+        <FirstPlanCelebration onDismiss={function(){
+          try { localStorage.setItem("virl_first_plan_celebrated", "1"); } catch(e) {}
+          setShowFirstPlanCelebration(false);
+        }}/>
       )}
 
       {/* [TASK 13] Sunday batch-log modal — opened from the Sunday nudge banner. */}
