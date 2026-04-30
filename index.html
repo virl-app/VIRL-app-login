@@ -962,6 +962,20 @@ function clearLocalUserData() {
   } catch(e) {}
 }
 
+// Resolves when the current plan should expire. Aligned with the user's
+// per-user credit reset cadence (sbCredits.reset_at), so plan + credits
+// tick together — the plan ends when fresh credits arrive. Falls back to
+// "now + 7 days" if the credits row hasn't loaded yet, which still gives
+// a per-user rolling 7-day window. Note: getNextMonday() (below) is kept
+// only for legacy callers; new code should use computePlanExpiry.
+function computePlanExpiry(sbCredits) {
+  if (sbCredits && sbCredits.reset_at) {
+    var ms = Date.parse(sbCredits.reset_at);
+    if (!Number.isNaN(ms) && ms > Date.now()) return ms;
+  }
+  return Date.now() + 7 * 86400000;
+}
+
 function getNextMonday() {
   const d = new Date();
   const diff = d.getDay()===0 ? 1 : 8-d.getDay();
@@ -3850,7 +3864,7 @@ function App() {
             setShowFirstPlanCelebration(true);
           }
         } catch(e) {}
-        var planExpiresAt = getNextMonday();
+        var planExpiresAt = computePlanExpiry(sbCredits);
         try {
           var current = JSON.parse(localStorage.getItem(KEY)||"{}");
           current.plan = parsedCards;
@@ -3917,11 +3931,11 @@ function App() {
       try {
         var current = JSON.parse(localStorage.getItem(KEY)||"{}");
         expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
-          ? current.planExpiresAt : getNextMonday();
+          ? current.planExpiresAt : computePlanExpiry(sbCredits);
         current.plan = next;
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
-      } catch(e) { expiresAt = getNextMonday(); }
+      } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
       if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy);
       return next;
     });
