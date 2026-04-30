@@ -353,12 +353,27 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     + (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
     + vaultCtx;
 
+  // Day labels are relative to the generation date — Day 1 = today's
+  // weekday, Day 2 = tomorrow, etc. This lets a Wednesday-generated plan
+  // start on Wednesday instead of awkwardly anchoring to a calendar
+  // Monday the user has already passed.
+  const today = new Date();
+  const WEEKDAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const startWeekday = WEEKDAYS[today.getUTCDay()];
+  const dayLabels = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today.getTime() + i * 86400000);
+    dayLabels.push("Day " + (i + 1) + " - " + WEEKDAYS[d.getUTCDay()]);
+  }
+  const dayLabelsLine = dayLabels.join(", ");
+
   const userPrompt = "This is week " + weekNumber + " of an ongoing plan. Generate this week's content plan with these settings: "
     + "platforms=" + platforms + " niche=" + niche + " goal=" + goal
     + " formats=" + formats + " followers=" + followers
     + (trending ? " TRENDING THIS WEEK - incorporate these where natural: " + trending : "")
     + (context  ? " Extra context: " + context : "")
     + historyCtx
+    + " The week starts TODAY (" + startWeekday + "). Use these exact day labels in the order they appear: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday."
     + " Create 10-14 total posts for THIS week. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
     + " Open the plan with a STRATEGY object that frames the week. The strategy must:"
     + "  - State a one-sentence thesis for the week (specific to this creator, not generic)."
@@ -369,7 +384,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     + " For each post: description is 2 punchy sentences max. Include a why field — one sentence on the strategic reason this post will perform well for this creator's audience, citing the platform signal it optimizes for."
     + " Return ONLY one JSON object with this exact shape: {"
     + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"},"
-    + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
+    + "\"cards\":[{\"day\":\"" + dayLabels[0] + "\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
     + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."

@@ -21,39 +21,69 @@ const COLOR = {
   white:   "#FFFFFF",
 };
 
+// Brand tagline — repeated in the header band and the footer so the
+// emails read distinctly VIRL even when forwarded.
+const BRAND_TAGLINE = "Finally, a strategy that sounds like you.";
+
 function unsubscribeFooter(unsubscribeToken) {
-  if (!unsubscribeToken) return ""; // transactional — no unsub
-  const url = `${UNSUBSCRIBE_BASE}?t=${encodeURIComponent(unsubscribeToken)}`;
+  // Branded footer block. Always shows the navy tagline + small VIRL
+  // mark; unsubscribe link only renders for marketing sends. Account &
+  // billing emails still get the brand foot but no unsub.
+  const unsubLink = unsubscribeToken
+    ? `<a href="${UNSUBSCRIBE_BASE}?t=${encodeURIComponent(unsubscribeToken)}" style="color:${COLOR.muted};text-decoration:underline">Unsubscribe from updates like this</a> &nbsp;·&nbsp; Account &amp; billing emails will still be sent.`
+    : `Account &amp; billing receipts only — no unsubscribe needed.`;
   return `
-    <tr><td style="padding:24px 32px;border-top:1px solid ${COLOR.border};font-family:Helvetica,Arial,sans-serif;font-size:11px;color:${COLOR.muted};line-height:1.6;text-align:center">
-      You're receiving this because you signed up for VIRL.
-      <br/>
-      <a href="${url}" style="color:${COLOR.muted};text-decoration:underline">Unsubscribe from updates like this</a>
-      &nbsp;·&nbsp;
-      Account &amp; billing emails will still be sent.
+    <tr><td style="padding:32px 32px 28px;border-top:1px solid ${COLOR.border};text-align:center">
+      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:18px;color:${COLOR.navy};letter-spacing:0.05em;margin-bottom:4px">VIRL</div>
+      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:11px;color:${COLOR.sky};letter-spacing:0.02em;margin-bottom:14px">${BRAND_TAGLINE}</div>
+      <div style="font-family:Helvetica,Arial,sans-serif;font-size:11px;color:${COLOR.muted};line-height:1.65">
+        ${unsubLink}
+      </div>
     </td></tr>`;
 }
 
 function unsubscribeFooterText(unsubscribeToken) {
   if (!unsubscribeToken) return "";
   const url = `${UNSUBSCRIBE_BASE}?t=${encodeURIComponent(unsubscribeToken)}`;
-  return `\n\n---\nYou're receiving this because you signed up for VIRL.\nUnsubscribe: ${url}\nAccount & billing emails will still be sent.`;
+  return `\n\n---\nVIRL — ${BRAND_TAGLINE}\nUnsubscribe: ${url}\nAccount & billing emails will still be sent.`;
 }
 
-// Wraps a single content block in the standard frame so every email shares
-// the same visual signature. `body` is raw HTML; the helper handles header,
-// padding, and footer (including unsubscribe link when provided).
-function layout({ headline, body, primaryCta, unsubscribeToken }) {
-  const cta = primaryCta
-    ? `<tr><td style="padding:0 32px 32px"><a href="${primaryCta.href}" style="display:inline-block;background:${COLOR.blue};color:${COLOR.white};font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;text-decoration:none;padding:14px 28px;border-radius:99px">${primaryCta.label}</a></td></tr>`
+// Email frame. Every template renders through this so a single-line
+// styling change cascades. Constraints: inline styles only (Outlook +
+// Gmail strip <style> blocks aggressively), table-based layout for
+// older clients, web-safe fonts (Georgia for italic-serif, Helvetica
+// for body), 600px max width.
+//
+// `accent` flips the CTA pill + the eyebrow color from navy/blue (the
+// default, used for transactional + neutral emails) to coral (used for
+// celebration moments — welcome, first plan, milestone). Pass
+// accent: "coral" for those.
+function layout({ headline, body, primaryCta, eyebrow, unsubscribeToken, accent }) {
+  const accentColor      = accent === "coral" ? COLOR.coral : COLOR.blue;
+  const accentEyebrow    = accent === "coral" ? COLOR.coral : COLOR.navy;
+  const accentShadowRGB  = accent === "coral" ? "244,63,94" : "37,99,235";
+
+  const eyebrowBlock = eyebrow
+    ? `<tr><td style="padding:0 36px 6px"><div style="font-family:Helvetica,Arial,sans-serif;font-size:10px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:${accentEyebrow}">${eyebrow}</div></td></tr>`
     : "";
 
+  const cta = primaryCta
+    ? `<tr><td style="padding:8px 36px 36px">
+        <a href="${primaryCta.href}" style="display:inline-block;background:${accentColor};color:${COLOR.white};font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;padding:15px 30px;border-radius:99px;box-shadow:0 6px 18px rgba(${accentShadowRGB},0.35)">${primaryCta.label}</a>
+      </td></tr>`
+    : `<tr><td style="padding:0 36px 32px"></td></tr>`;
+
   return `<!doctype html>
-<html><body style="margin:0;padding:24px 12px;background:${COLOR.bg};font-family:Helvetica,Arial,sans-serif;color:${COLOR.ink}">
-  <table role="presentation" cellpadding="0" cellspacing="0" align="center" width="100%" style="max-width:600px;background:${COLOR.card};border-radius:14px;overflow:hidden;border:1px solid ${COLOR.border}">
-    <tr><td style="padding:28px 32px 8px"><div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:24px;color:${COLOR.navy};letter-spacing:0.04em">VIRL</div></td></tr>
-    <tr><td style="padding:0 32px 8px"><div style="font-family:Georgia,'Times New Roman',serif;font-size:28px;line-height:1.2;color:${COLOR.ink}">${headline}</div></td></tr>
-    <tr><td style="padding:8px 32px 24px;font-size:15px;line-height:1.7;color:${COLOR.sub}">${body}</td></tr>
+<html><body style="margin:0;padding:32px 12px;background:${COLOR.bg};font-family:Helvetica,Arial,sans-serif;color:${COLOR.ink}">
+  <table role="presentation" cellpadding="0" cellspacing="0" align="center" width="100%" style="max-width:600px;background:${COLOR.card};border-radius:18px;overflow:hidden;border:1px solid ${COLOR.border};box-shadow:0 4px 30px rgba(15,23,42,0.06)">
+    <!-- Navy header band — mirrors the in-app top nav. VIRL mark + italic tagline. -->
+    <tr><td style="background:${COLOR.navy};padding:22px 36px 20px">
+      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:26px;color:${COLOR.white};letter-spacing:0.06em;line-height:1">VIRL</div>
+      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:11px;color:${COLOR.sky};letter-spacing:0.02em;margin-top:4px">${BRAND_TAGLINE}</div>
+    </td></tr>
+    ${eyebrowBlock}
+    <tr><td style="padding:${eyebrow ? "4px" : "32px"} 36px 16px"><div style="font-family:Georgia,'Times New Roman',serif;font-size:32px;line-height:1.2;color:${COLOR.ink};letter-spacing:-0.005em">${headline}</div></td></tr>
+    <tr><td style="padding:0 36px 22px;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.75;color:${COLOR.sub}">${body}</td></tr>
     ${cta}
     ${unsubscribeFooter(unsubscribeToken)}
   </table>
@@ -76,7 +106,7 @@ export function welcome({ name }) {
     <p style="margin:0">Reply to this email if anything's confusing — a real person reads every reply.</p>`;
   return {
     subject: "Welcome to VIRL — let's build your first plan",
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
+    html:    layout({ eyebrow: "Welcome", accent: "coral", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
     text:    `${headline}\n\nYou have 14 days and 20 credits per week to put VIRL through its paces — no card needed.\n\nThree things to try first:\n  1. Finish your creator profile.\n  2. Generate your first weekly plan.\n  3. Run a photo through VIRL Scan.\n\nReply to this email if anything's confusing.\n\n${APP_URL}`,
   };
 }
@@ -90,7 +120,7 @@ export function trialDay11({ name, unsubscribeToken }) {
     <p style="margin:0">No pressure if it's not the right fit. Either way, your plans and vault stay safe.</p>`;
   return {
     subject: "3 days left in your VIRL trial",
-    html:    layout({ headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "See plans" }, unsubscribeToken }),
+    html:    layout({ eyebrow: "Reminder", headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "See plans" }, unsubscribeToken }),
     text:    `${headline}\n\nYou've had 11 days with VIRL. Three more before the trial ends.\n\nIf VIRL is helping, the founding rate locks in 20% off year one — that ends with the trial too.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
@@ -104,7 +134,7 @@ export function trialDay13({ name, unsubscribeToken }) {
     <p style="margin:0">If it's not the fit, that's totally fine — your account stays open, your vault and saved plans are yours to keep.</p>`;
   return {
     subject: "Last day of your VIRL trial",
-    html:    layout({ headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "Lock in founding rate" }, unsubscribeToken }),
+    html:    layout({ eyebrow: "Last day", accent: "coral", headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "Lock in founding rate" }, unsubscribeToken }),
     text:    `${headline}\n\nToday is day 14 — your trial ends tonight.\n\nIf you've found VIRL useful, lock in the founding rate before midnight: $20/mo or $225/yr.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
@@ -121,7 +151,7 @@ export function trialExpired({ name, unsubscribeToken }) {
     <p style="margin:0">No hard feelings if not — reply and tell me why VIRL didn't fit. That feedback is gold this early.</p>`;
   return {
     subject: "Your VIRL free trial has ended",
-    html:    layout({ headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "Upgrade to Standard" }, unsubscribeToken }),
+    html:    layout({ eyebrow: "Trial ended", headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "Upgrade to Standard" }, unsubscribeToken }),
     text:    `${headline}\n\nYour 14-day trial is over. Your profile, vault, and saved plans stay safe.\n\nStandard: $25/mo or $249/yr — 150 credits/week, every feature.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
@@ -141,7 +171,7 @@ export function subscriptionWelcome({ name, plan }) {
     <p style="margin:0">Billing receipts come from Stripe; this is the human note.</p>`;
   return {
     subject: `Welcome to ${planLabel}`,
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
+    html:    layout({ eyebrow: "Welcome aboard", accent: "coral", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
     text:    `${headline}\n\nThank you. Your subscription is live and 150 credits a week are now yours.\n\nGenerate a fresh plan every Monday, run VIRL Scan often, log results on every post.\n\n${APP_URL}`,
   };
 }
@@ -155,7 +185,7 @@ export function paymentFailed({ name }) {
     <p style="margin:0">Open the app and head to your billing settings, or reply to this email and we'll send a billing-portal link.</p>`;
   return {
     subject: "Payment failed on your VIRL subscription",
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Update payment" } }),
+    html:    layout({ eyebrow: "Action needed", accent: "coral", headline, body, primaryCta: { href: APP_URL, label: "Update payment" } }),
     text:    `${headline}\n\nStripe just told us your most recent charge for VIRL failed.\n\nStripe will retry. To update your card, open the app or reply for a billing-portal link.\n\n${APP_URL}`,
   };
 }
@@ -169,22 +199,22 @@ export function subscriptionCancelled({ name }) {
     <p style="margin:0">If there's something specific that didn't work, reply to this email. Founder-stage feedback is the most valuable thing you could send us.</p>`;
   return {
     subject: "Sorry to see you go — VIRL subscription cancelled",
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
+    html:    layout({ eyebrow: "Confirmation", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
     text:    `${headline}\n\nWe're sorry to see you go.\n\nYour account stays open. Vault, saved plans, profile — all yours to keep. Resubscribe any time.\n\nReply to tell us what didn't work — feedback is gold this early.\n\n${APP_URL}`,
   };
 }
 
 // 8. Weekly Monday reset — re-engagement nudge for active users.
 export function weeklyReset({ name, unsubscribeToken }) {
-  const headline = "Fresh credits, fresh week.";
+  const headline = "Fresh week, fresh momentum.";
   const body = `
-    <p style="margin:0 0 12px">${name ? "Happy Monday, " + name + "." : "Happy Monday."} Your VIRL credits just refreshed.</p>
-    <p style="margin:0 0 12px">A 60-second plan generation now sets the next seven days. The earlier you draft it, the more time you have to actually post it.</p>
+    <p style="margin:0 0 12px">${name ? "Happy Monday, " + name + "." : "Happy Monday."} A new week — perfect time to draft your next plan and ship it before the week gets ahead of you.</p>
+    <p style="margin:0 0 12px">A 60-second plan generation sets the next seven days. The earlier you draft it, the more room you have to actually post it.</p>
     <p style="margin:0">If your audience expanded last week — or anything changed about how you sound — update your profile first, then generate.</p>`;
   return {
-    subject: "Fresh week, fresh VIRL credits",
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Generate this week's plan" }, unsubscribeToken }),
-    text:    `${headline}\n\nHappy Monday. Your VIRL credits just refreshed.\n\nA 60-second plan generation sets the next seven days.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    subject: "Fresh week, fresh VIRL plan",
+    html:    layout({ eyebrow: "Fresh week", headline, body, primaryCta: { href: APP_URL, label: "Generate this week's plan" }, unsubscribeToken }),
+    text:    `${headline}\n\nHappy Monday. A new week — perfect time to draft your next plan.\n\nA 60-second generation sets the next seven days.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -206,7 +236,7 @@ export function playbookDraftsReady({ count, summaries }) {
     <p style="margin:0">Open the Dashboard to approve or reject each draft. Drafts that aren't approved stay archived without affecting the live playbook.</p>`;
   return {
     subject: count === 1 ? "1 VIRL playbook draft pending" : `${count} VIRL playbook drafts pending`,
-    html:    layout({ headline, body, primaryCta: { href: APP_URL + "/?tab=admin", label: "Review drafts" } }),
+    html:    layout({ eyebrow: "Admin", headline, body, primaryCta: { href: APP_URL + "/?tab=admin", label: "Review drafts" } }),
     text:    `${headline}\n\nVIRL's monthly playbook research surfaced ${count === 1 ? "a change" : "changes"} from trusted sources.\n\n${summaryText}\n\nOpen ${APP_URL} → Dashboard to review.`,
   };
 }
@@ -220,7 +250,7 @@ export function phase1NoPlan({ name, unsubscribeToken }) {
     <p style="margin:0">If something's stopping you from clicking generate, hit reply and tell me why. Real person reads every reply.</p>`;
   return {
     subject: "Your VIRL profile's set — generate your first plan",
-    html:    layout({ headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Generate my first plan" }, unsubscribeToken }),
+    html:    layout({ eyebrow: "Activation", headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Generate my first plan" }, unsubscribeToken }),
     text:    `${headline}\n\nYou've given VIRL the foundation. Generating your first plan is the next step.\n\nTakes about 60 seconds.\n\n${APP_URL}/?tab=plan${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
@@ -238,7 +268,7 @@ export function firstPlanGenerated({ name }) {
     <p style="margin:0">Plans reset Monday morning. Until then, this one's yours to refine and ship.</p>`;
   return {
     subject: "Your first VIRL plan, decoded",
-    html:    layout({ headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Open the plan" } }),
+    html:    layout({ eyebrow: "Milestone", accent: "coral", headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Open the plan" } }),
     text:    `${headline}\n\nIt's live. Save posts you love to your Vault, generate scripts from any card, and log results once you post.\n\nPlans reset Monday morning.\n\n${APP_URL}/?tab=plan`,
   };
 }
@@ -252,7 +282,7 @@ export function inactive7Day({ name, unsubscribeToken }) {
     <p style="margin:0">Otherwise, the Monday reset is right around the corner. Worth a 60-second plan generation to put a fresh week on the calendar.</p>`;
   return {
     subject: "Your VIRL plan is waiting",
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
+    html:    layout({ eyebrow: "Check-in", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
     text:    `${headline}\n\nA week since you signed in. Your plan, vault, and saved scripts are still here.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
@@ -268,7 +298,7 @@ export function sundayLogNudge({ name, unloggedCount, unsubscribeToken }) {
     <p style="margin:0">Plans reset tomorrow morning, so this is the last good window to log this week.</p>`;
   return {
     subject: `Log this week's ${noun} — ${unloggedCount} pending`,
-    html:    layout({ headline, body, primaryCta: { href: APP_URL + "/?tab=results", label: "Log results" }, unsubscribeToken }),
+    html:    layout({ eyebrow: "Weekly wrap", headline, body, primaryCta: { href: APP_URL + "/?tab=results", label: "Log results" }, unsubscribeToken }),
     text:    `${headline}\n\nYou have ${unloggedCount} ${noun} from this week's plan that need results logged. Takes 90 seconds.\n\nVIRL learns what's working for your audience from these numbers.\n\n${APP_URL}/?tab=results${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
@@ -286,7 +316,7 @@ export function trialDay7({ name, unsubscribeToken }) {
     <p style="margin:0">If something's not clicking, hit reply — real person reads every reply.</p>`;
   return {
     subject: "How VIRL gets sharper after this week",
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
+    html:    layout({ eyebrow: "Mid-trial", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
     text:    `${headline}\n\nYou're halfway through the trial. Two things to try this week: save 3 posts to your vault, and log results on anything you've posted.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
@@ -300,7 +330,7 @@ export function inactive30Day({ name, unsubscribeToken }) {
     <p style="margin:0">If you do come back: your vault, profile, and any saved scripts are exactly where you left them.</p>`;
   return {
     subject: "Did VIRL drop the ball?",
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Reopen VIRL" }, unsubscribeToken }),
+    html:    layout({ eyebrow: "Check-in", headline, body, primaryCta: { href: APP_URL, label: "Reopen VIRL" }, unsubscribeToken }),
     text:    `${headline}\n\nIt's been 30 days since you last opened VIRL. If something bounced you, reply with one line — that feedback shapes what VIRL becomes.\n\nIf you do come back: vault, profile, saved scripts all where you left them.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
@@ -318,7 +348,7 @@ export function renewalUpcoming({ name, plan, amountUsd, renewalDate }) {
     <p style="margin:0">If you'd like to make changes (cancel, switch annual ↔ monthly, update your card), open the app's billing settings or reply and I'll sort it.</p>`;
   return {
     subject: `VIRL ${planLabel} renews ${dateText}`,
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
+    html:    layout({ eyebrow: "Heads up", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
     text:    `${headline}\n\nYour VIRL ${planLabel} subscription renews on ${dateText} at ${amountText}.\n\nNothing you need to do — this is just a transparency note. To change anything, open the app's billing settings or reply.\n\n${APP_URL}`,
   };
 }
@@ -338,7 +368,7 @@ export function accountDeleted({ name }) {
     <p style="margin:0">If this wasn't you, reply immediately. Otherwise, thanks for trying VIRL.</p>`;
   return {
     subject: "VIRL account closed",
-    html:    layout({ headline, body }),
+    html:    layout({ eyebrow: "Receipt", headline, body }),
     text:    `${headline}\n\nWe've closed your account and deleted your auth record, profile, vault, saved plans, credits, trial state, and activity history.\n\nStripe billing history is governed by Stripe's retention policy.\n\nIf this wasn't you, reply immediately.\n\nThanks for trying VIRL.`,
   };
 }
@@ -355,7 +385,7 @@ export function referralMilestone({ name, milestone, unsubscribeToken }) {
     <p style="margin:0">Forward this email, or send them straight to ${APP_URL}.</p>`;
   return {
     subject: `${milestone} plans in — keep going`,
-    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
+    html:    layout({ eyebrow: "Milestone", accent: "coral", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
     text:    `${headline}\n\nYou've generated ${milestone} VIRL plans. Your vault + logged results are starting to compound.\n\nIf a friend's building too: ${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
