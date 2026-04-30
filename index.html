@@ -410,6 +410,166 @@ const UsageKPI = ({label, value, sub, color}) => (
   </div>
 );
 
+// Floating feedback widget — bottom-right pill that opens a modal with
+// optional sentiment chips, a free-text "what's on your mind" textarea,
+// and a secondary "book 15 min with the founder" link if the env var is
+// set. Submit POSTs to /api/feedback (auth-required server-side).
+function FeedbackWidget({sessionToken, activeContext, calendlyUrl}) {
+  const [open,setOpen]           = useState(false);
+  const [sentiment,setSentiment] = useState(null);
+  const [message,setMessage]     = useState("");
+  const [submitting,setSubmitting] = useState(false);
+  const [thanks,setThanks]       = useState(false);
+  const [error,setError]         = useState("");
+
+  function reset() {
+    setSentiment(null); setMessage(""); setSubmitting(false); setError(""); setThanks(false);
+  }
+  function close() { setOpen(false); setTimeout(reset, 200); }
+
+  function submit() {
+    if (!message.trim() || submitting) return;
+    setSubmitting(true); setError("");
+    fetch("/api/feedback", {
+      method: "POST",
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": "Bearer " + sessionToken,
+      },
+      body: JSON.stringify({
+        sentiment: sentiment,
+        message:   message.trim(),
+        context:   activeContext || null,
+      }),
+    }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+      .then(function(res){
+        if (res.ok) {
+          setThanks(true);
+          setTimeout(close, 2500);
+        } else {
+          setError((res.body && res.body.error) || "Could not send feedback.");
+          setSubmitting(false);
+        }
+      })
+      .catch(function(e){ setError(e.message); setSubmitting(false); });
+  }
+
+  // Bottom-right pill. Stays out of the way but always visible.
+  return (
+    <div>
+      <button onClick={function(){ setOpen(true); }}
+        aria-label="Send feedback"
+        style={{
+          position:"fixed", right:18, bottom:18, zIndex:300,
+          fontFamily:"'Jost',sans-serif", fontSize:12, fontWeight:700, letterSpacing:"0.06em", textTransform:"uppercase",
+          background:B.navy, color:B.white, border:"none", borderRadius:99,
+          padding:"11px 18px", cursor:"pointer",
+          boxShadow:"0 6px 20px rgba(31,58,138,0.35)",
+        }}>
+        💬 Feedback
+      </button>
+
+      {open && (
+        <div onClick={close}
+          style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.7)",zIndex:600,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+          <div onClick={function(e){ e.stopPropagation(); }}
+            style={{background:B.white,width:"100%",maxWidth:480,borderRadius:"24px 24px 0 0",padding:"32px 28px 28px",boxShadow:"0 -8px 40px rgba(0,0,0,0.25)"}}>
+            <div style={{width:40,height:4,background:B.border,borderRadius:99,margin:"0 auto 24px"}}/>
+
+            {!thanks && (
+              <div>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.navy,marginBottom:8}}>How's VIRL going?</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,marginBottom:20,lineHeight:1.55}}>
+                  Tell me anything — what's working, what's broken, what you wish existed. A real person reads every reply.
+                </div>
+
+                {/* Sentiment chips — optional */}
+                <div style={{display:"flex",gap:10,marginBottom:18,justifyContent:"center"}}>
+                  {[
+                    {key:"sad",     emoji:"😞", label:"Frustrated"},
+                    {key:"neutral", emoji:"😐", label:"Mixed"},
+                    {key:"happy",   emoji:"😊", label:"Loving it"},
+                  ].map(function(s){
+                    var active = sentiment === s.key;
+                    return (
+                      <button key={s.key} onClick={function(){ setSentiment(active ? null : s.key); }}
+                        style={{
+                          flex:1, padding:"12px 8px",
+                          background:active ? B.navySoft : B.bg,
+                          border:"1px solid "+(active ? B.navy : B.border),
+                          borderRadius:14, cursor:"pointer", textAlign:"center",
+                          fontFamily:"'Jost',sans-serif", fontSize:11, fontWeight:active?700:400,
+                          color:active ? B.navy : B.muted,
+                        }}>
+                        <div style={{fontSize:22,lineHeight:1,marginBottom:4}}>{s.emoji}</div>
+                        {s.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <textarea value={message} onChange={function(e){ setMessage(e.target.value); }}
+                  placeholder="What's on your mind?"
+                  rows={4}
+                  style={{
+                    width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:12,
+                    padding:"12px 14px",fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.ink,
+                    resize:"vertical",lineHeight:1.6,marginBottom:14,
+                  }}/>
+
+                {error && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.coral,marginBottom:12}}>{error}</div>}
+
+                <button onClick={submit} disabled={!message.trim() || submitting}
+                  style={{
+                    width:"100%",
+                    fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",
+                    padding:"15px 24px",
+                    background:(!message.trim() || submitting) ? B.muted : B.navy,
+                    color:B.white,border:"none",borderRadius:14,
+                    cursor:(!message.trim() || submitting) ? "default" : "pointer",
+                    marginBottom:10,
+                  }}>
+                  {submitting ? "Sending…" : "Send feedback"}
+                </button>
+
+                {calendlyUrl && (
+                  <a href={calendlyUrl} target="_blank" rel="noopener noreferrer"
+                    style={{
+                      display:"block",textAlign:"center",
+                      fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.blue,
+                      textDecoration:"none",padding:"8px",
+                    }}>
+                    {"Or book 15 min with the founder →"}
+                  </a>
+                )}
+
+                <button onClick={close}
+                  style={{
+                    width:"100%",background:"none",border:"none",
+                    fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,
+                    cursor:"pointer",padding:"6px",marginTop:4,
+                  }}>
+                  Close
+                </button>
+              </div>
+            )}
+
+            {thanks && (
+              <div style={{textAlign:"center",padding:"24px 0"}}>
+                <div style={{fontSize:36,marginBottom:10}}>{"✦"}</div>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,marginBottom:6}}>Thank you.</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,lineHeight:1.55}}>
+                  Got it. Real person reads every reply — we'll be in touch if a follow-up makes sense.
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PendingPlaybookDraft({draft, token, onResolved}) {
   const [working,setWorking] = useState("");
   const [error,setError]     = useState("");
@@ -3003,6 +3163,17 @@ function App() {
   const [foundingCount,setFoundingCount] = useState(null);
   var foundingAvailable = (foundingCount === null) || (foundingCount < FOUNDING_CAP);
 
+  // Public app config (currently just the founder Calendly URL for the
+  // feedback widget). Loaded once on mount; missing values resolve to null
+  // and the dependent UI hides itself.
+  const [appConfig,setAppConfig] = useState({});
+  useEffect(function() {
+    fetch("/api/config")
+      .then(function(r){ return r.ok ? r.json() : {}; })
+      .then(function(c){ setAppConfig(c || {}); })
+      .catch(function(){});
+  }, []);
+
   // Platform playbook (loaded from Supabase on mount). Empty {} until the
   // network round-trip resolves; `playbookFetched` flips true regardless
   // of whether the table had data, so the Algo tab can distinguish "still
@@ -3291,6 +3462,7 @@ function App() {
   const [adminData,setAdminData] = useState(null);
   const [adminLoading,setAdminLoading] = useState(false);
   const [usageStats,setUsageStats] = useState(null);
+  const [feedbackInbox,setFeedbackInbox] = useState(null);
 
   // Loads the cost/usage panel. Separate from loadAdminData() so it can be
   // called in parallel when the admin clicks Refresh — different endpoint,
@@ -3313,6 +3485,18 @@ function App() {
     }
   }
 
+  async function loadFeedbackInbox() {
+    if (!isAdmin || !session) return;
+    try {
+      const res = await fetch("/api/admin/feedback", {
+        headers: { Authorization: "Bearer " + session.access_token },
+      });
+      if (!res.ok) return;
+      const body = await res.json();
+      setFeedbackInbox(Array.isArray(body.items) ? body.items : []);
+    } catch (e) { /* non-fatal */ }
+  }
+
   // ── Admin dashboard data fetch ────────────────────────────────────────
   async function loadAdminData() {
     if (!isAdmin) return;
@@ -3321,6 +3505,7 @@ function App() {
     // admin-stats fetch, so a failure on either side leaves the other
     // panel showing.
     loadUsageStats();
+    loadFeedbackInbox();
     try {
       // Call our server-side admin endpoint — uses service_role key
       // to bypass RLS and read all user data. Passes the user's access
@@ -3695,6 +3880,16 @@ return (
       {sundayLogModalOpen&&(
         <SundayLogModal unloggedCards={unloggedCards} onLog={logResult}
           onClose={function(){ setSundayLogModalOpen(false); }}/>
+      )}
+
+      {/* Floating feedback widget — bottom-right pill, visible on every
+          tab while signed in. activeContext threads the current tab name
+          so admin sees what surface the user was on when they wrote in. */}
+      {session && (
+        <FeedbackWidget
+          sessionToken={session.access_token}
+          activeContext={tab}
+          calendlyUrl={appConfig.founder_calendly_url}/>
       )}
 
       {showUpgrade&&(() => {
@@ -4719,6 +4914,39 @@ return (
                     })}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Feedback inbox — most recent first. Hidden when there's
+                nothing yet so a fresh launch shows a clean Dashboard. */}
+            {feedbackInbox && feedbackInbox.length > 0 && (
+              <div style={{marginBottom:24}}>
+                <Eyebrow>Feedback</Eyebrow>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,marginBottom:8,lineHeight:1.2}}>{feedbackInbox.length} recent message{feedbackInbox.length===1?"":"s"}.</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,marginBottom:14}}>
+                  Submitted via the in-app widget. Most recent first.
+                </div>
+                {feedbackInbox.map(function(f){
+                  var sentimentEmoji = f.sentiment === "happy" ? "😊"
+                                     : f.sentiment === "neutral" ? "😐"
+                                     : f.sentiment === "sad" ? "😞" : null;
+                  var when = (function(){ try { return new Date(f.created_at).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}); } catch(e){ return ""; } })();
+                  return (
+                    <div key={f.id} style={{background:B.card,borderRadius:14,padding:"16px 18px",marginBottom:8,boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,marginBottom:8,flexWrap:"wrap"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+                          {sentimentEmoji && <span style={{fontSize:18}}>{sentimentEmoji}</span>}
+                          <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,wordBreak:"break-all"}}>{f.user_email || "(unknown)"}</span>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:8,fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted}}>
+                          {f.context && <span style={{padding:"2px 8px",background:B.bg,borderRadius:99,fontSize:9,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.sub}}>{f.context}</span>}
+                          <span>{when}</span>
+                        </div>
+                      </div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{f.message}</div>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
