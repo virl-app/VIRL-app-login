@@ -33,6 +33,11 @@ const TEMPLATES = {
   first_plan_generated:   (uid) => T.firstPlanGenerated({ name: "Lauren" }),
   inactive_7d:            (uid) => T.inactive7Day({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   sunday_log:             (uid) => T.sundayLogNudge({ name: "Lauren", unloggedCount: 4, unsubscribeToken: makeUnsubToken(uid) }),
+  trial_day_7:            (uid) => T.trialDay7({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
+  inactive_30d:           (uid) => T.inactive30Day({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
+  renewal_upcoming:       (uid) => T.renewalUpcoming({ name: "Lauren", plan: "founding", amountUsd: 225, renewalDate: new Date(Date.now() + 7 * 86400000).toISOString() }),
+  account_deleted:        (uid) => T.accountDeleted({ name: "Lauren" }),
+  referral_milestone:     (uid) => T.referralMilestone({ name: "Lauren", milestone: 7, unsubscribeToken: makeUnsubToken(uid) }),
 };
 
 async function verifyAdmin(token) {

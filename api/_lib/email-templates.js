@@ -273,4 +273,91 @@ export function sundayLogNudge({ name, unloggedCount, unsubscribeToken }) {
   };
 }
 
+// 14. Trial day 7 mid-trial check-in — friendly, no urgency yet.
+export function trialDay7({ name, unsubscribeToken }) {
+  const headline = "A week with VIRL.";
+  const body = `
+    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'re halfway through the free trial. Most creators discover by day 7 that the saved-to-vault loop is where VIRL actually starts working — once VIRL has 3-5 saved posts to learn from, the next plan starts feeling pointed.</p>
+    <p style="margin:0 0 12px">If you haven't yet, two quick things to try this week:</p>
+    <ul style="margin:0 0 16px;padding-left:18px">
+      <li><strong>Save 3 posts</strong> from your plan to your vault. Future plans will weight similar styles higher.</li>
+      <li><strong>Log results</strong> on anything you've actually posted. The Results tab is how VIRL learns what's landing for <em>your</em> audience, not generic best practices.</li>
+    </ul>
+    <p style="margin:0">If something's not clicking, hit reply — real person reads every reply.</p>`;
+  return {
+    subject: "How VIRL gets sharper after this week",
+    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
+    text:    `${headline}\n\nYou're halfway through the trial. Two things to try this week: save 3 posts to your vault, and log results on anything you've posted.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
+// 15. 30-day inactivity — softer than 7-day, more honest.
+export function inactive30Day({ name, unsubscribeToken }) {
+  const headline = "Honest check-in.";
+  const body = `
+    <p style="margin:0 0 12px">${name ? "Hey " + name + " — it" : "It"}'s been 30 days since you last opened VIRL. Either life got in the way (totally fine) or VIRL didn't end up clicking. I'd love to know which.</p>
+    <p style="margin:0 0 12px">If something specific bounced you, reply with one line — even a curt one. That kind of feedback at this stage shapes what VIRL becomes.</p>
+    <p style="margin:0">If you do come back: your vault, profile, and any saved scripts are exactly where you left them.</p>`;
+  return {
+    subject: "Did VIRL drop the ball?",
+    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Reopen VIRL" }, unsubscribeToken }),
+    text:    `${headline}\n\nIt's been 30 days since you last opened VIRL. If something bounced you, reply with one line — that feedback shapes what VIRL becomes.\n\nIf you do come back: vault, profile, saved scripts all where you left them.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
+// 16. Renewal upcoming — fired by Stripe's invoice.upcoming webhook.
+// Transparency cuts down "I didn't know I'd be charged" support tickets.
+export function renewalUpcoming({ name, plan, amountUsd, renewalDate }) {
+  const planLabel = plan === "founding" ? "Founding" : plan === "pro" ? "Pro" : "Standard";
+  const headline = "Heads up — your VIRL renews soon.";
+  const dateText = renewalDate ? new Date(renewalDate).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : "shortly";
+  const amountText = amountUsd ? `$${amountUsd.toFixed(2)}` : "your usual rate";
+  const body = `
+    <p style="margin:0 0 12px">${name ? name + ", a" : "A"} quick heads-up: your VIRL ${planLabel} subscription renews on <strong>${dateText}</strong> at ${amountText}.</p>
+    <p style="margin:0 0 12px">Nothing you need to do — same card, same plan, same 150 credits/week. This is just a transparency note so the charge isn't a surprise.</p>
+    <p style="margin:0">If you'd like to make changes (cancel, switch annual ↔ monthly, update your card), open the app's billing settings or reply and I'll sort it.</p>`;
+  return {
+    subject: `VIRL ${planLabel} renews ${dateText}`,
+    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
+    text:    `${headline}\n\nYour VIRL ${planLabel} subscription renews on ${dateText} at ${amountText}.\n\nNothing you need to do — this is just a transparency note. To change anything, open the app's billing settings or reply.\n\n${APP_URL}`,
+  };
+}
+
+// 17. Account deleted — last email the address gets from VIRL. Trust signal.
+export function accountDeleted({ name }) {
+  const headline = "Your VIRL account is closed.";
+  const body = `
+    <p style="margin:0 0 12px">${name ? name + ", we've" : "We've"} closed your VIRL account and deleted your data:</p>
+    <ul style="margin:0 0 16px;padding-left:18px">
+      <li>Your auth record</li>
+      <li>Your profile, vault, and saved plans</li>
+      <li>Your weekly credits and trial state</li>
+      <li>Your activity history</li>
+    </ul>
+    <p style="margin:0 0 12px">Your Stripe billing history (invoices, payment methods) is governed by Stripe's retention policy and is outside our control.</p>
+    <p style="margin:0">If this wasn't you, reply immediately. Otherwise, thanks for trying VIRL.</p>`;
+  return {
+    subject: "VIRL account closed",
+    html:    layout({ headline, body }),
+    text:    `${headline}\n\nWe've closed your account and deleted your auth record, profile, vault, saved plans, credits, trial state, and activity history.\n\nStripe billing history is governed by Stripe's retention policy.\n\nIf this wasn't you, reply immediately.\n\nThanks for trying VIRL.`,
+  };
+}
+
+// 18. Referral milestone — mirrors the in-app modal at 3/7/15 plans.
+export function referralMilestone({ name, milestone, unsubscribeToken }) {
+  const headline = milestone === 3   ? "You're three plans in."
+                 : milestone === 7   ? "Seven plans deep."
+                 : milestone === 15  ? "Fifteen plans. Real momentum."
+                 :                     `${milestone} plans generated.`;
+  const body = `
+    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'ve generated ${milestone} VIRL plans now. The data shows that creators who hit ${milestone} plans are the ones VIRL gets sharpest for — your vault, your logged results, and your week-over-week strategy are starting to compound.</p>
+    <p style="margin:0 0 12px">If a friend of yours is building too, the founding rate is still open and a referral from someone like you carries more weight than any ad.</p>
+    <p style="margin:0">Forward this email, or send them straight to ${APP_URL}.</p>`;
+  return {
+    subject: `${milestone} plans in — keep going`,
+    html:    layout({ headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
+    text:    `${headline}\n\nYou've generated ${milestone} VIRL plans. Your vault + logged results are starting to compound.\n\nIf a friend's building too: ${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
 
