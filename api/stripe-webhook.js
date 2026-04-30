@@ -18,6 +18,7 @@ import {
   subscriptionWelcome,
   paymentFailed,
   subscriptionCancelled,
+  renewalUpcoming,
 } from "./_lib/email-templates.js";
 
 // [CHANGE 3b] Disable Vercel's body parser so Stripe gets the exact raw bytes
@@ -174,6 +175,60 @@ export default async function handler(req, res) {
           const plan = meta.isFoundingMember === "true" ? "founding" : "standard";
           await patchUserPlan(userId, { plan: plan });
           console.log("[webhook] User " + userId + " reactivated to " + plan);
+        }
+        break;
+      }
+
+      case "invoice.upcoming": {
+        // Stripe fires this 3-7 days before a subscription renewal (lead
+        // time configurable per subscription). The invoice object doesn't
+        // carry our metadata.userId, so we resolve the user via their
+        // stripe_customer_id stored in public.credits.
+        try {
+          const customerId = obj.customer;
+          const supabaseUrl = process.env.SUPABASE_URL;
+          const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
+          if (!customerId || !supabaseUrl || !serviceKey) break;
+
+          const credRes = await fetch(
+            `${supabaseUrl}/rest/v1/credits?stripe_customer_id=eq.${encodeURIComponent(customerId)}&select=user_id,plan`,
+            { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+          );
+          if (!credRes.ok) break;
+          const rows = await credRes.json();
+          const row = rows && rows[0];
+          if (!row || !row.user_id) break;
+
+          const ctx = await fetchUserContext(row.user_id);
+          if (!ctx.email) break;
+
+          // Stripe invoice amounts come in cents; renewal date is the
+          // period_end of the upcoming invoice.
+          const amountUsd = (obj.amount_due || obj.total || 0) / 100;
+          const renewalDate = obj.period_end ? new Date(obj.period_end * 1000).toISOString() : null;
+
+          // Dedupe by the invoice id when present, otherwise by the
+          // upcoming-period-end so we never send twice for the same renewal.
+          const dedupeKey = "renewal_" + (obj.id || ("p" + (obj.period_end || Date.now())));
+
+          const tpl = renewalUpcoming({
+            name:        ctx.name,
+            plan:        row.plan,
+            amountUsd:   amountUsd,
+            renewalDate: renewalDate,
+          });
+          await sendEmail({
+            userId:    row.user_id,
+            to:        ctx.email,
+            template:  "renewal_upcoming",
+            dedupeKey,
+            subject:   tpl.subject,
+            html:      tpl.html,
+            text:      tpl.text,
+            marketing: false,
+          });
+        } catch (e) {
+          console.error("[webhook] invoice.upcoming threw", e && e.message);
         }
         break;
       }

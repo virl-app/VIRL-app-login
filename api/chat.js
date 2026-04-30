@@ -9,7 +9,8 @@ import { loadPlaybook }              from "./_lib/playbook.js";
 import { loadLatestTrends }          from "./_lib/trends.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { sendEmail }                 from "./_lib/email-send.js";
-import { firstPlanGenerated }        from "./_lib/email-templates.js";
+import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
+import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
 
 // Free trial length in days. Mirrored in index.html — keep in sync.
@@ -87,6 +88,54 @@ async function recordUsageEvent(userId, usage) {
   } catch (e) {
     console.warn("[usage_events] insert threw", e.message);
   }
+}
+
+const MILESTONE_THRESHOLDS = new Set([3, 7, 15]);
+
+// Inline referral-milestone email. Counts the user's lifetime plan-type
+// usage_events (recordUsageEvent has just inserted the current one) and
+// fires the milestone email when the count is exactly 3, 7, or 15. Idempotent
+// via email_sends dedupe — re-runs of any individual milestone are no-ops.
+async function maybeSendReferralMilestoneEmail(userId) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !userId) return;
+  try {
+    // Use Prefer: count=exact + HEAD to get a fast count without payload.
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/usage_events?user_id=eq.${userId}&generation_type=eq.plan&select=id`,
+      {
+        method: "HEAD",
+        headers: {
+          apikey:        SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          Prefer:        "count=exact",
+        },
+      }
+    );
+    if (!r.ok) return;
+    const range = r.headers.get("content-range") || "";
+    // content-range looks like "0-N/total" or "*/total"
+    const totalStr = range.split("/")[1];
+    const total = parseInt(totalStr, 10);
+    if (Number.isNaN(total) || !MILESTONE_THRESHOLDS.has(total)) return;
+
+    const ctx = await fetchUserContactForEmail(userId);
+    if (!ctx.email) return;
+    const tpl = referralMilestone({
+      name: ctx.name,
+      milestone: total,
+      unsubscribeToken: makeUnsubToken(userId),
+    });
+    await sendEmail({
+      userId,
+      to:        ctx.email,
+      template:  "referral_milestone",
+      dedupeKey: `referral_milestone_${total}`,
+      subject:   tpl.subject,
+      html:      tpl.html,
+      text:      tpl.text,
+      marketing: false,
+    });
+  } catch (e) { /* non-fatal */ }
 }
 
 // Inline "first plan generated" send. Idempotent via the email_sends
@@ -413,6 +462,9 @@ export default async function handler(req, res) {
     // user generates triggers the mail; every subsequent plan is a no-op.
     if (generationType === "plan") {
       maybeSendFirstPlanEmail(userId).catch(() => {});
+      // Milestone email fires after the usage_event row has had a moment
+      // to land — small setTimeout so the count read sees this generation.
+      setTimeout(function(){ maybeSendReferralMilestoneEmail(userId).catch(() => {}); }, 800);
     }
 
     // `cost` flows back so the client can do an optimistic credit-counter

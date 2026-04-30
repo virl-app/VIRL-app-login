@@ -146,6 +146,13 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
 
   // Trial reminders apply to free-plan users only.
   if (!isPaid) {
+    if (days === 7) {
+      const tpl = T.trialDay7({ name, unsubscribeToken: unsubToken });
+      await sendEmail({
+        userId, to: email, template: "trial_day_7", dedupeKey: "trial_day_7",
+        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
+      });
+    }
     if (days === 11) {
       const tpl = T.trialDay11({ name, unsubscribeToken: unsubToken });
       await sendEmail({
@@ -200,6 +207,18 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
     const tpl = T.inactive7Day({ name, unsubscribeToken: unsubToken });
     await sendEmail({
       userId, to: email, template: "inactive_7d", dedupeKey: `inactive_7d_${weekKey}`,
+      subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
+    });
+  }
+
+  // Tier 3 — 30-day inactivity (deeper churn). Last sign-in 30+ days ago.
+  // Monthly dedupe key (year-month) so a long-dormant user gets at most
+  // one of these per month rather than weekly noise.
+  if (lastSignInDays !== null && lastSignInDays >= 30) {
+    const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM
+    const tpl = T.inactive30Day({ name, unsubscribeToken: unsubToken });
+    await sendEmail({
+      userId, to: email, template: "inactive_30d", dedupeKey: `inactive_30d_${monthKey}`,
       subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
     });
   }
