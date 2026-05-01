@@ -2141,8 +2141,11 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
-  // Auto-expand Phase 2 for returning users who already have any optional data
-  // so they don't have to re-discover it.
+  // Auto-expand Phase 2 for returning users who already have any optional
+  // data — and for any returning user with a saved Phase 1 (profile.name)
+  // even without optional data, so they always have access to the save
+  // button at the bottom of Phase 2 once the prominent "Save and start
+  // planning" button has been hidden.
   const [showPhase2,setShowPhase2] = useState(function(){
     var hasOptional =
       (profile.vibes && profile.vibes.length) ||
@@ -2154,9 +2157,16 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
       (profile.emojiPref && profile.emojiPref !== "Sometimes") ||
       (profile.handles && Object.keys(profile.handles).length) ||
       (profile.platformAudiences && Object.keys(profile.platformAudiences).length);
-    return !!hasOptional;
+    return !!hasOptional || !!(profile && profile.name);
   });
-  const [phase1Saved,setPhase1Saved] = useState(false);
+  // Treat a returning user (profile.name already populated from Supabase
+  // or localStorage) as having completed Phase 1, so the prominent
+  // "Save and start planning" button doesn't keep reappearing on every
+  // visit. The separate justSaved flag gates the green "Profile saved"
+  // celebration so it only fires immediately after an explicit save —
+  // returning users don't see it on every page load.
+  const [phase1Saved,setPhase1Saved] = useState(function(){ return !!(profile && profile.name); });
+  const [phase1JustSaved,setPhase1JustSaved] = useState(false);
 
   function handleSave() {
     onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell});
@@ -2169,6 +2179,7 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   function handleSavePhase1() {
     onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell});
     setPhase1Saved(true);
+    setPhase1JustSaved(true);
   }
 
   const profileComplete = !!(name&&audience&&voice);
@@ -2283,7 +2294,11 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           </button>
         )}
 
-        {phase1Saved && (
+        {/* Celebration block + navigation CTAs only fire right after an
+            explicit save in this session — returning users with a saved
+            profile see neither the green panel nor the redundant
+            "Generate my first plan" / "Make VIRL even sharper" buttons. */}
+        {phase1JustSaved && (
           <div>
             <div style={{background:B.green,borderRadius:12,padding:"14px 20px",marginBottom:12,display:"flex",alignItems:"center",gap:12,animation:"slideUp .3s ease"}}>
               <div style={{width:28,height:28,borderRadius:"50%",background:"rgba(255,255,255,0.25)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
