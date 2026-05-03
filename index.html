@@ -1119,18 +1119,25 @@ async function callAPI(generationType, params, opts) {
 // ── Event logging ─────────────────────────────────────────────────────────
 
 async function logEvent(userId, eventName, properties, token) {
-  if (!userId) return;
+  // Fall back to the globals the App-level useEffect mirrors from the
+  // active session. Lets event-firing components stay simple — they don't
+  // need to thread userId / token through props just to record telemetry.
+  var uid = userId || (typeof window !== "undefined" ? window.__virlUserId    : null);
+  var tok = token  || (typeof window !== "undefined" ? window.__virlUserToken : null);
+  if (!uid) return;
   try {
     await fetch(SUPABASE_URL+"/rest/v1/events", {
       method: "POST",
       headers: {
         "apikey": SUPABASE_ANON_KEY,
-        "Authorization": "Bearer "+(token||SUPABASE_ANON_KEY),
+        // RLS on `events` checks auth.uid() === user_id, so the user's
+        // bearer token is required — anon key alone gets rejected.
+        "Authorization": "Bearer "+(tok||SUPABASE_ANON_KEY),
         "Content-Type": "application/json",
         "Prefer": "return=minimal",
       },
       body: JSON.stringify({
-        user_id: userId,
+        user_id: uid,
         event_name: eventName,
         properties: properties||{},
       }),
@@ -1313,6 +1320,7 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
         setScript(parsed);
         setSavedOnCard(false);
         if (onCreditsUsed) onCreditsUsed({cost: data.cost});
+        try { logEvent(window.__virlUserId||null, "script_generated", { platform: card.platform || null, day: card.day || null }); } catch(e){}
       }
       else { setError("Script generation takes a moment - tap Try Again."); }
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
@@ -3491,6 +3499,22 @@ function App() {
     return function() { listener.data.subscription.unsubscribe(); };
   }, []);
 
+  // Mirror the signed-in user's id + access token onto window globals so
+  // logEvent() (and any other "fire-and-forget" telemetry called from
+  // deeply-nested components) can find them without prop-drilling. Cleared
+  // on sign-out so a logged-out session doesn't accidentally inherit the
+  // previous user's identity. This was previously missing — every logEvent
+  // call was silently no-oping because window.__virlUserId was never set.
+  useEffect(function(){
+    if (session && session.user && session.user.id) {
+      window.__virlUserId    = session.user.id;
+      window.__virlUserToken = session.access_token || null;
+    } else {
+      window.__virlUserId    = null;
+      window.__virlUserToken = null;
+    }
+  }, [session]);
+
   // ── App data state ──────────────────────────────────────────────────────
   const stored = load();
   // Restore the user's last-active tab on refresh. sessionStorage scoped so
@@ -4193,6 +4217,16 @@ function App() {
           localStorage.setItem(KEY, JSON.stringify(current));
         } catch(e){}
         if (session) savePlanToSupabase(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy);
+        try {
+          logEvent(session && session.user && session.user.id, "plan_generated", {
+            platforms: platforms,
+            niche:     niche,
+            goal:      goal,
+            formats:   formats,
+            isRegen:   !!cards,
+            cardCount: parsedCards.length,
+          });
+        } catch(e){}
       } else { setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers."); }
     }).then(function(){
       // Refresh credits from Supabase after successful generation. Pass the
@@ -4214,6 +4248,7 @@ function App() {
   function saveToVault(card) {
     const id = card.title+card.day;
     if (vault.some(function(v){return v.id===id;})) return;
+    try { logEvent(session && session.user && session.user.id, "vault_saved", { type: "plan", platform: card.platform || null, format: card.format || null }); } catch(e){}
     // [TASK 10] Persist card.format alongside platform so getVaultPatterns()
     // can weight similar styles in future plan generations.
     // Capture the full card payload so the vault detail modal can render
@@ -4239,6 +4274,7 @@ function App() {
     });
   }
   function saveCaption(cap) {
+    try { logEvent(session && session.user && session.user.id, "vault_saved", { type: "caption", platform: cap.platform || null }); } catch(e){}
     // Capture the full caption (text + hook + hashtags) so the vault detail
     // modal can show what the user actually saved, not just the preview.
     setVault(function(v){return [{
@@ -4259,6 +4295,7 @@ function App() {
   }
   function logResult(card,result) {
     const id = card.title+card.day;
+    try { logEvent(session && session.user && session.user.id, "result_logged", { result: result, platform: card.platform || null }); } catch(e){}
     setVault(function(v){return v.map(function(x){return x.id===id?Object.assign({},x,{result}):x;});});
     setResults(function(r){
       const idx = r.findIndex(function(x){return x.id===id;});
