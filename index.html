@@ -60,7 +60,7 @@ textarea:focus,select:focus,input:focus{outline:none;}
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 // ── Supabase client ────────────────────────────────────────────────────────
 // TODO: Replace these placeholder values with your real Supabase credentials
@@ -2790,6 +2790,31 @@ function GateScreen({onAuth}) {
   const [resetMode,setResetMode] = useState(false);
   const [resetSent,setResetSent] = useState(false);
 
+  // Read UTM / referrer once so we can stamp acquisition source onto
+  // user_metadata at signup. sessionStorage so a user who lands via a
+  // campaign link, navigates around, then signs up still gets credited
+  // to the original source. Capped sizes are deliberate — defense
+  // against someone passing a giant string in the query.
+  const attribution = useMemo(function(){
+    try {
+      var qs = new URLSearchParams(window.location.search || "");
+      var picked = {
+        utm_source:   (qs.get("utm_source")   || "").slice(0, 60),
+        utm_medium:   (qs.get("utm_medium")   || "").slice(0, 60),
+        utm_campaign: (qs.get("utm_campaign") || "").slice(0, 60),
+        ref:          (qs.get("ref")          || "").slice(0, 60),
+        referrer:     (document.referrer       || "").slice(0, 200),
+      };
+      var hasNew = picked.utm_source || picked.utm_medium || picked.utm_campaign || picked.ref || picked.referrer;
+      var stored = sessionStorage.getItem("virl_attr");
+      if (!stored && hasNew) {
+        sessionStorage.setItem("virl_attr", JSON.stringify(picked));
+        return picked;
+      }
+      return stored ? JSON.parse(stored) : picked;
+    } catch (e) { return {}; }
+  }, []);
+
   function handlePasswordReset() {
     if (!email.trim()) { setAuthError("Enter your email address first."); return; }
     setAuthLoading(true); setAuthError("");
@@ -2819,6 +2844,11 @@ function GateScreen({onAuth}) {
               tos_version:     TOS_VERSION,
               marketing_opt_in: !!marketingOptIn,
               age_confirmed:   true,
+              utm_source:      attribution.utm_source   || null,
+              utm_medium:      attribution.utm_medium   || null,
+              utm_campaign:    attribution.utm_campaign || null,
+              ref:             attribution.ref          || null,
+              referrer:        attribution.referrer     || null,
             },
           },
         })
@@ -3876,6 +3906,22 @@ function App() {
   const [adminLoading,setAdminLoading] = useState(false);
   const [usageStats,setUsageStats] = useState(null);
   const [feedbackInbox,setFeedbackInbox] = useState(null);
+  const [bizStats,setBizStats] = useState(null);
+
+  // Phase 1 business panel: signups/day, activation, DAU/WAU/MAU, ratings,
+  // plan mix, churn, top signup sources. Same admin-token gating as the
+  // sibling endpoints; failures are non-fatal so the rest of the dashboard
+  // still renders.
+  async function loadBizStats() {
+    if (!isAdmin || !session) return;
+    try {
+      const res = await fetch("/api/admin/business-stats", {
+        headers: { Authorization: "Bearer " + session.access_token },
+      });
+      if (!res.ok) { console.error("Biz stats fetch failed:", res.status); return; }
+      setBizStats(await res.json());
+    } catch (e) { console.error("Biz stats fetch threw:", e.message); }
+  }
 
   // Loads the cost/usage panel. Separate from loadAdminData() so it can be
   // called in parallel when the admin clicks Refresh — different endpoint,
@@ -3914,11 +3960,12 @@ function App() {
   async function loadAdminData() {
     if (!isAdmin) return;
     setAdminLoading(true);
-    // Kick off the cost/usage panel in parallel — independent of the
-    // admin-stats fetch, so a failure on either side leaves the other
-    // panel showing.
+    // Kick off the cost/usage + business panels in parallel — independent
+    // of the admin-stats fetch, so a failure on any side leaves the other
+    // panels showing.
     loadUsageStats();
     loadFeedbackInbox();
+    loadBizStats();
     try {
       // Call our server-side admin endpoint — uses service_role key
       // to bypass RLS and read all user data. Passes the user's access
@@ -5282,6 +5329,133 @@ return (
               <div style={{background:B.card,borderRadius:16,padding:"40px 24px",textAlign:"center"}}>
                 <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,marginBottom:8}}>Click Refresh to load your data.</div>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted}}>Pulls live from Supabase each time.</div>
+              </div>
+            )}
+
+            {/* ── Phase 1 business panels ─────────────────────────────────
+                Growth · Active users · Content quality · Revenue mix · Churn
+                · Acquisition sources. Sourced from /api/admin/business-stats
+                which aggregates auth.users + events + credits + content_ratings.
+            */}
+            {bizStats && (
+              <div style={{marginBottom:24}}>
+                {/* Growth: signups/day chart + activation rate */}
+                <div style={{marginBottom:18}}>
+                  <Eyebrow>Growth</Eyebrow>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:12}}>
+                    <UsageKPI label="Signups · 30d"   value={bizStats.activation_30d.signups}                                  sub={bizStats.totals.users + " all-time"}                                                       color={B.navy}/>
+                    <UsageKPI label="Activation rate" value={Math.round((bizStats.activation_30d.rate || 0) * 100) + "%"}     sub={bizStats.activation_30d.activated + " made a plan"}                                       color={B.green}/>
+                    <UsageKPI label="Time-to-1st-plan" value={bizStats.activation_30d.median_time_to_first_plan_hours !== null ? bizStats.activation_30d.median_time_to_first_plan_hours + "h" : "—"} sub="median, activated users" color={B.blue}/>
+                  </div>
+                  {Array.isArray(bizStats.signups_daily_30d) && bizStats.signups_daily_30d.length > 0 && (() => {
+                    const max = Math.max.apply(null, bizStats.signups_daily_30d.map(b => b.count || 0).concat([1]));
+                    return (
+                      <div style={{background:B.card,borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>Signups · last 30 days</div>
+                        <div style={{display:"flex",alignItems:"flex-end",gap:3,height:60}}>
+                          {bizStats.signups_daily_30d.map(function(b){
+                            var pct = max > 0 ? (b.count / max) : 0;
+                            var h = Math.max(2, Math.round(pct * 56));
+                            return (
+                              <div key={b.date} title={b.date + " · " + b.count + " signups"}
+                                style={{flex:1,height:h,background:B.navy,borderRadius:2,opacity:b.count > 0 ? 1 : 0.15,minWidth:4}}/>
+                            );
+                          })}
+                        </div>
+                        <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontFamily:"'Jost',sans-serif",fontSize:9,color:B.muted}}>
+                          <span>{bizStats.signups_daily_30d[0] && bizStats.signups_daily_30d[0].date}</span>
+                          <span>{bizStats.signups_daily_30d[bizStats.signups_daily_30d.length-1] && bizStats.signups_daily_30d[bizStats.signups_daily_30d.length-1].date}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Active users: DAU/WAU/MAU + stickiness. Active = anyone
+                    who triggered an event in the window. */}
+                <div style={{marginBottom:18}}>
+                  <Eyebrow>Active users</Eyebrow>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
+                    <UsageKPI label="DAU"        value={bizStats.active_users.dau} sub="last 24h"            color={B.navy}/>
+                    <UsageKPI label="WAU"        value={bizStats.active_users.wau} sub="last 7 days"         color={B.blue}/>
+                    <UsageKPI label="MAU"        value={bizStats.active_users.mau} sub="last 30 days"        color={B.sky}/>
+                    <UsageKPI label="Stickiness" value={Math.round((bizStats.active_users.stickiness || 0) * 100) + "%"} sub="DAU ÷ MAU" color={B.green}/>
+                  </div>
+                </div>
+
+                {/* Content quality: 👍/👎 from content_ratings, by type. */}
+                {bizStats.ratings_by_type && Object.keys(bizStats.ratings_by_type).length > 0 && (
+                  <div style={{marginBottom:18}}>
+                    <Eyebrow>Content quality</Eyebrow>
+                    <div style={{background:B.card,borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>👍 / 👎 by generation type</div>
+                      {Object.keys(bizStats.ratings_by_type).sort(function(a,b){
+                        return bizStats.ratings_by_type[b].total - bizStats.ratings_by_type[a].total;
+                      }).map(function(t){
+                        var s = bizStats.ratings_by_type[t];
+                        var rate = Math.round((s.up_rate || 0) * 100);
+                        var rateColor = rate >= 70 ? B.green : rate >= 40 ? B.amber : B.coral;
+                        return (
+                          <div key={t} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid "+B.divider,fontFamily:"'Jost',sans-serif",fontSize:12}}>
+                            <span style={{color:B.ink,fontWeight:500}}>{t}</span>
+                            <span style={{color:B.muted,display:"flex",gap:14,alignItems:"center"}}>
+                              <span>{"👍 "+s.up}</span>
+                              <span>{"👎 "+s.down}</span>
+                              <span style={{fontWeight:700,color:rateColor,minWidth:36,textAlign:"right"}}>{rate+"%"}</span>
+                            </span>
+                          </div>
+                        );
+                      })}
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted,fontStyle:"italic",marginTop:8}}>{"Up-rate < 40% → tune the prompt for that type."}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Revenue mix: founding vs standard vs trial vs cancelled. */}
+                <div style={{marginBottom:18}}>
+                  <Eyebrow>Revenue mix</Eyebrow>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:12,marginBottom:12}}>
+                    <UsageKPI label="Founding"          value={bizStats.plan_mix.founding}                  sub={bizStats.plan_mix.founding_slots_remaining + " of " + bizStats.plan_mix.founding_cap + " left"} color={B.navy}/>
+                    <UsageKPI label="Standard"          value={bizStats.plan_mix.standard}                  sub={"$" + bizStats.plan_mix.mrr_usd + " MRR (incl. founding)"}                                       color={B.blue}/>
+                    <UsageKPI label="Free / trial"      value={bizStats.plan_mix.free}                      sub="active trials + free tier"                                                                       color={B.muted}/>
+                    <UsageKPI label="Cancelled"         value={bizStats.plan_mix.cancelled}                 sub={bizStats.plan_mix.past_due + " past-due"}                                                        color={B.coral}/>
+                  </div>
+                </div>
+
+                {/* Churn this month: cancellations + past-due since the 1st. */}
+                <div style={{marginBottom:18}}>
+                  <Eyebrow>Churn this month</Eyebrow>
+                  <div style={{background:B.card,borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:14}}>
+                    <div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>{bizStats.churn_this_month.month}</div>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:bizStats.churn_this_month.cancelled > 0 ? B.coral : B.ink,lineHeight:1}}>
+                        {bizStats.churn_this_month.cancelled}
+                        <span style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,marginLeft:8}}>cancelled</span>
+                      </div>
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>Past due</div>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:bizStats.churn_this_month.past_due > 0 ? B.amber : B.ink,lineHeight:1}}>{bizStats.churn_this_month.past_due}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Top signup sources: utm_source / ref / referrer host. */}
+                {Array.isArray(bizStats.top_signup_sources) && bizStats.top_signup_sources.length > 0 && (
+                  <div style={{marginBottom:6}}>
+                    <Eyebrow>Top signup sources</Eyebrow>
+                    <div style={{background:B.card,borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                      {bizStats.top_signup_sources.map(function(s, i){
+                        return (
+                          <div key={s.source} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 0",borderBottom:i<bizStats.top_signup_sources.length-1?"1px solid "+B.divider:"none",fontFamily:"'Jost',sans-serif",fontSize:12}}>
+                            <span style={{color:B.ink}}>{s.source}</span>
+                            <span style={{color:B.muted}}>{s.count + " signup" + (s.count===1?"":"s")}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
