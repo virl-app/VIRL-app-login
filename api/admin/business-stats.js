@@ -80,6 +80,15 @@ async function fetchRatings() {
   return await r.json();
 }
 
+async function fetchProfiles() {
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/profiles?select=id,name&limit=2000`,
+    { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+  );
+  if (!r.ok) return [];
+  return await r.json();
+}
+
 // ── Aggregators ─────────────────────────────────────────────────────────────
 
 function dayKey(d) { return d.toISOString().slice(0, 10); }
@@ -203,6 +212,27 @@ function churnLifetime(credits) {
   return { cancelled, past_due: pastDue };
 }
 
+// Most-recent signups for the admin's "Who just joined?" panel. Joined
+// against the profiles table so we can show real names alongside the
+// email — both fall back gracefully if missing.
+function recentSignups(users, profilesById, n) {
+  return users
+    .filter(u => u && u.id && u.created_at)
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+    .slice(0, n)
+    .map(u => {
+      const md  = u.user_metadata || {};
+      const prf = profilesById[u.id] || {};
+      return {
+        user_id:    u.id,
+        name:       prf.name || null,
+        email:      u.email   || null,
+        signup_at:  u.created_at,
+        utm_source: md.utm_source || md.ref || null,
+      };
+    });
+}
+
 // Pull utm_source / referrer from user_metadata (we stamp it at signup).
 // Group + count, top N.
 function signupSources(users, n) {
@@ -233,18 +263,22 @@ export default async function handler(req, res) {
   const ok = await verifyAdmin(auth);
   if (!ok) return res.status(403).json({ error: "Not authorized" });
 
-  let users, credits, events, ratings;
+  let users, credits, events, ratings, profiles;
   try {
     const since60 = new Date(Date.now() - 60 * DAY_MS).toISOString();
-    [users, credits, events, ratings] = await Promise.all([
+    [users, credits, events, ratings, profiles] = await Promise.all([
       fetchAuthUsers(),
       fetchCredits(),
       fetchEvents(since60),
       fetchRatings(),
+      fetchProfiles(),
     ]);
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
+
+  const profilesById = {};
+  for (const p of profiles) if (p && p.id) profilesById[p.id] = p;
 
   return res.status(200).json({
     totals: {
@@ -252,12 +286,13 @@ export default async function handler(req, res) {
       events_60d:  events.length,
       ratings_all: ratings.length,
     },
-    signups_daily_30d: signupsDaily(users, 30),
-    activation_30d:    activation(users, events, 30),
-    active_users:      activeUsers(events),
-    ratings_by_type:   ratingsByType(ratings),
-    plan_mix:          planMix(credits),
-    churn_lifetime:    churnLifetime(credits),
+    signups_daily_30d:  signupsDaily(users, 30),
+    activation_30d:     activation(users, events, 30),
+    active_users:       activeUsers(events),
+    ratings_by_type:    ratingsByType(ratings),
+    plan_mix:           planMix(credits),
+    churn_lifetime:     churnLifetime(credits),
     top_signup_sources: signupSources(users, 8),
+    recent_signups:     recentSignups(users, profilesById, 10),
   });
 }

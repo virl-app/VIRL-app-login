@@ -3,6 +3,8 @@
 // for the admin dashboard. Bypasses RLS, but only returns data if the caller's
 // auth token belongs to the admin email.
 
+import { fetchUserDirectory } from './_lib/admin-users.js';
+
 const ADMIN_EMAIL = 'laurenannedoty@gmail.com';
 
 export default async function handler(req, res) {
@@ -76,8 +78,18 @@ export default async function handler(req, res) {
       console.error('[admin-stats] events fetch failed:', evRes.status, text);
     }
 
-    const credits = credRes.ok ? await credRes.json() : [];
-    const events = evRes.ok ? await evRes.json() : [];
+    const creditsRaw = credRes.ok ? await credRes.json() : [];
+    const events     = evRes.ok   ? await evRes.json()   : [];
+
+    // Enrich credits rows with creator name + email so the All-users
+    // table can show humans instead of UUID slices. Directory fetch is
+    // fail-soft — credits still returns even if profiles or auth admin
+    // hiccups; rows just fall back to anonymous.
+    const directory = await fetchUserDirectory(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+    const credits = creditsRaw.map(c => {
+      const e = directory.get(c.user_id) || {};
+      return Object.assign({}, c, { name: e.name || null, email: e.email || null });
+    });
 
     return res.status(200).json({ credits, events });
 
