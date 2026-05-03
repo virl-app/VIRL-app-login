@@ -6,6 +6,8 @@
 // Aggregation happens in JS rather than via SQL views so we can iterate on
 // the shape without schema migrations.
 
+import { fetchUserDirectory } from "../_lib/admin-users.js";
+
 const ADMIN_EMAIL          = "laurenannedoty@gmail.com";
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -126,12 +128,20 @@ export default async function handler(req, res) {
   const since7 = Date.now() - 7 * DAY_MS;
   const events7 = events.filter(e => Date.parse(e.created_at) >= since7);
 
+  // Enrich top_users with name + email so the panel shows humans, not
+  // UUID slices. Fail-soft: a directory miss just leaves name/email null.
+  const directory = await fetchUserDirectory(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+  const topUsersList = topUsers(events, 10).map(u => {
+    const e = directory.get(u.user_id) || {};
+    return Object.assign({}, u, { name: e.name || null, email: e.email || null });
+  });
+
   return res.status(200).json({
     last_7d:           rollUp(events7),
     last_30d:          rollUp(events),
     by_generation_type: groupBy(events, "generation_type"),
     by_model:          groupBy(events, "model"),
     daily_sparkline:   dailySparkline(events, 14),
-    top_users:         topUsers(events, 10),
+    top_users:         topUsersList,
   });
 }

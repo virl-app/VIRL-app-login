@@ -5478,6 +5478,45 @@ return (
                   </div>
                 </div>
 
+                {/* Recent signups: name + email + when they joined. Newest
+                     first. Joined against profiles so creators show up
+                     with their entered name; falls back to email if they
+                     haven't filled out their profile yet. */}
+                {Array.isArray(bizStats.recent_signups) && bizStats.recent_signups.length > 0 && (
+                  <div style={{marginBottom:18}}>
+                    <Eyebrow>Recent signups</Eyebrow>
+                    <div style={{background:B.card,borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                      {bizStats.recent_signups.map(function(u, i){
+                        var label = u.name || (u.email ? u.email.split("@")[0] : null) || ("user-" + (u.user_id||"").slice(0,6));
+                        var when = (function(){
+                          try {
+                            var t = Date.parse(u.signup_at);
+                            if (Number.isNaN(t)) return "";
+                            var hoursAgo = Math.floor((Date.now() - t) / 3600000);
+                            if (hoursAgo < 1)  return "just now";
+                            if (hoursAgo < 24) return hoursAgo + "h ago";
+                            return new Date(t).toLocaleDateString("en-US",{month:"short",day:"numeric"});
+                          } catch(e){ return ""; }
+                        })();
+                        return (
+                          <div key={u.user_id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderBottom:i<bizStats.recent_signups.length-1?"1px solid "+B.divider:"none",fontFamily:"'Jost',sans-serif",fontSize:12,gap:12}}>
+                            <div style={{minWidth:0,flex:1}}>
+                              <div style={{color:B.ink,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
+                              {u.email && u.name && (
+                                <div style={{color:B.muted,fontSize:10,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.email}</div>
+                              )}
+                            </div>
+                            <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+                              {u.utm_source && <span style={{padding:"2px 8px",background:B.bg,borderRadius:99,fontSize:9,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.sub}}>{u.utm_source}</span>}
+                              <span style={{color:B.muted}}>{when}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 {/* Top signup sources: utm_source / ref / referrer host. */}
                 {Array.isArray(bizStats.top_signup_sources) && bizStats.top_signup_sources.length > 0 && (
                   <div style={{marginBottom:6}}>
@@ -5572,15 +5611,23 @@ return (
                   </div>
                 )}
 
-                {/* Top 10 spenders */}
+                {/* Top 10 spenders. Server enriches each row with name +
+                     email via the user directory; UI prefers name, then
+                     email's local-part, then a truncated id. */}
                 {Array.isArray(usageStats.top_users) && usageStats.top_users.length > 0 && (
                   <div style={{background:B.card,borderRadius:14,padding:"16px 18px",marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>Top spenders · last 30 days</div>
                     {usageStats.top_users.map(function(u, i){
+                      var label = u.name || (u.email ? u.email.split("@")[0] : null) || ("user-" + (u.user_id||"").slice(0,6));
                       return (
-                        <div key={u.user_id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 0",borderBottom:i<usageStats.top_users.length-1?"1px solid "+B.divider:"none",fontFamily:"'Jost',sans-serif",fontSize:11}}>
-                          <span style={{color:B.muted,fontFamily:"monospace"}}>{u.user_id.slice(0,8)}</span>
-                          <span style={{color:B.muted}}>{u.count} calls · ${u.cost.toFixed(4)}</span>
+                        <div key={u.user_id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderBottom:i<usageStats.top_users.length-1?"1px solid "+B.divider:"none",fontFamily:"'Jost',sans-serif",fontSize:11,gap:12}}>
+                          <div style={{minWidth:0,flex:1}}>
+                            <div style={{color:B.ink,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
+                            {u.email && u.name && (
+                              <div style={{color:B.muted,fontSize:10,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.email}</div>
+                            )}
+                          </div>
+                          <span style={{color:B.muted,flexShrink:0}}>{u.count} calls · ${u.cost.toFixed(4)}</span>
                         </div>
                       );
                     })}
@@ -5689,18 +5736,28 @@ return (
                 <div style={{background:B.card,borderRadius:14,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
                   {/* Header */}
                   <div style={{display:"grid",gridTemplateColumns:"1fr 80px 80px",background:B.navy,padding:"10px 16px",gap:8}}>
-                    {["User ID","Plan","Credits"].map(function(h){return (
+                    {["User","Plan","Credits"].map(function(h){return (
                       <div key={h} style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>{h}</div>
                     );})}
                   </div>
-                  {/* Rows */}
-                  {adminData.credits.map(function(row,i){return (
-                    <div key={row.user_id} style={{display:"grid",gridTemplateColumns:"1fr 80px 80px",padding:"10px 16px",gap:8,borderBottom:i<adminData.credits.length-1?"1px solid "+B.divider:"none",background:i%2===0?B.card:B.bg,alignItems:"center"}}>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.user_id}</div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:row.plan==="standard"||row.plan==="founding"?B.green:B.muted,textTransform:"capitalize"}}>{row.plan}</div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.ink}}>{row.credits}</div>
-                    </div>
-                  );})}
+                  {/* Rows. row.name + row.email come from the admin-stats
+                       endpoint enriching credits via the user directory.
+                       Falls back to the truncated id when both are missing. */}
+                  {adminData.credits.map(function(row,i){
+                    var label = row.name || (row.email ? row.email.split("@")[0] : null) || ("user-" + (row.user_id||"").slice(0,6));
+                    return (
+                      <div key={row.user_id} style={{display:"grid",gridTemplateColumns:"1fr 80px 80px",padding:"10px 16px",gap:8,borderBottom:i<adminData.credits.length-1?"1px solid "+B.divider:"none",background:i%2===0?B.card:B.bg,alignItems:"center"}}>
+                        <div style={{minWidth:0}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.ink,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
+                          {row.email && row.name && (
+                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.email}</div>
+                          )}
+                        </div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:row.plan==="standard"||row.plan==="founding"?B.green:B.muted,textTransform:"capitalize"}}>{row.plan}</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.ink}}>{row.credits}</div>
+                      </div>
+                    );
+                  })}
                 </div>
 
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:12,textAlign:"center"}}>
