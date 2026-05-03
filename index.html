@@ -5459,20 +5459,21 @@ return (
                   </div>
                 </div>
 
-                {/* Churn this month: cancellations + past-due since the 1st. */}
+                {/* Churn (lifetime): cancellations + past-due across the
+                    entire user base. Switches to a date-windowed view
+                    once we add a plan_changed_at column to credits. */}
                 <div style={{marginBottom:18}}>
-                  <Eyebrow>Churn this month</Eyebrow>
+                  <Eyebrow>Churn (lifetime)</Eyebrow>
                   <div style={{background:B.card,borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:14}}>
                     <div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>{bizStats.churn_this_month.month}</div>
-                      <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:bizStats.churn_this_month.cancelled > 0 ? B.coral : B.ink,lineHeight:1}}>
-                        {bizStats.churn_this_month.cancelled}
-                        <span style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,marginLeft:8}}>cancelled</span>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>Cancelled</div>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:bizStats.churn_lifetime.cancelled > 0 ? B.coral : B.ink,lineHeight:1}}>
+                        {bizStats.churn_lifetime.cancelled}
                       </div>
                     </div>
                     <div style={{textAlign:"right"}}>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>Past due</div>
-                      <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:bizStats.churn_this_month.past_due > 0 ? B.amber : B.ink,lineHeight:1}}>{bizStats.churn_this_month.past_due}</div>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:bizStats.churn_lifetime.past_due > 0 ? B.amber : B.ink,lineHeight:1}}>{bizStats.churn_lifetime.past_due}</div>
                     </div>
                   </div>
                 </div>

@@ -42,11 +42,18 @@ async function fetchAuthUsers() {
 }
 
 async function fetchCredits() {
+  // Don't reference updated_at — column isn't on the table and the request
+  // 400s. If we later want a churn-by-date metric, that needs a migration
+  // adding a plan_changed_at column the stripe webhook can stamp.
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id,updated_at&limit=2000`,
+    `${SUPABASE_URL}/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id&limit=2000`,
     { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
   );
-  if (!r.ok) throw new Error("credits fetch " + r.status);
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    console.error("[business-stats] credits fetch failed:", r.status, text);
+    throw new Error("credits fetch " + r.status);
+  }
   return await r.json();
 }
 
@@ -182,21 +189,18 @@ function planMix(credits) {
   });
 }
 
-// "Churn this month" = credits rows whose plan is cancelled or past_due
-// AND whose last update landed in the current calendar month. updated_at
-// is set whenever the stripe webhook flips the plan, so it doubles as
-// the churn timestamp.
-function churnThisMonth(credits) {
-  const now = new Date();
-  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).getTime();
+// Lifetime cancelled / past-due. We can't filter to "this month" without
+// a plan_changed_at column on credits — the webhook doesn't stamp one
+// today. Once that migration lands, swap this back to a date-windowed
+// count. For now, lifetime is still useful — paired with the active
+// counts in plan_mix you can eyeball net churn.
+function churnLifetime(credits) {
   let cancelled = 0, pastDue = 0;
   for (const c of credits) {
-    const t = c.updated_at ? Date.parse(c.updated_at) : NaN;
-    if (Number.isNaN(t) || t < startOfMonth) continue;
     if (c.plan === "cancelled") cancelled++;
     else if (c.plan === "past_due") pastDue++;
   }
-  return { cancelled, past_due: pastDue, month: now.toISOString().slice(0, 7) };
+  return { cancelled, past_due: pastDue };
 }
 
 // Pull utm_source / referrer from user_metadata (we stamp it at signup).
@@ -253,7 +257,7 @@ export default async function handler(req, res) {
     active_users:      activeUsers(events),
     ratings_by_type:   ratingsByType(ratings),
     plan_mix:          planMix(credits),
-    churn_this_month:  churnThisMonth(credits),
+    churn_lifetime:    churnLifetime(credits),
     top_signup_sources: signupSources(users, 8),
   });
 }

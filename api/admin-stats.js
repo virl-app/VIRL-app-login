@@ -42,10 +42,13 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'Not authorized' });
     }
 
-    // Caller is verified admin — fetch credits + events with service key
+    // Caller is verified admin — fetch credits + events with service key.
+    // Don't reference updated_at on credits — that column isn't in the
+    // table and PostgREST returns 400, which our previous code silently
+    // swallowed into an empty list. Sort by user_id for stable order.
     const [credRes, evRes] = await Promise.all([
       fetch(
-        `${SUPABASE_URL}/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id,updated_at&order=updated_at.desc`,
+        `${SUPABASE_URL}/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id&order=user_id`,
         {
           headers: {
             'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
@@ -63,6 +66,15 @@ export default async function handler(req, res) {
         }
       ),
     ]);
+
+    if (!credRes.ok) {
+      const text = await credRes.text().catch(() => '');
+      console.error('[admin-stats] credits fetch failed:', credRes.status, text);
+    }
+    if (!evRes.ok) {
+      const text = await evRes.text().catch(() => '');
+      console.error('[admin-stats] events fetch failed:', evRes.status, text);
+    }
 
     const credits = credRes.ok ? await credRes.json() : [];
     const events = evRes.ok ? await evRes.json() : [];
