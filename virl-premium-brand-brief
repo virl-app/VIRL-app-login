@@ -1,0 +1,1319 @@
+# VIRL — Phase 1 Premium Brand Upgrades
+
+**Repo:** `VIRL-app-login`
+**Primary file:** `index.html`
+**Goal:** Transform VIRL from a capable SaaS product into a premium brand experience. These changes are about taste, craft, and emotional resonance — not new features.
+
+---
+
+## 🎯 How to use this brief with Claude Code
+
+Save this file to your repo as `docs/virl-premium-brand-brief.md` (or just upload it to the root). Then start a fresh Claude Code session and paste this prompt:
+
+> *"Read the file at `virl-premium-brand-brief.md`. Do not start coding yet. Tell me back: (1) the order you'll tackle the changes in, (2) any clarifying questions, and (3) which change you'll start with. After my approval, work on ONE change at a time. Print a one-line status update after every file you modify. After completing each change, commit with a clear message, push to a new branch, and open a PR. Wait for my review before starting the next change. Do not work on multiple changes in parallel."*
+
+---
+
+## 📋 Order of operations
+
+Work in this exact sequence. Each is self-contained — ship and review before moving on.
+
+1. **Empty state copywriting** — fastest win, shapes brand voice immediately
+2. **Demo plan flow for new signups** — highest-impact conversion change
+3. **Celebration moments at plan #5 and plan #10** — retention layer
+4. **Micro-insights inside generated content** — turns tool into strategist
+5. **Upgrade modal copy rewrite** — sells transformation, not features
+6. **VIRL belief statements woven into product** — gives the brand a worldview
+7. **Loops email suite integration** — connects the app to the rewritten lifecycle emails
+8. **Progressive disclosure on PlanCards** — collapsed-by-default cards with status indicators
+9. **Cross-tab workflow connection** — Plan ↔ Vault ↔ Results loop, with "Remix this" and "Plan next week" CTAs
+10. **Silent data infrastructure** — quiet logging that powers the Sunday Review in month 4-5
+
+The first 7 changes are the original premium brand polish. Changes 8-9 are the UX restructuring identified in the May UX audit. Change 10 is foundation work — no user-facing UI, but critical for unlocking Horizon 3 retention features.
+
+---
+
+## ⚙️ Critical context
+
+**Tech stack:** Single-file React app via Babel standalone. All components use `function` declarations. Brand palette in `const B = { ... }` around line 135. Use `B.navy, B.blue, B.coral, B.coralSoft, B.navySoft, B.green, B.greenSoft, B.amber, B.muted, B.ink, B.sub, B.border` — NEVER hardcode hex values.
+
+**Fonts:** `'Italiana', serif` for display, `'Jost', sans-serif` for body.
+
+**Babel rules** (these silently break the build):
+- ❌ No optional chaining `?.` in JSX
+- ❌ No template literals in JSX
+- ❌ No em-dashes in raw JSX text — use en-dash `–` or rephrase
+- ❌ Never put `}} style={{` on the same line — split across lines
+
+**Definition of done for each change:**
+1. Sucrase + vm.Script parse check passes on `index.html`
+2. App loads, auth works, all existing flows still complete
+3. Add `// [PREMIUM N]` comments above all new code blocks
+4. Commit with clear message, push branch, open PR
+5. Wait for review before starting the next change
+
+---
+
+## ✨ CHANGE 1 — Empty State Copy Polish
+
+**Goal:** Every empty state in the app should sound like a thoughtful host welcoming a guest into their home — not a system reporting "no data found."
+
+**Files to modify:** `index.html` only
+
+**Empty states to update:**
+
+### 1a. The Vault tab when empty
+Find the existing `<Vault />` component or wherever the vault renders its empty state.
+
+Replace the current copy with:
+```jsx
+<div style={{textAlign:"center", padding:"60px 20px"}}>
+  <div style={{
+    fontFamily:"'Italiana', serif",
+    fontSize:24,
+    color:B.ink,
+    marginBottom:8
+  }}>Save what resonates with you.</div>
+  <div style={{
+    fontSize:14,
+    fontWeight:300,
+    color:B.muted,
+    maxWidth:380,
+    margin:"0 auto",
+    lineHeight:1.65
+  }}>Tap the bookmark on any caption you love — VIRL learns from what you keep, and your future plans get sharper.</div>
+</div>
+```
+
+### 1b. The Plan tab when no plan has been generated yet
+Find the empty state on the Plan tab (before any generation).
+
+Replace with:
+```jsx
+<div style={{textAlign:"center", padding:"40px 20px"}}>
+  <div style={{
+    fontFamily:"'Italiana', serif",
+    fontSize:26,
+    color:B.ink,
+    marginBottom:10,
+    lineHeight:1.2
+  }}>Your week is a blank page.</div>
+  <div style={{
+    fontSize:14,
+    fontWeight:300,
+    color:B.muted,
+    maxWidth:420,
+    margin:"0 auto 24px",
+    lineHeight:1.65
+  }}>Let's fill it with something that sounds exactly like you.</div>
+</div>
+```
+
+### 1c. The Results tab when empty
+Replace existing copy with:
+```jsx
+<div style={{textAlign:"center", padding:"60px 20px"}}>
+  <div style={{
+    fontFamily:"'Italiana', serif",
+    fontSize:24,
+    color:B.ink,
+    marginBottom:8
+  }}>Track what's working.</div>
+  <div style={{
+    fontSize:14,
+    fontWeight:300,
+    color:B.muted,
+    maxWidth:380,
+    margin:"0 auto",
+    lineHeight:1.65
+  }}>VIRL pays attention to your wins so you can post smarter, not more.</div>
+</div>
+```
+
+### 1d. The Captions tab when empty (if it has an empty state)
+```jsx
+<div style={{textAlign:"center", padding:"60px 20px"}}>
+  <div style={{
+    fontFamily:"'Italiana', serif",
+    fontSize:24,
+    color:B.ink,
+    marginBottom:8
+  }}>One post at a time.</div>
+  <div style={{
+    fontSize:14,
+    fontWeight:300,
+    color:B.muted,
+    maxWidth:380,
+    margin:"0 auto",
+    lineHeight:1.65
+  }}>For when you've got a moment, an idea, or a photo — and just need the words to match.</div>
+</div>
+```
+
+**Acceptance test:** Open the app in incognito with a fresh account. Each tab should display its new empty state with Italiana serif headlines and warm, premium body copy.
+
+---
+
+## ✨ CHANGE 2 — Demo Plan Flow for New Signups
+
+**Goal:** New users experience VIRL's magic within 30 seconds of signup, before any profile work. This is the single highest-impact conversion change in this brief.
+
+**The user flow:**
+
+1. User completes signup
+2. Instead of being dropped into the empty Plan tab or profile setup, they see a brief introduction screen
+3. The screen says: *"Before you do anything else, let me show you what VIRL can do."*
+4. A "Show me a sample plan" button generates a demo plan using minimal inputs (default niche, generic audience, two platforms)
+5. After the plan generates, they see a banner above it: *"This is what VIRL writes with no information about you. Imagine what it can do once it knows your voice."*
+6. The banner has a CTA: *"Set up your profile (2 minutes) →"*
+7. After they complete the profile, the Plan tab is unlocked normally
+
+**Implementation:**
+
+Add new state at the top of the `App()` component:
+```javascript
+var [showDemoIntro, setShowDemoIntro] = useState(function(){
+  return localStorage.getItem("virl_demo_seen") !== "1";
+});
+var [demoPlan, setDemoPlan] = useState(null);
+var [generatingDemo, setGeneratingDemo] = useState(false);
+```
+
+The demo intro screen renders before any other app content if `showDemoIntro === true && !profile.name`. It looks like:
+
+```jsx
+<div style={{
+  maxWidth:600,
+  margin:"40px auto",
+  padding:"32px 28px",
+  background:B.card,
+  borderRadius:18,
+  border:"1px solid "+B.border
+}}>
+  <div style={{
+    fontFamily:"'Italiana', serif",
+    fontSize:32,
+    color:B.ink,
+    lineHeight:1.1,
+    marginBottom:14
+  }}>Before you do anything else,<br/>let me show you what VIRL can do.</div>
+  <div style={{
+    fontSize:15,
+    fontWeight:300,
+    color:B.sub,
+    lineHeight:1.7,
+    marginBottom:24
+  }}>I'll generate a sample plan with no information about you yet — just to show what 60 seconds of generation looks like. Then we'll set up your profile so VIRL actually sounds like you.</div>
+  <button
+    onClick={handleGenerateDemoPlan}
+    style={{
+      padding:"14px 28px",
+      background:B.coral,
+      color:B.white,
+      border:"none",
+      borderRadius:99,
+      fontFamily:"'Jost', sans-serif",
+      fontSize:14,
+      fontWeight:600,
+      cursor:"pointer"
+    }}
+  >Show me a sample plan →</button>
+</div>
+```
+
+The `handleGenerateDemoPlan` function calls the existing plan generation logic with these defaults:
+```javascript
+async function handleGenerateDemoPlan() {
+  setGeneratingDemo(true);
+  // Use existing generate() function with minimal default profile
+  var demoProfile = {
+    name: "Sample User",
+    audience: "people interested in self-improvement and small business",
+    voice: "warm, conversational, occasionally funny",
+    myPlatforms: ["TikTok", "Instagram"],
+    niche: "Lifestyle"
+  };
+  // Call existing API with these defaults
+  // Set demoPlan with result
+  // Set generatingDemo = false
+}
+```
+
+After the demo plan generates, show it with a banner above it:
+```jsx
+<div style={{
+  background:B.coralSoft,
+  borderLeft:"4px solid "+B.coral,
+  borderRadius:12,
+  padding:"16px 20px",
+  marginBottom:20
+}}>
+  <div style={{
+    fontFamily:"'Italiana', serif",
+    fontSize:18,
+    color:B.coral,
+    marginBottom:6
+  }}>This is what VIRL writes with no information about you.</div>
+  <div style={{
+    fontSize:13,
+    fontWeight:300,
+    color:B.sub,
+    lineHeight:1.65,
+    marginBottom:14
+  }}>Imagine what it can do once it knows your voice, your audience, and what you'd never say.</div>
+  <button
+    onClick={function(){
+      localStorage.setItem("virl_demo_seen", "1");
+      setShowDemoIntro(false);
+      setTab("profile");
+    }}
+    style={{
+      padding:"10px 20px",
+      background:B.navy,
+      color:B.white,
+      border:"none",
+      borderRadius:99,
+      fontFamily:"'Jost', sans-serif",
+      fontSize:13,
+      fontWeight:600,
+      cursor:"pointer"
+    }}
+  >Set up your profile (2 minutes) →</button>
+</div>
+```
+
+**Important constraints:**
+- Demo plan should NOT count against the user's credit balance — it's a free experience
+- The "virl_demo_seen" localStorage flag prevents the demo from showing again
+- Once they navigate to the profile tab, the demo intro never shows again
+- Demo plan should be visually distinct (the banner above makes this clear) so users don't confuse it for their actual personalized output
+
+**Acceptance test:** Sign up with a brand new account. The demo intro screen should appear before anything else. Tap "Show me a sample plan" — a plan generates within ~30 seconds. The pink banner appears above it. Tap "Set up your profile" — you go to the profile tab. The demo never appears again on subsequent logins.
+
+---
+
+## ✨ CHANGE 3 — Celebration Moments at Plan #5 and #10
+
+**Goal:** Quietly recognize milestones so users feel seen. Premium brands celebrate users.
+
+**Implementation:**
+
+Track total plans generated in localStorage:
+```javascript
+function incrementPlanCount() {
+  var count = parseInt(localStorage.getItem("virl_total_plans") || "0", 10);
+  count = count + 1;
+  localStorage.setItem("virl_total_plans", String(count));
+  return count;
+}
+```
+
+Call `incrementPlanCount()` after every successful plan generation. Then check the returned count and trigger a celebration if it matches a milestone.
+
+### 3a. Plan #5 — In-app celebration card
+
+After the user generates their 5th plan, show a dismissible card at the top of the Plan tab:
+```jsx
+<div style={{
+  background:"linear-gradient(135deg, "+B.coralSoft+" 0%, "+B.amber+"15 100%)",
+  border:"1px solid "+B.coral+"33",
+  borderRadius:14,
+  padding:"18px 22px",
+  marginBottom:18,
+  position:"relative"
+}}>
+  <div style={{
+    fontFamily:"'Italiana', serif",
+    fontSize:22,
+    color:B.ink,
+    marginBottom:6
+  }}>Five plans in. ✦</div>
+  <div style={{
+    fontSize:13,
+    fontWeight:300,
+    color:B.sub,
+    lineHeight:1.65
+  }}>You're building a habit most creators never do. The hardest part of consistent content isn't the writing — it's the planning. You're past it.</div>
+  <button
+    onClick={function(){ setShowMilestone5(false); }}
+    style={{
+      position:"absolute",
+      top:14,
+      right:14,
+      background:"transparent",
+      border:"none",
+      color:B.muted,
+      fontSize:18,
+      cursor:"pointer"
+    }}
+  >×</button>
+</div>
+```
+
+Use a `localStorage` flag `virl_milestone_5_seen` so it only shows once.
+
+### 3b. Plan #10 — Email trigger (Loops integration)
+
+Plan #10 should trigger a Loops event called `tenPlansMilestone`. Add a fetch call after `incrementPlanCount()` returns 10:
+
+```javascript
+async function fireMilestoneEvent(eventName, userId, properties) {
+  if (!userId) return;
+  try {
+    await fetch("/api/loops-event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: userId,
+        eventName: eventName,
+        properties: properties || {}
+      })
+    });
+  } catch(e) { console.warn("Loops event failed:", e); }
+}
+```
+
+This requires a new API endpoint `/api/loops-event.js` that proxies to Loops' Events API. Keep it simple — graceful degradation if `LOOPS_API_KEY` env var is missing.
+
+The actual email content lives in Loops, not in the app. (Lauren writes that email separately in the Loops dashboard.)
+
+**Acceptance test:** Generate 5 plans in a row. The celebration card appears after the 5th. Generate 5 more (total 10). Check Loops dashboard for `tenPlansMilestone` event firing.
+
+---
+
+## ✨ CHANGE 4 — Micro-Insights Inside Generated Content
+
+**Goal:** Shift VIRL from "tool that does work for you" to "strategist who's teaching you to think."
+
+**Implementation:**
+
+Modify the Claude API system prompt for plan generation to occasionally include a strategic insight per post. Update the prompt structure to request output like:
+
+```json
+{
+  "day": "Monday",
+  "platform": "TikTok",
+  "title": "Morning routine breakdown",
+  "hook": "What I do every morning before 8am.",
+  "caption": "...",
+  "hashtags": "...",
+  "postingTime": "7:30 AM",
+  "insight": "This hook leads with curiosity — strongest format for educational content."
+}
+```
+
+Update the `PlanCard` component to render the insight if present:
+```jsx
+{card.insight && (
+  <div style={{
+    marginTop:12,
+    padding:"10px 14px",
+    background:B.navySoft,
+    borderRadius:8,
+    borderLeft:"3px solid "+B.blue
+  }}>
+    <div style={{
+      fontSize:11,
+      fontWeight:600,
+      letterSpacing:"0.1em",
+      color:B.blue,
+      textTransform:"uppercase",
+      marginBottom:4
+    }}>Why this works</div>
+    <div style={{
+      fontSize:13,
+      fontWeight:300,
+      color:B.sub,
+      lineHeight:1.6
+    }}>{card.insight}</div>
+  </div>
+)}
+```
+
+The insight should appear on roughly 30-40% of posts — not every post. The system prompt should explicitly instruct: *"Add a brief strategic insight ('insight' field) to roughly 1 in 3 posts. Skip the field on the others. Insights should be genuine and specific — never generic. Examples of good insights: 'This hook leads with curiosity — strongest format for educational content.' / 'Tuesday at 7pm — when your audience is most active based on your platforms.' / 'The rule of three makes this caption more memorable.' Never say things like 'engagement-boosting' or 'go viral.' VIRL's voice is honest, not hypey."*
+
+**Acceptance test:** Generate a plan. Roughly 2-3 of 7 posts should have a "Why this works" callout below them. Each insight should be specific and useful, not generic.
+
+---
+
+## ✨ CHANGE 5 — Upgrade Modal Copy Rewrite
+
+**Goal:** The upgrade modal currently sells features. It should sell transformation.
+
+**Implementation:**
+
+Find the existing upgrade modal (search for `showUpgrade && (`).
+
+Replace the existing tier copy with this structure:
+
+```jsx
+<div style={{ /* existing modal container */ }}>
+  <div style={{
+    fontFamily:"'Italiana', serif",
+    fontSize:28,
+    color:B.ink,
+    lineHeight:1.15,
+    marginBottom:8
+  }}>Show up consistently. Sound like you, every time.</div>
+  <div style={{
+    fontSize:14,
+    fontWeight:300,
+    color:B.sub,
+    lineHeight:1.65,
+    marginBottom:24
+  }}>150 credits per week — enough to plan, post, and grow without ever wondering what to say next.</div>
+
+  {/* Existing annual/monthly toggle stays here */}
+
+  {/* Pricing display stays here */}
+
+  {/* Replace the feature list (if any) with this trust block: */}
+  <div style={{
+    marginTop:18,
+    paddingTop:18,
+    borderTop:"1px solid "+B.border,
+    fontSize:12,
+    fontWeight:300,
+    color:B.muted,
+    lineHeight:1.7
+  }}>
+    Cancel anytime. Your saved content is always yours, even if you stop subscribing. No credit card games.
+  </div>
+</div>
+```
+
+Remove any existing feature bullet lists (e.g., "✓ 150 credits/week ✓ All platforms ✓ ...") — premium pricing pages don't itemize features. The headline does the selling.
+
+**Acceptance test:** Open the upgrade modal as a trial user. The headline should be Italiana serif, talking about consistency and voice — not credits. The trust block at the bottom should be visible. No feature checklist.
+
+---
+
+## ✨ CHANGE 6 — VIRL Belief Statements
+
+**Goal:** Premium brands have a point of view. Let VIRL's beliefs show up in the product.
+
+**The four beliefs (canonical, do not change):**
+
+1. *Authenticity outperforms perfection.*
+2. *Posting consistently matters more than going viral.*
+3. *Hooks should respect the reader's intelligence.*
+4. *Most engagement hacks are noise — the work is the work.*
+
+**Where to surface these:**
+
+### 6a. Welcome modal for new users
+After the user completes their profile and reaches the main app for the first time, show a one-time welcome modal that surfaces one belief:
+
+```jsx
+<div style={{ /* modal styling */ }}>
+  <div style={{
+    fontFamily:"'Italiana', serif",
+    fontSize:28,
+    color:B.ink,
+    lineHeight:1.15,
+    marginBottom:14
+  }}>Before you start —</div>
+  <div style={{
+    fontSize:15,
+    fontWeight:300,
+    color:B.sub,
+    lineHeight:1.75,
+    marginBottom:24
+  }}>VIRL won't promise to make you go viral. We don't write clickbait, and we don't suggest engagement hacks that treat your audience like dopamine slot machines.<br/><br/>What we'll do: help you sound like you, consistently. Posting consistently matters more than going viral. The work is the work.<br/><br/>Now go make something only you could make.</div>
+  <button onClick={function(){ setShowWelcome(false); }}>I'm in</button>
+</div>
+```
+
+Trigger condition: `localStorage.getItem("virl_welcome_seen") !== "1"` AND `profileComplete === true`. Set the flag when dismissed.
+
+### 6b. Footer of the Plan tab (subtle)
+Add a small philosophical line at the very bottom of the Plan tab, below all the cards:
+
+```jsx
+<div style={{
+  textAlign:"center",
+  padding:"40px 20px 20px",
+  fontSize:11,
+  fontStyle:"italic",
+  color:B.muted,
+  fontWeight:300
+}}>
+  The work is the work. VIRL just makes it easier to start.
+</div>
+```
+
+This appears on every plan view, quietly reinforcing the brand's worldview.
+
+**Acceptance test:** A new user completes profile setup → welcome modal with the belief statement appears once → after dismissal, they land on the Plan tab → small italicized line is visible at the bottom of plan results.
+
+---
+
+## 📁 Files modified by this brief
+
+- **Primary:** `index.html` (all changes)
+- **New file:** `/api/loops-event.js` (Change 3 — Loops event proxy)
+- **No vercel.json changes needed**
+
+---
+
+## 🛡️ Safety reminders
+
+1. **One change at a time.** Do not start Change 2 until Change 1 is reviewed and merged.
+2. **Commit after every change.** Each gets its own PR with a clear description.
+3. **One-line status updates** after every file modification. No silent stretches.
+4. **Verify syntax** before committing — run sucrase + vm.Script check on `index.html`.
+5. **Match existing code style** — function declarations, `style={Object.assign({},base,{...})}` pattern, no shortcuts.
+6. **Do not touch existing functionality** — the app must still work end-to-end after every change.
+
+---
+
+## ✨ CHANGE 7 — Loops Email Suite (Premium Voice Edition)
+
+**Goal:** Twelve lifecycle emails rewritten as personal letters from Lauren. Most of this work happens in Loops itself (you'll paste these in directly). Claude Code's role is wiring the trigger events from the app to Loops.
+
+**Important:** The email *content* below is for Lauren to paste into Loops directly. Claude Code's responsibility for this change is only:
+1. Building the `/api/loops-event.js` proxy endpoint
+2. Adding `fireMilestoneEvent()` calls at the right moments in the app
+3. Ensuring user properties (firstName, planCount, captionCount, etc.) are synced to Loops
+
+### 7a. Build the `/api/loops-event.js` proxy endpoint
+
+Create this file in `/api/loops-event.js`:
+
+```javascript
+// /api/loops-event.js
+// Proxy endpoint that fires a Loops event for the current user.
+// Used by the frontend to trigger lifecycle emails.
+
+module.exports = async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const apiKey = process.env.LOOPS_API_KEY;
+
+  // Graceful degradation — if Loops isn't configured, log and return ok
+  if (!apiKey) {
+    console.warn("[loops-event] LOOPS_API_KEY not set");
+    return res.status(200).json({ ok: true, note: "Loops not configured" });
+  }
+
+  const { userId, email, eventName, properties } = req.body || {};
+
+  if (!eventName || (!userId && !email)) {
+    return res.status(400).json({ error: "eventName and userId or email required" });
+  }
+
+  try {
+    const response = await fetch("https://app.loops.so/api/v1/events/send", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: userId,
+        email: email,
+        eventName: eventName,
+        eventProperties: properties || {},
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn("[loops-event] Loops returned " + response.status);
+      return res.status(200).json({ ok: false });
+    }
+
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("[loops-event] error:", err.message);
+    return res.status(200).json({ ok: false });
+  }
+};
+```
+
+### 7b. Add the helper function in `index.html`
+
+Add near the existing API helpers (around the existing `callAPI` function):
+
+```javascript
+async function fireLoopsEvent(eventName, properties) {
+  if (!session || !session.user) return;
+  try {
+    await fetch("/api/loops-event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: session.user.id,
+        email: session.user.email,
+        eventName: eventName,
+        properties: properties || {},
+      }),
+    });
+  } catch (e) {
+    console.warn("[loops] event failed:", e);
+  }
+}
+```
+
+### 7c. Wire the events at the right moments
+
+Add `fireLoopsEvent` calls at these points:
+
+| Trigger point | Event name | Properties |
+|---|---|---|
+| User signs up | `userSignedUp` | `firstName` |
+| 24h after signup, profile not complete | (nightly job — Loops handles this from properties) | sync `profileComplete: false` to Loops |
+| First plan generation | `firstPlanGenerated` | `firstName`, `planCount: 1` |
+| Plan #5 generated | `fivePlansMilestone` | `firstName`, `planCount: 5` |
+| Plan #10 generated | `tenPlansMilestone` | `firstName`, `planCount: 10` |
+| Day 30 milestone reached | `thirtyDayMilestone` | `firstName`, `planCount`, `captionCount`, `vaultCount`, `postDays` |
+| Subscription started | `subscriptionStarted` | `firstName`, `planType` (monthly/annual), `isFoundingMember` |
+| User cancelled | `subscriptionCancelled` | `firstName` |
+
+**Important:** Some triggers (like "trial ending in 48 hours" or "inactive 14 days") are time-based and handled inside Loops directly using user properties — not via events from the app. For those, ensure the user's `signupDate`, `lastActiveDate`, and `plan` properties are kept current via a Loops `userIdentified` call on every login.
+
+### 7d. The 12 emails (Lauren pastes these into Loops)
+
+These are the rewritten email bodies. Each goes into Loops as a separate campaign with the trigger condition listed.
+
+---
+
+**EMAIL 01 — Welcome**
+
+- **Trigger:** `userSignedUp` event fires
+- **Send delay:** Immediately
+- **Subject line:** `A note before you build your first plan`
+- **Subject alternates to A/B test:** `Welcome — read this first` · `Before you do anything else`
+
+```
+{{firstName}},
+
+Welcome. Before you do anything else, I want to tell you what VIRL actually is — because the description doesn't quite capture it.
+
+Most AI tools write at you. VIRL writes as you.
+
+The difference shows up in the third sentence of every caption — the place where every other tool reveals it's a robot. VIRL was built so that moment never comes.
+
+You'll set up your profile in the next two minutes. Take it seriously — every question shapes how I sound when I'm writing for you. Skip nothing.
+
+Then we'll build your first week.
+
+Lauren
+Founder, VIRL
+```
+
+---
+
+**EMAIL 02 — Profile incomplete**
+
+- **Trigger:** Time-based, fires when `profileComplete` property is false AND signup was ≥24 hours ago
+- **Send delay:** 24 hours after signup
+- **Subject line:** `Quick favor — finish your profile?`
+- **Alternates:** `Two minutes — and VIRL becomes 10x sharper` · `Your voice is missing`
+
+```
+{{firstName}},
+
+Noticed you started setting up your profile but didn't finish. No pressure — but I want to flag something.
+
+Right now VIRL knows enough to write for a generic creator. That works. But it's not what you signed up for.
+
+The fields you skipped — your voice, your off-limits, what you'd never say — are exactly what makes VIRL sound like you instead of every other AI out there. Two more minutes and the difference is dramatic.
+
+If you're stuck on a question, write whatever first comes to mind. You can always edit later.
+
+Lauren
+```
+
+---
+
+**EMAIL 03 — Trial ending (Day 12)**
+
+- **Trigger:** Time-based, fires when `daysIntoTrial` = 12 AND `plan` = "trial"
+- **Send delay:** Morning of day 12
+- **Subject line:** `Your trial ends in 48 hours — here's what happens next`
+- **Alternates:** `48 hours` · `Two days left — and a small offer`
+
+```
+{{firstName}},
+
+In two days, your free trial ends.
+
+Here's exactly what happens: your account moves to read-only. You'll still be able to see every plan and caption you've already generated. Nothing is deleted. Nothing is auto-charged. You're in full control.
+
+If VIRL has been useful — if even one plan made you think "oh, this actually sounds like me" — I'd love for you to keep going.
+
+$25/mo gets you 150 credits every week. That's enough to plan, post, and never wonder what to say again. There's also annual at $249 if you'd rather pay once and forget about it.
+
+Either way — thank you for trying VIRL. The fact that you've been here for two weeks means more than you know.
+
+Lauren
+```
+
+---
+
+**EMAIL 04 — Payment confirmed**
+
+- **Trigger:** `subscriptionStarted` event fires
+- **Send delay:** Immediately
+- **Subject line:** `Welcome to Standard. Here's what you unlocked.`
+- **Alternates:** `Officially in.` · `You're a VIRL subscriber now`
+
+```
+{{firstName}},
+
+Thank you. Genuinely.
+
+You now have 150 credits per week — enough to plan, write, and post without ever feeling rationed. Credits reset every Monday morning, so go build something.
+
+If you're a founding member, you locked in $20/mo for the next 12 months. That price will not be offered again.
+
+One favor: hit reply and tell me what made you upgrade. The honest answer — even if it's small. Every founder's job is to find the moments that mattered, and yours is the data I learn the most from.
+
+Now go make something only you could make.
+
+Lauren
+```
+
+---
+
+**EMAIL 05 — After first plan generation**
+
+- **Trigger:** `firstPlanGenerated` event fires
+- **Send delay:** 30 minutes after the event
+- **Subject line:** `How did your first plan feel?`
+- **Alternates:** `Be honest with me` · `Did it sound like you?`
+
+```
+{{firstName}},
+
+You just generated your first plan with VIRL.
+
+The whole point of VIRL is one thing: did the captions actually sound like something you'd write?
+
+If yes — keep going. Try VIRL Captions for one-off posts, or VIRL Scan to score photos before you post them. Every additional tool sharpens what VIRL knows about you.
+
+If no — tell me what felt off. Hit reply with one specific line that didn't sound like you, and I'll personally look at it. The product gets better when you're honest with me.
+
+Either way, you're three plans into the most important habit a creator can build: planning before posting. Don't let that go.
+
+Lauren
+```
+
+---
+
+**EMAIL 06 — Day 5 scan highlight**
+
+- **Trigger:** Time-based, fires when `daysIntoTrial` = 5 AND `scanCount` = 0
+- **Send delay:** Morning of day 5
+- **Subject line:** `The feature most people miss for the first week`
+- **Alternates:** `Try this before you post` · `VIRL Scan — quietly the best part`
+
+```
+{{firstName}},
+
+Most VIRL users find Plans first. Captions second. Scan third — usually after a week, when someone tells them about it.
+
+Worth knowing now: VIRL Scan analyzes a photo or video and tells you, before you post, whether it'll resonate with your specific audience. Not generic engagement scoring — your audience, based on the profile you set up.
+
+It's saved me from posting more than a few things I would've regretted.
+
+Try one before you post next.
+
+Lauren
+```
+
+---
+
+**EMAIL 07 — Day 10 progress check**
+
+- **Trigger:** Time-based, fires when `daysIntoTrial` = 10 AND `plan` = "trial"
+- **Send delay:** Morning of day 10
+- **Subject line:** `Where you are with VIRL — quick stats`
+- **Alternates:** `You've built X plans this week` · `10 days in — here's what's happening`
+
+```
+{{firstName}},
+
+Quick check-in. Ten days into your trial, four left.
+
+Here's where you are:
+
+•  {{planCount}} plans generated
+•  {{captionCount}} captions written in your voice
+•  {{scanCount}} posts pre-checked before publishing
+
+Whatever combination that adds up to — that's the rhythm of someone who's planning their content instead of scrambling for it. Keep going.
+
+If you've found VIRL useful, you can lock in the founding member rate — $20/mo for the first year — at govirl.ai/upgrade. Only the first 100 paying users get this; after that it's $25/mo.
+
+Lauren
+```
+
+---
+
+**EMAIL 08 — Sunday plan reminder (recurring)**
+
+- **Trigger:** Time-based, fires every Sunday at 6pm user-local time
+- **Send delay:** Recurring weekly
+- **Targets:** All active paid subscribers
+- **Subject line:** `Your week resets tomorrow`
+- **Alternates:** `Sunday — the right time` · `30 minutes today saves your whole week`
+
+```
+{{firstName}},
+
+It's Sunday. Tomorrow your credits reset to 150.
+
+If you've got 30 minutes tonight, plan your week with VIRL now. Mondays are easier when the hard thinking is already done.
+
+Optional but powerful: open last week's plan first and check what worked. VIRL learns from what you saved to your Vault — so the more you tell it, the sharper next week's plan gets.
+
+You don't need a perfect week. You need a planned one.
+
+Lauren
+```
+
+---
+
+**EMAIL 09 — 30-day milestone (NEW)**
+
+- **Trigger:** `thirtyDayMilestone` event fires (or time-based if 30 days since signup AND `plan` = "standard"/"founding")
+- **Send delay:** Morning of day 30
+- **Subject line:** `30 days in — here's what you've built`
+- **Alternates:** `Your first month with VIRL` · `Look what you did`
+
+```
+{{firstName}},
+
+30 days. That's how long you've been with VIRL.
+
+In that time, you've:
+
+•  Generated {{planCount}} weekly plans
+•  Written {{captionCount}} captions in your voice
+•  Saved {{vaultCount}} posts you loved to your Vault
+•  Showed up on social media on {{postDays}} different days
+
+That last number is the one that matters most. Posting consistently for 30 days puts you ahead of 90% of creators who try and quit.
+
+Whatever you do next — keep doing this.
+
+Lauren
+```
+
+---
+
+**EMAIL 10 — We miss you (inactive 14 days)**
+
+- **Trigger:** Time-based, fires when `lastActiveDays` ≥ 14 AND `plan` ≠ "cancelled"
+- **Send delay:** Morning of day 14 of inactivity
+- **Subject line:** `Everything okay?`
+- **Alternates:** `Just checking in` · `Two weeks since we've seen you`
+
+```
+{{firstName}},
+
+Noticed you haven't been by VIRL in a couple of weeks. Just wanted to check in — no pressure either way.
+
+If something about VIRL isn't working for you, I genuinely want to know. Hit reply and tell me. Even if it's "it just didn't click" — that's useful.
+
+If life is just busy and you'll be back when things settle: I get it. Your account stays right where you left it.
+
+And if you'd like to pause your subscription instead of cancelling, just reply with the word "pause" and I'll handle it.
+
+Lauren
+```
+
+---
+
+**EMAIL 11 — Annual upgrade nudge (Day 60)**
+
+- **Trigger:** Time-based, fires when `daysSinceUpgrade` = 60 AND `plan` = "standard" (monthly billing only — exclude annual subscribers)
+- **Send delay:** Day 60 after first paid month
+- **Subject line:** `A small math problem`
+- **Alternates:** `$51 — and what to do with it` · `Two months free, if you want`
+
+```
+{{firstName}},
+
+You've been with VIRL for two months. Long enough to know whether it's part of your routine or not.
+
+If it is — quick math: monthly is $25, which adds up to $300 over a year. Annual is $249. That's $51 saved, or roughly two months free.
+
+If you want to switch, reply to this email and I'll move you over without you having to do anything. Your renewal date stays the same; you just stop paying monthly.
+
+If you'd rather keep things as they are, no problem — this email exists once, not as a recurring nag.
+
+Lauren
+```
+
+---
+
+**EMAIL 12 — Reactivation (cancelled users, 60 days later)**
+
+- **Trigger:** Time-based, fires when `daysSinceCancellation` = 60
+- **Send delay:** Morning of day 60 after cancellation
+- **Subject line:** `If you ever want to come back`
+- **Alternates:** `No pitch — just a note` · `What's changed since you left`
+
+```
+{{firstName}},
+
+It's been about two months since you left VIRL. I'm not going to pitch you on coming back — but I do want to share two things.
+
+First: your profile and saved content are still here, exactly where you left them. If you ever want to log back in, nothing's been deleted.
+
+Second: a few things have changed since you cancelled. {{recentImprovements}}. Those came from feedback I got from people just like you.
+
+If any of that makes you curious enough to come back, reply and I'll restart your account at the founding rate — $20/mo for 12 months — even though that offer is technically closed.
+
+And if you've moved on for good, that's okay too. Thanks for being part of the early days.
+
+Lauren
+```
+
+---
+
+### 7e. Loops setup checklist (Lauren's task)
+
+When pasting these into Loops:
+
+1. **Sender setup:** Set From name to `Lauren from VIRL` (not "VIRL Team"). Reply-to: `hello@govirl.ai`. Personal sender names get 30-40% higher open rates.
+
+2. **User properties to track:** firstName, signupDate, daysIntoTrial, plan, planType, profileComplete, planCount, captionCount, scanCount, vaultCount, postDays, lastActiveDate, daysSinceUpgrade, daysSinceCancellation, isFoundingMember, recentImprovements
+
+3. **Frequency rules:** No user should receive more than 2 automated emails in any 7-day window unless one is transactional. Loops handles deduplication, but check the queue manually for the first month to be safe.
+
+4. **A/B testing plan:** Set up tests for the four highest-volume emails (Welcome, Trial Ending, Sunday Reminder, 30-Day Milestone). Run each for 2 weeks minimum.
+
+5. **Reply rate expectation:** 5-15% of these emails will get replies. Treat each as gold — especially in the first 200 customers. The reply-to address must be monitored.
+
+**Acceptance test for Claude Code:**
+- `/api/loops-event.js` exists and returns 200 OK with valid input
+- `fireLoopsEvent()` is called at all 8 trigger points listed in 7c
+- User properties are synced to Loops on signup, login, and after each significant action
+- Graceful degradation works: if `LOOPS_API_KEY` env var is missing, no errors thrown — just a console warning
+
+---
+
+**End of brief.** Estimated total Claude Code time: 7-10 hours across 7 PRs. Ship in order. The Loops email content can go live independently (Lauren handles that in Loops directly).
+
+---
+
+## ✨ CHANGE 8 — Progressive Disclosure on PlanCards
+
+**Goal:** Replace the current text-heavy PlanCard layout with a collapsed-by-default design that uses progressive disclosure. Same content, dramatically less visual weight, premium feel.
+
+**Files to modify:** `index.html` (PlanCard component only)
+
+**The current problem:** PlanCards stack 6-7 pieces of information vertically at the same visual hierarchy — day, platform, hook, full caption, hashtags, posting time, and (post Change 4) the "Why this works" insight. On mobile especially, each card requires a full scroll to read. Users skim, miss key information, or fatigue out before reaching card 7.
+
+### 8a. The collapsed default state
+
+Each card renders by default showing only:
+
+```jsx
+<div style={{
+  background: B.white,
+  border: "1px solid " + B.border,
+  borderRadius: 14,
+  padding: "16px 18px",
+  marginBottom: 12,
+  cursor: "pointer"
+}}>
+  {/* Metadata row — small, muted */}
+  <div style={{
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: B.muted,
+    marginBottom: 12
+  }}>
+    <div>{card.day}  ·  {card.platform}</div>
+    <div>{card.postingTime}</div>
+  </div>
+
+  {/* The hook — the visual anchor */}
+  <div style={{
+    fontFamily: "'Italiana', serif",
+    fontSize: 18,
+    color: B.ink,
+    lineHeight: 1.25,
+    marginBottom: 14
+  }}>{card.hook}</div>
+
+  {/* Action row */}
+  <div style={{
+    display: "flex",
+    gap: 8,
+    fontSize: 12,
+    fontWeight: 500
+  }}>
+    <button onClick={toggleExpand}>Tap to see caption</button>
+    <button onClick={handleSave}>📌 Save</button>
+    <button onClick={handlePosted}>↗ Mark as posted</button>
+  </div>
+</div>
+```
+
+### 8b. The expanded state (when tapped)
+
+When the user taps "Tap to see caption" or anywhere on the card, expand to show:
+- The full caption text in Jost 14px below the hook
+- Hashtags rendered as small chips (Jost 11px, B.navySoft background, B.navy text)
+- The "Why this works" insight callout if `card.insight` is present (use the existing styling from Change 4)
+- Full action row at the bottom: Save, Mark as Posted, Edit, Copy
+
+Use a local state `const [expanded, setExpanded] = useState(false)` per card. Expanding does NOT close other expanded cards — users can have multiple open at once.
+
+### 8c. Status indicator system
+
+Track per-card status using localStorage keys:
+- `virl_saved_<cardId>` — "1" if saved
+- `virl_posted_<cardId>` — "1" if marked as posted
+
+`cardId` should be derived from `<weekStartDate>_<dayIndex>` so it's stable across sessions but unique per plan.
+
+Render a subtle status dot in the top-right corner of the card (NOT the metadata row — a separate small absolute-positioned element):
+- Saved only: small navy dot (B.navy, 8px diameter)
+- Posted: coral checkmark icon (B.coral, 12px)
+- Both: coral checkmark only (posted supersedes saved visually)
+
+This gives users a sense of progress through their week. By Wednesday they can glance at the cards and see 2 are checked, 5 are pending. Premium retention pattern.
+
+### 8d. Acceptance test
+
+- Generate a plan → cards render in collapsed state showing only metadata + hook + 3 action buttons
+- Tap "Tap to see caption" → card expands smoothly, showing full content
+- Tap "Save" → small navy dot appears top-right of card; localStorage updated
+- Tap "Mark as posted" → navy dot replaced with coral checkmark
+- Refresh the page → status indicators persist
+- Card heights drop from ~280px to ~140px in collapsed state — twice as many fit on screen
+
+---
+
+## ✨ CHANGE 9 — Cross-Tab Workflow Connection
+
+**Goal:** Tie Plan, Vault, and Results into a single connected workflow loop. Users should never feel like they're starting from scratch on any tab.
+
+**Files to modify:** `index.html` (Plan, Vault, and Results tab components)
+
+**The current problem:** Plan, Vault, and Results currently feel like three separate apps glued together. There's no flow between them. The user has to manually move between tabs and mentally reconnect related actions. Premium brands create continuous workflows.
+
+### 9a. Plan tab — "Last week's posts" banner
+
+When 2+ cards from the prior week have been marked as posted (using the localStorage status from Change 8), show a small banner at the top of the Plan tab above the current week's cards:
+
+```jsx
+<div style={{
+  background: B.coralSoft,
+  borderLeft: "3px solid " + B.coral,
+  borderRadius: 12,
+  padding: "12px 16px",
+  marginBottom: 18,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+  flexWrap: "wrap"
+}}>
+  <div style={{
+    fontSize: 13,
+    fontWeight: 300,
+    color: B.sub,
+    lineHeight: 1.5
+  }}>You posted <strong>{postedCount} cards</strong> last week. Add their results in your Vault →</div>
+  <button onClick={function(){ setTab("vault"); }} style={{
+    fontSize: 12,
+    fontWeight: 600,
+    color: B.coral,
+    background: "transparent",
+    border: "none",
+    cursor: "pointer"
+  }}>Open Vault →</button>
+</div>
+```
+
+Hide the banner if user has already visited the Vault from this banner (track via `sessionStorage.virl_vault_prompt_dismissed`).
+
+### 9b. Vault tab — "Remix this" generative action
+
+For each saved item in the Vault, add a "Remix this" button alongside the existing actions. When tapped:
+
+1. Set a temporary state `remixContext` containing the original caption text
+2. Navigate to the Plan tab (`setTab("plan")`)
+3. The Plan tab's generation logic should detect `remixContext` and pass it to the Claude API as a voice reference: *"Here is a caption the user previously loved — use its tone, structure, and energy as inspiration for the new plan: [original caption]"*
+4. Clear `remixContext` after generation completes
+
+This transforms the Vault from "save and forget" into a generative loop. Saved content becomes input for new content. Users come back to Vault not just to look at old work but to feed VIRL their best content.
+
+```jsx
+<button onClick={function(){
+  setRemixContext(savedItem.caption);
+  setTab("plan");
+}} style={{
+  /* coral pill button */
+  padding: "6px 14px",
+  background: B.coralSoft,
+  color: B.coral,
+  border: "1px solid " + B.coral,
+  borderRadius: 99,
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer"
+}}>✨ Remix this</button>
+```
+
+### 9c. Results tab — "Plan next week" action button
+
+At the bottom of the Results tab, add a primary CTA:
+
+```jsx
+<div style={{
+  marginTop: 32,
+  padding: "24px 20px",
+  background: B.navySoft,
+  borderRadius: 14,
+  textAlign: "center"
+}}>
+  <div style={{
+    fontFamily: "'Italiana', serif",
+    fontSize: 22,
+    color: B.ink,
+    marginBottom: 8,
+    lineHeight: 1.2
+  }}>Tomorrow is Monday.</div>
+  <div style={{
+    fontSize: 13,
+    fontWeight: 300,
+    color: B.sub,
+    marginBottom: 16,
+    lineHeight: 1.65
+  }}>VIRL has noted what worked this week. Ready to plan something even sharper?</div>
+  <button onClick={handlePlanNextWeek} style={{
+    padding: "12px 24px",
+    background: B.coral,
+    color: B.white,
+    border: "none",
+    borderRadius: 99,
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: "pointer"
+  }}>Plan next week →</button>
+</div>
+```
+
+The `handlePlanNextWeek` function should:
+1. Identify the user's top-performing post from the prior week (most saves OR most engagement)
+2. Set a temporary `priorWeekContext` containing that post's hook and caption
+3. Navigate to the Plan tab
+4. The Plan generation logic uses this context to inform the new plan
+
+For users without enough data yet (first 2 weeks), the button still works — it just navigates to Plan without context.
+
+### 9d. Acceptance test
+
+- After marking 2+ cards as posted, navigate to Plan tab → coral banner appears prompting Vault visit
+- Tap a "Remix this" in Vault → navigates to Plan tab → next generated plan reflects the remixed caption's tone
+- Tap "Plan next week" on Results tab → navigates to Plan with prior-week context loaded → new plan reflects what worked
+
+---
+
+## ✨ CHANGE 10 — Silent Data Infrastructure
+
+**Goal:** Quietly accumulate the data that will power the Sunday Review feature in month 4-5. No user-facing UI for this change — it's pure foundation work.
+
+**Files to modify:** `index.html` (event tracking) and create new file `/api/track-event.js`
+
+**Why now, not later:** The Sunday Review's emotional weight depends on real data: "Your Tuesday post outperformed by 2.4×" — but that data only matters if it's been tracked from day one. If you wait until month 4 to start logging, you'll launch the Sunday Review screen with empty cards. Track silently now; ship the feature with confidence later.
+
+### 10a. The Supabase schema addition
+
+Add a new table `user_events` to Supabase with these columns:
+
+```sql
+CREATE TABLE user_events (
+  id BIGSERIAL PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  event_name TEXT NOT NULL,
+  event_data JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_user_events_user_id ON user_events(user_id);
+CREATE INDEX idx_user_events_created_at ON user_events(created_at DESC);
+CREATE INDEX idx_user_events_name ON user_events(event_name);
+
+-- RLS: users can only insert/read their own events
+ALTER TABLE user_events ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can insert their own events"
+  ON user_events FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can read their own events"
+  ON user_events FOR SELECT
+  USING (auth.uid() = user_id);
+```
+
+Lauren needs to run this migration in the Supabase SQL Editor before this change ships. (Include this in the PR description.)
+
+### 10b. The tracking helper in `index.html`
+
+Add near the existing API helpers:
+
+```javascript
+async function trackEvent(eventName, eventData) {
+  if (!session || !session.user) return;
+  try {
+    await supabase.from("user_events").insert({
+      user_id: session.user.id,
+      event_name: eventName,
+      event_data: eventData || {}
+    });
+  } catch (e) {
+    // Silent failure — never block user actions on tracking
+    console.warn("[track] event failed:", e);
+  }
+}
+```
+
+### 10c. Wire the tracking calls
+
+Add `trackEvent()` calls at exactly these moments — and nowhere else (no scope creep):
+
+| When | Event name | Event data |
+|---|---|---|
+| Plan generated | `plan_generated` | `{ weekStart: "2026-06-01", platforms: ["TikTok","Instagram"] }` |
+| Caption saved to Vault | `caption_saved` | `{ cardId, hook, caption, platform }` |
+| Card marked as posted | `post_marked` | `{ cardId, hook, platform, day }` |
+| Caption used via Remix | `caption_remixed` | `{ originalCardId, originalCaption }` |
+| Plan generated using prior-week context | `plan_remixed_from_prior` | `{ priorWeekTopCardId }` |
+| Scan completed | `scan_completed` | `{ score, recommendations }` |
+
+
+These events become the raw material for the Sunday Review insights logic in month 4-5.
+
+### 10d. Privacy and graceful degradation
+
+- All events stored under the user's own user_id with RLS preventing cross-user access
+- If Supabase is unreachable, events fail silently — never block user-facing actions
+- Add a brief privacy mention to the footer: *"VIRL stores anonymized usage data to improve your experience"* (Lauren may want a lawyer to review)
+
+### 10e. Acceptance test
+
+- Generate a plan → check Supabase `user_events` table → row exists with `event_name = 'plan_generated'`
+- Save a caption → row inserted with `event_name = 'caption_saved'` and the caption in event_data
+- Mark a post as posted → row inserted with `event_name = 'post_marked'`
+- Sign out and sign in as a different user → can only see your own events
+- Disconnect Supabase temporarily → app continues to work, events fail silently in console
+
+---
+
+**Updated end of brief.** Estimated total Claude Code time: 14-20 hours across 10 PRs. Ship strictly in order — each change builds on the last. Changes 1-7 are the original premium brand polish. Changes 8-9 are UX restructuring. Change 10 is silent foundation work that unlocks Horizon 3 retention features in month 4-5 without touching the user experience today.
