@@ -2823,12 +2823,11 @@ function VaultItemModal({item, onClose}) {
 function Vault({vault,onDelete,onRemix}) {
   const [openItem, setOpenItem] = useState(null);
   if (!vault.length) return (
-    <div style={{background:B.card,borderRadius:16,padding:"56px 32px",textAlign:"center"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.sky,marginBottom:14}}>{"✦"}</div>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:8}}>Save 3 posts to unlock pattern-based plans.</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.7,maxWidth:380,margin:"0 auto"}}>
-        VIRL weights what you save heavier in next week's strategy. Three saves is the threshold where your plans start feeling like <em>yours</em>.
-      </div>
+    /* [PREMIUM 1] Vault empty state. Premium voice: thoughtful host
+       welcoming a guest, not a system reporting "no data found". */
+    <div style={{textAlign:"center",padding:"60px 20px"}}>
+      <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,marginBottom:8}}>Save what resonates with you.</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,maxWidth:380,margin:"0 auto",lineHeight:1.65}}>Tap Save on any caption or post you love – VIRL learns from what you keep, and your future plans get sharper.</div>
     </div>
   );
   return (
@@ -2888,12 +2887,10 @@ function Vault({vault,onDelete,onRemix}) {
 // the button so the component renders standalone.
 function Results({results,onPlanWithInsights}) {
   if (!results.length) return (
-    <div style={{background:B.card,borderRadius:16,padding:"56px 32px",textAlign:"center"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.sky,marginBottom:14}}>{"📊"}</div>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:8}}>Log one post and Results lights up.</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.7,maxWidth:380,margin:"0 auto"}}>
-        Log three posts and VIRL starts learning what's actually working for <em>your</em> audience. Open any plan card to drop in views, likes, and saves.
-      </div>
+    /* [PREMIUM 1] Results empty state. Premium voice. */
+    <div style={{textAlign:"center",padding:"60px 20px"}}>
+      <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,marginBottom:8}}>Track what's working.</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,maxWidth:380,margin:"0 auto",lineHeight:1.65}}>VIRL pays attention to your wins so you can post smarter, not more.</div>
     </div>
   );
   var tv = results.reduce(function(a,r){return a+(parseInt((r.result&&r.result.views))||0);},0);
@@ -5406,10 +5403,10 @@ return (
             )}
 
             {!loading&&!cards&&(
-              <div style={{background:B.card,borderRadius:16,padding:"48px 32px",textAlign:"center",marginTop:24}}>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.sky,marginBottom:12}}>{"✦"}</div>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:8}}>Your strategy is ready to build.</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted}}>Fill in your details above and hit generate. 60 seconds* to your full week.</div>
+              /* [PREMIUM 1] Plan empty state. Premium voice. */
+              <div style={{textAlign:"center",padding:"40px 20px",marginTop:24}}>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink,lineHeight:1.2,marginBottom:10}}>Your week is a blank page.</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,maxWidth:420,margin:"0 auto",lineHeight:1.65}}>Let's fill it with something that sounds exactly like you.</div>
               </div>
             )}
           </div>
@@ -5421,6 +5418,12 @@ return (
               <Eyebrow>VIRL Captions</Eyebrow>
               <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                 The right words,<br/><span style={{color:B.navy}}>in your voice.</span>
+              </div>
+              {/* [PREMIUM 1] Captions positioning copy. Acts as the tab's
+                   "empty zone" voice since the tab opens with the form
+                   and never has a true empty state. */}
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.65,maxWidth:520,marginBottom:profileComplete?12:0}}>
+                One post at a time. For when you've got a moment, an idea, or a photo – and just need the words to match.
               </div>
               {profileComplete&&<div style={{background:B.navySoft,borderRadius:10,padding:"10px 16px",fontFamily:"'Jost',sans-serif",fontSize:13,color:B.navy}}>{"Writing in "+profile.name+"'s voice - tuned to your platform's style."}</div>}
             </div>
