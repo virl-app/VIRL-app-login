@@ -3521,7 +3521,10 @@ function App() {
   // it resets when they close the browser. Falls back to "plan" when a
   // current plan exists in the local cache (avoids bouncing to profile),
   // otherwise "profile".
-  const ALLOWED_TABS = ["profile","plan","caption","scan","algo","vault","results","admin"];
+  // "algo" removed from the whitelist along with the Algorithm tab —
+  // strategic insights are moving inline. Add it back here if the tab
+  // is ever restored.
+  const ALLOWED_TABS = ["profile","plan","caption","scan","vault","results","admin"];
   const [tab,setTab] = useState(function() {
     try {
       const remembered = sessionStorage.getItem("virl_active_tab");
@@ -4146,7 +4149,9 @@ function App() {
     {key:"plan",    label:"VIRL Plan"},
     {key:"caption", label:"VIRL Captions"},
     {key:"scan",    label:"VIRL Scan"},
-    {key:"algo",    label:"Algorithm"},
+    // Algorithm tab removed — strategic insights moving inline. Keep
+    // this commented for easy restoration:
+    // {key:"algo",    label:"Algorithm"},
     {key:"vault",   label:"Vault ("+vault.length+")"},
     {key:"results", label:"Results"},
     ...(isAdmin?[{key:"admin", label:"Dashboard"}]:[]),
@@ -5236,6 +5241,11 @@ return (
           </div>
         )}
 
+        {/* Algorithm tab — strategic insights moving inline. Removed
+            from the sidebar but the JSX is preserved here verbatim so
+            it can be restored without re-deriving the layout. To bring
+            it back: uncomment this block, re-add the tabs-array entry,
+            and put "algo" back in ALLOWED_TABS.
         {tab==="algo"&&(
           <div>
             <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
@@ -5303,6 +5313,7 @@ return (
             )}
           </div>
         )}
+        */}
 
         {tab==="results"&&(
           <div>
