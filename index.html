@@ -1118,6 +1118,66 @@ async function callAPI(generationType, params, opts) {
 
 // ── Event logging ─────────────────────────────────────────────────────────
 
+// [UX-01] Per-card status indicator helpers. Saved + posted state is
+// mirrored to localStorage with timestamp values so the dot / checkmark
+// indicators can render instantly without round-tripping to Supabase,
+// and so the "posted last week" banner can count cards across plan
+// regenerations. Keys are intentionally per-card so they survive
+// localStorage cache wipes scoped at the user-data level.
+function buildCardId(card) {
+  if (!card) return "";
+  return (card.title || "") + (card.day || "");
+}
+function setCardSaved(cardId) {
+  if (!cardId) return;
+  try { localStorage.setItem("virl_saved_" + cardId, String(Date.now())); } catch (e) {}
+}
+function isCardSaved(cardId) {
+  if (!cardId) return false;
+  try { return !!localStorage.getItem("virl_saved_" + cardId); } catch (e) { return false; }
+}
+function setCardPosted(cardId) {
+  if (!cardId) return;
+  try { localStorage.setItem("virl_posted_" + cardId, String(Date.now())); } catch (e) {}
+}
+function clearCardPosted(cardId) {
+  if (!cardId) return;
+  try { localStorage.removeItem("virl_posted_" + cardId); } catch (e) {}
+}
+function isCardPosted(cardId) {
+  if (!cardId) return false;
+  try { return !!localStorage.getItem("virl_posted_" + cardId); } catch (e) { return false; }
+}
+// [UX-01] Returns count of cards posted between 7 and 14 days ago that
+// don't yet have results logged. Used by the Plan-tab banner.
+function countPostedLastWeekUnlogged(results) {
+  var now = Date.now();
+  var weekMs = 7 * 86400000;
+  var loggedIds = {};
+  if (Array.isArray(results)) {
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      if (r && r.id) loggedIds[r.id] = true;
+    }
+  }
+  var count = 0;
+  try {
+    for (var k = 0; k < localStorage.length; k++) {
+      var key = localStorage.key(k);
+      if (!key || key.indexOf("virl_posted_") !== 0) continue;
+      var raw = localStorage.getItem(key);
+      var ts  = raw ? parseInt(raw, 10) : 0;
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      var age = now - ts;
+      if (age < weekMs || age >= 2 * weekMs) continue;
+      var id = key.slice("virl_posted_".length);
+      if (loggedIds[id]) continue;
+      count++;
+    }
+  } catch (e) { return 0; }
+  return count;
+}
+
 async function logEvent(userId, eventName, properties, token) {
   // Fall back to the globals the App-level useEffect mirrors from the
   // active session. Lets event-firing components stay simple — they don't
@@ -1471,71 +1531,138 @@ const MTag = ({type,children}) => {
   return <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"3px 10px",borderRadius:99,...s}}>{children}</span>;
 };
 
+// [UX-01] PlanCard refactored to progressive disclosure. Collapsed view
+// (default) shows day + platform metadata, the hook in Italiana 18px,
+// and three primary actions (Tap to expand, Save, Mark as posted). The
+// full description, hashtags, "why this works" insight, and secondary
+// actions (Log Results, Write Script, Share, Rate) live in the
+// expanded view. Status indicators in the header row read from
+// localStorage so saved / posted state persists across regenerations.
 function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userToken,onCreditsUsed}) {
-  const bl = card.priority==="HIGH"?B.navy:card.priority==="MED"?B.blue:B.border;
-  const [showLog,setShowLog] = useState(false);
+  var cardId = buildCardId(card);
+  var bl = card.priority==="HIGH"?B.navy:card.priority==="MED"?B.blue:B.border;
+  const [expanded,setExpanded] = useState(false);
+  const [showLog,setShowLog]   = useState(false);
   const [showScript,setShowScript] = useState(false);
-  const [views,setViews] = useState((result&&result.views)||"");
-  const [likes,setLikes] = useState((result&&result.likes)||"");
-  const [saves2,setSaves2] = useState((result&&result.saves)||"");
-  const reminder = "VIRL "+card.day+": "+card.title+" - Post at "+card.postTime+" on "+card.platform;
-  const hasSavedScript = !!card.savedScript;
+  const [views,setViews]       = useState((result&&result.views)||"");
+  const [likes,setLikes]       = useState((result&&result.likes)||"");
+  const [saves2,setSaves2]     = useState((result&&result.saves)||"");
+  // [UX-01] Posted state mirrored to local React state so the checkmark
+  // re-renders immediately after a click without forcing a parent
+  // re-render. Initialized from localStorage on mount.
+  const [posted,setPosted]     = useState(function(){ return isCardPosted(cardId); });
+  var reminder = "VIRL "+card.day+": "+card.title+" - Post at "+card.postTime+" on "+card.platform;
+  var hasSavedScript = !!card.savedScript;
+  var dayPlatformLabel = card.day + " | " + card.platform + " | " + card.postTime;
 
-  function saveResults() { onLog(card,{views,likes,saves:saves2}); setShowLog(false); }
+  function saveResults() { onLog(card,{views:views,likes:likes,saves:saves2}); setShowLog(false); }
+  // [UX-01] Save handler — also writes the localStorage status flag so
+  // the navy dot persists in the header after the parent re-renders.
+  function handleSave() {
+    setCardSaved(cardId);
+    if (onSave) onSave(card);
+  }
+  // [UX-01] Mark-as-posted toggle — flips the localStorage flag and
+  // mirrors the change locally so the coral checkmark updates instantly.
+  function handleTogglePosted() {
+    if (posted) { clearCardPosted(cardId); setPosted(false); }
+    else        { setCardPosted(cardId);   setPosted(true);  }
+  }
+  function toggleExpanded() { setExpanded(function(v){ return !v; }); }
 
   return (
-    <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:"3px solid "+bl,padding:"20px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s"}}>
+    <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:"3px solid "+bl,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s"}}>
       {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
-      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:10}}>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.28em",textTransform:"uppercase",color:B.muted}}>{card.day}</div>
-        <div style={{display:"flex",gap:6,alignItems:"center"}}>
-          {hasSavedScript&&<MTag type="result">Script saved</MTag>}
-          {result&&<MTag type="result">Logged</MTag>}
+
+      {/* [UX-01] Header row: day | platform | postTime metadata plus
+           status indicators (navy dot for saved, coral checkmark for
+           posted), priority badge, and any "logged / script saved"
+           tags from existing flows. */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,flex:1}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.22em",textTransform:"uppercase",color:B.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{dayPlatformLabel}</div>
+          {saved && (
+            <span aria-label="Saved to vault" title="Saved"
+              style={{display:"inline-block",width:8,height:8,borderRadius:99,background:B.navy,flexShrink:0}}/>
+          )}
+          {posted && (
+            <span aria-label="Marked as posted" title="Posted"
+              style={{fontSize:13,color:B.coral,fontWeight:700,lineHeight:1,flexShrink:0}}>{"✓"}</span>
+          )}
+        </div>
+        <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
+          {hasSavedScript && <MTag type="result">Script saved</MTag>}
+          {result && <MTag type="result">Logged</MTag>}
           <PBadge p={card.priority}/>
         </div>
       </div>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:21,lineHeight:1.15,color:B.ink,marginBottom:8}}>{card.title}</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.7,marginBottom:card.why?10:14}}>{card.description}</div>
-      {card.why&&(
-        <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",gap:8,alignItems:"flex-start"}}>
-          <div style={{fontSize:12,flexShrink:0,color:B.navy}}>{"✦"}</div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,color:B.navy,lineHeight:1.6}}>{card.why}</div>
+
+      {/* [UX-01] Hook in Italiana 18px. Always visible, both states. */}
+      <div style={{fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,marginBottom:expanded?10:14}}>{card.title}</div>
+
+      {/* [UX-01] Expanded section: full description, why-this-works,
+           tag chips, hashtags, copy-reminder strip. Mounted only when
+           expanded so collapsed cards stay scannable. */}
+      {expanded && (
+        <div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.7,marginBottom:card.why?10:14}}>{card.description}</div>
+          {card.why && (
+            <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",gap:8,alignItems:"flex-start"}}>
+              <div style={{fontSize:12,flexShrink:0,color:B.navy}}>{"✦"}</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,color:B.navy,lineHeight:1.6}}>{card.why}</div>
+            </div>
+          )}
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:14}}>
+            <MTag type="time">{"🕐 "+card.postTime}</MTag>
+            <MTag>{"📱 "+card.platform}</MTag>
+            {card.trend && <MTag>{"✦ "+card.trend}</MTag>}
+            {card.format && <MTag>{card.format}</MTag>}
+          </div>
+          <HashtagRow hashtags={card.hashtags}/>
+          <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.navy,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+              {"🌙 "+card.day+" · "+card.postTime+" · "+card.platform}
+            </div>
+            <CopyBtn text={reminder} label="Copy reminder"/>
+          </div>
         </div>
       )}
-      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:14}}>
-        <MTag type="time">{"🕐 "+card.postTime}</MTag>
-        <MTag>{"📱 "+card.platform}</MTag>
-        <MTag>{"✦ "+card.trend}</MTag>
-        <MTag>{card.format}</MTag>
-      </div>
-      <HashtagRow hashtags={card.hashtags}/>
-      <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.navy,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-          {"🌙 "+card.day+" · "+card.postTime+" · "+card.platform}
-        </div>
-        <CopyBtn text={reminder} label="Copy reminder"/>
-      </div>
+
+      {/* [UX-01] Action row. Collapsed: Tap to expand + Save + Mark as
+           posted only. Expanded: full action set including Log Results,
+           Write Script, Share, and Rate. */}
       <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-        <button onClick={function(){onSave(card);}}
+        <button onClick={toggleExpanded}
+          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:expanded?B.bg:B.navySoft,color:expanded?B.sub:B.navy,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
+          {expanded?"Collapse":"Tap to expand"}
+        </button>
+        <button onClick={handleSave}
           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:saved?B.navy:B.divider,color:saved?B.white:B.sub,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
-          {saved?"Saved":"Save to Vault"}
+          {saved?"Saved":"Save"}
         </button>
-        <button onClick={function(){setShowLog(function(v){return !v;});}}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:B.sub,border:"none",borderRadius:99,cursor:"pointer"}}>
-          {showLog?"Cancel":result?"Update Results":"Log Results"}
+        <button onClick={handleTogglePosted}
+          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:posted?B.coralSoft:B.bg,color:posted?B.coral:B.sub,border:"1px solid "+(posted?B.coral:B.border),borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
+          {posted?"Marked posted":"Mark as posted"}
         </button>
-        <button onClick={function(){
-          setShowScript(true);
-        }}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
-          {"Write Script"}
-        </button>
-        <SharePlanCard card={card}/>
-        {userToken && (
+        {expanded && (
+          <button onClick={function(){setShowLog(function(v){return !v;});}}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:B.sub,border:"none",borderRadius:99,cursor:"pointer"}}>
+            {showLog?"Cancel":result?"Update Results":"Log Results"}
+          </button>
+        )}
+        {expanded && (
+          <button onClick={function(){ setShowScript(true); }}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
+            {"Write Script"}
+          </button>
+        )}
+        {expanded && <SharePlanCard card={card}/>}
+        {expanded && userToken && (
           <RatingButtons sessionToken={userToken} generationType="plan_card" targetRef={(card.title||"")+"|"+(card.day||"")} size="sm"/>
         )}
       </div>
-      {showLog&&(
+
+      {showLog && expanded && (
         <div style={{marginTop:12,padding:16,background:B.bg,borderRadius:12}}>
           <Label>Log your actual results</Label>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
@@ -2688,7 +2815,12 @@ function VaultItemModal({item, onClose}) {
   );
 }
 
-function Vault({vault,onDelete}) {
+// [UX-01] Vault now exposes a "Remix this" action per item that pre-
+// fills the Plan generator's context with the saved post or caption as
+// a voice reference and navigates to the Plan tab. onRemix is wired
+// from App; a missing handler hides the button so the component still
+// renders standalone.
+function Vault({vault,onDelete,onRemix}) {
   const [openItem, setOpenItem] = useState(null);
   if (!vault.length) return (
     <div style={{background:B.card,borderRadius:16,padding:"56px 32px",textAlign:"center"}}>
@@ -2701,36 +2833,60 @@ function Vault({vault,onDelete}) {
   );
   return (
     <div>
-      {vault.map(function(item,i){return (
-        <div key={item.id} className="su" onClick={function(){ setOpenItem(item); }}
-          style={{background:B.card,borderRadius:12,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",padding:"18px 20px",marginBottom:8,animationDelay:(i*0.04)+"s",borderLeft:"3px solid "+B.navy,cursor:"pointer",transition:"background .15s"}}>
-          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8,gap:10}}>
-            <div style={{minWidth:0,flex:1}}>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>
-                {(item.type==="plan"?"Saved Post":"Caption")+" · "+item.savedAt+" · tap to view"}
+      {vault.map(function(item,i){
+        // [UX-01] Click handlers — stopPropagation on inner buttons so
+        // the row's "open detail modal" tap target stays exclusive to
+        // the card body itself.
+        function handleRowClick() { setOpenItem(item); }
+        function handleDelete(e)  { e.stopPropagation(); if (onDelete) onDelete(item.id); }
+        function handleRemix(e)   { e.stopPropagation(); if (onRemix)  onRemix(item); }
+        return (
+          <div key={item.id} className="su" onClick={handleRowClick}
+            style={{background:B.card,borderRadius:12,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",padding:"18px 20px",marginBottom:8,animationDelay:(i*0.04)+"s",borderLeft:"3px solid "+B.navy,cursor:"pointer",transition:"background .15s"}}>
+            <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8,gap:10}}>
+              <div style={{minWidth:0,flex:1}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>
+                  {(item.type==="plan"?"Saved Post":"Caption")+" · "+item.savedAt+" · tap to view"}
+                </div>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:19,color:B.ink}}>{item.title}</div>
               </div>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:19,color:B.ink}}>{item.title}</div>
+              <button onClick={handleDelete}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:9,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 10px",background:"none",border:"1px solid "+B.border,color:B.muted,cursor:"pointer",borderRadius:99,flexShrink:0}}>
+                Remove
+              </button>
             </div>
-            <button onClick={function(e){ e.stopPropagation(); onDelete(item.id); }}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 10px",background:"none",border:"1px solid "+B.border,color:B.muted,cursor:"pointer",borderRadius:99,flexShrink:0}}>
-              Remove
-            </button>
+            {item.type==="plan"&&(
+              <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:6}}>
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,padding:"3px 10px",borderRadius:99,background:B.bg}}>{"📱 "+item.platform}</span>
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.blue,padding:"3px 10px",borderRadius:99,background:B.blueSoft}}>{"🕐 "+item.postTime}</span>
+              </div>
+            )}
+            {item.preview&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.muted,marginTop:8,lineHeight:1.6}}>{item.preview+"..."}</div>}
+            {/* [UX-01] Remix this — pre-fills the Plan generator with
+                 this item's voice and jumps to the Plan tab. Hidden if
+                 no onRemix handler was wired (defensive). */}
+            {onRemix && (
+              <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid "+B.divider,display:"flex",justifyContent:"flex-end"}}>
+                <button onClick={handleRemix}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"7px 14px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
+                  Remix this
+                </button>
+              </div>
+            )}
           </div>
-          {item.type==="plan"&&(
-            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:6}}>
-              <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,padding:"3px 10px",borderRadius:99,background:B.bg}}>{"📱 "+item.platform}</span>
-              <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.blue,padding:"3px 10px",borderRadius:99,background:B.blueSoft}}>{"🕐 "+item.postTime}</span>
-            </div>
-          )}
-          {item.preview&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.muted,marginTop:8,lineHeight:1.6}}>{item.preview+"..."}</div>}
-        </div>
-      );})}
+        );
+      })}
       {openItem && <VaultItemModal item={openItem} onClose={function(){ setOpenItem(null); }}/>}
     </div>
   );
 }
 
-function Results({results}) {
+// [UX-01] Results now exposes a "Plan next week with these insights"
+// CTA that pre-fills the Plan generator's context with a note
+// referencing the prior week's top performer and routes to the Plan
+// tab. onPlanWithInsights is supplied by App; missing handler hides
+// the button so the component renders standalone.
+function Results({results,onPlanWithInsights}) {
   if (!results.length) return (
     <div style={{background:B.card,borderRadius:16,padding:"56px 32px",textAlign:"center"}}>
       <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.sky,marginBottom:14}}>{"📊"}</div>
@@ -2740,14 +2896,36 @@ function Results({results}) {
       </div>
     </div>
   );
-  const tv = results.reduce(function(a,r){return a+(parseInt((r.result&&r.result.views))||0);},0);
-  const tl = results.reduce(function(a,r){return a+(parseInt((r.result&&r.result.likes))||0);},0);
-  const ts = results.reduce(function(a,r){return a+(parseInt((r.result&&r.result.saves))||0);},0);
-  const eng = tv>0?((tl+ts)/tv*100).toFixed(1):"0.0";
-  const sorted = results.slice().sort(function(a,b){return (parseInt((b.result&&b.result.views))||0)-(parseInt((a.result&&a.result.views))||0);});
+  var tv = results.reduce(function(a,r){return a+(parseInt((r.result&&r.result.views))||0);},0);
+  var tl = results.reduce(function(a,r){return a+(parseInt((r.result&&r.result.likes))||0);},0);
+  var ts = results.reduce(function(a,r){return a+(parseInt((r.result&&r.result.saves))||0);},0);
+  var eng = tv>0?((tl+ts)/tv*100).toFixed(1):"0.0";
+  var sorted = results.slice().sort(function(a,b){return (parseInt((b.result&&b.result.views))||0)-(parseInt((a.result&&a.result.views))||0);});
+  // [UX-01] Top performer = highest-views row. Used as the source for
+  // the insights pre-fill so the Plan generator gets a concrete signal.
+  var topPerformer = sorted.length ? sorted[0] : null;
+  function handlePlanWithInsights() {
+    if (onPlanWithInsights && topPerformer) onPlanWithInsights(topPerformer);
+  }
   return (
     <div>
       <SherpaTip>These are your real numbers. Log results after every post and VIRL will show you which platforms, formats, and topics are actually working for your specific audience.</SherpaTip>
+      {/* [UX-01] Plan-next-week CTA — only mounted once we have a top
+           performer to reference. */}
+      {onPlanWithInsights && topPerformer && (
+        <div style={{background:B.navy,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+          <div style={{minWidth:0,flex:1}}>
+            <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,lineHeight:1.2,marginBottom:4}}>Carry this momentum into next week.</div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.75)",lineHeight:1.55,overflow:"hidden",textOverflow:"ellipsis"}}>
+              {"Top post: " + topPerformer.title}
+            </div>
+          </div>
+          <button onClick={handlePlanWithInsights}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 18px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
+            Plan next week with these insights
+          </button>
+        </div>
+      )}
       <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:16}}>
         {[["Views",tv.toLocaleString(),B.navy],["Likes",tl.toLocaleString(),B.blue],["Saves",ts.toLocaleString(),B.navy],["Engagement",eng+"%",B.blue]].map(function(item,i){return (
           <div key={item[0]} style={{padding:16,background:i%2===0?B.navySoft:B.card,borderRadius:12}}>
@@ -4339,6 +4517,41 @@ function App() {
 
   const profileComplete = !!(profile.name&&profile.audience&&profile.voice);
 
+  // [UX-01] Count of cards posted in the prior week that haven't been
+  // logged yet. Recomputed on every render so localStorage edits
+  // (Mark as posted / Log Results) are reflected without a manual
+  // refresh signal. Cheap — single linear scan of localStorage keys.
+  var postedLastWeekCount = countPostedLastWeekUnlogged(results);
+
+  // [UX-01] Vault remix handler — pulls the saved item's caption /
+  // description into the Plan generator's context state and routes to
+  // the Plan tab. Voice reference framing keeps the prompt instruction
+  // explicit so the LLM treats it as style guidance, not source material.
+  function handleVaultRemix(item) {
+    if (!item) return;
+    var voice = item.text || item.preview || item.description || item.title || "";
+    voice = String(voice).slice(0, 600);
+    var label = item.platform ? (item.platform + " " + (item.type==="caption"?"caption":"post")) : (item.type==="caption"?"caption":"post");
+    var note  = "Voice reference (from saved " + label + '): "' + voice + '". Use a similar voice and rhythm for the new plan.';
+    setContext(note);
+    setTab("plan");
+  }
+
+  // [UX-01] Results "plan with insights" handler — pre-fills context
+  // with a concrete reference to the prior week's top performer so
+  // the next plan can lean into what worked.
+  function handlePlanWithInsights(top) {
+    if (!top) return;
+    var v = (top.result && top.result.views) || 0;
+    var l = (top.result && top.result.likes) || 0;
+    var s = (top.result && top.result.saves) || 0;
+    var note = "Last week's top performer: \"" + (top.title || "") + "\" (" + v + " views, " + l + " likes, " + s + " saves)"
+             + (top.platform ? " on " + top.platform : "")
+             + ". Lean into the same format and topic for next week.";
+    setContext(note);
+    setTab("plan");
+  }
+
   // ── Auth gate - show loading, then auth screen, then app ────────────────
   if (appError) return (
     <div style={{minHeight:"100vh",background:B.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px",fontFamily:"'Jost',sans-serif"}}>
@@ -4832,6 +5045,20 @@ return (
                 </div>
               )}
             </div>
+            {/* [UX-01] Posted-last-week banner. Counts cards marked
+                 posted via the per-card localStorage flag in the
+                 7-to-14-day window that don't yet have results logged.
+                 Threshold of 2+ keeps it from nagging on a single
+                 stray post. Tap routes to the Vault. */}
+            {postedLastWeekCount >= 2 && (
+              <div style={{background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:12,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,cursor:"pointer"}}
+                onClick={function(){ setTab("vault"); }}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.coral,lineHeight:1.45}}>
+                  {"You posted " + postedLastWeekCount + " cards last week. Add their results in Vault →"}
+                </div>
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.coral,flexShrink:0}}>{"Vault"}</span>
+              </div>
+            )}
             <SherpaTip>Tell VIRL your setup and it builds your entire week across your platforms - 10 to 14 posts with timing, trend angles, and the strategic reason behind every post. Tap Write Script on any card to go even deeper.</SherpaTip>
             <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
               {[
@@ -5237,7 +5464,7 @@ return (
                 </div>
               )}
             </div>
-            <Vault vault={vault} onDelete={deleteFromVault}/>
+            <Vault vault={vault} onDelete={deleteFromVault} onRemix={handleVaultRemix}/>
           </div>
         )}
 
@@ -5348,7 +5575,7 @@ return (
                 </button>
               </div>
             )}
-            <Results results={results}/>
+            <Results results={results} onPlanWithInsights={handlePlanWithInsights}/>
           </div>
         )}
 
