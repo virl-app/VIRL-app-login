@@ -266,7 +266,18 @@ export default async function handler(req, res) {
     imageBase64,
     imageType,
     token: bodyToken,
+    demo,
   } = req.body || {};
+
+  // [PREMIUM 2] Demo mode: brand-new users get a single free plan
+  // generation before they fill out their profile, so they can see what
+  // VIRL produces. Only honored on `plan` generation type. Server-side
+  // gates: must be a brand-new user (zero prior `plan` rows in
+  // usage_events) so the flag can't be replayed for free generations
+  // after the first one. Skips credit check + uses canned profile
+  // defaults so a malicious client can't spoof "high-value" plans for
+  // free.
+  const demoMode = demo === true && generationType === "plan";
 
   // Validate the generation type up front so a bad type never reaches Anthropic.
   if (!generationType || !isValidGenerationType(generationType)) {
@@ -319,6 +330,26 @@ export default async function handler(req, res) {
     });
   }
 
+  // [PREMIUM 2] Demo eligibility gate. Server-side check that this user
+  // has never generated a real plan before — prevents a malicious client
+  // from passing demo=true on every call to skip credit deduction.
+  if (demoMode) {
+    try {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/usage_events?user_id=eq.${userId}&generation_type=eq.plan&select=id&limit=1`,
+        { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      );
+      const rows = r.ok ? await r.json() : [];
+      if (Array.isArray(rows) && rows.length > 0) {
+        return res.status(403).json({ error: "Demo plan already used." });
+      }
+    } catch (e) {
+      // Fail closed — better to make the user run their first real plan
+      // than to silently grant a free generation if we can't verify.
+      return res.status(500).json({ error: "Could not verify demo eligibility." });
+    }
+  }
+
   // ── Build the prompt server-side ──────────────────────────────────────────
   // Profile + vault patterns + playbook + trends all come from Supabase,
   // not the client, so the prompt template never has to be exposed in the
@@ -327,12 +358,22 @@ export default async function handler(req, res) {
   // Plan generation also pulls the last 3 weeks of history so the LLM can
   // build narratively week-over-week. Other generation types skip history
   // since they're scoped to a single piece of content.
+  // [PREMIUM 2] In demo mode the user has no profile yet — substitute a
+  // minimal canned profile so the LLM has just enough context to produce
+  // a generic-but-coherent plan. Vault / history fetches are also
+  // bypassed: the user has neither.
   const [profile, vaultPatterns, playbook, trends, history] = await Promise.all([
-    fetchProfile(userId),
-    (generationType === "plan") ? fetchVaultPatterns(userId)        : Promise.resolve(null),
+    demoMode
+      ? Promise.resolve({
+          name:     "Sample User",
+          audience: "people interested in self-improvement and small business",
+          voice:    "warm, conversational, occasionally funny",
+        })
+      : fetchProfile(userId),
+    (generationType === "plan" && !demoMode) ? fetchVaultPatterns(userId)         : Promise.resolve(null),
     loadPlaybook(),
     loadLatestTrends(),
-    (generationType === "plan") ? loadPlanHistoryForPrompt(userId,3): Promise.resolve([]),
+    (generationType === "plan" && !demoMode) ? loadPlanHistoryForPrompt(userId,3) : Promise.resolve([]),
   ]);
 
   let built;
@@ -346,6 +387,12 @@ export default async function handler(req, res) {
   const creditCost    = built.cost || 1;
 
   // ── Credit check & deduction ──────────────────────────────────────────────
+  // [PREMIUM 2] Demo plans skip the credit ledger entirely. The
+  // eligibility gate above already verified this is the user's first
+  // ever plan, so this path can only ever be reached once per account.
+  if (demoMode) {
+    // Skip credit check + deduction. Continue to the Anthropic call.
+  } else
   try {
     const credRes = await fetch(
       `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan,credits,reset_at`,
