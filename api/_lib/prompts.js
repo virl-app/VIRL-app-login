@@ -323,6 +323,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
   const followers = params.followers || "";
   const trending  = params.trending  || "";
   const context   = params.context   || "";
+  // [AUDIENCE 1] Week-of business context. Optional free-text from the
+  // creator describing what is actually happening in their business
+  // this week (events, launches, milestones). Trimmed + length-capped
+  // server-side as defense against accidental novel-length pastes.
+  const weekContext = String(params.weekContext || "").trim().slice(0, 1200);
   const isRegen   = !!params.isRegen;
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
@@ -372,6 +377,17 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     + " formats=" + formats + " followers=" + followers
     + (trending ? " TRENDING THIS WEEK - incorporate these where natural: " + trending : "")
     + (context  ? " Extra context: " + context : "")
+    // [AUDIENCE 1] Week-of business context as a hard constraint, not
+    // generic flavor. The creator told us what is happening in their
+    // business this week; at least 2 of the generated posts must
+    // reference, build on, or directly support it. Lifts output
+    // quality from "generic to their industry" to "specific to their
+    // life this week".
+    + (weekContext
+        ? "\n\n## WHAT IS HAPPENING IN THE USER BUSINESS THIS WEEK\n"
+        + weekContext
+        + "\n\nIMPORTANT: At least 2 posts in the plan must reference, build on, or directly support what is happening this week. Do not make the plan generic when specific context is provided."
+        : "")
     + historyCtx
     + " The week starts TODAY (" + startWeekday + "). Use these exact day labels in the order they appear: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday."
     + " Create 10-14 total posts for THIS week. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."

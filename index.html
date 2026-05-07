@@ -3789,6 +3789,16 @@ function App() {
   const [followers,setFollowers] = useState(stored.followers||"Under 1K");
   const [trending,setTrending] = useState("");
   const [context,setContext] = useState("");
+  // [AUDIENCE 1] Week-context state for the "What's happening in your
+  // business this week?" field. Seeded blank (we don't auto-fill from
+  // last week — the field expects a fresh weekly answer). The previous
+  // value is read separately into lastWeekContext so the user can pull
+  // it back in with one tap if they want.
+  const [weekContext,setWeekContext] = useState("");
+  const [lastWeekContext,setLastWeekContext] = useState(function(){
+    try { return localStorage.getItem("virl_last_week_context") || ""; }
+    catch (e) { return ""; }
+  });
   // [PREMIUM 10] Tracks whether the next plan generation was seeded
   // from a prior post (Vault remix or Results "plan next week"). When
   // a plan generates with this set, we fire a `plan_remixed_from_prior`
@@ -4448,14 +4458,18 @@ function App() {
     setLoading(true); setError(""); setCards(null); setStats(null);
     var appliedCost = 0;
     callAPI("plan", {
-      platforms: platforms,
-      niche:     niche,
-      goal:      goal,
-      formats:   formats,
-      followers: followers,
-      trending:  trending || "",
-      context:   context || "",
-      isRegen:   !!cards,
+      platforms:    platforms,
+      niche:        niche,
+      goal:         goal,
+      formats:      formats,
+      followers:    followers,
+      trending:     trending || "",
+      context:      context || "",
+      // [AUDIENCE 1] Week-of business context. Server-side prompt
+      // builder appends a dedicated section so the LLM treats this as
+      // a hard constraint, not generic flavour.
+      weekContext:  weekContext || "",
+      isRegen:      !!cards,
     }, { token: userToken }).then(function(data) {
       appliedCost = data.cost || 0;
       // New response shape: { strategy, cards, stats }. The whole payload
@@ -4468,6 +4482,17 @@ function App() {
         setCards(parsedCards);
         if (parsedStats)    setStats(parsedStats);
         if (parsedStrategy) setStrategy(parsedStrategy);
+        // [AUDIENCE 1] Persist this week's context so next week's
+        // generation can offer it as a one-tap suggestion. Trimmed +
+        // length-capped before write so a malformed paste doesn't
+        // bloat localStorage.
+        try {
+          var trimmed = (weekContext || "").trim().slice(0, 1200);
+          if (trimmed) {
+            localStorage.setItem("virl_last_week_context", trimmed);
+            setLastWeekContext(trimmed);
+          }
+        } catch (e) {}
         // [TASK 5] Bump lifetime plan counter and fire the referral modal the
         // first time the user hits 3, 7, or 15 plans. Only when signed in —
         // anonymous sessions have no user.id to build a referral link from.
@@ -5454,6 +5479,81 @@ return (
                 <textarea value={context} onChange={function(e){setContext(e.target.value);}}
                   placeholder="e.g. I have unposted videos from last week, my audience responds well to tutorials..."
                   style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:13,fontWeight:300,fontStyle:"italic",padding:"10px 14px",resize:"vertical",minHeight:60,lineHeight:1.6}}/>
+              </div>
+            </div>
+            {/* [AUDIENCE 1] "What's happening this week?" field. Sits
+                 above the Generate button (visually closer to the
+                 action than the rest of the form) because the entire
+                 point is to grab a fresh weekly answer at the moment
+                 of generation, not at form fill time. Server-side
+                 prompt builder injects this as a hard-constraint
+                 section so 2+ posts in the plan reference it. */}
+            <div
+              style={{
+                marginBottom: 16,
+                padding: "14px 16px",
+                background: B.bg,
+                border: "1px solid " + B.border,
+                borderRadius: 12
+              }}>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  color: B.muted,
+                  marginBottom: 8
+                }}>
+                What's happening in your business this week? (optional)
+              </label>
+              <textarea
+                value={weekContext}
+                onChange={function(e){ setWeekContext(e.target.value); }}
+                placeholder="Example: Hosting an open house Saturday, launching new fall menu, my teacher Sarah's last day..."
+                style={{
+                  width: "100%",
+                  minHeight: 60,
+                  padding: "10px 12px",
+                  fontFamily: "'Jost', sans-serif",
+                  fontSize: 13,
+                  fontWeight: 300,
+                  color: B.ink,
+                  border: "1px solid " + B.border,
+                  borderRadius: 8,
+                  resize: "vertical"
+                }}/>
+              {/* [AUDIENCE 1] One-tap recall of the previous week's
+                   context. Hidden once the field already matches it so
+                   the link doesn't sit there as dead UI after recall. */}
+              {lastWeekContext && weekContext.trim() !== lastWeekContext && (
+                <button
+                  onClick={function(){ setWeekContext(lastWeekContext); }}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    marginTop: 8,
+                    fontFamily: "'Jost', sans-serif",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: B.blue,
+                    cursor: "pointer",
+                    textDecoration: "underline"
+                  }}>
+                  Use last week's context
+                </button>
+              )}
+              <div
+                style={{
+                  fontSize: 11,
+                  fontStyle: "italic",
+                  color: B.muted,
+                  marginTop: 6,
+                  lineHeight: 1.5
+                }}>
+                VIRL will weave this into your plan so your content reflects what's actually happening, not just what's generic to your industry.
               </div>
             </div>
             <GenBtn onClick={generate} loading={loading} disabled={!platforms.length||!formats.length}>
