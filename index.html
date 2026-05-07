@@ -4880,39 +4880,47 @@ return (
       )}
 
       {showUpgrade&&(() => {
-        // Drive modal copy from actual state, not from upgradeReason — the
-        // reason is kept for analytics, but headline/sub/dismiss reflect
-        // whether the user is in trial, out of credits, low, or has plenty.
+        // [PREMIUM 5] Modal copy now sells transformation, not features.
+        // One Italiana headline that holds across every state; a small
+        // contextual eyebrow chip above keeps trial-ended / out-of-
+        // credits users oriented without competing with the headline.
+        // Dismiss text stays state-driven because the call to "Wait
+        // for tomorrow's reset" is genuinely useful, not feature-list
+        // marketing.
         var modalState = trialExpired
           ? "trial"
           : (credits <= 0 ? "noCredits" : (credits <= 5 ? "lowCredits" : "hasCredits"));
-        var headline, sub, dismiss;
+        var eyebrow, eyebrowColor, dismiss;
         if (modalState === "trial") {
-          headline = "Your free trial has ended.";
-          sub      = "You've had 2 weeks to put VIRL through its paces. Ready to make it permanent?";
-          dismiss  = "Browse my vault instead";
+          eyebrow      = "Your free trial has ended";
+          eyebrowColor = B.coral;
+          dismiss      = "Browse my vault instead";
         } else if (modalState === "noCredits") {
-          headline = "You're out of credits.";
-          var reset = daysUntilReset === 1 ? "in 1 day" : ("in " + daysUntilReset + " days");
-          sub      = "Your " + WEEKLY_CREDITS + " weekly credits are used up. They reset " + reset + " — or upgrade now for 150 credits per week.";
-          dismiss  = daysUntilReset === 1 ? "Wait for tomorrow's reset" : ("Wait " + daysUntilReset + " days for reset");
+          eyebrow      = daysUntilReset === 1 ? "Out of credits — reset in 1 day" : ("Out of credits — reset in " + daysUntilReset + " days");
+          eyebrowColor = B.coral;
+          dismiss      = daysUntilReset === 1 ? "Wait for tomorrow's reset" : ("Wait " + daysUntilReset + " days for reset");
         } else if (modalState === "lowCredits") {
-          headline = "You're running low on credits.";
-          sub      = "Just " + credits + " credit" + (credits === 1 ? "" : "s") + " left this week. Upgrade to 150/week and never wait for a reset.";
-          dismiss  = "Maybe later";
+          eyebrow      = "Running low — " + credits + " credit" + (credits === 1 ? "" : "s") + " left this week";
+          eyebrowColor = B.amber;
+          dismiss      = "Maybe later";
         } else {
-          headline = "Ready for more out of VIRL?";
-          sub      = "Upgrade to 150 credits a week and unlock every feature.";
-          dismiss  = "Maybe later";
+          eyebrow      = "";
+          eyebrowColor = B.muted;
+          dismiss      = "Maybe later";
         }
         return (
         <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.88)",zIndex:500,display:"flex",alignItems:"flex-end",justifyContent:"center",padding:"0 0 0 0"}}>
           <div style={{background:B.white,width:"100%",maxWidth:480,borderRadius:"24px 24px 0 0",padding:"36px 28px 48px",boxShadow:"0 -8px 40px rgba(0,0,0,0.25)"}}>
             <div style={{width:40,height:4,background:B.border,borderRadius:99,margin:"0 auto 28px"}}/>
+            {/* [PREMIUM 5] Premium voice headline + body. Italiana 28px,
+                 selling transformation rather than itemising credits. */}
             <div style={{textAlign:"center",marginBottom:24}}>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.navy,marginBottom:8}}>{headline}</div>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.7}}>
-                {sub}
+              {eyebrow && (
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:eyebrowColor,marginBottom:10}}>{eyebrow}</div>
+              )}
+              <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.ink,lineHeight:1.15,marginBottom:10}}>Show up consistently. Sound like you, every time.</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.65}}>
+                150 credits per week – enough to plan, post, and grow without ever wondering what to say next.
               </div>
             </div>
             {/* [CHANGE 2a] Annual/monthly toggle. Annual is highlighted by
@@ -4989,12 +4997,18 @@ return (
                         : "cancel anytime"}
                     </div>
                   </div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.5)",marginTop:4}}>150 credits/week · all features</div>
                 </div>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:"white",background:"rgba(255,255,255,0.12)",padding:"8px 14px",borderRadius:99,flexShrink:0}}>
                   Get started
                 </div>
               </div>
+            </div>
+            {/* [PREMIUM 5] Trust block. Replaces the old "150 credits /
+                 all features" sub-line on the price card with the
+                 things that actually matter at the moment of decision:
+                 cancel rules, content ownership, no card games. */}
+            <div style={{paddingTop:18,borderTop:"1px solid "+B.border,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.7,textAlign:"center",marginBottom:14}}>
+              Cancel anytime. Your saved content is always yours, even if you stop subscribing. No credit card games.
             </div>
             <button onClick={function(){setShowUpgrade(false);}}
               style={{width:"100%",background:"none",border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,cursor:"pointer",padding:"8px"}}>
