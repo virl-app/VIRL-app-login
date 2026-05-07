@@ -1178,6 +1178,31 @@ function countPostedLastWeekUnlogged(results) {
   return count;
 }
 
+// [PREMIUM 3] Loops event helper. Fire-and-forget — never blocks the
+// caller, never throws. Built initially for the tenPlansMilestone
+// celebration; PREMIUM 7 will reuse this for the rest of the
+// lifecycle email triggers (welcome, profile-incomplete, trial-end,
+// etc). Auth header is required so the proxy can verify the caller
+// owns the user_id it sends to Loops.
+async function fireLoopsEvent(eventName, properties) {
+  if (typeof window === "undefined") return;
+  var token = window.__virlUserToken || null;
+  if (!token) return;
+  try {
+    await fetch("/api/loops-event", {
+      method:  "POST",
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": "Bearer " + token,
+      },
+      body: JSON.stringify({
+        eventName:  eventName,
+        properties: properties || {},
+      }),
+    });
+  } catch (e) { /* non-critical — never block UI on lifecycle events */ }
+}
+
 async function logEvent(userId, eventName, properties, token) {
   // Fall back to the globals the App-level useEffect mirrors from the
   // active session. Lets event-firing components stay simple — they don't
@@ -3769,6 +3794,17 @@ function App() {
   // [TASK 5] Referral-modal milestone. 0 = hidden; 3/7/15 = show the prompt
   // for that milestone. Counter lives in localStorage.virl_plans_completed.
   const [referralMilestone,setReferralMilestone] = useState(0);
+  // [PREMIUM 3] Plan-#5 celebration card. Persists at the top of the
+  // Plan tab until dismissed (virl_milestone_5_seen flag). Initialised
+  // from localStorage so the card survives a refresh between hitting
+  // the milestone and dismissing it.
+  const [showMilestone5,setShowMilestone5] = useState(function(){
+    try {
+      var c    = parseInt(localStorage.getItem("virl_plans_completed") || "0", 10);
+      var seen = localStorage.getItem("virl_milestone_5_seen") === "1";
+      return !isNaN(c) && c >= 5 && !seen;
+    } catch (e) { return false; }
+  });
   // First-plan celebration. Fires once ever per browser, when the user
   // generates their very first plan. Persists in localStorage so a refresh
   // mid-session doesn't re-trigger.
@@ -4399,6 +4435,23 @@ function App() {
           // different device doesn't re-fire it gratuitously.
           if (newCount === 1 && localStorage.getItem("virl_first_plan_celebrated") !== "1") {
             setShowFirstPlanCelebration(true);
+          }
+          // [PREMIUM 3] Plan #5 — surface the in-app celebration card.
+          // Card persists at the top of the Plan tab until the user
+          // dismisses it (virl_milestone_5_seen flag).
+          if (newCount === 5 && localStorage.getItem("virl_milestone_5_seen") !== "1") {
+            setShowMilestone5(true);
+          }
+          // [PREMIUM 3] Plan #10 — fire the Loops event so the
+          // tenPlansMilestone email goes out. Email content + delay
+          // live in Loops; here we just trigger. Idempotent flag
+          // prevents re-firing if a counter ever rolls back.
+          if (newCount === 10 && localStorage.getItem("virl_milestone_10_fired") !== "1") {
+            try { localStorage.setItem("virl_milestone_10_fired", "1"); } catch(e2) {}
+            fireLoopsEvent("tenPlansMilestone", {
+              firstName: (profile && profile.name) || "",
+              planCount: 10,
+            });
           }
         } catch(e) {}
         var planExpiresAt = computePlanExpiry(sbCredits);
@@ -5205,6 +5258,25 @@ return (
                 </div>
               )}
             </div>
+            {/* [PREMIUM 3] Plan-#5 celebration card. Quietly recognises
+                 a milestone most creators never reach. Dismissible —
+                 once dismissed, never reappears (virl_milestone_5_seen
+                 flag in localStorage). */}
+            {showMilestone5 && (
+              <div style={{background:"linear-gradient(135deg, "+B.coralSoft+" 0%, "+B.amber+"15 100%)",border:"1px solid "+B.coral+"33",borderRadius:14,padding:"18px 22px",marginBottom:18,position:"relative"}}>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:6}}>Five plans in. ✦</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65,paddingRight:24}}>
+                  You're building a habit most creators never do. The hardest part of consistent content isn't the writing – it's the planning. You're past it.
+                </div>
+                <button onClick={function(){
+                    try { localStorage.setItem("virl_milestone_5_seen", "1"); } catch(e) {}
+                    setShowMilestone5(false);
+                  }} aria-label="Dismiss"
+                  style={{position:"absolute",top:14,right:14,background:"transparent",border:"none",color:B.muted,fontSize:18,cursor:"pointer",lineHeight:1}}>
+                  {"×"}
+                </button>
+              </div>
+            )}
             {/* [UX-01] Posted-last-week banner. Counts cards marked
                  posted via the per-card localStorage flag in the
                  7-to-14-day window that don't yet have results logged.
