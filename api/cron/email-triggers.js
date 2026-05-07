@@ -13,6 +13,10 @@
 import { sendEmail, emailEnabled } from "../_lib/email-send.js";
 import { makeUnsubToken } from "../_lib/unsub-token.js";
 import * as T from "../_lib/email-templates.js";
+// [PREMIUM 7] thirtyDayMilestone is fired here (not the app) because
+// it's a calendar-day check that has to run whether or not the user
+// is currently online.
+import { sendLoopsEvent } from "../_lib/loops.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -183,6 +187,19 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
     await sendEmail({
       userId, to: email, template: "weekly_reset", dedupeKey: `weekly_reset_${weekKey}`,
       subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
+    });
+  }
+
+  // [PREMIUM 7] Day-30 milestone for paid users. Fires once per user.
+  // Email content + property merging happen in Loops; we just trip the
+  // event with the firstName so the template can address them.
+  // Idempotency comes from Loops itself (an event fired once for a
+  // contact won't replay), but the days === 30 gate also makes the
+  // window single-day in practice.
+  if (isPaid && days === 30) {
+    await sendLoopsEvent({
+      userId, email, eventName: "thirtyDayMilestone",
+      properties: { firstName: name || "" },
     });
   }
 
