@@ -3723,6 +3723,24 @@ function App() {
     }
   }, [session]);
 
+  // [PREMIUM 7] Fire userSignedUp into Loops on the user's first
+  // authenticated session. Gated by virl_signup_event_fired so each
+  // user only fires once, and by a 7-day window on auth.users.created_at
+  // so existing users from before this PR don't get a phantom welcome
+  // email when they next log in.
+  useEffect(function(){
+    if (!session || !session.user) return;
+    try {
+      if (localStorage.getItem("virl_signup_event_fired") === "1") return;
+      var createdMs = Date.parse(session.user.created_at);
+      var fresh     = !Number.isNaN(createdMs) && (Date.now() - createdMs) < 7 * 86400000;
+      if (fresh) {
+        fireLoopsEvent("userSignedUp", { firstName: "" });
+      }
+      localStorage.setItem("virl_signup_event_fired", "1");
+    } catch (e) {}
+  }, [session]);
+
   // ── App data state ──────────────────────────────────────────────────────
   const stored = load();
   // Restore the user's last-active tab on refresh. sessionStorage scoped so
@@ -4444,11 +4462,32 @@ function App() {
           if (newCount === 1 && localStorage.getItem("virl_first_plan_celebrated") !== "1") {
             setShowFirstPlanCelebration(true);
           }
+          // [PREMIUM 7] First plan ever — fire firstPlanGenerated so
+          // Loops can drop the day-1 followup email. Idempotent flag
+          // matches the celebration overlay so the two share lifecycle.
+          if (newCount === 1 && localStorage.getItem("virl_first_plan_event_fired") !== "1") {
+            try { localStorage.setItem("virl_first_plan_event_fired", "1"); } catch(e2) {}
+            fireLoopsEvent("firstPlanGenerated", {
+              firstName: (profile && profile.name) || "",
+              planCount: 1,
+            });
+          }
           // [PREMIUM 3] Plan #5 — surface the in-app celebration card.
           // Card persists at the top of the Plan tab until the user
           // dismisses it (virl_milestone_5_seen flag).
           if (newCount === 5 && localStorage.getItem("virl_milestone_5_seen") !== "1") {
             setShowMilestone5(true);
+          }
+          // [PREMIUM 7] Plan #5 — fire the Loops event alongside the
+          // in-app card so Lauren can layer an email if she wants.
+          // Separate idempotent flag from the in-app dismissal so the
+          // email doesn't refire if the card is dismissed and re-shown.
+          if (newCount === 5 && localStorage.getItem("virl_milestone_5_fired") !== "1") {
+            try { localStorage.setItem("virl_milestone_5_fired", "1"); } catch(e2) {}
+            fireLoopsEvent("fivePlansMilestone", {
+              firstName: (profile && profile.name) || "",
+              planCount: 5,
+            });
           }
           // [PREMIUM 3] Plan #10 — fire the Loops event so the
           // tenPlansMilestone email goes out. Email content + delay

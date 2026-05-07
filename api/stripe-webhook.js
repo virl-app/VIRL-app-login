@@ -20,6 +20,10 @@ import {
   subscriptionCancelled,
   renewalUpcoming,
 } from "./_lib/email-templates.js";
+// [PREMIUM 7] Loops lifecycle event triggers (subscriptionStarted /
+// subscriptionCancelled) + contact-property sync so Loops can drive
+// plan-state-aware emails inside its own dashboard.
+import { sendLoopsEvent, updateLoopsContact } from "./_lib/loops.js";
 
 // [CHANGE 3b] Disable Vercel's body parser so Stripe gets the exact raw bytes
 // it signed — any reformatting would invalidate the signature.
@@ -125,6 +129,11 @@ export default async function handler(req, res) {
       case "checkout.session.completed": {
         const isFoundingMember = meta.isFoundingMember;
         const plan = isFoundingMember === "true" ? "founding" : "standard";
+        // [PREMIUM 7] planType reflects the user's billing cadence
+        // (monthly vs annual) so Loops can pick between the standard
+        // welcome and the annual-thank-you variants. Pulled from
+        // checkout metadata where the client stamped it.
+        const planType = (meta.planType === "annual") ? "annual" : "monthly";
         if (userId) {
           await patchUserPlan(userId, {
             plan: plan,
@@ -141,6 +150,25 @@ export default async function handler(req, res) {
               userId, to: ctx.email, template: "subscription_welcome",
               dedupeKey: "sub_" + subId,
               subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
+            });
+            // [PREMIUM 7] Fire subscriptionStarted into Loops + sync
+            // plan-state properties so time-based segments (annual
+            // upgrade nudge at day 60, etc) have what they need.
+            await sendLoopsEvent({
+              userId, email: ctx.email, eventName: "subscriptionStarted",
+              properties: {
+                firstName:        ctx.name || "",
+                planType:         planType,
+                isFoundingMember: plan === "founding",
+              },
+            });
+            await updateLoopsContact({
+              userId, email: ctx.email,
+              properties: {
+                plan:             plan,
+                planType:         planType,
+                isFoundingMember: plan === "founding",
+              },
             });
           }
         } else {
@@ -249,6 +277,17 @@ export default async function handler(req, res) {
             userId, to: ctx.email, template: "subscription_cancelled",
             dedupeKey: "cancel_" + (obj.id || "sub"),
             subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
+          });
+          // [PREMIUM 7] Fire subscriptionCancelled + flip the contact's
+          // plan property so the day-60 reactivation segment in Loops
+          // can target this user.
+          await sendLoopsEvent({
+            userId, email: ctx.email, eventName: "subscriptionCancelled",
+            properties: { firstName: ctx.name || "" },
+          });
+          await updateLoopsContact({
+            userId, email: ctx.email,
+            properties: { plan: "cancelled" },
           });
         }
         break;
