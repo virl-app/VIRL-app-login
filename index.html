@@ -1589,9 +1589,26 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
   }
   // [UX-01] Mark-as-posted toggle — flips the localStorage flag and
   // mirrors the change locally so the coral checkmark updates instantly.
+  // [PREMIUM 10] Also fires a `post_marked` event on toggle-on (not on
+  // un-toggle) so the Sunday Review feature in month 4-5 can read which
+  // cards the creator actually posted, paired with their hook + day +
+  // platform metadata. Silent — never blocks the UI.
   function handleTogglePosted() {
-    if (posted) { clearCardPosted(cardId); setPosted(false); }
-    else        { setCardPosted(cardId);   setPosted(true);  }
+    if (posted) {
+      clearCardPosted(cardId);
+      setPosted(false);
+    } else {
+      setCardPosted(cardId);
+      setPosted(true);
+      try {
+        logEvent(window.__virlUserId || null, "post_marked", {
+          cardId:   cardId,
+          title:    card.title || "",
+          platform: card.platform || null,
+          day:      card.day || null,
+        });
+      } catch (e) {}
+    }
   }
   function toggleExpanded() { setExpanded(function(v){ return !v; }); }
 
@@ -3772,6 +3789,13 @@ function App() {
   const [followers,setFollowers] = useState(stored.followers||"Under 1K");
   const [trending,setTrending] = useState("");
   const [context,setContext] = useState("");
+  // [PREMIUM 10] Tracks whether the next plan generation was seeded
+  // from a prior post (Vault remix or Results "plan next week"). When
+  // a plan generates with this set, we fire a `plan_remixed_from_prior`
+  // event and clear it. The Sunday Review feature in month 4-5 uses
+  // this to surface "you built last week's plan around Tuesday's
+  // top post" insights.
+  const [remixSource,setRemixSource] = useState(null);
   const [loading,setLoading] = useState(false);
   // Plan persists for the week — cleared when credit week resets
   const [cards,setCards] = useState(function(){
@@ -4512,7 +4536,16 @@ function App() {
         } catch(e){}
         if (session) savePlanToSupabase(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy);
         try {
+          // [PREMIUM 10] weekStart anchors the plan to a specific week
+          // so the Sunday Review can group events by plan cycle. Use
+          // the local YYYY-MM-DD of generation; week boundary handling
+          // happens at query time.
+          var weekStart = (function(){
+            try { return new Date().toISOString().slice(0, 10); }
+            catch(e){ return null; }
+          })();
           logEvent(session && session.user && session.user.id, "plan_generated", {
+            weekStart: weekStart,
             platforms: platforms,
             niche:     niche,
             goal:      goal,
@@ -4520,6 +4553,20 @@ function App() {
             isRegen:   !!cards,
             cardCount: parsedCards.length,
           });
+          // [PREMIUM 10] If this plan was seeded from a prior post
+          // (Vault remix or Results "plan next week"), fire a second
+          // event tagging the source. The Sunday Review can join this
+          // back to the original card to surface "you doubled down on
+          // last Tuesday's hook" style insights.
+          if (remixSource) {
+            logEvent(session && session.user && session.user.id, "plan_remixed_from_prior", {
+              source:    remixSource.kind,
+              sourceId:  remixSource.sourceId || null,
+              platform:  remixSource.platform || null,
+              weekStart: weekStart,
+            });
+            setRemixSource(null);
+          }
         } catch(e){}
       } else { setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers."); }
     }).then(function(){
@@ -4542,7 +4589,19 @@ function App() {
   function saveToVault(card) {
     const id = card.title+card.day;
     if (vault.some(function(v){return v.id===id;})) return;
-    try { logEvent(session && session.user && session.user.id, "vault_saved", { type: "plan", platform: card.platform || null, format: card.format || null }); } catch(e){}
+    // [PREMIUM 10] Vault saves are first-class signal for the Sunday
+    // Review — record cardId + title so we can join back to the
+    // original generation. Truncated to keep the events table light.
+    try {
+      logEvent(session && session.user && session.user.id, "vault_saved", {
+        type:     "plan",
+        cardId:   id,
+        title:    (card.title || "").slice(0, 120),
+        platform: card.platform || null,
+        format:   card.format   || null,
+        day:      card.day      || null,
+      });
+    } catch(e){}
     // [TASK 10] Persist card.format alongside platform so getVaultPatterns()
     // can weight similar styles in future plan generations.
     // Capture the full card payload so the vault detail modal can render
@@ -4573,7 +4632,19 @@ function App() {
     });
   }
   function saveCaption(cap) {
-    try { logEvent(session && session.user && session.user.id, "vault_saved", { type: "caption", platform: cap.platform || null }); } catch(e){}
+    // [PREMIUM 10] Capture the saved hook + a 160-char caption preview
+    // so the Sunday Review can answer "what kinds of captions did you
+    // save this week?" without re-fetching from Supabase. Full text
+    // still lives on the vault item itself.
+    try {
+      logEvent(session && session.user && session.user.id, "vault_saved", {
+        type:     "caption",
+        title:    (cap.title || "").slice(0, 120),
+        hook:     (cap.hook  || "").slice(0, 200),
+        preview:  (cap.text  || cap.preview || "").slice(0, 160),
+        platform: cap.platform || null,
+      });
+    } catch(e){}
     // Capture the full caption (text + hook + hashtags) so the vault detail
     // modal can show what the user actually saved, not just the preview.
     setVault(function(v){return [{
@@ -4650,6 +4721,9 @@ function App() {
     var label = item.platform ? (item.platform + " " + (item.type==="caption"?"caption":"post")) : (item.type==="caption"?"caption":"post");
     var note  = "Voice reference (from saved " + label + '): "' + voice + '". Use a similar voice and rhythm for the new plan.';
     setContext(note);
+    // [PREMIUM 10] Stamp the source so the next plan_generated event
+    // can also fire plan_remixed_from_prior with this reference id.
+    setRemixSource({ kind: "vault", sourceId: item.id, platform: item.platform || null });
     setTab("plan");
   }
 
@@ -4665,6 +4739,9 @@ function App() {
              + (top.platform ? " on " + top.platform : "")
              + ". Lean into the same format and topic for next week.";
     setContext(note);
+    // [PREMIUM 10] Stamp source so plan_generated also fires
+    // plan_remixed_from_prior with this top-performer reference.
+    setRemixSource({ kind: "results_top", sourceId: top.id, platform: top.platform || null });
     setTab("plan");
   }
 
