@@ -1630,11 +1630,15 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
            expanded so collapsed cards stay scannable. */}
       {expanded && (
         <div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.7,marginBottom:card.why?10:14}}>{card.description}</div>
-          {card.why && (
-            <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",gap:8,alignItems:"flex-start"}}>
-              <div style={{fontSize:12,flexShrink:0,color:B.navy}}>{"✦"}</div>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,color:B.navy,lineHeight:1.6}}>{card.why}</div>
+          {/* [PREMIUM 4] Insight callout — only on cards that earned
+               one (LLM emits the field on roughly 1 in 3 posts). The
+               legacy `why` field is still tolerated so vault items
+               saved before this change keep rendering. */}
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.7,marginBottom:(card.insight||card.why)?10:14}}>{card.description}</div>
+          {(card.insight || card.why) && (
+            <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:14,borderLeft:"3px solid "+B.blue}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.1em",color:B.blue,textTransform:"uppercase",marginBottom:4}}>Why this works</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>{card.insight || card.why}</div>
             </div>
           )}
           <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:14}}>
@@ -2779,10 +2783,13 @@ function VaultItemModal({item, onClose}) {
                   {item.description}
                 </div>
               )}
-              {item.why && (
-                <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",gap:8,alignItems:"flex-start"}}>
-                  <div style={{fontSize:12,flexShrink:0,color:B.navy}}>{"✦"}</div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,color:B.navy,lineHeight:1.6}}>{item.why}</div>
+              {/* [PREMIUM 4] Renders the new `insight` field. Falls
+                   back to the legacy `why` so items saved pre-PREMIUM-4
+                   don't lose their callout. */}
+              {(item.insight || item.why) && (
+                <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:14,borderLeft:"3px solid "+B.blue}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.1em",color:B.blue,textTransform:"uppercase",marginBottom:4}}>Why this works</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>{item.insight || item.why}</div>
                 </div>
               )}
               {item.trend && (
@@ -2812,7 +2819,7 @@ function VaultItemModal({item, onClose}) {
                   )}
                 </div>
               )}
-              {!item.description && !item.why && tags.length === 0 && !item.savedScript && (
+              {!item.description && !item.insight && !item.why && tags.length === 0 && !item.savedScript && (
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,fontStyle:"italic"}}>This card was saved before VIRL captured full details. Re-save from the plan tab to get the full view.</div>
               )}
             </div>
@@ -3309,11 +3316,12 @@ function PreLaunchGate() {
 
   // Plan preview cards mirror the "VIRL Plan" card structure shown on the live
   // landing page — eyebrow line "DAY · TIME · PLATFORM", Italiana white title,
-  // small format/length descriptor, and an italic "Why this works:" reason.
+  // small format/length descriptor, and an italic insight reason.
+  // [PREMIUM 4] Field renamed why -> insight to match the in-app render.
   var previewCards = [
-    {day:"MONDAY",   time:"7:00 AM", platform:"TIKTOK",    title:"The thing nobody tells you about posting daily", format:"Talking-head video · 30-45 seconds", why:"Curiosity gap hook – your audience needs the answer in the first 3 seconds."},
-    {day:"WEDNESDAY",time:"12:30 PM",platform:"INSTAGRAM", title:"The caption I almost didn't post",                format:"Carousel · 6 slides",                  why:"Midweek IG saves spike at lunch. Soft-hook carousels outperform Reels for your audience."},
-    {day:"FRIDAY",   time:"8:00 PM", platform:"YOUTUBE",   title:"Why I quit optimizing every single thing",       format:"Long-form · 8-12 minutes",             why:"Friday-night long-form gets 22% more watch time. Counterintuitive takes hold viewers past 30s."}
+    {day:"MONDAY",   time:"7:00 AM", platform:"TIKTOK",    title:"The thing nobody tells you about posting daily", format:"Talking-head video · 30-45 seconds", insight:"Curiosity gap hook – your audience needs the answer in the first 3 seconds."},
+    {day:"WEDNESDAY",time:"12:30 PM",platform:"INSTAGRAM", title:"The caption I almost didn't post",                format:"Carousel · 6 slides",                  insight:"Midweek IG saves spike at lunch. Soft-hook carousels outperform Reels for your audience."},
+    {day:"FRIDAY",   time:"8:00 PM", platform:"YOUTUBE",   title:"Why I quit optimizing every single thing",       format:"Long-form · 8-12 minutes",             insight:"Friday-night long-form gets 22% more watch time. Counterintuitive takes hold viewers past 30s."}
   ];
 
   // Reusable styles
@@ -3452,7 +3460,7 @@ function PreLaunchGate() {
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.78)",marginBottom:12}}>{c.format}</div>
                     <div style={{borderTop:"1px solid rgba(255,255,255,0.12)",paddingTop:12}}>
                       <span style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.white}}>Why this works: </span>
-                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:"rgba(255,255,255,0.72)"}}>{c.why}</span>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:"rgba(255,255,255,0.72)"}}>{c.insight}</span>
                     </div>
                   </div>
                 </div>
@@ -4499,7 +4507,7 @@ function App() {
     // [TASK 10] Persist card.format alongside platform so getVaultPatterns()
     // can weight similar styles in future plan generations.
     // Capture the full card payload so the vault detail modal can render
-    // description / why / hashtags / saved script — not just the headline.
+    // description / insight / hashtags / saved script — not just the headline.
     setVault(function(v){
       return [{
         id,
@@ -4511,7 +4519,12 @@ function App() {
         day:         card.day||null,
         priority:    card.priority||null,
         description: card.description||null,
-        why:         card.why||null,
+        // [PREMIUM 4] Vault save now stores insight; falls back to the
+        // legacy `why` so a card generated under the old prompt still
+        // gets its callout captured. Keep `why` mirrored too so older
+        // app builds reading from Supabase still render the field.
+        insight:     card.insight || card.why || null,
+        why:         card.why || card.insight || null,
         trend:       card.trend||null,
         hashtags:    Array.isArray(card.hashtags) ? card.hashtags.slice() : [],
         savedScript: card.savedScript||null,
@@ -5566,7 +5579,7 @@ return (
                         lines.push(card.day+" | "+card.postTime+" | "+card.platform);
                         lines.push(card.title);
                         lines.push(card.description);
-                        if (card.why) lines.push("Why: "+card.why);
+                        if (card.insight || card.why) lines.push("Why this works: "+(card.insight || card.why));
                         lines.push("Format: "+card.format+" | Trend: "+card.trend);
                         lines.push("Hashtags: "+(card.hashtags||[]).join(" "));
                         return lines.join("\n");

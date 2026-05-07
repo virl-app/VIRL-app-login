@@ -381,10 +381,16 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     + "  - Read the audience in one sentence so the user can verify."
     + "  - Define a concrete success metric (e.g. '3 posts past 1K views or 50 saves')."
     + "  - Articulate the bet — what you're leaning into this week and why, citing prior weeks if relevant."
-    + " For each post: description is 2 punchy sentences max. Include a why field — one sentence on the strategic reason this post will perform well for this creator's audience, citing the platform signal it optimizes for."
+    + " For each post: description is 2 punchy sentences max."
+    // [PREMIUM 4] Strategic micro-insights replace the always-on "why"
+    // field. Sparseness is intentional: one in three feels like a
+    // strategist sharing earned wisdom; on every card it reads like
+    // marketing filler.
+    + " Add an `insight` field to roughly 1 in 3 cards (NEVER every card). On the other ~2/3, OMIT the field entirely — do not return it as null or empty. Insights are short, specific, and earned. Examples of good insights: 'This hook leads with curiosity — strongest format for educational content.' / 'Tuesday at 7pm — when your audience is most active based on your platforms.' / 'The rule of three makes this caption more memorable.' Never say things like 'engagement-boosting', 'go viral', or generic platitudes. Voice is honest, not hypey."
     + " Return ONLY one JSON object with this exact shape: {"
     + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"},"
-    + "\"cards\":[{\"day\":\"" + dayLabels[0] + "\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"why\":\"one sentence on why this works for this audience\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
+    + "\"cards\":[{\"day\":\"" + dayLabels[0] + "\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
+    + " (Optional `insight` field on roughly 1 in 3 cards.)"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
     + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
