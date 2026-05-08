@@ -71,9 +71,19 @@ export default async function handler(req, res) {
   const isAnnual = planType === "annual";
   const priceId  = isAnnual ? annualPriceId : monthlyPriceId;
 
+  // [STRIPE-FIX] Annual price was missing from the early degradation
+  // check above, so an annual checkout slipped past it and crashed
+  // here with a generic 500. Now it returns the same friendly 503 so
+  // users see "Annual checkout not configured" instead of a generic
+  // "Something went wrong".
   if (!priceId) {
-    console.error("[create-checkout] Missing price ID for planType:", planType);
-    return res.status(500).json({ error: "Price not configured for selected plan" });
+    console.warn("[create-checkout] Missing price ID for planType:", planType);
+    return res.status(503).json({
+      error: "billing_not_configured",
+      message: isAnnual
+        ? "Annual checkout is not configured yet. Email hello@govirl.ai to upgrade early."
+        : "Billing setup is in progress. Email hello@govirl.ai to upgrade early.",
+    });
   }
 
   try {
@@ -87,6 +97,11 @@ export default async function handler(req, res) {
       console.log("[create-checkout] Paid count:", paidCount, "| Founding:", isFoundingMember);
     }
 
+    // [STRIPE-FIX] Removed `customer_creation: "always"` — that
+    // parameter is only valid for `mode: "payment"` sessions and
+    // makes Stripe reject a subscription-mode session. Subscription
+    // sessions create a customer automatically, so the flag is a
+    // no-op at best and an error at worst. Removing it.
     const sessionParams = {
       mode: "subscription",
       payment_method_types: ["card"],
@@ -104,7 +119,6 @@ export default async function handler(req, res) {
         : {}),
       success_url: appUrl + "?upgraded=true&session_id={CHECKOUT_SESSION_ID}",
       cancel_url: appUrl,
-      customer_creation: "always",
     };
 
     const session = await stripe.checkout.sessions.create(sessionParams);

@@ -4173,6 +4173,10 @@ function App() {
 
 
 
+  // [STRIPE-FIX] Surface the server's error message when checkout fails
+  // instead of swallowing it into a generic "Something went wrong".
+  // Hides real Stripe / config issues during testing — without this
+  // fix, a missing annual price ID looks identical to a network blip.
   async function handleCheckout(planType) {
     if (!session) return;
     setShowUpgrade(false);
@@ -4186,10 +4190,17 @@ function App() {
           planType: planType||"monthly",
         }),
       });
-      var data = await res.json();
-      if (data.url) { window.location.href = data.url; }
-      else { alert("Something went wrong. Please try again."); }
-    } catch (err) { alert("Something went wrong. Please try again."); }
+      var data = {};
+      try { data = await res.json(); } catch(e) {}
+      if (data.url) {
+        window.location.href = data.url;
+        return;
+      }
+      var msg = data.message || data.error || ("Checkout failed (" + res.status + "). Please try again.");
+      alert(msg);
+    } catch (err) {
+      alert("Could not reach the checkout service. Check your connection and try again.");
+    }
   }
 
   function handleSignOut() { clearLocalUserData(); supabaseClient.auth.signOut(); }
