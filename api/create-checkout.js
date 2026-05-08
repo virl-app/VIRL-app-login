@@ -47,7 +47,15 @@ export default async function handler(req, res) {
   const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
   const monthlyPriceId  = process.env.STRIPE_PRICE_ID;
   const annualPriceId   = process.env.STRIPE_ANNUAL_PRICE_ID;
-  const foundingCoupon  = process.env.STRIPE_FOUNDING_COUPON;
+  // [STRIPE-FIX] Founding member coupon split into per-cadence env
+  // vars because Stripe coupons can't span both a monthly and an
+  // annual price cleanly (a percentage coupon was double-discounting
+  // the annual; a fixed-amount coupon doesn't apply correctly to a
+  // recurring annual). Lauren now maintains one coupon per cadence.
+  // STRIPE_FOUNDING_COUPON is kept as a fallback so an existing
+  // single-coupon setup still works during the rollout window.
+  const foundingMonthly = process.env.STRIPE_FOUNDING_MONTHLY || process.env.STRIPE_FOUNDING_COUPON;
+  const foundingAnnual  = process.env.STRIPE_FOUNDING_ANNUAL  || process.env.STRIPE_FOUNDING_COUPON;
   const supabaseUrl     = process.env.SUPABASE_URL;
   const supabaseKey     = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
   const appUrl          = process.env.APP_URL || "https://app.govirl.ai";
@@ -89,9 +97,13 @@ export default async function handler(req, res) {
   try {
     const stripe = Stripe(stripeSecretKey);
 
-    // Check founding member eligibility
+    // [STRIPE-FIX] Pick the right founding-member coupon for this
+    // cadence. Eligibility check (paid-user count < 100) only runs
+    // if at least one of the two coupons is configured, otherwise
+    // there's nothing to apply and we skip the Supabase round-trip.
+    const cadenceCoupon = isAnnual ? foundingAnnual : foundingMonthly;
     let isFoundingMember = false;
-    if (foundingCoupon && supabaseUrl) {
+    if (cadenceCoupon && supabaseUrl) {
       const paidCount = await getPaidUserCount(supabaseUrl, supabaseKey);
       isFoundingMember = paidCount < FOUNDING_CAP;
       console.log("[create-checkout] Paid count:", paidCount, "| Founding:", isFoundingMember);
@@ -114,8 +126,8 @@ export default async function handler(req, res) {
           isFoundingMember: isFoundingMember ? "true" : "false",
         },
       },
-      ...(isFoundingMember && foundingCoupon
-        ? { discounts: [{ coupon: foundingCoupon }] }
+      ...(isFoundingMember && cadenceCoupon
+        ? { discounts: [{ coupon: cadenceCoupon }] }
         : {}),
       success_url: appUrl + "?upgraded=true&session_id={CHECKOUT_SESSION_ID}",
       cancel_url: appUrl,
