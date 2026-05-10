@@ -1634,6 +1634,186 @@ const MTag = ({type,children}) => {
 // actions (Log Results, Write Script, Share, Rate) live in the
 // expanded view. Status indicators in the header row read from
 // localStorage so saved / posted state persists across regenerations.
+
+// [INTEL 4] Format-specific PlanCard rendering. INTEL 3 normalized the
+// format vocabulary the model emits (video / single_image / carousel /
+// quote_graphic / story / long_form_text); this layer maps any string the
+// model ever returned (capitalized "Video", legacy "Talking-head video",
+// etc.) onto that vocabulary so the renderer can branch reliably. Anything
+// unrecognized falls through to "video" so old plans keep rendering.
+function normalizeFormat(raw) {
+  if (!raw || typeof raw !== "string") return "video";
+  var v = raw.toLowerCase().trim();
+  if (v === "single_image" || v === "image" || v === "single image" || v === "photo" || v === "image post" || v === "image_post" || v === "feed_post" || v === "feed post" || v.indexOf("pin") === 0) return "single_image";
+  if (v === "carousel" || v === "carousel_pin" || v === "photo_carousel" || v === "document" || v === "document carousel") return "carousel";
+  if (v === "quote_graphic" || v === "quote graphic" || v === "quote") return "quote_graphic";
+  if (v === "story" || v === "stories" || v === "idea_pin") return "story";
+  if (v === "long_form_text" || v === "long-form text" || v === "long form text" || v === "long_post" || v === "long post" || v === "tweet" || v === "thread" || v === "image_tweet" || v === "community_post") return "long_form_text";
+  // Everything video-shaped (reels, shorts, vertical videos, talking-head video,
+  // aesthetic b-roll, day in my life, etc.) collapses to "video".
+  return "video";
+}
+
+// [INTEL 4] Format-specific body components rendered inside the PlanCard
+// expanded section, ABOVE the existing description paragraph. Each body
+// only renders fields it actually has — missing fields are skipped silently
+// so old cards (no slides / frames / photoDirection / etc.) render nothing
+// extra and fall through to the existing description-based layout.
+function FormatBodyEyebrow({children}) {
+  return <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6,marginTop:4}}>{children}</div>;
+}
+
+function FormatBodyDetail({label,value}) {
+  if (!value) return null;
+  return (
+    <div style={{marginBottom:10}}>
+      <FormatBodyEyebrow>{label}</FormatBodyEyebrow>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>{value}</div>
+    </div>
+  );
+}
+
+function VideoCardBody({card}) {
+  // Hook is rendered in the card title up top, so we only show it here if
+  // the model emitted a hook AND it's distinct from the title.
+  var hook = card.hook && card.hook !== card.title ? card.hook : "";
+  var onScreen = Array.isArray(card.onScreenText) ? card.onScreenText.filter(Boolean) : [];
+  if (!hook && !card.caption && onScreen.length === 0 && !card.audioRecommendation) return null;
+  return (
+    <div style={{marginBottom:14}}>
+      <FormatBodyDetail label="Hook" value={hook}/>
+      <FormatBodyDetail label="Caption" value={card.caption}/>
+      {onScreen.length > 0 && (
+        <div style={{marginBottom:10}}>
+          <FormatBodyEyebrow>On-screen text</FormatBodyEyebrow>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {onScreen.map(function(t,i){
+              return <div key={i} style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.55}}>{"“"+t+"”"}</div>;
+            })}
+          </div>
+        </div>
+      )}
+      <FormatBodyDetail label="Audio" value={card.audioRecommendation}/>
+    </div>
+  );
+}
+
+function ImageCardBody({card}) {
+  if (!card.caption && !card.photoDirection && !card.compositionTip) return null;
+  return (
+    <div style={{marginBottom:14}}>
+      <FormatBodyDetail label="Caption" value={card.caption}/>
+      <FormatBodyDetail label="Photo direction" value={card.photoDirection}/>
+      <FormatBodyDetail label="Composition tip" value={card.compositionTip}/>
+    </div>
+  );
+}
+
+function CarouselCardBody({card}) {
+  var slides = Array.isArray(card.slides) ? card.slides : [];
+  if (!card.caption && slides.length === 0) return null;
+  return (
+    <div style={{marginBottom:14}}>
+      <FormatBodyDetail label="Caption" value={card.caption}/>
+      {slides.length > 0 && (
+        <div>
+          <FormatBodyEyebrow>{"Slides ("+slides.length+")"}</FormatBodyEyebrow>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {slides.map(function(s,i){
+              var num = s.slideNumber || i + 1;
+              return (
+                <div key={i} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.blue}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.blue,letterSpacing:"0.05em",flexShrink:0,minWidth:18}}>{num}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    {s.headline && <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.ink,marginBottom:3,lineHeight:1.4}}>{s.headline}</div>}
+                    {s.body && <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.55,marginBottom:s.designDirection?6:0}}>{s.body}</div>}
+                    {s.designDirection && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.muted,lineHeight:1.5}}>{"Design: "+s.designDirection}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuoteCardBody({card}) {
+  if (!card.quote && !card.attribution && !card.caption && !card.designDirection) return null;
+  return (
+    <div style={{marginBottom:14}}>
+      {card.quote && (
+        <div style={{padding:"14px 18px",background:B.navySoft,borderRadius:12,marginBottom:10}}>
+          <div style={{fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.35,color:B.navy,marginBottom:card.attribution?6:0}}>{"“"+card.quote+"”"}</div>
+          {card.attribution && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.muted,letterSpacing:"0.05em"}}>{"– "+card.attribution}</div>}
+        </div>
+      )}
+      <FormatBodyDetail label="Caption" value={card.caption}/>
+      <FormatBodyDetail label="Design direction" value={card.designDirection}/>
+    </div>
+  );
+}
+
+function StoryCardBody({card}) {
+  var frames = Array.isArray(card.frames) ? card.frames : [];
+  if (frames.length === 0) return null;
+  return (
+    <div style={{marginBottom:14}}>
+      <FormatBodyEyebrow>{"Story frames ("+frames.length+")"}</FormatBodyEyebrow>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {frames.map(function(f,i){
+          var num = f.frameNumber || i + 1;
+          return (
+            <div key={i} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.coral}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.coral,letterSpacing:"0.05em",flexShrink:0,minWidth:18}}>{num}</div>
+              <div style={{flex:1,minWidth:0}}>
+                {f.content && <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.55,marginBottom:f.textOverlay||f.interactiveElement?6:0}}>{f.content}</div>}
+                {f.textOverlay && <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.ink,marginBottom:f.interactiveElement?4:0,lineHeight:1.5}}>{"Text overlay: "+f.textOverlay}</div>}
+                {f.interactiveElement && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.coral,lineHeight:1.5}}>{"Interactive: "+f.interactiveElement}</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LongFormCardBody({card}) {
+  // Hook lives in the card title; only render here if distinct.
+  var hook = card.hook && card.hook !== card.title ? card.hook : "";
+  if (!hook && !card.body && !card.closing) return null;
+  return (
+    <div style={{marginBottom:14}}>
+      <FormatBodyDetail label="Hook" value={hook}/>
+      {card.body && (
+        <div style={{marginBottom:10}}>
+          <FormatBodyEyebrow>Body</FormatBodyEyebrow>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{card.body}</div>
+        </div>
+      )}
+      <FormatBodyDetail label="Closing" value={card.closing}/>
+    </div>
+  );
+}
+
+// [INTEL 4] Pick the right format-specific body for a card. Returns null
+// when the card has no format-specific fields populated, so backward-compat
+// (old plans) renders the existing description-only layout cleanly.
+function FormatSpecificBody({card}) {
+  var fmt = normalizeFormat(card.format);
+  switch (fmt) {
+    case "single_image":   return <ImageCardBody card={card}/>;
+    case "carousel":       return <CarouselCardBody card={card}/>;
+    case "quote_graphic":  return <QuoteCardBody card={card}/>;
+    case "story":          return <StoryCardBody card={card}/>;
+    case "long_form_text": return <LongFormCardBody card={card}/>;
+    case "video":
+    default:               return <VideoCardBody card={card}/>;
+  }
+}
+
 function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userToken,onCreditsUsed}) {
   var cardId = buildCardId(card);
   var bl = card.priority==="HIGH"?B.navy:card.priority==="MED"?B.blue:B.border;
@@ -1722,6 +1902,13 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
                one (LLM emits the field on roughly 1 in 3 posts). The
                legacy `why` field is still tolerated so vault items
                saved before this change keep rendering. */}
+          {/* [INTEL 4] Format-specific structured body. Renders only the
+              fields the model actually emitted for this card's format
+              (slides, story frames, photo direction, quote, long-form body,
+              etc.). Returns null for old plans / cards with no format-specific
+              fields, so the existing description-only layout below stays
+              intact for backward compatibility. */}
+          <FormatSpecificBody card={card}/>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.7,marginBottom:(card.insight||card.why)?10:14}}>{card.description}</div>
           {(card.insight || card.why) && (
             <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:14,borderLeft:"3px solid "+B.blue}}>

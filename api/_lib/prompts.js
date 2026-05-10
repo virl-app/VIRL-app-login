@@ -552,6 +552,22 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
     + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
+    // [INTEL 4] Format-specific output structure. Universal fields above
+    // (day, priority, title, description, postTime, platform, format,
+    // hashtags) MUST appear on every card so existing UI (vault save,
+    // logging, hashtag rendering, share, copy-reminder) keeps working.
+    // Format-specific fields are ADDITIVE: emit them based on the card's
+    // format value so the renderer can show structured slides / frames /
+    // photoDirection / etc. The PlanCard renderer in index.html branches on
+    // `format` and renders the matching subset of these fields.
+    + " FORMAT-SPECIFIC FIELDS — emit these IN ADDITION to the universal fields above, keyed off the card's `format` value. Required whenever the format matches:"
+    + " format=video → include `hook` (1-2 sentence opening for the first 1.5 seconds), `caption` (the post caption), `onScreenText` (array of suggested text overlays during the video, 2-5 items), `audioRecommendation` (style of audio/sound to use)."
+    + " format=single_image → include `caption` (the post caption — carries the post), `photoDirection` (specific guidance on what to shoot, lighting, composition), `compositionTip` (one specific tip for making the photo land)."
+    + " format=carousel → include `caption` (the post caption) and `slides` (array of 3-7 slides; each slide is an object with: `slideNumber` (1-indexed), `headline` (short), `body` (1-2 sentences), `designDirection` (how the slide should look))."
+    + " format=quote_graphic → include `quote` (5-15 words), `attribution` (creator name or source), `caption` (caption for the post), `designDirection` (background style, font emphasis suggestions)."
+    + " format=story → include `frames` (array of 3-5 Story frames; each frame is an object with: `frameNumber` (1-indexed), `content` (what the frame shows), `textOverlay` (suggested overlay text), `interactiveElement` (poll question, slider, question sticker, tap-through link, countdown, etc.))."
+    + " format=long_form_text → include `hook` (the opening line), `body` (the full post body, formatted with line breaks for LinkedIn readability — use \\n for line breaks inside the JSON string), `closing` (the final line / CTA)."
+    + " Always include `format`, `platform`, and `day` on every card. If you cannot produce a meaningful format-specific field for a card, omit just that field (do not invent placeholder content)."
     + playbookCtx
     + trendsCtx;
 
