@@ -95,6 +95,162 @@ async function recordUsageEvent(userId, usage) {
   }
 }
 
+// [PERF 3] SSE handler for streaming plan generation. Forwards Anthropic's
+// SSE response chunks to the client as text deltas, then emits a trailing
+// `meta` event carrying { cost, usage } once the upstream stream completes.
+// Mirrors the side-effects of the non-streaming branch: writes usage_events,
+// fires the first-plan + milestone emails. Returns the underlying Express
+// response so the caller's `return` semantics still hold.
+async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost }) {
+  res.statusCode = 200;
+  res.setHeader('Content-Type',  'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection',    'keep-alive');
+  // Disable proxy buffering so chunks reach the browser as they're written.
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  function sendEvent(eventName, dataObj) {
+    res.write('event: ' + eventName + '\n');
+    res.write('data: '  + JSON.stringify(dataObj) + '\n\n');
+  }
+
+  let anthropicRes;
+  try {
+    anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key':         ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type':      'application/json',
+        accept:              'text/event-stream',
+        ...(useCache ? { 'anthropic-beta': 'prompt-caching-2024-07-31' } : {}),
+      },
+      body: JSON.stringify({ ...payload, stream: true }),
+    });
+  } catch (e) {
+    sendEvent('error', { error: 'Could not reach AI provider: ' + (e.message || 'unknown') });
+    res.end();
+    return res;
+  }
+
+  if (!anthropicRes.ok) {
+    const errBody = await anthropicRes.text().catch(() => '');
+    let parsed = null;
+    try { parsed = JSON.parse(errBody); } catch (e) { /* keep raw */ }
+    console.error('Anthropic error:', anthropicRes.status, parsed || errBody);
+    sendEvent('error', {
+      error: 'AI error ' + anthropicRes.status + ': ' + ((parsed && parsed.error && parsed.error.message) || 'Unknown'),
+    });
+    res.end();
+    return res;
+  }
+
+  // Accumulators populated by parsing the upstream SSE stream.
+  let inputTokens       = 0;
+  let cacheReadTokens   = 0;
+  let cacheWriteTokens  = 0;
+  let outputTokens      = 0;
+  let stopReason        = null;
+  let fullText          = '';
+
+  // Parse Anthropic SSE: events are separated by "\n\n"; each event has
+  // `event: <name>` and `data: <json>` lines. We're only interested in the
+  // JSON data — the line type carries the same info as `data.type`.
+  let sseBuf = '';
+  const decoder = new TextDecoder('utf-8');
+  const reader  = anthropicRes.body.getReader();
+
+  function processSseEvent(rawEvent) {
+    // Pull the data: line out — Anthropic puts the full JSON on one data line.
+    const lines = rawEvent.split('\n');
+    let jsonStr = '';
+    for (const line of lines) {
+      if (line.startsWith('data: ')) jsonStr += line.slice(6);
+      else if (line.startsWith('data:')) jsonStr += line.slice(5);
+    }
+    if (!jsonStr) return;
+    let evt;
+    try { evt = JSON.parse(jsonStr); } catch (e) { return; }
+    const type = evt.type;
+    if (type === 'message_start' && evt.message && evt.message.usage) {
+      const u = evt.message.usage;
+      inputTokens      = u.input_tokens                || 0;
+      cacheReadTokens  = u.cache_read_input_tokens     || 0;
+      cacheWriteTokens = u.cache_creation_input_tokens || 0;
+      outputTokens     = u.output_tokens               || 0;
+    } else if (type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta') {
+      const piece = evt.delta.text || '';
+      if (piece) {
+        fullText += piece;
+        sendEvent('text', { delta: piece });
+      }
+    } else if (type === 'message_delta') {
+      if (evt.delta && evt.delta.stop_reason) stopReason = evt.delta.stop_reason;
+      // Final output_tokens count lands here, not in message_start.
+      if (evt.usage && typeof evt.usage.output_tokens === 'number') {
+        outputTokens = evt.usage.output_tokens;
+      }
+    }
+  }
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      sseBuf += decoder.decode(value, { stream: true });
+      // SSE events end with a blank line — split on the double newline.
+      let idx;
+      while ((idx = sseBuf.indexOf('\n\n')) >= 0) {
+        const raw = sseBuf.slice(0, idx);
+        sseBuf = sseBuf.slice(idx + 2);
+        if (raw.trim()) processSseEvent(raw);
+      }
+    }
+    if (sseBuf.trim()) processSseEvent(sseBuf);
+  } catch (e) {
+    console.error('Plan stream read error:', e.message);
+    sendEvent('error', { error: 'Stream interrupted: ' + (e.message || 'unknown') });
+    res.end();
+    return res;
+  }
+
+  const truncated = stopReason === 'max_tokens';
+
+  // [COST 1] Same shape as the non-streaming branch so downstream consumers
+  // (admin trends, client logEvent) don't have to special-case streaming.
+  const usage = {
+    generationType,
+    model:              selectedModel,
+    input_tokens:       inputTokens,
+    output_tokens:      outputTokens,
+    cache_read_tokens:  cacheReadTokens,
+    cache_write_tokens: cacheWriteTokens,
+    truncated,
+    stop_reason:        stopReason,
+  };
+  console.log('virl_usage', JSON.stringify(usage));
+  recordUsageEvent(userId, usage).catch(() => {});
+
+  const clientUsage = {
+    outputTokens,
+    cachedInputTokens:   cacheReadTokens,
+    uncachedInputTokens: Math.max(0, inputTokens - cacheReadTokens),
+    cacheWriteTokens,
+    truncated,
+    stopReason,
+    model:               selectedModel,
+  };
+
+  // Fire-and-forget onboarding hooks, same as the non-streaming branch.
+  maybeSendFirstPlanEmail(userId).catch(() => {});
+  setTimeout(function () { maybeSendReferralMilestoneEmail(userId).catch(() => {}); }, 800);
+
+  sendEvent('meta', { cost: creditCost, usage: clientUsage });
+  res.end();
+  return res;
+}
+
 const MILESTONE_THRESHOLDS = new Set([3, 7, 15]);
 
 // Inline referral-milestone email. Counts the user's lifetime plan-type
@@ -505,6 +661,17 @@ export default async function handler(req, res) {
       messages:   [{ role: 'user', content }],
       ...(systemBlock ? { system: systemBlock } : {}),
     };
+
+    // [PERF 3] Plan generations stream so the client can render strategy and
+    // cards progressively. Same total time, ~half the perceived wait. Other
+    // generation types stay non-streaming because they're short enough that
+    // streaming adds complexity without changing user experience.
+    if (generationType === 'plan') {
+      return await handleStreamingPlan({
+        res, payload, useCache, selectedModel, generationType,
+        userId, creditCost,
+      });
+    }
 
     const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
