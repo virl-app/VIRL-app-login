@@ -2747,7 +2747,17 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   }
 
   const profileComplete = !!(name&&audience&&voice);
-  const optionalCount = [purpose,offLimits,inspiration,journey,knownFor,workedWell,postFreq].filter(Boolean).length;
+  // [INTEL counter] Counts every optional Phase 2 field, including the four
+  // added by INTEL 1 (personalFacts / neverAssume / loveToReference) and
+  // INTEL 2 (platformFormats). The first three are plain strings so the
+  // Boolean filter handles them like the existing seven; platformFormats is
+  // an object keyed by platform, so an empty {} would naively pass Boolean —
+  // we need a real "at least one platform has at least one format selected"
+  // check before it counts.
+  var hasAnyPlatformFormat = !!(platformFormats && Object.keys(platformFormats).some(function(k){
+    return Array.isArray(platformFormats[k]) && platformFormats[k].length > 0;
+  }));
+  const optionalCount = [purpose,offLimits,inspiration,journey,knownFor,workedWell,postFreq,personalFacts,neverAssume,loveToReference].filter(Boolean).length + (hasAnyPlatformFormat ? 1 : 0);
 
   // [TASK 6] Tier-based completeness meter. The brief spec names "audience" but
   // the current form captures audience per platform via platformAudiences, so
@@ -2890,7 +2900,11 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
       {showPhase2 && (
         <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,padding:"22px 24px"}}>
           <div style={{marginBottom:6,fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.15}}>Make VIRL even sharper (optional)</div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,marginBottom:4}}>{optionalCount+" of 7 optional fields added"}</div>
+          {/* [INTEL counter] "of 11" reflects the seven legacy optional
+              fields plus four added by INTEL 1 + INTEL 2. Bumping past
+              11 is fine to do later – keep this string in sync with the
+              optionalCount definition above. */}
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,marginBottom:4}}>{optionalCount+" of 11 optional fields added"}</div>
 
           {/* [INTEL 1] Personal facts subsection – placed at the top of Phase 2
               because these are foundational identity facts that drive factual
