@@ -1,7 +1,13 @@
-// Per-platform trends research for the weekly cron. Asks Claude to
-// surface what's actually working THIS WEEK on a given platform —
+// Per-platform trends research for the weekly cron. Asks Perplexity Sonar
+// to surface what's actually working THIS WEEK on a given platform —
 // trending topics, hashtags, audio (where applicable), emerging formats,
 // hooks that are getting outsized engagement.
+//
+// [COST 4] Migrated from Claude + web_search to Perplexity Sonar. The
+// stored row shape is identical (`{ platform, summary, items, sources,
+// fetched_at }`), so loadLatestTrends + the prompt builders see no change.
+// Perplexity returns citations as a top-level array on the response, which
+// we map directly into the `sources` field.
 //
 // Difference from playbook-research:
 //   - Trends auto-publish (no admin approval), since they're transparently
@@ -10,7 +16,7 @@
 //   - Lower latency window: only items from the last 14 days qualify.
 //   - Returns up to 7 concise items per platform.
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+import { callPerplexity, tryParseJSON } from "./perplexity.js";
 
 const TRUSTED_SOURCES_GENERAL = [
   "sproutsocial.com/insights",
@@ -36,7 +42,7 @@ function buildTrendsPrompt(platform) {
   return [
     "Research what's working right now (this week) on " + platform + " for content creators.",
     "",
-    "Use web_search to surface up to 7 of the following:",
+    "Surface up to 7 of the following:",
     "  - Trending topics or themes",
     "  - Trending hashtags",
     "  - Trending audio (where applicable to the platform)",
@@ -44,9 +50,9 @@ function buildTrendsPrompt(platform) {
     "  - Specific hook or opening angles that are getting outsized engagement",
     "",
     "Constraints:",
-    "1. Only use information from these trusted sources:",
+    "1. Prefer information from these trusted sources when available:",
     allSources.map(s => "   - " + s).join("\n"),
-    "2. Each item MUST cite an exact source URL.",
+    "2. Each item MUST cite an exact source URL — use the full https:// URL, not a citation marker like [1].",
     "3. Skip anything older than 14 days — we want THIS WEEK's signal.",
     "4. Skip evergreen advice (e.g., 'use trending audio' — that's not a trend, it's a rule). We want specific, named, currently-hot items.",
     "5. If the platform has had a quiet week with no notable signal, return an empty items list rather than padding.",
@@ -69,68 +75,27 @@ function buildTrendsPrompt(platform) {
   ].join("\n");
 }
 
-function extractText(message) {
-  if (!message || !Array.isArray(message.content)) return "";
-  return message.content
-    .filter(b => b && b.type === "text")
-    .map(b => b.text)
-    .join("");
-}
-
-function tryParseJSON(text) {
-  if (!text) return null;
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fence) {
-    try { return JSON.parse(fence[1].trim()); } catch (e) {}
-  }
-  try { return JSON.parse(text.trim()); } catch (e) {}
-  const start = text.indexOf("{");
-  const end   = text.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try { return JSON.parse(text.slice(start, end + 1)); } catch (e) {}
-  }
-  return null;
-}
-
 // Returns { summary, items, sources } or null on failure.
 export async function researchTrends(platform) {
-  if (!ANTHROPIC_API_KEY) return null;
   const prompt = buildTrendsPrompt(platform);
-  let res;
-  try {
-    res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key":         ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "Content-Type":      "application/json",
-      },
-      body: JSON.stringify({
-        model:      "claude-sonnet-4-6",
-        max_tokens: 3500,
-        tools: [
-          { type: "web_search_20250305", name: "web_search", max_uses: 5 },
-        ],
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-  } catch (e) {
-    console.error("[trends-research] fetch threw for", platform, e.message);
+  const result = await callPerplexity({ prompt, model: "sonar", maxTokens: 3500 });
+  if (!result) return null;
+  const parsed = tryParseJSON(result.text);
+  if (!parsed) {
+    console.error("[trends-research] could not parse JSON for", platform);
     return null;
   }
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    console.error("[trends-research] Anthropic error", platform, res.status, errText);
-    return null;
-  }
-  let body;
-  try { body = await res.json(); } catch (e) { return null; }
-  const parsed = tryParseJSON(extractText(body));
-  if (!parsed) return null;
-  // Light shape validation so a malformed response doesn't break callers.
+  // [COST 4] Prefer Perplexity's top-level citations over whatever the
+  // model put inside the JSON. Citations come back as raw URLs we can
+  // trust; the in-JSON `sources` array is best-effort. Fall back to the
+  // parsed array only if Perplexity returned no citations (offline mode,
+  // tier downgrade, etc.).
+  const sources = result.citations.length
+    ? result.citations
+    : (Array.isArray(parsed.sources) ? parsed.sources : []);
   return {
     summary: typeof parsed.summary === "string" ? parsed.summary : "",
     items:   Array.isArray(parsed.items)   ? parsed.items   : [],
-    sources: Array.isArray(parsed.sources) ? parsed.sources : [],
+    sources,
   };
 }
