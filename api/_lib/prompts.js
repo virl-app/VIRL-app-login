@@ -378,6 +378,67 @@ function buildSystemPrompt(profile, role) {
   return base;
 }
 
+// [INTEL 3] Map the user-facing NICHE labels (the values stored in
+// params.niche, e.g. "Real Estate", "Fitness", "Lifestyle") onto the seven
+// format-mix buckets from the intelligence brief. Anything not explicitly
+// mapped falls through to the creator default. Keeping this as a separate
+// helper so the buckets can be tuned without touching the guidance strings,
+// and so a future "industry" field can swap in cleanly if the niche taxonomy
+// is ever decoupled from format-mix categories.
+function nicheCategory(niche) {
+  switch (niche) {
+    case "Real Estate":    return "real_estate";
+    case "Small Business": return "service_business";
+    case "Education":      return "coach_consultant";
+    case "Finance":        return "coach_consultant";
+    case "Fitness":        return "fitness_pro";
+    case "Sports":         return "fitness_pro";
+    case "Wellness":       return "wellness";
+    case "Food & Recipes": return "wellness";
+    case "Beauty":         return "retail_product";
+    case "Fashion":        return "retail_product";
+    default:               return "creator";
+  }
+}
+
+// [INTEL 3] Industry-specific format mix guidance. Returned as a single line
+// so it slots into the existing userPrompt concatenation without disrupting
+// the surrounding structure. Percentages are illustrative — the LLM treats
+// them as a target distribution, not a strict allocation.
+function getFormatGuidance(niche) {
+  switch (nicheCategory(niche)) {
+    case "real_estate":
+      return "Real estate content performs best as: 40% single images (listing photos, neighborhood shots), 25% carousels (multi-photo home tours, market reports), 20% videos (walkthrough Reels, neighborhood spotlights), 15% other (quote graphics for testimonials, Stories for behind-the-scenes).";
+    case "service_business":
+      return "Service business content performs best as: 35% single images (service photos, staff/team shots), 25% Stories (daily presence, behind-the-scenes), 20% carousels (service breakdowns, before/after), 15% videos (service demos, customer testimonials), 5% quote graphics.";
+    case "coach_consultant":
+      return "Coach/consultant content performs best as: 40% long-form text posts (LinkedIn especially), 25% carousels (frameworks, multi-slide insights), 15% quote graphics (shareable insights), 15% videos (talking-head thought leadership), 5% single images.";
+    case "fitness_pro":
+      return "Fitness content performs best as: 45% videos (workout demos, form fixes), 20% Stories (daily training, behind-the-scenes), 20% carousels (workout breakdowns, transformation stories), 10% single images (motivational, lifestyle), 5% quote graphics.";
+    case "wellness":
+      return "Wellness content performs best as: 30% carousels (educational frameworks, recipes), 25% single images (lifestyle, food photography), 20% videos (recipe demos, daily practices), 15% Stories (daily presence, polls), 10% quote graphics.";
+    case "retail_product":
+      return "Retail/product content performs best as: 40% single images (product photography, lifestyle), 25% carousels (product details, customer features), 15% videos (product demos, behind-the-scenes), 15% Stories (new arrivals, sales, polls), 5% quote graphics.";
+    case "creator":
+    default:
+      return "Creator content should mix: 35% videos (Reels, TikToks), 25% carousels (educational, narrative), 15% single images (lifestyle, behind-the-scenes), 15% Stories (daily presence), 10% quote graphics or text posts.";
+  }
+}
+
+// [INTEL 3] Format-diversity instruction injected into the plan-generation
+// systemPrompt. The fixed vocabulary (video / single_image / carousel /
+// quote_graphic / story / long_form_text) is also the set INTEL 4 will branch
+// on when rendering format-specific PlanCards, so any change to this list
+// must be coordinated with the renderer.
+const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mix of content formats across the 7-day plan. Do NOT default all posts to video format. Distribute content across these format types based on the user's selected platform formats and industry context: "
+  + "Video posts (Reels, TikTok videos, YouTube Shorts) are high-attention, hook-driven, ideal for entertainment and education. "
+  + "Single image posts (feed photos, Pinterest pins) let the caption carry the content, image speaks for itself, ideal for lifestyle and inspiration. "
+  + "Carousel posts (Instagram carousels, LinkedIn document carousels) follow a narrative arc across slides, ideal for educational content, frameworks, and lists. "
+  + "Quote graphics / text-on-image are bold typographic posts with minimal caption, ideal for brand voice moments and shareable insights. "
+  + "Stories (Instagram, Facebook) are casual, in-the-moment, interactive (polls, questions, tap-throughs), ideal for daily presence and behind-the-scenes. "
+  + "Long-form text (LinkedIn) is narrative storytelling, no visual required, ideal for thought leadership and personal essays. "
+  + "Each post in the plan MUST set its 'format' field to exactly one of: video, single_image, carousel, quote_graphic, story, long_form_text. Do not invent other format values.";
+
 // ── Builders, one per generation type ──────────────────────────────────────
 
 function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
@@ -416,13 +477,23 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
   }
 
   const profileCtx = buildProfileCtx(profile);
+  // [INTEL 3] Industry-specific format mix is keyed off the user's niche.
+  // Always returns a non-empty string (creator default for unmapped niches),
+  // so it gets unconditionally appended below.
+  const industryFormatGuidance = getFormatGuidance(niche);
   const systemPrompt = "You are VIRL, an AI content strategist and creative director. "
     + "Your job is to create highly personalized 7-day social media content plans that build on each other week over week. "
     + "Always return valid JSON only — no markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
     + LOCALE_LINE + " "
     + (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
-    + vaultCtx;
+    + vaultCtx
+    // [INTEL 3] Format diversity rules + the fixed format vocabulary land in
+    // the systemPrompt because they are constraints on every plan, not
+    // per-request data. Industry-specific mix follows immediately so the
+    // model reads "diversify, and here's the target mix for this niche."
+    + FORMAT_DIVERSITY_BLOCK
+    + " FORMAT MIX FOR THIS USER'S INDUSTRY: " + industryFormatGuidance;
 
   // Day labels are relative to the generation date — Day 1 = today's
   // weekday, Day 2 = tomorrow, etc. This lets a Wednesday-generated plan
@@ -471,7 +542,12 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     + " Add an `insight` field to roughly 1 in 3 cards (NEVER every card). On the other ~2/3, OMIT the field entirely — do not return it as null or empty. Insights are short, specific, and earned. Examples of good insights: 'This hook leads with curiosity — strongest format for educational content.' / 'Tuesday at 7pm — when your audience is most active based on your platforms.' / 'The rule of three makes this caption more memorable.' Never say things like 'engagement-boosting', 'go viral', or generic platitudes. Voice is honest, not hypey."
     + " Return ONLY one JSON object with this exact shape: {"
     + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"},"
-    + "\"cards\":[{\"day\":\"" + dayLabels[0] + "\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"Video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
+    // [INTEL 3] format value in the schema example uses the normalized
+    // vocabulary (video / single_image / carousel / quote_graphic / story /
+    // long_form_text) so the model emits values INTEL 4's PlanCard renderer
+    // can branch on. Mixing the example with the vocabulary list elsewhere
+    // in the prompt risks the model picking "Video" out of habit.
+    + "\"cards\":[{\"day\":\"" + dayLabels[0] + "\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
     + " (Optional `insight` field on roughly 1 in 3 cards.)"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
