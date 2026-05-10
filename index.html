@@ -1154,6 +1154,180 @@ function extractVideoFrame(file, atSeconds) {
   });
 }
 
+// [PERF 3] Walk index `start` in `s` (which must point at '{') forward,
+// counting brace depth with quote/escape awareness, and return the index of
+// the matching closing brace. Returns -1 if the object isn't complete yet,
+// which is how the streaming plan parser knows to wait for more data.
+function matchObjectEnd(s, start) {
+  var depth = 0, inStr = false, escape = false;
+  for (var i = start; i < s.length; i++) {
+    var ch = s[i];
+    if (escape) { escape = false; continue; }
+    if (ch === "\\") { escape = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+// [PERF 3] Streaming JSON parser for the plan response shape
+// `{ strategy: {...}, cards: [{...},...], stats: {...} }`. Hand-rolled
+// brace-counting works fine here because the shape is fixed and small. As
+// chunks arrive, push them; callbacks fire exactly once for strategy and
+// stats, and once per fully-formed card object. The order of fields in the
+// response is whatever the model picks, but the schema example puts strategy
+// first, cards next, stats last — that's what we render against.
+function createStreamingPlanParser() {
+  var buf = "";
+  var strategyEmitted = false;
+  var statsEmitted    = false;
+  var cardsStart      = -1; // index of '[' for the cards array, or -1
+  var cardsScan       = -1; // next scan position inside cards[]
+  var cardsClosed     = false;
+  return {
+    push: function (chunk, callbacks) {
+      buf += chunk;
+      // strategy
+      if (!strategyEmitted) {
+        var sm = buf.match(/"strategy"\s*:\s*\{/);
+        if (sm) {
+          var sStart = sm.index + sm[0].length - 1;
+          var sEnd   = matchObjectEnd(buf, sStart);
+          if (sEnd >= 0) {
+            try {
+              var obj = JSON.parse(buf.substring(sStart, sEnd + 1));
+              if (callbacks.onStrategy) callbacks.onStrategy(obj);
+              strategyEmitted = true;
+            } catch (e) { /* incomplete despite balanced braces — wait */ }
+          }
+        }
+      }
+      // cards array — find the opening once, then scan forward for objects.
+      if (cardsStart < 0) {
+        var cm = buf.match(/"cards"\s*:\s*\[/);
+        if (cm) {
+          cardsStart = cm.index + cm[0].length - 1; // points at '['
+          cardsScan  = cardsStart + 1;
+        }
+      }
+      if (cardsStart >= 0 && !cardsClosed) {
+        while (cardsScan < buf.length) {
+          var ch = buf[cardsScan];
+          if (ch === " " || ch === "\n" || ch === "\t" || ch === "\r" || ch === ",") { cardsScan++; continue; }
+          if (ch === "]") { cardsClosed = true; cardsScan++; break; }
+          if (ch !== "{") { break; }
+          var end = matchObjectEnd(buf, cardsScan);
+          if (end < 0) break; // wait for more
+          try {
+            var card = JSON.parse(buf.substring(cardsScan, end + 1));
+            if (callbacks.onCard) callbacks.onCard(card);
+          } catch (e) { /* skip malformed object */ }
+          cardsScan = end + 1;
+        }
+      }
+      // stats
+      if (!statsEmitted) {
+        var tm = buf.match(/"stats"\s*:\s*\{/);
+        if (tm) {
+          var tStart = tm.index + tm[0].length - 1;
+          var tEnd   = matchObjectEnd(buf, tStart);
+          if (tEnd >= 0) {
+            try {
+              var stats = JSON.parse(buf.substring(tStart, tEnd + 1));
+              if (callbacks.onStats) callbacks.onStats(stats);
+              statsEmitted = true;
+            } catch (e) { /* wait */ }
+          }
+        }
+      }
+    },
+    // After the stream ends, fall back to extractJSON on the whole buffer
+    // to catch anything the streaming pass missed (e.g. cards that arrived
+    // in a different order, or a final stats object emitted before cards).
+    finalize: function () {
+      return { fullText: buf, parsed: extractJSON(buf) };
+    },
+  };
+}
+
+// [PERF 3] SSE-stream consumer for the plan endpoint. Reads the chunked
+// response, parses out our wire events ("text", "meta", "error"), and fires
+// callbacks. Wire format (see api/chat.js handleStreamingPlan):
+//   event: text\n data: {"delta":"..."}\n\n
+//   event: meta\n data: {"cost":N,"usage":{...}}\n\n
+//   event: error\n data: {"error":"..."}\n\n
+// Resolves with { meta } once the upstream stream completes; rejects on
+// transport errors or upstream `error` events.
+async function consumePlanStream(generationType, params, opts, callbacks) {
+  opts = opts || {};
+  var body = { generationType: generationType, params: params || {} };
+  var headers = { "Content-Type": "application/json", "Accept": "text/event-stream" };
+  if (opts.token) headers["Authorization"] = "Bearer " + opts.token;
+  var res;
+  try {
+    res = await fetch("/api/chat", { method: "POST", headers: headers, body: JSON.stringify(body) });
+  } catch (e) { throw new Error("Connection issue - check your internet and try again."); }
+  if (res.status === 402) {
+    var data402 = await res.json().catch(function(){ return {}; });
+    throw new Error(data402.error || "Not enough credits this week.");
+  }
+  if (res.status === 401) throw new Error("Session expired - please sign out and sign in again.");
+  if (res.status === 429) {
+    var data429 = await res.json().catch(function(){ return {}; });
+    throw new Error(data429.error || "Slow down - too many requests. Try again in a moment.");
+  }
+  if (!res.ok) {
+    var dataErr = await res.json().catch(function(){ return {}; });
+    throw new Error(dataErr.error || ("Server error " + res.status));
+  }
+  if (!res.body || !res.body.getReader) {
+    throw new Error("Streaming not supported in this browser - please update or try a different one.");
+  }
+
+  var reader  = res.body.getReader();
+  var decoder = new TextDecoder("utf-8");
+  var sseBuf  = "";
+  var meta    = null;
+  var upstreamErr = null;
+
+  function processEvent(rawEvent) {
+    var lines = rawEvent.split("\n");
+    var eventName = "message";
+    var dataStr = "";
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (line.indexOf("event:") === 0) eventName = line.slice(6).trim();
+      else if (line.indexOf("data:") === 0) dataStr += line.slice(5).replace(/^ /, "");
+    }
+    if (!dataStr) return;
+    var payload;
+    try { payload = JSON.parse(dataStr); } catch (e) { return; }
+    if (eventName === "text" && callbacks.onText) callbacks.onText(payload.delta || "");
+    else if (eventName === "meta") meta = payload;
+    else if (eventName === "error") upstreamErr = payload.error || "AI error";
+  }
+
+  while (true) {
+    var step;
+    try { step = await reader.read(); }
+    catch (e) { throw new Error("Stream interrupted - tap Generate again."); }
+    if (step.done) break;
+    sseBuf += decoder.decode(step.value, { stream: true });
+    var idx;
+    while ((idx = sseBuf.indexOf("\n\n")) >= 0) {
+      var raw = sseBuf.slice(0, idx);
+      sseBuf = sseBuf.slice(idx + 2);
+      if (raw.trim()) processEvent(raw);
+    }
+  }
+  if (sseBuf.trim()) processEvent(sseBuf);
+
+  if (upstreamErr) throw new Error(upstreamErr);
+  return { meta: meta };
+}
+
 // Calls the unified /api/chat endpoint. Server owns prompt construction,
 // model selection, max-token limits, and credit cost — the client only
 // names the generation type and supplies its parameters.
@@ -4898,9 +5072,16 @@ function App() {
       setUpgradeReason("trial"); setShowUpgrade(true); return;
     }
     refreshCredits();
-    setLoading(true); setError(""); setCards(null); setStats(null);
+    // [PERF 3] Clear strategy too so a previous week's strategy banner
+    // doesn't linger above the spinner while the new one is in flight.
+    // Spinner is gated on (loading && !cards), so the first streamed card
+    // hides it naturally; loading stays true until the stream completes
+    // so the Generate button can't be double-clicked mid-stream.
+    setLoading(true); setError(""); setCards(null); setStats(null); setStrategy(null);
     var appliedCost = 0;
-    callAPI("plan", {
+    var parser = createStreamingPlanParser();
+    var progressiveCards = [];
+    consumePlanStream("plan", {
       platforms:    platforms,
       niche:        niche,
       goal:         goal,
@@ -4913,11 +5094,29 @@ function App() {
       // a hard constraint, not generic flavour.
       weekContext:  weekContext || "",
       isRegen:      !!cards,
-    }, { token: userToken }).then(function(data) {
-      appliedCost = data.cost || 0;
-      // New response shape: { strategy, cards, stats }. The whole payload
-      // is one JSON object — no more STATS-line parsing.
-      const parsed = extractJSON(data.text);
+    }, { token: userToken }, {
+      onText: function (delta) {
+        parser.push(delta, {
+          onStrategy: function (s) { setStrategy(s); },
+          onCard:     function (card) {
+            progressiveCards.push(card);
+            // New array reference so React re-renders the list.
+            setCards(progressiveCards.slice());
+          },
+          onStats:    function (s) { setStats(s); },
+        });
+      },
+    }).then(function (result) {
+      var meta = (result && result.meta) || {};
+      appliedCost = meta.cost || 0;
+      // Final parse on the full accumulated buffer is the canonical source
+      // of truth — overrides anything the streaming parser may have missed.
+      // Any persistence / logging downstream uses these values, not the
+      // progressive state, so the saved plan can never diverge from what
+      // the model actually produced.
+      const finalized = parser.finalize();
+      const data = { text: finalized.fullText, cost: meta.cost, usage: meta.usage };
+      const parsed = finalized.parsed;
       const parsedCards    = parsed && Array.isArray(parsed.cards) ? parsed.cards : null;
       const parsedStrategy = parsed && parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
       const parsedStats    = parsed && parsed.stats    && typeof parsed.stats    === "object" ? parsed.stats    : null;
@@ -5046,7 +5245,13 @@ function App() {
             setRemixSource(null);
           }
         } catch(e){}
-      } else { setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers."); }
+      } else {
+        // [PERF 3] Truncated / unparseable final payload. Clear any cards
+        // the streaming parser had already pushed so the user sees the
+        // error message alone, not a half-rendered plan next to it.
+        setCards(null); setStats(null); setStrategy(null);
+        setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers.");
+      }
     }).then(function(){
       // Refresh credits from Supabase after successful generation. Pass the
       // cost so the displayed counter ticks down immediately rather than
@@ -5055,6 +5260,10 @@ function App() {
       // canonical server value.
       refreshCredits({cost: appliedCost});
     }).catch(function(e){
+      // [PERF 3] Mid-stream failure (network drop, upstream error). Wipe
+      // anything that may have streamed in so the error toast isn't
+      // sitting on top of a half-rendered plan.
+      setCards(null); setStats(null); setStrategy(null);
       if (e.message&&e.message.includes("credits")) {
         setUpgradeReason("credits"); setShowUpgrade(true);
       } else {
