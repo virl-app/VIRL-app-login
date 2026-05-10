@@ -575,7 +575,14 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    maxTokens: 6000,
+    // [HOTFIX] Bumped 6000 -> 12000 after INTEL 4 expanded per-card output
+    // to include slides arrays (3-7 per carousel), story frames (3-5 per
+    // story), long-form bodies, plus universal fields. A 10-14 card plan
+    // weighted toward carousels/long-form was hitting the old cap mid-JSON,
+    // triggering the "VIRL got cut off mid-thought" client-side error.
+    // Sonnet 4.6 supports far more than 12000 output tokens; this gives
+    // ~2x headroom over the typical post-INTEL-4 plan size.
+    maxTokens: 12000,
     cost:      isRegen ? CREDIT_COSTS.regen : CREDIT_COSTS.plan,
   };
 }
