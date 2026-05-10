@@ -1,0 +1,597 @@
+# VIRL — Intelligence Sharpening Brief
+
+**For Claude Code  ·  Pre-launch (or early post-launch) — High Priority**
+
+This brief addresses three intelligence gaps surfaced in late-stage testing: factual drift in generated content, format bias toward video, and lack of structural support for Instagram Stories. Each gap is fixable in the prompt and product layers without major architectural changes. Together, they meaningfully sharpen VIRL's core "sounds like you" promise.
+
+---
+
+## 🎯 Why these changes, why now
+
+These aren't aesthetic refinements — they're foundational intelligence improvements that affect every output the product generates. Concrete examples that motivated this work:
+
+- A user with three sons received content referencing daughters
+- Plans skew heavily toward video content even when users primarily use photos, carousels, or stories
+- Users who post mainly on Instagram Stories are being given content optimized for the feed
+
+Each change below is bounded, can ship as a single PR, and addresses one specific intelligence gap. **Estimated total effort: 8-12 hours across 4 PRs.**
+
+---
+
+## 🎯 How to use this brief with Claude Code
+
+Save this file to your repo as `docs/virl-intelligence-brief.md` and start a fresh Claude Code session with:
+
+> *"Read the file at `virl-intelligence-brief.md`. Do not start coding yet. Tell me back: (1) the order you'll tackle the four changes in, (2) any clarifying questions, and (3) which change you'll start with. After my approval, work on ONE change at a time. Print a one-line status update after every file you modify. After completing each change, commit with a clear message, push to a new branch, and open a PR. Wait for my review before starting the next change."*
+
+---
+
+## 📋 Order of operations
+
+1. **Profile fact infrastructure** — fixes factual drift (sons/daughters problem)
+2. **Stories awareness in onboarding and generation** — adds format awareness
+3. **Format diversity in plan generation** — eliminates video bias
+4. **Format-specific PlanCard output structure** — different fields for different post types
+
+---
+
+## ⚙️ Critical context
+
+**Tech stack:** Single-file React app via Babel standalone. All components use `function` declarations. Brand palette in `const B = { ... }`. Use `B.xxx` tokens, never hardcode hex values.
+
+**Babel rules** (these silently break the build):
+- ❌ No optional chaining `?.` in JSX
+- ❌ No template literals in JSX
+- ❌ No em-dashes in raw JSX text — use en-dash `–` or rephrase
+- ❌ Never put `}} style={{` on the same line — split across lines
+
+**Definition of done for each change:**
+1. Sucrase + vm.Script parse check passes on `index.html`
+2. App loads, auth works, all existing flows complete
+3. Add `// [INTEL N]` comments above all new code blocks
+4. Existing users without new fields default gracefully (no breaking changes)
+5. Commit with clear message, push branch, open PR
+6. Wait for review before starting the next change
+
+---
+
+## ✨ CHANGE 1 — Profile Fact Infrastructure
+
+**Goal:** Eliminate factual drift in generated content. When a user states a personal fact in their profile, that fact should never be contradicted in any output.
+
+**Files to modify:** `index.html` (CreatorProfile component + system prompt builder)
+
+### 1a. Add three new profile fields
+
+Add these fields in Phase 2 of the profile (the optional depth section):
+
+```jsx
+{/* Personal facts — non-negotiable */}
+<div style={{marginBottom: 20}}>
+  <label style={labelStyle}>Personal facts VIRL should always get right (optional)</label>
+  <textarea
+    value={personalFacts}
+    onChange={function(e){ setPersonalFacts(e.target.value); }}
+    placeholder="Example: I have three sons (ages 4, 7, 10). I'm married to Mike. We live in Indianapolis. I have a golden retriever named Charlie. I run a pilates studio."
+    style={Object.assign({}, textareaStyle, {minHeight: 90})}
+  />
+  <div style={hintStyle}>VIRL will treat these as canonical facts and never contradict them in any output.</div>
+</div>
+
+{/* Things to never assume */}
+<div style={{marginBottom: 20}}>
+  <label style={labelStyle}>Things VIRL should never assume about you (optional)</label>
+  <textarea
+    value={neverAssume}
+    onChange={function(e){ setNeverAssume(e.target.value); }}
+    placeholder="Example: Don't assume I have daughters. Don't assume I work from home. Don't assume I'm religious. Don't assume my partner is a husband."
+    style={Object.assign({}, textareaStyle, {minHeight: 70})}
+  />
+  <div style={hintStyle}>If VIRL doesn't know something, it should leave it out — not guess.</div>
+</div>
+
+{/* Things to weave in */}
+<div style={{marginBottom: 20}}>
+  <label style={labelStyle}>Things you'd love VIRL to reference naturally (optional)</label>
+  <textarea
+    value={loveToReference}
+    onChange={function(e){ setLoveToReference(e.target.value); }}
+    placeholder="Example: My kids' personalities, our dog Charlie, my morning coffee ritual, our family Sunday tradition."
+    style={Object.assign({}, textareaStyle, {minHeight: 70})}
+  />
+  <div style={hintStyle}>VIRL will weave these in occasionally to make content feel personal — never forced.</div>
+</div>
+```
+
+Add new state at the top of the CreatorProfile component:
+```javascript
+var [personalFacts, setPersonalFacts] = useState(profile.personalFacts || "");
+var [neverAssume, setNeverAssume] = useState(profile.neverAssume || "");
+var [loveToReference, setLoveToReference] = useState(profile.loveToReference || "");
+```
+
+Update the `handleSave` function to include these three new fields when persisting to Supabase.
+
+### 1b. Restructure the system prompt
+
+The system prompt must place personal facts at the very top with explicit weight. Refactor the prompt builder so it follows this structure:
+
+```javascript
+function buildSystemPrompt(profile, weekContext) {
+  var prompt = "";
+
+  // 1. CRITICAL FACTS (top of prompt — non-negotiable)
+  if (profile.personalFacts && profile.personalFacts.trim().length > 0) {
+    prompt += "## CRITICAL PERSONAL FACTS — NEVER CONTRADICT\n\n";
+    prompt += "The following facts about the user are non-negotiable. Every output must be consistent with them. If you cannot incorporate a topic without violating these facts, omit the topic entirely rather than guess:\n\n";
+    prompt += profile.personalFacts.trim() + "\n\n";
+  }
+
+  if (profile.neverAssume && profile.neverAssume.trim().length > 0) {
+    prompt += "## DO NOT ASSUME\n\n";
+    prompt += "The user has explicitly stated these are NOT to be assumed:\n\n";
+    prompt += profile.neverAssume.trim() + "\n\n";
+    prompt += "If you find yourself about to make any of these assumptions, stop and rephrase the content to avoid the assumption entirely.\n\n";
+  }
+
+  if (profile.loveToReference && profile.loveToReference.trim().length > 0) {
+    prompt += "## NATURAL TOUCHPOINTS\n\n";
+    prompt += "The user enjoys when these are referenced naturally (don't force them, but weave them in 1-2 times per week of content where it fits):\n\n";
+    prompt += profile.loveToReference.trim() + "\n\n";
+  }
+
+  // 2. STANDARD PROFILE CONTEXT (existing logic continues here)
+  prompt += "## USER PROFILE\n\n";
+  prompt += "Name: " + profile.name + "\n";
+  prompt += "Voice: " + profile.voice + "\n";
+  prompt += "Audience: " + profile.audience + "\n";
+  // ... rest of existing profile fields
+
+  return prompt;
+}
+```
+
+The KEY structural decision: **CRITICAL FACTS goes first, before everything else.** Models pay disproportionate attention to instructions at the top of the system prompt — using this position for non-negotiable facts dramatically reduces drift.
+
+### 1c. Optional — fact-check pass for high-stakes generation
+
+For plan generation specifically (the highest-stakes output), add a verification pass after generation:
+
+```javascript
+async function verifyFacts(plan, profile) {
+  if (!profile.personalFacts && !profile.neverAssume) return plan;
+
+  var verifyPrompt = "Review the following 7-day content plan against the user's stated personal facts. Identify any post that contradicts a fact or makes a forbidden assumption. Return a JSON array of {dayIndex: number, issue: string} for any violations found, or an empty array if all posts are compliant.\n\n";
+  verifyPrompt += "PERSONAL FACTS: " + profile.personalFacts + "\n";
+  verifyPrompt += "DO NOT ASSUME: " + profile.neverAssume + "\n\n";
+  verifyPrompt += "PLAN:\n" + JSON.stringify(plan);
+
+  // Call Claude Haiku (cheap, fast)
+  var verification = await callClaude("haiku", verifyPrompt);
+
+  // If violations found, regenerate just those posts
+  // [implementation: loop through violations, regenerate specific posts with stricter constraints]
+  return plan;
+}
+```
+
+This is optional — ship 1a and 1b first, then add the verification pass if drift continues to be a problem. The first two layers handle 90% of the issue.
+
+### Acceptance test
+- Existing user without these fields set → system works exactly as before, no regression
+- New user fills in "I have three sons" in personal facts → generated content never references daughters
+- User adds "Don't assume I have a husband" to never assume → generated content avoids assumptions about partner
+- User fills in "weave in my dog Charlie" to love to reference → roughly 1-2 posts per week reference Charlie naturally
+- Profile changes save to Supabase and persist across sessions
+
+---
+
+## ✨ CHANGE 2 — Stories Awareness in Onboarding and Generation
+
+**Goal:** Capture how each user actually posts on each platform (feed vs Stories vs Reels) so VIRL can generate content optimized for their actual workflow.
+
+**Files to modify:** `index.html` (CreatorProfile component + plan generation system prompt)
+
+### 2a. Add per-platform format preferences
+
+When a user selects platforms in their profile, follow up with format preferences for each. After the existing `myPlatforms` chip selector, add:
+
+```jsx
+{myPlatforms.length > 0 && (
+  <div style={{marginTop: 24, marginBottom: 20}}>
+    <label style={labelStyle}>How do you primarily post on each platform?</label>
+    <div style={hintStyle}>This shapes the content VIRL creates for you. Pick one or two per platform.</div>
+
+    {myPlatforms.map(function(platform){
+      var formats = getFormatsForPlatform(platform);
+      var selected = platformFormats[platform] || [];
+
+      return (
+        <div key={platform} style={{marginTop: 16}}>
+          <div style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: B.ink,
+            marginBottom: 8
+          }}>{platform}</div>
+          <div style={{display:"flex", flexWrap:"wrap", gap: 6}}>
+            {formats.map(function(format){
+              var isSelected = selected.includes(format.value);
+              return (
+                <button
+                  key={format.value}
+                  onClick={function(){ toggleFormat(platform, format.value); }}
+                  style={Object.assign({}, formatChipStyle, isSelected ? formatChipSelected : {})}
+                >
+                  {format.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      );
+    })}
+  </div>
+)}
+```
+
+### 2b. Format options per platform
+
+```javascript
+function getFormatsForPlatform(platform) {
+  switch(platform) {
+    case "Instagram":
+      return [
+        { value: "feed_post", label: "Feed Posts (single image)" },
+        { value: "carousel", label: "Carousels (multi-image)" },
+        { value: "reel", label: "Reels (short video)" },
+        { value: "story", label: "Stories" }
+      ];
+    case "TikTok":
+      return [
+        { value: "video", label: "Vertical Videos" },
+        { value: "photo_carousel", label: "Photo Carousels" }
+      ];
+    case "LinkedIn":
+      return [
+        { value: "long_post", label: "Long-form Text Posts" },
+        { value: "document", label: "Document Carousels (PDF)" },
+        { value: "image_post", label: "Image Posts" },
+        { value: "video", label: "Native Video" }
+      ];
+    case "Facebook":
+      return [
+        { value: "feed_post", label: "Feed Posts" },
+        { value: "reel", label: "Reels" },
+        { value: "story", label: "Stories" }
+      ];
+    case "YouTube":
+      return [
+        { value: "long_video", label: "Long-form Videos" },
+        { value: "short", label: "Shorts" },
+        { value: "community_post", label: "Community Posts" }
+      ];
+    case "Pinterest":
+      return [
+        { value: "pin", label: "Standard Pins" },
+        { value: "idea_pin", label: "Idea Pins (video)" },
+        { value: "carousel_pin", label: "Carousel Pins" }
+      ];
+    case "X":
+      return [
+        { value: "tweet", label: "Single Tweets" },
+        { value: "thread", label: "Threads" },
+        { value: "image_tweet", label: "Image Tweets" }
+      ];
+    default:
+      return [{ value: "post", label: "Standard Posts" }];
+  }
+}
+```
+
+State management:
+```javascript
+var [platformFormats, setPlatformFormats] = useState(profile.platformFormats || {});
+
+function toggleFormat(platform, format) {
+  setPlatformFormats(function(prev){
+    var current = prev[platform] || [];
+    var updated;
+    if (current.includes(format)) {
+      updated = current.filter(function(f){ return f !== format; });
+    } else {
+      updated = current.concat([format]);
+    }
+    return Object.assign({}, prev, { [platform]: updated });
+  });
+}
+```
+
+### 2c. Use platform formats in system prompt
+
+```javascript
+if (profile.platformFormats && Object.keys(profile.platformFormats).length > 0) {
+  prompt += "\n## USER'S PRIMARY POSTING FORMATS\n\n";
+  prompt += "The user primarily posts in these formats. Generate content optimized for each:\n\n";
+
+  Object.keys(profile.platformFormats).forEach(function(platform){
+    var formats = profile.platformFormats[platform];
+    if (formats && formats.length > 0) {
+      prompt += "- " + platform + ": " + formats.join(", ") + "\n";
+    }
+  });
+
+  prompt += "\nIMPORTANT: Match the format to the user's actual workflow. If they primarily use Instagram Stories, generate Story-optimized content (short, casual, in-the-moment, with poll/question/tap-through suggestions) — NOT feed posts. If they primarily use carousels, generate carousel-optimized content with slide-by-slide structure. Do not default to video format if the user has not selected video.\n";
+}
+```
+
+### Acceptance test
+- User selects Instagram → format options appear (Feed Posts, Carousels, Reels, Stories)
+- User selects "Stories" only → generated Instagram content is Story-optimized (short, casual, with interactive element suggestions), not feed posts
+- User selects "Carousels" only → generated content includes slide-by-slide structure
+- Existing users without platformFormats set → system uses sensible defaults per platform (no regression)
+- Profile changes save to Supabase and persist
+
+---
+
+## ✨ CHANGE 3 — Format Diversity in Plan Generation
+
+**Goal:** Eliminate VIRL's video bias. Plans should include a diverse mix of content formats based on the user's profile, industry, and stated preferences.
+
+**Files to modify:** `index.html` (system prompt builder)
+
+### 3a. Add explicit format diversity instructions to the system prompt
+
+After the existing platform context section, add:
+
+```javascript
+prompt += "\n## CONTENT FORMAT DIVERSITY\n\n";
+prompt += "Generate a diverse mix of content formats across the 7-day plan. Do NOT default all posts to video format. Distribute content across these format types based on the user's selected platform formats and industry context:\n\n";
+prompt += "- Video posts (Reels, TikTok videos, YouTube Shorts): high-attention, hook-driven, ideal for entertainment and education\n";
+prompt += "- Single image posts (feed photos, Pinterest pins): the caption carries the content, image speaks for itself, ideal for lifestyle/inspiration\n";
+prompt += "- Carousel posts (Instagram carousels, LinkedIn document carousels): narrative arc across slides, ideal for educational content, frameworks, lists\n";
+prompt += "- Quote graphics / text-on-image: bold typographic posts, minimal caption, ideal for brand voice moments and shareable insights\n";
+prompt += "- Stories (Instagram, Facebook): casual, in-the-moment, interactive (polls, questions, tap-throughs), ideal for daily presence and behind-the-scenes\n";
+prompt += "- Long-form text (LinkedIn): narrative storytelling, no visual required, ideal for thought leadership and personal essays\n\n";
+prompt += "Each post must specify its 'format' field with one of: video, single_image, carousel, quote_graphic, story, long_form_text.\n\n";
+
+// Industry-specific format guidance
+var industryFormatGuidance = getFormatGuidance(profile.industry);
+if (industryFormatGuidance) {
+  prompt += "## FORMAT MIX FOR THIS USER'S INDUSTRY\n\n";
+  prompt += industryFormatGuidance + "\n\n";
+}
+```
+
+### 3b. Industry-specific format mix guidance
+
+```javascript
+function getFormatGuidance(industry) {
+  switch(industry) {
+    case "real_estate":
+      return "Real estate content performs best as: 40% single images (listing photos, neighborhood shots), 25% carousels (multi-photo home tours, market reports), 20% videos (walkthrough Reels, neighborhood spotlights), 15% other (quote graphics for testimonials, Stories for behind-the-scenes).";
+
+    case "service_business":
+      return "Service business content performs best as: 35% single images (service photos, staff/team shots), 25% Stories (daily presence, behind-the-scenes), 20% carousels (service breakdowns, before/after), 15% videos (service demos, customer testimonials), 5% quote graphics.";
+
+    case "coach_consultant":
+      return "Coach/consultant content performs best as: 40% long-form text posts (LinkedIn especially), 25% carousels (frameworks, multi-slide insights), 15% quote graphics (shareable insights), 15% videos (talking-head thought leadership), 5% single images.";
+
+    case "fitness_pro":
+      return "Fitness content performs best as: 45% videos (workout demos, form fixes), 20% Stories (daily training, behind-the-scenes), 20% carousels (workout breakdowns, transformation stories), 10% single images (motivational, lifestyle), 5% quote graphics.";
+
+    case "wellness":
+      return "Wellness content performs best as: 30% carousels (educational frameworks, recipes), 25% single images (lifestyle, food photography), 20% videos (recipe demos, daily practices), 15% Stories (daily presence, polls), 10% quote graphics.";
+
+    case "retail_product":
+      return "Retail/product content performs best as: 40% single images (product photography, lifestyle), 25% carousels (product details, customer features), 15% videos (product demos, behind-the-scenes), 15% Stories (new arrivals, sales, polls), 5% quote graphics.";
+
+    case "creator":
+    default:
+      return "Creator content should mix: 35% videos (Reels, TikToks), 25% carousels (educational, narrative), 15% single images (lifestyle, behind-the-scenes), 15% Stories (daily presence), 10% quote graphics or text posts.";
+  }
+}
+```
+
+### Acceptance test
+- Generate a plan for a real estate agent → format mix is roughly 40% images, 25% carousels, 20% videos
+- Generate a plan for a fitness pro → still video-heavy (45%) but includes carousels, Stories, and other formats
+- Generate a plan for a coach/consultant → predominantly long-form text and carousels, minimal video
+- Each post in every plan has a populated `format` field
+
+---
+
+## ✨ CHANGE 4 — Format-Specific PlanCard Output Structure
+
+**Goal:** Different content formats need different output fields. A video post needs different information than a carousel post. PlanCards should adapt their structure based on the post format.
+
+**Files to modify:** `index.html` (PlanCard component + Claude API system prompt for output structure)
+
+### 4a. Update the system prompt to request format-specific fields
+
+Add to the system prompt:
+
+```javascript
+prompt += "\n## OUTPUT STRUCTURE PER POST\n\n";
+prompt += "Each post in the plan must include format-specific fields based on its 'format' value:\n\n";
+
+prompt += "VIDEO posts (format: video) include:\n";
+prompt += "- hook (1-2 sentence opening for first 1.5 seconds)\n";
+prompt += "- caption (the post caption)\n";
+prompt += "- onScreenText (suggested text overlays during the video, as an array)\n";
+prompt += "- audioRecommendation (style of audio/sound to use)\n";
+prompt += "- hashtags\n";
+prompt += "- postingTime\n\n";
+
+prompt += "SINGLE IMAGE posts (format: single_image) include:\n";
+prompt += "- caption (the post caption — carries the post)\n";
+prompt += "- photoDirection (specific guidance on what to shoot, lighting, composition)\n";
+prompt += "- compositionTip (one specific tip for making the photo land)\n";
+prompt += "- hashtags\n";
+prompt += "- postingTime\n\n";
+
+prompt += "CAROUSEL posts (format: carousel) include:\n";
+prompt += "- caption (the post caption)\n";
+prompt += "- slides (an array of 3-7 slides, each with: slideNumber, headline, body, designDirection)\n";
+prompt += "- hashtags\n";
+prompt += "- postingTime\n\n";
+
+prompt += "QUOTE GRAPHIC posts (format: quote_graphic) include:\n";
+prompt += "- quote (the quote itself, 5-15 words)\n";
+prompt += "- attribution (your name or source)\n";
+prompt += "- caption (caption for the post)\n";
+prompt += "- designDirection (background style, font emphasis suggestions)\n";
+prompt += "- hashtags\n";
+prompt += "- postingTime\n\n";
+
+prompt += "STORY posts (format: story) include:\n";
+prompt += "- frames (an array of 3-5 Story frames, each with: frameNumber, content, textOverlay, interactiveElement)\n";
+prompt += "- interactiveElement examples: poll question, slider, question sticker, tap-through link, countdown\n\n";
+
+prompt += "LONG_FORM_TEXT posts (format: long_form_text) include:\n";
+prompt += "- hook (the opening line)\n";
+prompt += "- body (the full post body, formatted with line breaks for LinkedIn readability)\n";
+prompt += "- closing (the final line / CTA)\n";
+prompt += "- postingTime\n\n";
+
+prompt += "Always include the format field. Always include the platform field. Always include the day field.\n";
+```
+
+### 4b. Update PlanCard to render format-specific layouts
+
+The PlanCard component should branch based on `card.format`:
+
+```jsx
+function PlanCard({card}) {
+  // Common metadata row (always shown)
+  var metadataRow = (
+    <div style={{display:"flex", justifyContent:"space-between", marginBottom: 12}}>
+      <div style={metadataStyle}>{card.day} · {card.platform} · {card.format}</div>
+      <div style={metadataStyle}>{card.postingTime}</div>
+    </div>
+  );
+
+  // Format-specific body
+  var body;
+  switch(card.format) {
+    case "video":
+      body = <VideoCardBody card={card} />;
+      break;
+    case "single_image":
+      body = <ImageCardBody card={card} />;
+      break;
+    case "carousel":
+      body = <CarouselCardBody card={card} />;
+      break;
+    case "quote_graphic":
+      body = <QuoteCardBody card={card} />;
+      break;
+    case "story":
+      body = <StoryCardBody card={card} />;
+      break;
+    case "long_form_text":
+      body = <LongFormCardBody card={card} />;
+      break;
+    default:
+      body = <DefaultCardBody card={card} />;
+  }
+
+  return (
+    <div style={cardStyle}>
+      {metadataRow}
+      {body}
+      {/* Common action row at bottom */}
+      <ActionRow card={card} />
+    </div>
+  );
+}
+```
+
+Each format-specific body component renders the relevant fields with appropriate styling. For example:
+
+```jsx
+function CarouselCardBody({card}) {
+  return (
+    <div>
+      <div style={hookStyle}>{card.caption}</div>
+      <div style={{marginTop: 14}}>
+        <div style={eyebrowStyle}>SLIDES</div>
+        {card.slides.map(function(slide){
+          return (
+            <div key={slide.slideNumber} style={slideStyle}>
+              <div style={slideNumberStyle}>{slide.slideNumber}</div>
+              <div>
+                <div style={slideHeadlineStyle}>{slide.headline}</div>
+                <div style={slideBodyStyle}>{slide.body}</div>
+                {slide.designDirection && (
+                  <div style={designDirectionStyle}>Design: {slide.designDirection}</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={hashtagsStyle}>{card.hashtags}</div>
+    </div>
+  );
+}
+```
+
+Similarly create `VideoCardBody`, `ImageCardBody`, `QuoteCardBody`, `StoryCardBody`, and `LongFormCardBody`. Each renders the format's specific fields in a clean, scannable layout.
+
+### 4c. Backward compatibility
+
+For existing plans in the database that don't have the `format` field populated, default to `video` (the current implicit behavior). The PlanCard should gracefully handle missing format-specific fields by falling back to the basic hook + caption + hashtags layout.
+
+```javascript
+var format = card.format || "video";  // backward compatible default
+```
+
+### Acceptance test
+- Generate a plan with mixed formats → each card renders with its format-appropriate structure
+- A carousel post shows the slide-by-slide breakdown clearly
+- A Story post shows the frame sequence with interactive element suggestions
+- A long-form text post shows the full body content cleanly formatted
+- An image post shows the photo direction and composition tip
+- Existing plans (pre-format-field) render without errors using the default video layout
+- Card heights remain reasonable on mobile — long content gracefully expands without breaking layout
+
+---
+
+## 📁 Database migration (run before Change 1 and Change 2)
+
+```sql
+-- Add intelligence sharpening fields to profiles table
+ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS personal_facts TEXT,
+  ADD COLUMN IF NOT EXISTS never_assume TEXT,
+  ADD COLUMN IF NOT EXISTS love_to_reference TEXT,
+  ADD COLUMN IF NOT EXISTS platform_formats JSONB DEFAULT '{}'::jsonb;
+```
+
+Run this in the Supabase SQL Editor before testing Change 1 or Change 2.
+
+---
+
+## 🛡️ Safety reminders
+
+1. **One change at a time.** Do not start Change 2 until Change 1 is reviewed and merged.
+2. **Existing users must not break.** All four changes must default gracefully for users without the new fields populated. Confirm this with explicit testing.
+3. **The system prompt order matters.** CRITICAL FACTS must come first. Test that the model actually honors them by trying contradictory profile + content combinations.
+4. **Match existing code style** — function declarations, style object spreading pattern, B.xxx tokens.
+5. **Verify syntax** before committing — run sucrase + vm.Script check on `index.html`.
+
+---
+
+## 🎯 Expected impact
+
+| Problem | Pre-fix state | Post-fix state |
+|---|---|---|
+| Factual drift (sons/daughters) | Roughly 5-15% of plans contain a factual error | Less than 1% with verification pass enabled |
+| Stories awareness | All Instagram content treated as feed | Stories users get Story-optimized content |
+| Format diversity | 70-80% of posts default to video | Format mix matches user preference and industry |
+| Output structure | Same fields for every post regardless of format | Each post type has appropriate, useful fields |
+
+---
+
+**End of brief.** Estimated total Claude Code time: 8-12 hours across 4 PRs. Ship in order. Each change builds on the last and dramatically sharpens VIRL's intelligence without requiring new infrastructure or external APIs.
