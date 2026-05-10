@@ -285,6 +285,28 @@ function buildProfileCtx(profile) {
     if (list) parts.push("Per-platform audiences: " + list + ".");
   }
 
+  // [INTEL 2] Per-platform format preferences. Tells the model exactly how
+  // the user posts on each platform (Stories vs feed, carousels vs reels,
+  // long-form text vs image posts) so it can shape output to the user's
+  // actual workflow. Critical for Stories users who were getting feed-style
+  // captions, and for carousel/long-form users who were getting video plans.
+  if (profile.platformFormats && typeof profile.platformFormats === "object") {
+    const formatList = Object.keys(profile.platformFormats)
+      .filter(k => Array.isArray(profile.platformFormats[k]) && profile.platformFormats[k].length > 0)
+      .map(k => k + ": " + profile.platformFormats[k].join(", "))
+      .join("; ");
+    if (formatList) {
+      parts.push(
+        "USER'S PRIMARY POSTING FORMATS — match content to these workflows: "
+        + formatList + "."
+        + " IMPORTANT: If the user primarily uses Stories, generate Story-optimized content (short, casual, in-the-moment, with poll/question/tap-through suggestions) — NOT feed posts."
+        + " If they primarily use carousels, generate carousel-optimized content with slide-by-slide structure."
+        + " If they primarily use long-form text (LinkedIn), generate narrative posts with no visual required."
+        + " Do not default to video format if the user has not selected video."
+      );
+    }
+  }
+
   if (profile.contentLength) parts.push("Preferred content length: " + profile.contentLength + ".");
   if (profile.workedWell)    parts.push("Content that has worked well before: " + profile.workedWell + ".");
   if (profile.inspiration)   parts.push("Style inspiration/reference: " + profile.inspiration + ".");
