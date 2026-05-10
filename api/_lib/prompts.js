@@ -490,10 +490,37 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     + vaultCtx
     // [INTEL 3] Format diversity rules + the fixed format vocabulary land in
     // the systemPrompt because they are constraints on every plan, not
-    // per-request data. Industry-specific mix follows immediately so the
-    // model reads "diversify, and here's the target mix for this niche."
+    // per-request data.
     + FORMAT_DIVERSITY_BLOCK
-    + " FORMAT MIX FOR THIS USER'S INDUSTRY: " + industryFormatGuidance;
+    // [COST 2] Static output-shape rules moved here from userPrompt so they
+    // ride on the cache_control: ephemeral block. On a warm cache these
+    // ~1500 tokens shift from $3/M → $0.30/M. The schema example's day
+    // value is generalized to "Day 1 - Mon" so the cached prefix stays
+    // stable across generation dates; the actual day labels still arrive
+    // per-request in userPrompt.
+    + " Return ONLY one JSON object with this exact shape: {"
+    + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"},"
+    + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
+    + " (Optional `insight` field on roughly 1 in 3 cards.)"
+    + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
+    + "}"
+    + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
+    // [INTEL 4] Format-specific output structure. Universal fields above
+    // (day, priority, title, description, postTime, platform, format,
+    // hashtags) MUST appear on every card so existing UI (vault save,
+    // logging, hashtag rendering, share, copy-reminder) keeps working.
+    // Format-specific fields are ADDITIVE: emit them based on the card's
+    // format value so the renderer can show structured slides / frames /
+    // photoDirection / etc. The PlanCard renderer in index.html branches on
+    // `format` and renders the matching subset of these fields.
+    + " FORMAT-SPECIFIC FIELDS — emit these IN ADDITION to the universal fields above, keyed off the card's `format` value. Required whenever the format matches:"
+    + " format=video → include `hook` (1-2 sentence opening for the first 1.5 seconds), `caption` (the post caption), `onScreenText` (array of suggested text overlays during the video, 2-5 items), `audioRecommendation` (style of audio/sound to use)."
+    + " format=single_image → include `caption` (the post caption — carries the post), `photoDirection` (specific guidance on what to shoot, lighting, composition), `compositionTip` (one specific tip for making the photo land)."
+    + " format=carousel → include `caption` (the post caption) and `slides` (array of 3-7 slides; each slide is an object with: `slideNumber` (1-indexed), `headline` (short), `body` (1-2 sentences), `designDirection` (how the slide should look))."
+    + " format=quote_graphic → include `quote` (5-15 words), `attribution` (creator name or source), `caption` (caption for the post), `designDirection` (background style, font emphasis suggestions)."
+    + " format=story → include `frames` (array of 3-5 Story frames; each frame is an object with: `frameNumber` (1-indexed), `content` (what the frame shows), `textOverlay` (suggested overlay text), `interactiveElement` (poll question, slider, question sticker, tap-through link, countdown, etc.))."
+    + " format=long_form_text → include `hook` (the opening line), `body` (the full post body, formatted with line breaks for LinkedIn readability — use \\n for line breaks inside the JSON string), `closing` (the final line / CTA)."
+    + " Always include `format`, `platform`, and `day` on every card. If you cannot produce a meaningful format-specific field for a card, omit just that field (do not invent placeholder content).";
 
   // Day labels are relative to the generation date — Day 1 = today's
   // weekday, Day 2 = tomorrow, etc. This lets a Wednesday-generated plan
@@ -527,6 +554,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
         : "")
     + historyCtx
     + " The week starts TODAY (" + startWeekday + "). Use these exact day labels in the order they appear: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday."
+    // [COST 2] Industry format mix is per-niche, so it stays in userPrompt
+    // (moved out of systemPrompt). The systemPrompt holds the static output
+    // schema; this line tells the model how to weight format choice for
+    // this user's specific industry.
+    + " FORMAT MIX FOR THIS USER'S INDUSTRY: " + industryFormatGuidance
     + " Create 10-14 total posts for THIS week. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
     + " Open the plan with a STRATEGY object that frames the week. The strategy must:"
     + "  - State a one-sentence thesis for the week (specific to this creator, not generic)."
@@ -540,34 +572,6 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     // strategist sharing earned wisdom; on every card it reads like
     // marketing filler.
     + " Add an `insight` field to roughly 1 in 3 cards (NEVER every card). On the other ~2/3, OMIT the field entirely — do not return it as null or empty. Insights are short, specific, and earned. Examples of good insights: 'This hook leads with curiosity — strongest format for educational content.' / 'Tuesday at 7pm — when your audience is most active based on your platforms.' / 'The rule of three makes this caption more memorable.' Never say things like 'engagement-boosting', 'go viral', or generic platitudes. Voice is honest, not hypey."
-    + " Return ONLY one JSON object with this exact shape: {"
-    + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"},"
-    // [INTEL 3] format value in the schema example uses the normalized
-    // vocabulary (video / single_image / carousel / quote_graphic / story /
-    // long_form_text) so the model emits values INTEL 4's PlanCard renderer
-    // can branch on. Mixing the example with the vocabulary list elsewhere
-    // in the prompt risks the model picking "Video" out of habit.
-    + "\"cards\":[{\"day\":\"" + dayLabels[0] + "\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
-    + " (Optional `insight` field on roughly 1 in 3 cards.)"
-    + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
-    + "}"
-    + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
-    // [INTEL 4] Format-specific output structure. Universal fields above
-    // (day, priority, title, description, postTime, platform, format,
-    // hashtags) MUST appear on every card so existing UI (vault save,
-    // logging, hashtag rendering, share, copy-reminder) keeps working.
-    // Format-specific fields are ADDITIVE: emit them based on the card's
-    // format value so the renderer can show structured slides / frames /
-    // photoDirection / etc. The PlanCard renderer in index.html branches on
-    // `format` and renders the matching subset of these fields.
-    + " FORMAT-SPECIFIC FIELDS — emit these IN ADDITION to the universal fields above, keyed off the card's `format` value. Required whenever the format matches:"
-    + " format=video → include `hook` (1-2 sentence opening for the first 1.5 seconds), `caption` (the post caption), `onScreenText` (array of suggested text overlays during the video, 2-5 items), `audioRecommendation` (style of audio/sound to use)."
-    + " format=single_image → include `caption` (the post caption — carries the post), `photoDirection` (specific guidance on what to shoot, lighting, composition), `compositionTip` (one specific tip for making the photo land)."
-    + " format=carousel → include `caption` (the post caption) and `slides` (array of 3-7 slides; each slide is an object with: `slideNumber` (1-indexed), `headline` (short), `body` (1-2 sentences), `designDirection` (how the slide should look))."
-    + " format=quote_graphic → include `quote` (5-15 words), `attribution` (creator name or source), `caption` (caption for the post), `designDirection` (background style, font emphasis suggestions)."
-    + " format=story → include `frames` (array of 3-5 Story frames; each frame is an object with: `frameNumber` (1-indexed), `content` (what the frame shows), `textOverlay` (suggested overlay text), `interactiveElement` (poll question, slider, question sticker, tap-through link, countdown, etc.))."
-    + " format=long_form_text → include `hook` (the opening line), `body` (the full post body, formatted with line breaks for LinkedIn readability — use \\n for line breaks inside the JSON string), `closing` (the final line / CTA)."
-    + " Always include `format`, `platform`, and `day` on every card. If you cannot produce a meaningful format-specific field for a card, omit just that field (do not invent placeholder content)."
     + playbookCtx
     + trendsCtx;
 
