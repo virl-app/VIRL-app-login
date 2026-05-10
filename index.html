@@ -94,7 +94,12 @@ async function saveProfileToSupabase(profile, userId) {
       platform_audiences: profile.platformAudiences||{},
       post_freq: profile.postFreq||null,
       content_length: profile.contentLength||null,
-      worked_well: profile.workedWell||null
+      worked_well: profile.workedWell||null,
+      // [INTEL 1] Personal-fact columns. NULL on empty so we can later
+      // distinguish "user has not yet been prompted" from "explicitly cleared".
+      personal_facts: profile.personalFacts||null,
+      never_assume: profile.neverAssume||null,
+      love_to_reference: profile.loveToReference||null
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -134,7 +139,12 @@ async function loadProfileFromSupabase(userId) {
       platformAudiences: data.platform_audiences||{},
       postFreq: data.post_freq||"",
       contentLength: data.content_length||"",
-      workedWell: data.worked_well||""
+      workedWell: data.worked_well||"",
+      // [INTEL 1] Personal-fact columns. Existing rows pre-migration return
+      // null for these and fall through the || "" so the textareas render empty.
+      personalFacts: data.personal_facts||"",
+      neverAssume: data.never_assume||"",
+      loveToReference: data.love_to_reference||""
     };
   } catch(e) { return {}; }
 }
@@ -2410,6 +2420,13 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   const [postFreq,setPostFreq] = useState(profile.postFreq||"");
   const [contentLength,setContentLength] = useState(profile.contentLength||"");
   const [workedWell,setWorkedWell] = useState(profile.workedWell||"");
+  // [INTEL 1] Personal facts that VIRL must never contradict in any output.
+  // Anti-drift: the sons/daughters problem (factual error in 5-15% of plans
+  // pre-fix). All three default to empty string so existing users without
+  // these columns populated render the textareas unfilled with no errors.
+  const [personalFacts,setPersonalFacts] = useState(profile.personalFacts||"");
+  const [neverAssume,setNeverAssume] = useState(profile.neverAssume||"");
+  const [loveToReference,setLoveToReference] = useState(profile.loveToReference||"");
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -2441,7 +2458,9 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   const [phase1JustSaved,setPhase1JustSaved] = useState(false);
 
   function handleSave() {
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell});
+    // [INTEL 1] Pass the 3 new personal-fact fields up to the parent's onSave
+    // alongside the existing fields so they get persisted to Supabase.
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -2599,6 +2618,39 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
         <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,padding:"22px 24px"}}>
           <div style={{marginBottom:6,fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.15}}>Make VIRL even sharper (optional)</div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,marginBottom:4}}>{optionalCount+" of 7 optional fields added"}</div>
+
+          {/* [INTEL 1] Personal facts subsection – placed at the top of Phase 2
+              because these are foundational identity facts that drive factual
+              correctness in every output. Three optional textareas with hint
+              copy; all default to empty for existing users with no values. */}
+          <div style={subhead}>What VIRL must get right</div>
+          <div style={{marginBottom:18}}>
+            <Label>Personal facts VIRL should always get right</Label>
+            <textarea value={personalFacts} onChange={function(e){setPersonalFacts(e.target.value);}}
+              placeholder="e.g. I have three sons (ages 4, 7, 10). I am married to Mike. We live in Indianapolis. I have a golden retriever named Charlie. I run a pilates studio."
+              style={Object.assign({},textareaStyle,{minHeight:90})}/>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
+              VIRL will treat these as canonical facts and never contradict them in any output.
+            </div>
+          </div>
+          <div style={{marginBottom:18}}>
+            <Label>Things VIRL should never assume about you</Label>
+            <textarea value={neverAssume} onChange={function(e){setNeverAssume(e.target.value);}}
+              placeholder="e.g. Don't assume I have daughters. Don't assume I work from home. Don't assume I'm religious. Don't assume my partner is a husband."
+              style={Object.assign({},textareaStyle,{minHeight:72})}/>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
+              If VIRL doesn't know something, it leaves it out – never guesses.
+            </div>
+          </div>
+          <div style={{marginBottom:18}}>
+            <Label>Things you'd love VIRL to reference naturally</Label>
+            <textarea value={loveToReference} onChange={function(e){setLoveToReference(e.target.value);}}
+              placeholder="e.g. My kids' personalities, our dog Charlie, my morning coffee ritual, our family Sunday tradition."
+              style={Object.assign({},textareaStyle,{minHeight:72})}/>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
+              VIRL weaves these in occasionally to make content feel personal – never forced.
+            </div>
+          </div>
 
           <div style={subhead}>Your style</div>
           <div id="vp-vibes" style={{marginBottom:18}}>

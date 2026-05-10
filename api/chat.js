@@ -249,6 +249,12 @@ async function fetchProfile(userId) {
       postFreq:          data.post_freq         || "",
       contentLength:     data.content_length    || "",
       workedWell:        data.worked_well       || "",
+      // [INTEL 1] Personal-fact columns. Empty strings for existing users
+      // who have not filled out these fields yet — the prompt builder skips
+      // any falsy field so they simply don't appear in the system prompt.
+      personalFacts:     data.personal_facts    || "",
+      neverAssume:       data.never_assume      || "",
+      loveToReference:   data.love_to_reference || "",
     };
   } catch (e) {
     return {};
