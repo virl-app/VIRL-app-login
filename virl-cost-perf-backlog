@@ -1,0 +1,336 @@
+# VIRL — Cost, Performance, and Freshness Backlog
+
+**For Claude Code  ·  Post-Intelligence-Sharpening  ·  Optimization phase**
+
+Post-INTEL-4, plan generation produces richer outputs (slides arrays, story frames, long-form bodies) at higher cost and latency. Hotfix #73 bumped `maxTokens` to 12000 to stop truncation. This backlog captures the optimizations that bring spend and latency back down without walking back the value.
+
+---
+
+## 🎯 Use this brief
+
+Save this file alongside `virl-intelligence-brief` and start a fresh Claude Code session with:
+
+> *"Read the file at `virl-cost-perf-backlog`. Do not start coding yet. Tell me back: (1) the order you'll tackle the items in, (2) any clarifying questions, and (3) which item you'll start with. After my approval, work on ONE item at a time. Print a one-line status update after every file you modify. After completing each item, commit with a clear message, push to a new branch, and open a PR. Wait for my review before starting the next item."*
+
+Each item is bounded, can ship as a single PR, and has its own acceptance criteria.
+
+---
+
+## 📋 Order of operations (recommended)
+
+1. **Telemetry** — log output_tokens, cache hits, truncation per generation (prereq for items 5, 6, 8)
+2. **Cache expansion** — move static blocks from `userPrompt` to cached `systemPrompt`
+3. **Streaming responses** — progressive plan rendering (biggest perceived-latency win)
+4. **Perplexity migration** — research workers
+5. **Output tightening** — slide/frame caps, lower `maxTokens` once data justifies
+6. **History summarization** — compact `historyCtx` past 8 weeks
+7. **Message Batches API** — for async / non-urgent generations
+8. **Predictive pre-generation** — background-generate next week's plan
+
+Items 1, 2, 3 are the highest combined return. Item 8 depends on 1 and 7.
+
+---
+
+## ⚙️ Critical context
+
+**Tech stack:** Same as the Intelligence Brief — single-file React via Babel standalone, server-side prompts in `api/_lib/prompts.js`, function declarations, Babel rules (no `?.` in JSX, no template literals in JSX, no em-dashes in raw JSX text, no `}} style={{`).
+
+**Anthropic pricing (Sonnet 4.6):**
+- Input: ~$3 / 1M tokens
+- Output: ~$15 / 1M tokens
+- Cached input: ~$0.30 / 1M tokens (90% discount, 1-hour ephemeral)
+- Message Batches: 50% discount, async only
+
+**Current per-plan rough cost:** ~$0.12 successful, ~$0.20 with one truncation retry.
+
+**Definition of done (every item):**
+1. Sucrase + vm.Script parse check passes on `index.html` (if touched)
+2. `node --check` passes on edited server files
+3. Add `// [COST N]` or `// [PERF N]` comments above new code blocks
+4. Existing flows complete without regression
+5. Commit with `[COST N]` or `[PERF N]` prefix, push branch, open PR
+6. Wait for review before starting next item
+
+---
+
+## ✨ ITEM 1 — Generation telemetry (PREREQUISITE)
+
+**Goal:** Capture per-generation Anthropic usage stats so the rest of the backlog can be tuned from data instead of guesses.
+
+**Files to modify:** `api/chat.js` (capture from Anthropic response), `index.html` (forward fields in `logEvent`)
+
+### What Anthropic returns in the response body
+
+```
+{
+  usage: {
+    input_tokens: 5234,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 2100,
+    output_tokens: 7421
+  },
+  stop_reason: "end_turn"   // or "max_tokens" when truncated
+}
+```
+
+### What to log per generation
+
+Append to the existing `plan_generated` (and other generation) `logEvent` payloads:
+
+- `outputTokens` — raw output size
+- `cachedInputTokens` / `uncachedInputTokens` — derive cache hit ratio
+- `truncated` — boolean from `stop_reason === "max_tokens"`
+- `model` (already logged)
+
+### Where to capture
+
+In `api/chat.js`, after the Anthropic response parses successfully, before returning `{ text, cost }`, add the usage fields to the response so the client can forward them into its existing `logEvent` call.
+
+### Acceptance test
+
+- Generate a plan, check `usage_events` table → row has `outputTokens`, `cachedInputTokens`, `uncachedInputTokens`, `truncated`
+- After 10 generations, can compute median output tokens
+- After 50 generations, can spot truncation rate
+- No regression: plan generation still succeeds when usage fields are missing (older Anthropic SDK behavior)
+
+---
+
+## ✨ ITEM 2 — Move static blocks from userPrompt to cached systemPrompt
+
+**Goal:** Shift everything in the prompt that doesn't change per-request from `userPrompt` (uncached) into `systemPrompt` (cached for 1 hour ephemeral). Saves ~10% input cost on warm-cache calls and lowers TTFT.
+
+**Files to modify:** `api/_lib/prompts.js` (`buildPlan`)
+
+### What moves into systemPrompt
+
+- **FORMAT-SPECIFIC FIELDS block** (the INTEL 4 addition, currently appended in `userPrompt`) — fully static
+- **The JSON schema example** (the `"cards":[{...}]` exemplar) — static if you replace the date-dependent `dayLabels[0]` with a generic `"Day 1 - Mon"` and keep the format value as the normalized `"video"`
+- **The "cards array should have 10-14 objects" rule** and the universal-fields recap
+- **`FORMAT_DIVERSITY_BLOCK`** — already in systemPrompt as of INTEL 3, leave it
+
+### What stays in userPrompt
+
+- platforms, niche, goal, formats, followers (per-request)
+- weekContext, trending, context (per-request)
+- `dayLabelsLine` ("Day 1 - Wed, Day 2 - Thu, ..." — changes daily)
+- `playbookCtx`, `trendsCtx`, `historyCtx` (per-user, change weekly)
+- The "industry format mix" guidance string from `getFormatGuidance(niche)` (per-request because keyed off niche)
+
+### Expected savings
+
+- Per cached call: ~1500 input tokens shift from $3/M → $0.30/M = ~$0.004 saved
+- TTFT: 200-500ms lower on cached path (less input to process)
+
+### Acceptance test
+
+- `node --check` passes
+- Generate a plan, then immediately regenerate within 1 hour → second call's `cache_read_input_tokens` includes the newly-moved blocks (depends on Item 1 telemetry)
+- Diff median cached-input-tokens before/after across 10 generations → ~1500 token increase
+- Plan quality regression check: 5 generations before/after with the same prompt → outputs feel comparable
+
+---
+
+## ✨ ITEM 3 — Streaming responses + progressive PlanCard rendering
+
+**Goal:** Same total time, ~half the perceived wait. User sees strategy block at ~2s, first card at ~3s, all cards landing through ~12s.
+
+**Files to modify:** `api/chat.js` (switch to streaming), `index.html` (stream consumer + progressive setState)
+
+### Server side
+
+Switch the Anthropic call from non-streaming to streaming (`stream: true`) and forward chunks to the client as SSE or chunked-transfer:
+
+```js
+const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+  method: 'POST',
+  headers: { ..., 'anthropic-version': '2023-06-01' },
+  body: JSON.stringify({ ...payload, stream: true }),
+});
+// Forward stream chunks to client via res.write() or ReadableStream
+```
+
+Vercel functions support streaming responses via `Response` with a `ReadableStream` body.
+
+### Client side
+
+1. Use `fetch` with a reader on the response body
+2. Accumulate text as chunks arrive
+3. Use a lightweight streaming JSON parser (hand-rolled brace-counting works fine for our known shape: `{strategy: {...}, cards: [...], stats: {...}}`)
+4. As `strategy` becomes fully parseable → `setStrategy(parsed.strategy)`
+5. As each item in `cards[]` becomes fully parseable → append to cards state
+6. UI: render plan as it grows; show a subtle skeleton/shimmer for in-progress cards
+7. When stream completes → final `setCards(allCards)` to ensure state matches reality
+
+### Edge cases
+
+- **Partial JSON at end** — if stream ends with truncated JSON, fall back to the existing "cut off mid-thought" error path
+- **All existing card-save / log / share code** must still work — final `setCards` ensures the post-stream state is identical to today's
+- **Stop reason `max_tokens`** during streaming → same truncation error after partial render is cleared
+
+### Acceptance test
+
+- Plan completes successfully
+- First card visible within 4s of clicking Generate
+- All existing card actions (Save, Mark posted, Log Results, Write Script, Share, Rate) work after stream completes
+- Backward compat: a network failure mid-stream gracefully clears partial render and shows error
+- No double-counted credits if the stream is interrupted
+
+### Effort
+
+1-2 days. The streaming JSON parser is the trickiest piece.
+
+---
+
+## ✨ ITEM 4 — Perplexity migration for research workers
+
+**Goal:** Replace Claude+web_search calls in the weekly cron with Perplexity. Same Supabase target tables; downstream plan generation reads from the same `loadLatestTrends()` / `loadPlaybook()` helpers without change.
+
+**Files to modify:** `api/_lib/trends-research.js`, `api/_lib/playbook-research.js`, env config for `PERPLEXITY_API_KEY`
+
+### Honest framing
+
+This **doesn't shrink the plan-generation prompt** unless you also restructure stored content (see 4c). The wins are:
+- Cheaper research (Perplexity Sonar is generally cheaper than Claude + web_search)
+- Sharper "what's working this week" (Perplexity's specialty)
+- Fresher data
+
+### Sub-tasks
+
+**4a.** Replace `trends-research.js` Claude call with Perplexity Sonar. Preserve the trends table schema (`{ platform, summary, items, sources, fetched_at }`). Map Perplexity's `citations` array to the existing `sources` field.
+
+**4b.** Replace `playbook-research.js` Claude call with Perplexity. Same approach.
+
+**4c (optional, prompt-shrinking).** Restructure stored trends/playbook content into compact "top 3 levers" summaries instead of full reports. Cuts injected prompt by ~500-700 tokens per plan generation.
+
+### Cost note
+
+- Perplexity Sonar API: ~$5/M input + ~$5/M output (varies by tier)
+- Weekly × 7 platforms × 2 research types ≈ 14 calls/week ≈ $5-15/month
+- Replaces ~$10-30/month in Claude+web_search calls
+
+### Acceptance test
+
+- Trends table populates from Perplexity weekly cron
+- Plan generation continues to pull from `loadLatestTrends` with no code changes downstream
+- Sources array reflects Perplexity citations (not Claude's web_search sources)
+- Fail-open: Perplexity outage → cron logs error, plan generation falls back to the most recent valid trends row (existing `TREND_FRESHNESS_DAYS = 14` window)
+
+---
+
+## ✨ ITEM 5 — Output tightening (after Item 1 telemetry)
+
+**Goal:** Reduce per-plan output cost by ~10-15% by capping variability on the biggest output drivers. Do this **after** Item 1 has been live long enough to show the actual distribution.
+
+**Files to modify:** `api/_lib/prompts.js`
+
+### Sub-tasks (gated on data)
+
+**5a.** If telemetry shows 80%+ of carousels use ≤5 slides → tighten the prompt from "array of 3-7 slides" to "array of 3-5 slides".
+
+**5b.** If 80%+ of stories use ≤4 frames → tighten "array of 3-5 Story frames" to "array of 3-4 Story frames".
+
+**5c.** If 95th-percentile output tokens < 10000 → lower `maxTokens` from 12000 to 10000 as a safer ceiling.
+
+### Acceptance test
+
+- Median output tokens decreases by the expected amount (10-15%)
+- Truncation rate from telemetry does **not** increase
+- No regression in qualitative plan richness (sample 5 generations before/after, eyeball)
+
+---
+
+## ✨ ITEM 6 — History summarization past 8 weeks
+
+**Goal:** `planHistoryContext` currently passes full prior weeks into every generation. After 8+ weeks, older entries add input tokens without commensurate signal.
+
+**Files to modify:** `api/_lib/prompts.js` (`planHistoryContext` function)
+
+### Approach
+
+- **Last 4 weeks:** full pass (as today — strategy thesis, optimizing-for, the_bet, posted counts)
+- **Weeks 5-8:** trimmed to strategy thesis + posted-count per week only
+- **Weeks 9+:** aggregated single block — "Across [N] prior weeks, the user has emphasized [top 3 themes from theses]; average posted-rate [X]/week"
+
+### Acceptance test
+
+- For a user with 12+ weeks of history, `planHistoryContext` returns ≤300 tokens
+- For a user with ≤4 weeks of history, output is unchanged from today
+- Plan quality assessment: regenerate the same week with/without trimmed history → outputs feel comparable
+- No errors when history is malformed or empty
+
+---
+
+## ✨ ITEM 7 — Message Batches API for non-urgent generations
+
+**Goal:** 50% discount on input + output for async work. Foundation for Item 8.
+
+**Files to modify:** new `api/_lib/anthropic-batch.js` helper; integration is per-feature.
+
+### Approach
+
+- Helper module wrapping the Message Batches API: submit batch → poll status → retrieve results
+- Initial consumer: Item 8 (predictive pre-generation)
+- Out of scope: real-time plan generation (latency rules out batching)
+
+### Acceptance test
+
+- (Defer until Item 8 — no current consumer)
+- Standalone unit test: submit a small batch of 2 cheap generations, retrieve results within 10 minutes
+
+---
+
+## ✨ ITEM 8 — Predictive pre-generation
+
+**Goal:** For users with a regular weekly posting rhythm, pre-generate next week's plan in the background ~30 minutes before their typical "open VIRL" time. User opens app → plan is already there → zero perceived latency.
+
+**Files to modify:** new `api/cron/predictive-plan.js`, `api/chat.js` (accept pre-generated plan reuse), `index.html` (Plan tab reads from `predictive_plans` table on mount)
+
+### Requirements
+
+- User must have 4+ weeks of history to identify their typical generation window
+- New Supabase table `predictive_plans` keyed by `(user_id, week_start)`
+- Hourly cron identifies eligible users, kicks off plan generation via **Item 7 batches** (half the cost)
+- Pre-generated plans expire after 24 hours — stale ones get discarded, user sees normal generation flow
+
+### Tradeoffs
+
+- Significant infra lift (cron, batch polling, dedup logic)
+- Wastes credits if user changes habits or skips a week (mitigated by 24h expiry)
+- High UX win for power users with rhythm
+
+### Acceptance test
+
+- Cron successfully pre-generates for at least one test user
+- Test user opens app at typical time → plan visible within 1s
+- User opens app outside their typical window → falls back to live generation
+- Stale predictive plans (> 24h) discarded
+- No double-charge: if user clicks Generate manually after a predictive plan exists, the cached predictive plan is used
+
+---
+
+## 🎯 Expected impact
+
+| Item | Cost impact | Latency impact | Effort |
+|---|---|---|---|
+| 1 Telemetry | — | — | 2 hrs |
+| 2 Cache expansion | -5-10% input on warm cache | -200-500ms TTFT | 3 hrs |
+| 3 Streaming | — | -50% perceived wait | 1-2 days |
+| 4 Perplexity migration | -$5-15/mo research spend | — | 1 day |
+| 5 Output tightening | -10-15% output | -10-15% gen time | 1 hr after data |
+| 6 History summarization | -5% input (long-tenured users) | -10% TTFT for them | half day |
+| 7 Message Batches helper | -50% on bulk work | — (async) | half day |
+| 8 Predictive pre-gen | adds spend in absolute terms; -50% per pre-gen via Item 7 | -100% perceived (when warm) | 1-2 days |
+
+---
+
+## 🛡️ Safety reminders
+
+1. **One item at a time.** Do not start Item N+1 until Item N is reviewed and merged.
+2. **Item 1 is a prereq.** Items 5, 6, and 8 should not be implemented before telemetry is collecting real data.
+3. **Match existing code style** — function declarations, style object spreading pattern, `B.xxx` tokens.
+4. **Verify syntax** before committing — run sucrase + vm.Script check on `index.html` and `node --check` on server files.
+5. **No client/DB breaking changes** without explicit approval — most items are server-only, but Item 8 needs a new Supabase table.
+
+---
+
+**End of backlog.** Items 1-3 are the highest combined return — ship those first unless priorities shift.
