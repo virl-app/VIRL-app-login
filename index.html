@@ -3918,10 +3918,20 @@ function App() {
   // strategic insights are moving inline. Add it back here if the tab
   // is ever restored.
   const ALLOWED_TABS = ["profile","plan","caption","scan","vault","results","admin"];
+  // [TAB-PERSIST FIX] Tracks whether the initial tab came from sessionStorage
+  // (a real page refresh while the user was on a specific tab) vs a default
+  // fallback (first sign-in, no remembered tab). The remote-plan loader below
+  // only auto-jumps the user from "profile" to "plan" when no tab was
+  // remembered, so refreshing while on the profile tab now stays on profile
+  // instead of silently bouncing the user to the plan view.
+  const tabFromSessionStorage = useRef(false);
   const [tab,setTab] = useState(function() {
     try {
       const remembered = sessionStorage.getItem("virl_active_tab");
-      if (remembered && ALLOWED_TABS.indexOf(remembered) >= 0) return remembered;
+      if (remembered && ALLOWED_TABS.indexOf(remembered) >= 0) {
+        tabFromSessionStorage.current = true;
+        return remembered;
+      }
     } catch(e) {}
     try {
       if (stored.plan && stored.planExpiresAt && Date.now() < stored.planExpiresAt) return "plan";
@@ -4194,7 +4204,14 @@ function App() {
         setCards(row.cards);
         if (row.stats)    setStats(row.stats);
         if (row.strategy) setStrategy(row.strategy);
-        setTab(function(t) { return t === "profile" ? "plan" : t; });
+        // [TAB-PERSIST FIX] Only auto-swap the default profile tab to plan on
+        // first sign-in, when no tab was remembered. If the user refreshed
+        // while intentionally on the profile tab, sessionStorage hydrated the
+        // initial state and we leave them where they were.
+        setTab(function(t) {
+          if (tabFromSessionStorage.current) return t;
+          return t === "profile" ? "plan" : t;
+        });
         try {
           var current = load() || {};
           current.plan = row.cards;
