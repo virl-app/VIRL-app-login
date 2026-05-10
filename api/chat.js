@@ -79,6 +79,11 @@ async function recordUsageEvent(userId, usage) {
         cache_read_tokens:  usage.cache_read_tokens  || 0,
         cache_write_tokens: usage.cache_write_tokens || 0,
         est_cost_usd:       cost,
+        // [COST 1] Truncation signal. truncated mirrors stop_reason ===
+        // "max_tokens"; stop_reason is kept raw so future Anthropic values
+        // (e.g. "pause_turn", "refusal") show up without a code change.
+        truncated:          !!usage.truncated,
+        stop_reason:        usage.stop_reason || null,
       }),
     });
     if (!res.ok) {
@@ -522,6 +527,13 @@ export default async function handler(req, res) {
 
     const data = await anthropicRes.json();
 
+    // [COST 1] Truncation flag derived from Anthropic's stop_reason. Captured
+    // here so it lands on both the usage_events row (admin trends) and the
+    // response payload (per-event client telemetry).
+    const stopReason = data.stop_reason || null;
+    const truncated  = stopReason === 'max_tokens';
+
+    let clientUsage = null;
     if (data.usage) {
       const usage = {
         generationType,
@@ -530,11 +542,26 @@ export default async function handler(req, res) {
         output_tokens:       data.usage.output_tokens       || 0,
         cache_read_tokens:   data.usage.cache_read_input_tokens     || 0,
         cache_write_tokens:  data.usage.cache_creation_input_tokens || 0,
+        truncated,
+        stop_reason:         stopReason,
       };
       console.log('virl_usage', JSON.stringify(usage));
       // Fire-and-forget insert so admin Dashboard can trend cost/usage.
       // Failure is logged inside the helper; we never wait on it.
       recordUsageEvent(userId, usage).catch(() => {});
+      // [COST 1] Surfaced to the client so existing logEvent payloads can
+      // forward per-generation cost/cache/truncation signal into events.
+      // Cache-read tokens are billed at ~10% of normal input; uncached is the
+      // remainder of input_tokens. Derived here once so callers don't repeat it.
+      clientUsage = {
+        outputTokens:        usage.output_tokens,
+        cachedInputTokens:   usage.cache_read_tokens,
+        uncachedInputTokens: Math.max(0, usage.input_tokens - usage.cache_read_tokens),
+        cacheWriteTokens:    usage.cache_write_tokens,
+        truncated,
+        stopReason,
+        model:               selectedModel,
+      };
     }
 
     const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
@@ -550,8 +577,11 @@ export default async function handler(req, res) {
     }
 
     // `cost` flows back so the client can do an optimistic credit-counter
-    // tick without needing to know the cost table itself.
-    return res.status(200).json({ text, cost: creditCost });
+    // tick without needing to know the cost table itself. `usage` (added by
+    // [COST 1]) is forwarded into per-generation logEvent payloads on the
+    // client so we can trend output size, cache hit ratio, and truncation
+    // rate alongside business metadata.
+    return res.status(200).json({ text, cost: creditCost, usage: clientUsage });
 
   } catch (e) {
     console.error('Generation error:', e.message);

@@ -1476,7 +1476,19 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
         setScript(parsed);
         setSavedOnCard(false);
         if (onCreditsUsed) onCreditsUsed({cost: data.cost});
-        try { logEvent(window.__virlUserId||null, "script_generated", { platform: card.platform || null, day: card.day || null }); } catch(e){}
+        // [COST 1] Forward Anthropic usage signal into the same event row.
+        try {
+          var scriptUsage = (data && data.usage) || {};
+          logEvent(window.__virlUserId||null, "script_generated", {
+            platform: card.platform || null,
+            day:      card.day || null,
+            outputTokens:        scriptUsage.outputTokens        || 0,
+            cachedInputTokens:   scriptUsage.cachedInputTokens   || 0,
+            uncachedInputTokens: scriptUsage.uncachedInputTokens || 0,
+            truncated:           !!scriptUsage.truncated,
+            model:               scriptUsage.model || null,
+          });
+        } catch(e){}
       }
       else { setError("Script generation takes a moment - tap Try Again."); }
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
@@ -2004,7 +2016,18 @@ function RemixCaption({text,onSelect,profile,userToken,onCreditsUsed}) {
       const parsed = extractJSON(data.text);
       if (parsed&&parsed.shorter) {
         setVariants(parsed);
-        try { logEvent(window.__virlUserId||null,"caption_remixed",{}); } catch(e){}
+        // [COST 1] Forward Anthropic usage signal so cache-hit + output-size
+        // trends are visible per generation type, not just for plans.
+        try {
+          var remixUsage = (data && data.usage) || {};
+          logEvent(window.__virlUserId||null,"caption_remixed",{
+            outputTokens:        remixUsage.outputTokens        || 0,
+            cachedInputTokens:   remixUsage.cachedInputTokens   || 0,
+            uncachedInputTokens: remixUsage.uncachedInputTokens || 0,
+            truncated:           !!remixUsage.truncated,
+            model:               remixUsage.model || null,
+          });
+        } catch(e){}
         if (onCreditsUsed) onCreditsUsed({cost: data.cost});
       }
       else { setError("Try again in a moment."); }
@@ -2138,7 +2161,19 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
         setResult(parsed);
         try {
           var uid = window.__virlUserId||null;
-          logEvent(uid,"caption_generated",{platform:platform,tone:tone,length:length});
+          // [COST 1] Forward Anthropic usage signal alongside the existing
+          // platform/tone/length business dims.
+          var capUsage = (data && data.usage) || {};
+          logEvent(uid,"caption_generated",{
+            platform:platform,
+            tone:tone,
+            length:length,
+            outputTokens:        capUsage.outputTokens        || 0,
+            cachedInputTokens:   capUsage.cachedInputTokens   || 0,
+            uncachedInputTokens: capUsage.uncachedInputTokens || 0,
+            truncated:           !!capUsage.truncated,
+            model:               capUsage.model || null,
+          });
         } catch(e){}
         if (onCreditsUsed) onCreditsUsed({cost: data.cost});
       }
@@ -2456,6 +2491,25 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
       var out = [];
       var idx = 0;
       var totalCost = 0;
+      // [COST 1] Aggregate Anthropic usage across the scan batch so the
+      // single scan_completed event carries the same telemetry shape as
+      // single-call generations. truncated is OR'd — one truncation in the
+      // batch is enough to flag the run as worth investigating.
+      var totalUsage = {
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        uncachedInputTokens: 0,
+        truncated: false,
+        model: null,
+      };
+      function accumulateUsage(u) {
+        if (!u) return;
+        totalUsage.outputTokens        += u.outputTokens        || 0;
+        totalUsage.cachedInputTokens   += u.cachedInputTokens   || 0;
+        totalUsage.uncachedInputTokens += u.uncachedInputTokens || 0;
+        if (u.truncated) totalUsage.truncated = true;
+        if (u.model) totalUsage.model = u.model;
+      }
 
       function processNext() {
         if (idx >= files.length) {
@@ -2465,7 +2519,15 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
             var scores = out.filter(function(r){return !r.error&&r.score;})
               .map(function(r){ var m=String(r.score).match(/(\d+\.?\d*)/); return m?parseFloat(m[1]):0; });
             var avg = scores.length ? Math.round((scores.reduce(function(a,b){return a+b;},0)/scores.length)*10)/10 : null;
-            logEvent(window.__virlUserId||null,"scan_completed",{file_count:out.length,avg_score:avg});
+            logEvent(window.__virlUserId||null,"scan_completed",{
+              file_count: out.length,
+              avg_score:  avg,
+              outputTokens:        totalUsage.outputTokens,
+              cachedInputTokens:   totalUsage.cachedInputTokens,
+              uncachedInputTokens: totalUsage.uncachedInputTokens,
+              truncated:           totalUsage.truncated,
+              model:               totalUsage.model,
+            });
           } catch(e){}
           // Server deducts per call; sum what it actually charged for the
           // optimistic credit-counter tick.
@@ -2485,6 +2547,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
               return callAPI("scan_video_frame", {}, { token: userToken, imageBase64: fd.b64, imageType: "image/jpeg" })
                 .then(function(data) {
                   totalCost += data.cost || 0;
+                  accumulateUsage(data && data.usage);
                   var parsed = extractJSON(data.text);
                   if (parsed && parsed.score) {
                     out.push(Object.assign({name:file.name,isVideo:true,duration:fd.dur}, parsed));
@@ -2510,6 +2573,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
             })
             .then(function(data) {
               totalCost += data.cost || 0;
+              accumulateUsage(data && data.usage);
               var parsed = extractJSON(data.text);
               if (parsed && parsed.score) {
                 out.push(Object.assign({name:file.name,url:imageUrl}, parsed));
@@ -4948,6 +5012,11 @@ function App() {
             try { return new Date().toISOString().slice(0, 10); }
             catch(e){ return null; }
           })();
+          // [COST 1] Forward Anthropic usage signal into the same event row
+          // we already log per plan. data.usage is shaped by api/chat.js and
+          // may be missing on older deployments — spread defensively so a
+          // null usage object falls back to the pre-INTEL payload.
+          var planUsage = (data && data.usage) || {};
           logEvent(session && session.user && session.user.id, "plan_generated", {
             weekStart: weekStart,
             platforms: platforms,
@@ -4956,6 +5025,11 @@ function App() {
             formats:   formats,
             isRegen:   !!cards,
             cardCount: parsedCards.length,
+            outputTokens:        planUsage.outputTokens        || 0,
+            cachedInputTokens:   planUsage.cachedInputTokens   || 0,
+            uncachedInputTokens: planUsage.uncachedInputTokens || 0,
+            truncated:           !!planUsage.truncated,
+            model:               planUsage.model || null,
           });
           // [PREMIUM 10] If this plan was seeded from a prior post
           // (Vault remix or Results "plan next week"), fire a second
