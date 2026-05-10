@@ -1,12 +1,16 @@
-// Per-platform playbook research call. Uses Anthropic's server-side
-// web_search tool (Anthropic executes the searches; we only receive the
-// final structured response) so the cron can stay a single round-trip.
+// Per-platform playbook research call.
+//
+// [COST 4] Migrated from Anthropic + web_search to Perplexity Sonar.
+// Perplexity executes its own web search inside the model call and returns
+// a `citations` array on the response; we map those URLs to the existing
+// `sources` field, leaving the return shape identical for downstream
+// playbook_drafts inserts + admin diff review.
 //
 // Conservative by design: the prompt instructs the model to only propose
 // changes that are sourced to the trusted-source allowlist below. The
 // admin reviews every diff before anything reaches the live playbook.
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+import { callPerplexity, tryParseJSON } from "./perplexity.js";
 
 // Trusted-source allowlist baked into the prompt. Per-platform officials +
 // reputable analyst blogs. Extend this list when you onboard new sources.
@@ -57,12 +61,12 @@ function buildResearchPrompt(platform, currentEntry) {
     JSON.stringify(currentEntry, null, 2),
     "",
     "YOUR TASK:",
-    "Use web_search to find updates from these trusted sources within the last 6 months:",
+    "Find updates from these trusted sources within the last 6 months:",
     allSources.map(s => "  - " + s).join("\n"),
     "",
     "Only propose changes that meet ALL of these criteria:",
     "1. A trusted source from the list above explicitly contradicts or updates what's currently in our playbook.",
-    "2. You can cite the exact source URL.",
+    "2. You can cite the exact source URL — use the full https:// URL, not a citation marker like [1].",
     "3. The change reflects current 2026 reality — not 2023 evergreen advice.",
     "",
     "Field types to respect when proposing values:",
@@ -89,78 +93,25 @@ function buildResearchPrompt(platform, currentEntry) {
   ].join("\n");
 }
 
-// Extract text from Claude's response. Web search responses include
-// `web_search_tool_result` blocks alongside the final `text` block; we
-// concatenate just the text content.
-function extractText(message) {
-  if (!message || !Array.isArray(message.content)) return "";
-  return message.content
-    .filter(b => b && b.type === "text")
-    .map(b => b.text)
-    .join("");
-}
-
-function tryParseJSON(text) {
-  if (!text) return null;
-  // Strip fenced code blocks if present
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fence) {
-    try { return JSON.parse(fence[1].trim()); } catch (e) { /* fall through */ }
-  }
-  // Otherwise try the whole text
-  try { return JSON.parse(text.trim()); } catch (e) {}
-  // Last resort: extract the outer object
-  const start = text.indexOf("{");
-  const end   = text.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try { return JSON.parse(text.slice(start, end + 1)); } catch (e) {}
-  }
-  return null;
-}
-
 // Main entry. Returns the parsed research result for one platform, or null
 // on any failure (caller logs and continues to the next platform).
 export async function researchPlatform(platform, currentEntry) {
-  if (!ANTHROPIC_API_KEY) return null;
   const prompt = buildResearchPrompt(platform, currentEntry);
-
-  let res;
-  try {
-    res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key":         ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "Content-Type":      "application/json",
-      },
-      body: JSON.stringify({
-        model:      "claude-sonnet-4-6",
-        max_tokens: 4000,
-        tools: [
-          { type: "web_search_20250305", name: "web_search", max_uses: 5 },
-        ],
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-  } catch (e) {
-    console.error("[playbook-research] fetch threw for", platform, e.message);
-    return null;
-  }
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    console.error("[playbook-research] Anthropic error for", platform, res.status, errText);
-    return null;
-  }
-
-  let body;
-  try { body = await res.json(); } catch (e) { return null; }
-
-  const text = extractText(body);
-  const parsed = tryParseJSON(text);
+  const result = await callPerplexity({ prompt, model: "sonar", maxTokens: 4000 });
+  if (!result) return null;
+  const parsed = tryParseJSON(result.text);
   if (!parsed) {
     console.error("[playbook-research] could not parse JSON for", platform);
     return null;
+  }
+  // [COST 4] Prefer Perplexity's top-level citations — they come back as
+  // raw URLs we can trust. The model's in-JSON `sources` is best-effort
+  // and only used when Perplexity returned no citations (offline mode,
+  // tier downgrade, etc.).
+  if (result.citations.length) {
+    parsed.sources = result.citations;
+  } else if (!Array.isArray(parsed.sources)) {
+    parsed.sources = [];
   }
   return parsed;
 }
