@@ -99,7 +99,11 @@ async function saveProfileToSupabase(profile, userId) {
       // distinguish "user has not yet been prompted" from "explicitly cleared".
       personal_facts: profile.personalFacts||null,
       never_assume: profile.neverAssume||null,
-      love_to_reference: profile.loveToReference||null
+      love_to_reference: profile.loveToReference||null,
+      // [INTEL 2] Per-platform format preferences. Empty object on missing
+      // matches the column's JSONB default of '{}' so old rows and new rows
+      // always upsert as the same shape.
+      platform_formats: profile.platformFormats||{}
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -144,7 +148,10 @@ async function loadProfileFromSupabase(userId) {
       // null for these and fall through the || "" so the textareas render empty.
       personalFacts: data.personal_facts||"",
       neverAssume: data.never_assume||"",
-      loveToReference: data.love_to_reference||""
+      loveToReference: data.love_to_reference||"",
+      // [INTEL 2] Per-platform format preferences. Defaults to {} so old
+      // rows hydrate the chip selectors as fully unselected.
+      platformFormats: data.platform_formats||{}
     };
   } catch(e) { return {}; }
 }
@@ -321,6 +328,60 @@ function checkAccess() {
 }
 
 const PLATFORMS = ["TikTok","Instagram","Facebook","YouTube","LinkedIn","X","Pinterest"];
+// [INTEL 2] Per-platform format options. The user picks one or two per platform
+// they post on, and the prompt builder uses these to generate content shaped
+// for the user's actual posting workflow (Stories vs. feed, carousels vs.
+// reels, etc.). Defaults to a single "post" option for any platform not in
+// this map so the UI never breaks on an unrecognized value.
+function getFormatsForPlatform(platform) {
+  switch (platform) {
+    case "Instagram":
+      return [
+        { value:"feed_post", label:"Feed Posts (single image)" },
+        { value:"carousel",  label:"Carousels (multi-image)" },
+        { value:"reel",      label:"Reels (short video)" },
+        { value:"story",     label:"Stories" }
+      ];
+    case "TikTok":
+      return [
+        { value:"video",          label:"Vertical Videos" },
+        { value:"photo_carousel", label:"Photo Carousels" }
+      ];
+    case "LinkedIn":
+      return [
+        { value:"long_post",  label:"Long-form Text Posts" },
+        { value:"document",   label:"Document Carousels (PDF)" },
+        { value:"image_post", label:"Image Posts" },
+        { value:"video",      label:"Native Video" }
+      ];
+    case "Facebook":
+      return [
+        { value:"feed_post", label:"Feed Posts" },
+        { value:"reel",      label:"Reels" },
+        { value:"story",     label:"Stories" }
+      ];
+    case "YouTube":
+      return [
+        { value:"long_video",     label:"Long-form Videos" },
+        { value:"short",          label:"Shorts" },
+        { value:"community_post", label:"Community Posts" }
+      ];
+    case "Pinterest":
+      return [
+        { value:"pin",          label:"Standard Pins" },
+        { value:"idea_pin",     label:"Idea Pins (video)" },
+        { value:"carousel_pin", label:"Carousel Pins" }
+      ];
+    case "X":
+      return [
+        { value:"tweet",       label:"Single Tweets" },
+        { value:"thread",      label:"Threads" },
+        { value:"image_tweet", label:"Image Tweets" }
+      ];
+    default:
+      return [{ value:"post", label:"Standard Posts" }];
+  }
+}
 const NICHES = ["Lifestyle","Fitness","Food & Recipes","Finance","Beauty","Travel","Education","Parenting","Home & Family","Wellness","Small Business","Real Estate","Gaming","Tech","Sports","Fashion"];
 const GOALS = ["Grow my following","Land brand deals","Sell products","Build community","Go viral"];
 const FORMATS = ["Talking-head video","Aesthetic B-roll","Day in my life","Tutorial","Trend duets","Carousel"];
@@ -2417,6 +2478,10 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   const [emojiPref,setEmojiPref] = useState(profile.emojiPref||"Sometimes");
   const [handles,setHandles] = useState(profile.handles||{});
   const [platformAudiences,setPlatformAudiences] = useState(profile.platformAudiences||{});
+  // [INTEL 2] Per-platform format preferences. Shape: { Instagram: ["feed_post","story"], LinkedIn: ["long_post"] }.
+  // Defaults to {} so existing users without this column populated render
+  // every platform's format chip group with nothing selected.
+  const [platformFormats,setPlatformFormats] = useState(profile.platformFormats||{});
   const [postFreq,setPostFreq] = useState(profile.postFreq||"");
   const [contentLength,setContentLength] = useState(profile.contentLength||"");
   const [workedWell,setWorkedWell] = useState(profile.workedWell||"");
@@ -2457,10 +2522,31 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   const [phase1Saved,setPhase1Saved] = useState(function(){ return !!(profile && profile.name); });
   const [phase1JustSaved,setPhase1JustSaved] = useState(false);
 
+  // [INTEL 2] Toggle a single format on/off for a given platform. Functional
+  // setState so concurrent toggles on different platforms don't clobber one
+  // another. Empty array entries are kept rather than deleted so the user
+  // sees their toggle state immediately reflect (deselect-all = empty list,
+  // not "platform key vanished").
+  function toggleFormat(platform, format) {
+    setPlatformFormats(function(prev){
+      var current = prev[platform] || [];
+      var updated;
+      if (current.includes(format)) {
+        updated = current.filter(function(f){ return f !== format; });
+      } else {
+        updated = current.concat([format]);
+      }
+      var next = Object.assign({}, prev);
+      next[platform] = updated;
+      return next;
+    });
+  }
+
   function handleSave() {
-    // [INTEL 1] Pass the 3 new personal-fact fields up to the parent's onSave
-    // alongside the existing fields so they get persisted to Supabase.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference});
+    // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
+    // [INTEL 2] platformFormats joins the payload so per-platform format
+    // preferences persist to Supabase alongside everything else.
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -2701,9 +2787,21 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           {myPlatforms.length>0 && (
             <div>
               <div style={subhead}>Your platforms in detail</div>
-              {myPlatforms.map(function(p){return (
+              {myPlatforms.map(function(p){
+                // [INTEL 2] Per-platform format options drive content shape:
+                // selecting "Stories" on Instagram tells the prompt builder to
+                // generate Story-optimized content (short, casual, interactive)
+                // rather than feed posts.
+                var formats = getFormatsForPlatform(p);
+                var selectedFormats = platformFormats[p] || [];
+                return (
                 <div key={p} style={{marginBottom:16,paddingBottom:16,borderBottom:"1px solid "+B.divider}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.navy,marginBottom:8}}>{p}</div>
+                  {/* [INTEL 2] Format chips for this platform – shapes content output. */}
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginBottom:6,lineHeight:1.5}}>How do you primarily post here? Pick one or two.</div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+                    {formats.map(function(f){return <Chip key={f.value} active={selectedFormats.includes(f.value)} onClick={function(){toggleFormat(p,f.value);}}>{f.label}</Chip>;})}
+                  </div>
                   <input value={(handles[p]||"")} onChange={function(e){
                     var h=Object.assign({},handles); h[p]=e.target.value; setHandles(h);
                   }} placeholder={"@your"+p.toLowerCase()+"handle"}

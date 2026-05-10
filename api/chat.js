@@ -255,6 +255,10 @@ async function fetchProfile(userId) {
       personalFacts:     data.personal_facts    || "",
       neverAssume:       data.never_assume      || "",
       loveToReference:   data.love_to_reference || "",
+      // [INTEL 2] Per-platform format preferences. Defaults to {} so users
+      // without any selections get an empty object and the prompt builder
+      // skips the per-platform formats block entirely.
+      platformFormats:   data.platform_formats  || {},
     };
   } catch (e) {
     return {};
