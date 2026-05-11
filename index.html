@@ -1179,7 +1179,11 @@ function matchObjectEnd(s, start) {
 // stats, and once per fully-formed card object. The order of fields in the
 // response is whatever the model picks, but the schema example puts strategy
 // first, cards next, stats last — that's what we render against.
-function createStreamingPlanParser() {
+function createStreamingPlanParser(opts) {
+  opts = opts || {};
+  // "full"    — emits strategy + cards + stats (default; matches buildPlan output)
+  // "partial" — emits only cards (matches buildPlanPartial output: {"cards":[...]})
+  var mode = opts.mode === "partial" ? "partial" : "full";
   var buf = "";
   var strategyEmitted = false;
   var statsEmitted    = false;
@@ -1189,8 +1193,8 @@ function createStreamingPlanParser() {
   return {
     push: function (chunk, callbacks) {
       buf += chunk;
-      // strategy
-      if (!strategyEmitted) {
+      // strategy (skipped in partial mode — server does not emit it)
+      if (mode === "full" && !strategyEmitted) {
         var sm = buf.match(/"strategy"\s*:\s*\{/);
         if (sm) {
           var sStart = sm.index + sm[0].length - 1;
@@ -1227,8 +1231,8 @@ function createStreamingPlanParser() {
           cardsScan = end + 1;
         }
       }
-      // stats
-      if (!statsEmitted) {
+      // stats (skipped in partial mode — server does not emit it)
+      if (mode === "full" && !statsEmitted) {
         var tm = buf.match(/"stats"\s*:\s*\{/);
         if (tm) {
           var tStart = tm.index + tm[0].length - 1;
@@ -2004,7 +2008,21 @@ function FormatSpecificBody({card}) {
   }
 }
 
-function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userToken,onCreditsUsed}) {
+function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing}) {
+  // When `replacing` is true, this card slot is awaiting a streaming
+  // replacement from /api/chat?generationType=plan_partial. Render a
+  // skeleton instead of the real card so the user sees their kept cards
+  // stay put while only the selected ones swap.
+  if (replacing) {
+    return (
+      <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:"3px solid "+B.border,padding:"22px 22px",marginBottom:8,opacity:0.7,animationDelay:(idx*0.04)+"s"}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.navy,marginBottom:8}}>Regenerating…</div>
+        <div style={{height:14,width:"60%",background:B.border,borderRadius:4,marginBottom:8}}/>
+        <div style={{height:10,width:"90%",background:B.border,borderRadius:4,marginBottom:6}}/>
+        <div style={{height:10,width:"75%",background:B.border,borderRadius:4}}/>
+      </div>
+    );
+  }
   var cardId = buildCardId(card);
   var bl = card.priority==="HIGH"?B.navy:card.priority==="MED"?B.blue:B.border;
   const [expanded,setExpanded] = useState(false);
@@ -2053,8 +2071,12 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
   }
   function toggleExpanded() { setExpanded(function(v){ return !v; }); }
 
+  // Edit-mode visuals: when the card is marked for replacement, swap the
+  // left border to a dashed coral to make the state obvious at a glance.
+  var cardBorderLeft = (editMode && markedReplace) ? ("3px dashed " + B.coral) : ("3px solid " + bl);
+  var cardOpacity    = (editMode && markedReplace) ? 0.65 : 1;
   return (
-    <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:"3px solid "+bl,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s"}}>
+    <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity}}>
       {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
 
       {/* [UX-01] Header row: day | platform | postTime metadata plus
@@ -2076,7 +2098,22 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
         <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
           {hasSavedScript && <MTag type="result">Script saved</MTag>}
           {result && <MTag type="result">Logged</MTag>}
-          <PBadge p={card.priority}/>
+          {editMode ? (
+            <button
+              onClick={function(e){ e.stopPropagation(); if (onToggleReplace) onToggleReplace(idx); }}
+              aria-pressed={!!markedReplace}
+              style={{
+                fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.12em",
+                textTransform:"uppercase",padding:"4px 9px",borderRadius:99,cursor:"pointer",
+                border:"1px solid "+(markedReplace ? B.coral : B.border),
+                background:markedReplace ? B.coral : "transparent",
+                color:markedReplace ? B.white : B.muted,
+              }}>
+              {markedReplace ? "Replace ✕" : "Keep"}
+            </button>
+          ) : (
+            <PBadge p={card.priority}/>
+          )}
         </div>
       </div>
 
@@ -4438,6 +4475,18 @@ function App() {
     } catch(e){}
     return null;
   });
+  // Edit-mode for partial regeneration. `replaceSet` is a Set<number> of
+  // card indices marked for replacement; `editMode` gates the per-card
+  // toggle UI and the "Regenerate N cards" action bar; `partialLoading`
+  // suppresses the full-plan spinner while a partial regen is streaming
+  // so the kept cards stay visible.
+  const [editMode,setEditMode]               = useState(false);
+  const [replaceSet,setReplaceSet]           = useState(function(){ return new Set(); });
+  const [partialLoading,setPartialLoading]   = useState(false);
+  // Pending replacement positions during partial regen — indices into
+  // `cards` that are currently showing the skeleton while we wait for
+  // the new card to stream in.
+  const [partialReplacing,setPartialReplacing] = useState(function(){ return new Set(); });
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
   const [results,setResults] = useState(stored.results||[]);
@@ -5069,6 +5118,185 @@ function App() {
   // only; nothing in the prompt construction lives client-side anymore.
   var vaultPatterns = getVaultPatterns(vault);
 
+  // Toggle a card index in/out of the replace-set (used by per-card
+  // Keep/Replace pills when editMode is on). Uses a fresh Set instance
+  // so React re-renders the affected cards.
+  function toggleReplaceAt(i) {
+    setReplaceSet(function (prev) {
+      var next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  }
+
+  function enterEditMode() {
+    setReplaceSet(new Set());
+    setEditMode(true);
+  }
+  function cancelEditMode() {
+    setEditMode(false);
+    setReplaceSet(new Set());
+  }
+
+  // Partial regeneration: rewrite only the cards the user marked for
+  // replacement, keeping the rest (and the strategy) intact. Streams via
+  // the same SSE pipeline as full plan generation; the parser is started
+  // in partial mode so it only emits cards (no strategy/stats). As each
+  // new card arrives we splice it into the cards array at the next
+  // pending replacement index. When the user has selected ALL cards we
+  // fall through to a full regen instead — same cost, plus the user gets
+  // a fresh strategy and stats out of it.
+  function runPartialRegen() {
+    if (!cards || !cards.length) return;
+    if (!replaceSet.size) return;
+
+    // Selecting every card → just do a full regen; user gets strategy +
+    // stats refreshed too, and the cost matches their intent.
+    if (replaceSet.size === cards.length) {
+      cancelEditMode();
+      generate();
+      return;
+    }
+
+    if (!isFoundingOrPro && trialExpired) {
+      setUpgradeReason("trial"); setShowUpgrade(true); return;
+    }
+
+    var sorted = Array.from(replaceSet).sort(function (a, b) { return a - b; });
+    var replaceDayLabels = sorted.map(function (i) { return cards[i] && cards[i].day; }).filter(Boolean);
+    var keptCards = cards
+      .map(function (c, i) { return { c: c, i: i }; })
+      .filter(function (x) { return !replaceSet.has(x.i) && x.c; })
+      .map(function (x) {
+        return {
+          day:      x.c.day      || null,
+          platform: x.c.platform || null,
+          format:   x.c.format   || null,
+          title:    x.c.title    || "",
+        };
+      });
+
+    setPartialLoading(true);
+    setPartialReplacing(new Set(sorted));
+    setError("");
+    refreshCredits();
+
+    var parser = createStreamingPlanParser({ mode: "partial" });
+    // Working copy of the cards array; we splice replacements in by
+    // index order as they stream and snapshot via setCards so React
+    // re-renders one card at a time.
+    var working = cards.slice();
+    var nextSlot = 0;
+
+    consumePlanStream("plan_partial", {
+      platforms:    platforms,
+      niche:        niche,
+      goal:         goal,
+      formats:      formats,
+      followers:    followers,
+      trending:     trending || "",
+      context:      context || "",
+      weekContext:  weekContext || "",
+      strategy:     strategy || null,
+      keptCards:    keptCards,
+      replaceDayLabels: replaceDayLabels,
+      // Skip plan_history's prior-week lookup — this is a same-week
+      // edit, not a new week.
+      currentWeekStart: weekStartISO(Date.now()),
+    }, { token: userToken }, {
+      onText: function (delta) {
+        parser.push(delta, {
+          onCard: function (card) {
+            if (nextSlot >= sorted.length) return; // server emitted extra — ignore
+            var targetIdx = sorted[nextSlot];
+            working = working.slice();
+            working[targetIdx] = card;
+            setCards(working);
+            // Reveal this slot's new card by removing it from the
+            // replacing-set so the skeleton clears.
+            setPartialReplacing(function (prev) {
+              var next = new Set(prev);
+              next.delete(targetIdx);
+              return next;
+            });
+            nextSlot++;
+          },
+        });
+      },
+      onReset: function () {
+        // Streaming retry kicked in (server hit max_tokens). Restart the
+        // partial-merge state so the second pass's cards land in the
+        // right slots from scratch.
+        parser = createStreamingPlanParser({ mode: "partial" });
+        working = cards.slice();
+        nextSlot = 0;
+        setPartialReplacing(new Set(sorted));
+      },
+    }).then(function (result) {
+      var finalized = parser.finalize();
+      var parsed = finalized.parsed;
+      var parsedCards = (parsed && Array.isArray(parsed.cards)) ? parsed.cards : null;
+      // Final reconciliation: if the streaming pass missed cards (or got
+      // them in a different order), trust the finalized parse over the
+      // progressive splice.
+      if (parsedCards && parsedCards.length === sorted.length) {
+        var finalWorking = cards.slice();
+        for (var k = 0; k < sorted.length; k++) finalWorking[sorted[k]] = parsedCards[k];
+        setCards(finalWorking);
+        working = finalWorking;
+      } else if (!parsedCards || parsedCards.length === 0) {
+        // Stream finished with no usable cards (truncation past the retry,
+        // or upstream error already shown via the error callback).
+        // Roll back the skeletons so the user sees the original plan.
+        setCards(cards);
+        setError("VIRL got cut off mid-thought. Tap Regenerate selected to try again.");
+        return;
+      }
+
+      // Persist the merged plan. plan_history upserts by week_start so
+      // the same week's row is updated with the new card mix.
+      var planExpiresAt = computePlanExpiry(sbCredits);
+      try {
+        var current = JSON.parse(localStorage.getItem(KEY) || "{}");
+        current.plan = working;
+        current.planStats = stats;
+        current.planStrategy = strategy;
+        current.planExpiresAt = planExpiresAt;
+        localStorage.setItem(KEY, JSON.stringify(current));
+      } catch (e) {}
+      if (session) savePlanToSupabase(session.user.id, working, stats, planExpiresAt, strategy);
+
+      try {
+        var meta = (result && result.meta) || {};
+        var planUsage = meta.usage || {};
+        logEvent(session && session.user && session.user.id, "plan_partial_regen", {
+          weekStart:           weekStartISO(Date.now()),
+          replacedCount:       sorted.length,
+          totalCards:          cards.length,
+          replacedDayLabels:   replaceDayLabels,
+          outputTokens:        planUsage.outputTokens        || 0,
+          cachedInputTokens:   planUsage.cachedInputTokens   || 0,
+          uncachedInputTokens: planUsage.uncachedInputTokens || 0,
+          truncated:           !!planUsage.truncated,
+          retried:             !!planUsage.retried,
+          model:               planUsage.model || null,
+        });
+      } catch (e) {}
+
+      cancelEditMode();
+      // [PREMIUM 10] Optimistic credit tick — server already deducted
+      // CREDIT_COSTS.plan_partial (1). The refresh below reconciles.
+      refreshCredits({ cost: 1 });
+    }).catch(function (err) {
+      setError((err && err.message) || "Couldn't regenerate the selected cards. Try again in a moment.");
+      // Clear skeletons on failure so the user sees their unchanged plan.
+      setCards(cards);
+    }).then(function () {
+      setPartialLoading(false);
+      setPartialReplacing(new Set());
+    });
+  }
+
   function generate() {
     if (!platforms.length||!formats.length) return;
     // Block generation if trial expired or out of credits
@@ -5082,6 +5310,10 @@ function App() {
     // hides it naturally; loading stays true until the stream completes
     // so the Generate button can't be double-clicked mid-stream.
     setLoading(true); setError(""); setCards(null); setStats(null); setStrategy(null);
+    // Clear edit-mode state — selections were against the old cards
+    // array, so they'd point at the wrong slots once the new plan
+    // streams in.
+    setEditMode(false); setReplaceSet(new Set()); setPartialReplacing(new Set());
     var appliedCost = 0;
     var parser = createStreamingPlanParser();
     var progressiveCards = [];
@@ -6466,38 +6698,77 @@ return (
                       profile={profile}
                       userToken={userToken}
                       onCreditsUsed={refreshCredits}
+                      editMode={editMode}
+                      markedReplace={replaceSet.has(i)}
+                      onToggleReplace={toggleReplaceAt}
+                      replacing={partialReplacing.has(i)}
                     />
                   );
                   return acc;
                 },[])}
                 <div style={{background:B.navy,borderRadius:16,padding:"20px 24px",marginTop:8,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
                   <div>
-                    <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,marginBottom:4}}>Your week is planned.</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:"rgba(255,255,255,0.6)"}}>Now go make it happen.</div>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,marginBottom:4}}>
+                      {editMode
+                        ? (replaceSet.size === 0
+                            ? "Tap cards to swap."
+                            : (replaceSet.size === cards.length
+                                ? "Replacing every card — same as a full regenerate."
+                                : (replaceSet.size + " card" + (replaceSet.size === 1 ? "" : "s") + " to replace.")))
+                        : "Your week is planned."}
+                    </div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:"rgba(255,255,255,0.6)"}}>
+                      {editMode
+                        ? "Keeps land as-is. Replacements come from a fresh take that fits your strategy."
+                        : "Now go make it happen."}
+                    </div>
                   </div>
                   <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                    <button onClick={function(){
-                      var text = (cards||[]).map(function(card){
-                        var lines = [];
-                        lines.push(card.day+" | "+card.postTime+" | "+card.platform);
-                        lines.push(card.title);
-                        lines.push(card.description);
-                        if (card.insight || card.why) lines.push("Why this works: "+(card.insight || card.why));
-                        lines.push("Format: "+card.format+" | Trend: "+card.trend);
-                        lines.push("Hashtags: "+(card.hashtags||[]).join(" "));
-                        return lines.join("\n");
-                      }).join("\n\n---\n\n");
-                      navigator.clipboard&&navigator.clipboard.writeText(text).then(function(){
-                        alert("Full plan copied to clipboard.");
-                      });
-                    }}
-                      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:"rgba(255,255,255,0.12)",color:B.white,border:"1px solid rgba(255,255,255,0.2)",cursor:"pointer",borderRadius:99}}>
-                      Copy all
-                    </button>
-                    <button onClick={generate}
-                      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:B.sky,color:B.white,border:"none",cursor:"pointer",borderRadius:99}}>
-                      Regenerate
-                    </button>
+                    {editMode ? (
+                      <React.Fragment>
+                        <button onClick={cancelEditMode} disabled={partialLoading}
+                          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:"rgba(255,255,255,0.12)",color:B.white,border:"1px solid rgba(255,255,255,0.2)",cursor:partialLoading?"default":"pointer",borderRadius:99,opacity:partialLoading?0.5:1}}>
+                          Cancel
+                        </button>
+                        <button onClick={runPartialRegen} disabled={partialLoading || replaceSet.size === 0}
+                          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:B.sky,color:B.white,border:"none",cursor:(partialLoading||replaceSet.size===0)?"default":"pointer",borderRadius:99,opacity:(partialLoading||replaceSet.size===0)?0.5:1}}>
+                          {partialLoading
+                            ? "Regenerating…"
+                            : (replaceSet.size === cards.length
+                                ? "Regenerate all"
+                                : ("Regenerate " + replaceSet.size + " card" + (replaceSet.size === 1 ? "" : "s")))}
+                        </button>
+                      </React.Fragment>
+                    ) : (
+                      <React.Fragment>
+                        <button onClick={function(){
+                          var text = (cards||[]).map(function(card){
+                            var lines = [];
+                            lines.push(card.day+" | "+card.postTime+" | "+card.platform);
+                            lines.push(card.title);
+                            lines.push(card.description);
+                            if (card.insight || card.why) lines.push("Why this works: "+(card.insight || card.why));
+                            lines.push("Format: "+card.format+" | Trend: "+card.trend);
+                            lines.push("Hashtags: "+(card.hashtags||[]).join(" "));
+                            return lines.join("\n");
+                          }).join("\n\n---\n\n");
+                          navigator.clipboard&&navigator.clipboard.writeText(text).then(function(){
+                            alert("Full plan copied to clipboard.");
+                          });
+                        }}
+                          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:"rgba(255,255,255,0.12)",color:B.white,border:"1px solid rgba(255,255,255,0.2)",cursor:"pointer",borderRadius:99}}>
+                          Copy all
+                        </button>
+                        <button onClick={enterEditMode}
+                          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:"rgba(255,255,255,0.12)",color:B.white,border:"1px solid rgba(255,255,255,0.2)",cursor:"pointer",borderRadius:99}}>
+                          Edit plan
+                        </button>
+                        <button onClick={generate}
+                          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:B.sky,color:B.white,border:"none",cursor:"pointer",borderRadius:99}}>
+                          Regenerate
+                        </button>
+                      </React.Fragment>
+                    )}
                   </div>
                 </div>
                 {!isFoundingOrPro&&!trialExpired&&(

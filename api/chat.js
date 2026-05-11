@@ -699,7 +699,10 @@ export default async function handler(req, res) {
     // cards progressively. Same total time, ~half the perceived wait. Other
     // generation types stay non-streaming because they're short enough that
     // streaming adds complexity without changing user experience.
-    if (generationType === 'plan') {
+    // plan_partial reuses the same streaming pipeline so it inherits the
+    // truncation retry path for free; the client opts the parser into
+    // partial mode (cards-only output, no strategy/stats).
+    if (generationType === 'plan' || generationType === 'plan_partial') {
       return await handleStreamingPlan({
         res, payload, useCache, selectedModel, generationType,
         userId, creditCost,
