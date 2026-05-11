@@ -6479,34 +6479,12 @@ return (
                 border: "1px solid " + B.border,
                 borderRadius: 12
               }}>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  letterSpacing: "0.12em",
-                  textTransform: "uppercase",
-                  color: B.muted,
-                  marginBottom: 8
-                }}>
-                What's happening in your business this week? (optional)
-              </label>
+              <Label>{"What's happening in your business this week? (optional)"}</Label>
               <textarea
                 value={weekContext}
                 onChange={function(e){ setWeekContext(e.target.value); }}
                 placeholder="Example: Hosting an open house Saturday, launching new fall menu, my teacher Sarah's last day..."
-                style={{
-                  width: "100%",
-                  minHeight: 60,
-                  padding: "10px 12px",
-                  fontFamily: "'Jost', sans-serif",
-                  fontSize: 13,
-                  fontWeight: 300,
-                  color: B.ink,
-                  border: "1px solid " + B.border,
-                  borderRadius: 8,
-                  resize: "vertical"
-                }}/>
+                style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:13,fontWeight:300,fontStyle:"italic",padding:"10px 14px",resize:"vertical",minHeight:60,lineHeight:1.6}}/>
               {/* [AUDIENCE 1] One-tap recall of the previous week's
                    context. Hidden once the field already matches it so
                    the link doesn't sit there as dead UI after recall. */}
