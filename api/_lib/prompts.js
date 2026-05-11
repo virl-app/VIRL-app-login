@@ -15,7 +15,7 @@ export const MODEL_HAIKU     = "claude-haiku-4-5-20251001";
 export const ALLOWED_MODELS  = [MODEL_SONNET, MODEL_HAIKU];
 
 // ── Credit costs (server is the source of truth) ──────────────────────────
-export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1 };
+export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1 };
 
 // ── Playbook helpers ──────────────────────────────────────────────────────
 // `playbook` is a map keyed by platform: { TikTok: {cadence, peak_times, ...} }.
@@ -240,7 +240,7 @@ const CAPTION_LENGTH_GUIDE = {
 };
 
 const GENERATION_TYPES = [
-  "plan", "plan_partial", "script", "caption", "caption_remix", "scan_image", "scan_video_frame",
+  "plan", "plan_partial", "plan_strategy", "script", "caption", "caption_remix", "scan_image", "scan_video_frame",
 ];
 
 const IMAGE_REQUIRED_TYPES = new Set(["scan_image", "scan_video_frame"]);
@@ -655,6 +655,66 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   };
 }
 
+// Strategy-only regeneration. The user has the cards they want and the
+// week-plan structure they like — they just disagree with how VIRL
+// framed it. This generates a *different but equally accurate* strategy
+// object for the same cards. The new framing must fit what's actually
+// on screen, not propose a different week — otherwise the banner
+// would lie about the user's plan.
+function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, _history) {
+  const cards    = Array.isArray(params.cards) ? params.cards : [];
+  const previous = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
+
+  if (cards.length < 1) {
+    throw new Error("plan_strategy needs the existing plan's cards as context.");
+  }
+
+  const systemPrompt = buildSystemPrompt(profile, "content strategist and creative director");
+
+  // Condensed per-card line — enough signal for the model to find a
+  // through-line, no card bodies/hashtags that would inflate tokens.
+  const cardLines = cards.map(function (c) {
+    if (!c) return null;
+    const day      = c.day      || "?";
+    const platform = c.platform || "?";
+    const format   = c.format   || "?";
+    const title    = c.title    || "untitled";
+    return "  " + day + " | " + platform + " | " + format + " | \"" + title + "\"";
+  }).filter(Boolean).join("\n");
+
+  const previousLines = [];
+  if (previous.thesis)         previousLines.push("Thesis: "         + previous.thesis);
+  if (previous.optimizing_for) previousLines.push("Optimizing for: " + previous.optimizing_for);
+  if (previous.audience_read)  previousLines.push("Audience read: "  + previous.audience_read);
+  if (previous.success_metric) previousLines.push("Success metric: " + previous.success_metric);
+  if (previous.the_bet)        previousLines.push("The bet: "        + previous.the_bet);
+  const previousBlock = previousLines.length ? previousLines.join("\n") : "(no previous strategy on file)";
+
+  const userPrompt = ""
+    + "Re-frame this week's plan with a DIFFERENT strategic angle."
+    + "\n\nTHIS WEEK'S CARDS (already finalized — do NOT propose changes to them):\n" + cardLines
+    + "\n\nPREVIOUS STRATEGY (the user disagreed with this — find a different lens that still genuinely describes the same cards):\n" + previousBlock
+    + "\n\nRules:"
+    + "\n  - The new framing must honestly describe what is ON THE PLAN. Do not invent posts that aren't there."
+    + "\n  - The new thesis and bet must be MEANINGFULLY DIFFERENT from the previous ones — not a paraphrase."
+    + "\n  - One sentence each for thesis / optimizing_for / audience_read / success_metric / the_bet."
+    + "\n  - success_metric should be concrete (e.g. \"3 posts past 1K views or 50 saves\"), not vague."
+    + "\n  - the_bet should be the specific thing this plan is leaning into and why, in plain language."
+    + "\n\nReturn ONLY this JSON shape — no markdown, no preamble:"
+    + "\n{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"}";
+
+  return {
+    systemPrompt,
+    userPrompt,
+    model:     MODEL_SONNET,
+    // Strategy output is ~5 short fields. 800 is plenty of headroom; no
+    // retry path needed because non-streaming generations don't run
+    // through handleStreamingPlan.
+    maxTokens: 800,
+    cost:      CREDIT_COSTS.plan_strategy,
+  };
+}
+
 function buildScript(params, profile, _vaultPatterns, playbook) {
   const card = params.card || {};
   const platform = card.platform || "TikTok";
@@ -763,6 +823,7 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends) 
 const BUILDERS = {
   plan:             buildPlan,
   plan_partial:     buildPlanPartial,
+  plan_strategy:    buildPlanStrategy,
   script:           buildScript,
   caption:          buildCaption,
   caption_remix:    buildCaptionRemix,
