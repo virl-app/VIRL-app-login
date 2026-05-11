@@ -15,7 +15,7 @@ export const MODEL_HAIKU     = "claude-haiku-4-5-20251001";
 export const ALLOWED_MODELS  = [MODEL_SONNET, MODEL_HAIKU];
 
 // ── Credit costs (server is the source of truth) ──────────────────────────
-export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1 };
+export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1 };
 
 // ── Playbook helpers ──────────────────────────────────────────────────────
 // `playbook` is a map keyed by platform: { TikTok: {cadence, peak_times, ...} }.
@@ -240,7 +240,7 @@ const CAPTION_LENGTH_GUIDE = {
 };
 
 const GENERATION_TYPES = [
-  "plan", "script", "caption", "caption_remix", "scan_image", "scan_video_frame",
+  "plan", "plan_partial", "plan_strategy", "script", "caption", "caption_remix", "scan_image", "scan_video_frame",
 ];
 
 const IMAGE_REQUIRED_TYPES = new Set(["scan_image", "scan_video_frame"]);
@@ -579,8 +579,139 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    maxTokens: 6000,
+    // Heavy plans (carousel-rich, long_form_text, story-heavy) routinely
+    // exceeded 6000 and surfaced the "cut off mid-thought" error to users.
+    // Sonnet 4.6 supports up to 64K; handleStreamingPlan retries once at a
+    // larger budget when this still truncates.
+    maxTokens: 10000,
     cost:      isRegen ? CREDIT_COSTS.regen : CREDIT_COSTS.plan,
+  };
+}
+
+// Partial plan regeneration: rewrite N specific cards within an existing
+// plan while leaving the strategy and the other cards untouched. Same
+// systemPrompt as buildPlan (so the cached prefix is shared — first
+// partial regen of the day still pays the cache-write, but every regen
+// after that lands on the warm block). The userPrompt is the override:
+// declares the strategy locked, lists kept cards as do-not-duplicate
+// context, and demands exactly N replacements for the supplied day
+// labels — no strategy/stats in the output.
+function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _history) {
+  const keptCards        = Array.isArray(params.keptCards)        ? params.keptCards        : [];
+  const replaceDayLabels = Array.isArray(params.replaceDayLabels) ? params.replaceDayLabels : [];
+  const strategy         = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
+  const N = replaceDayLabels.length;
+
+  if (N < 1)  throw new Error("plan_partial requires at least one day label to replace.");
+  if (N > 14) throw new Error("plan_partial cannot replace more than 14 cards.");
+
+  // Reuse buildPlan's systemPrompt so the prompt-cache prefix is shared
+  // between full plan generations and partial regens. The history arg is
+  // [] because partial regen doesn't care about week-over-week context —
+  // it's anchored to the current week's strategy, not last week's.
+  const fullBuilt = buildPlan(params, profile, vaultPatterns, playbook, trends, []);
+
+  const keptLines = keptCards.map(function (c) {
+    const day      = c && c.day      ? c.day      : "?";
+    const platform = c && c.platform ? c.platform : "?";
+    const format   = c && c.format   ? c.format   : "?";
+    const title    = c && c.title    ? c.title    : "untitled";
+    return "  " + day + " | " + platform + " | " + format + " | \"" + title + "\"";
+  }).join("\n");
+
+  const strategyLines = [];
+  if (strategy.thesis)         strategyLines.push("Thesis: "         + strategy.thesis);
+  if (strategy.optimizing_for) strategyLines.push("Optimizing for: " + strategy.optimizing_for);
+  if (strategy.audience_read)  strategyLines.push("Audience read: "  + strategy.audience_read);
+  if (strategy.success_metric) strategyLines.push("Success metric: " + strategy.success_metric);
+  if (strategy.the_bet)        strategyLines.push("The bet: "        + strategy.the_bet);
+  const strategyBlock = strategyLines.length ? strategyLines.join("\n") : "(no strategy provided — improvise from the kept cards)";
+
+  const labelList = replaceDayLabels.map(function (d) { return "\"" + d + "\""; }).join(", ");
+
+  const userPrompt = ""
+    + "PARTIAL REGENERATION — you are rewriting specific cards within an EXISTING weekly plan."
+    + "\n\nLOCKED STRATEGY (do not change this; do not re-emit it in your output):\n" + strategyBlock
+    + "\n\nKEPT CARDS (already in the plan — do NOT regenerate these, do NOT duplicate their angles, and lean toward formats/platforms UNDER-represented in this set when the playbook cadence allows):\n"
+    + (keptLines || "  (none — every card is being replaced)")
+    + "\n\nGENERATE EXACTLY " + N + " new card" + (N === 1 ? "" : "s") + " for these day labels, in this order: " + labelList + "."
+    + "\n\nRules for the new cards:"
+    + "\n  - Use the EXACT day labels above. Do not invent other days, do not regenerate kept days."
+    + "\n  - Fit the locked strategy thesis and bet. The new cards should feel like they belong to the SAME week as the kept cards."
+    + "\n  - Follow ALL the same per-card field rules from the system prompt (universal fields + format-specific fields based on the card's `format`)."
+    + "\n  - Hashtag arrays still follow the platform's playbook hashtag_count. Strings still omit the '#' prefix."
+    + "\n\nOutput ONLY this JSON shape — NO strategy field, NO stats field, NO preamble:"
+    + "\n{\"cards\":[{...}, {...}]}";
+
+  return {
+    systemPrompt: fullBuilt.systemPrompt,
+    userPrompt:   userPrompt,
+    model:        fullBuilt.model,
+    // ~800 tokens of output per replacement card is a safe upper bound on
+    // the heaviest formats (carousel/story). The streaming retry path
+    // covers the rare case where Sonnet still truncates.
+    maxTokens:    Math.min(800 * N + 1500, 16000),
+    cost:         CREDIT_COSTS.plan_partial,
+  };
+}
+
+// Strategy-only regeneration. The user has the cards they want and the
+// week-plan structure they like — they just disagree with how VIRL
+// framed it. This generates a *different but equally accurate* strategy
+// object for the same cards. The new framing must fit what's actually
+// on screen, not propose a different week — otherwise the banner
+// would lie about the user's plan.
+function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, _history) {
+  const cards    = Array.isArray(params.cards) ? params.cards : [];
+  const previous = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
+
+  if (cards.length < 1) {
+    throw new Error("plan_strategy needs the existing plan's cards as context.");
+  }
+
+  const systemPrompt = buildSystemPrompt(profile, "content strategist and creative director");
+
+  // Condensed per-card line — enough signal for the model to find a
+  // through-line, no card bodies/hashtags that would inflate tokens.
+  const cardLines = cards.map(function (c) {
+    if (!c) return null;
+    const day      = c.day      || "?";
+    const platform = c.platform || "?";
+    const format   = c.format   || "?";
+    const title    = c.title    || "untitled";
+    return "  " + day + " | " + platform + " | " + format + " | \"" + title + "\"";
+  }).filter(Boolean).join("\n");
+
+  const previousLines = [];
+  if (previous.thesis)         previousLines.push("Thesis: "         + previous.thesis);
+  if (previous.optimizing_for) previousLines.push("Optimizing for: " + previous.optimizing_for);
+  if (previous.audience_read)  previousLines.push("Audience read: "  + previous.audience_read);
+  if (previous.success_metric) previousLines.push("Success metric: " + previous.success_metric);
+  if (previous.the_bet)        previousLines.push("The bet: "        + previous.the_bet);
+  const previousBlock = previousLines.length ? previousLines.join("\n") : "(no previous strategy on file)";
+
+  const userPrompt = ""
+    + "Re-frame this week's plan with a DIFFERENT strategic angle."
+    + "\n\nTHIS WEEK'S CARDS (already finalized — do NOT propose changes to them):\n" + cardLines
+    + "\n\nPREVIOUS STRATEGY (the user disagreed with this — find a different lens that still genuinely describes the same cards):\n" + previousBlock
+    + "\n\nRules:"
+    + "\n  - The new framing must honestly describe what is ON THE PLAN. Do not invent posts that aren't there."
+    + "\n  - The new thesis and bet must be MEANINGFULLY DIFFERENT from the previous ones — not a paraphrase."
+    + "\n  - One sentence each for thesis / optimizing_for / audience_read / success_metric / the_bet."
+    + "\n  - success_metric should be concrete (e.g. \"3 posts past 1K views or 50 saves\"), not vague."
+    + "\n  - the_bet should be the specific thing this plan is leaning into and why, in plain language."
+    + "\n\nReturn ONLY this JSON shape — no markdown, no preamble:"
+    + "\n{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"}";
+
+  return {
+    systemPrompt,
+    userPrompt,
+    model:     MODEL_SONNET,
+    // Strategy output is ~5 short fields. 800 is plenty of headroom; no
+    // retry path needed because non-streaming generations don't run
+    // through handleStreamingPlan.
+    maxTokens: 800,
+    cost:      CREDIT_COSTS.plan_strategy,
   };
 }
 
@@ -691,6 +822,8 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends) 
 
 const BUILDERS = {
   plan:             buildPlan,
+  plan_partial:     buildPlanPartial,
+  plan_strategy:    buildPlanStrategy,
   script:           buildScript,
   caption:          buildCaption,
   caption_remix:    buildCaptionRemix,
