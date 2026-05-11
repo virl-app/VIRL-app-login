@@ -5098,6 +5098,11 @@ function App() {
       // a hard constraint, not generic flavour.
       weekContext:  weekContext || "",
       isRegen:      !!cards,
+      // Same Monday-of-this-week key the client uses when upserting
+      // plan_history. The server uses it to exclude this row from the
+      // history it loads, so a same-week regenerate is treated as
+      // "still week N" instead of bumping to week N+1.
+      currentWeekStart: weekStartISO(Date.now()),
     }, { token: userToken }, {
       onText: function (delta) {
         parser.push(delta, {

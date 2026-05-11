@@ -14,14 +14,24 @@ const SUPABASE_HEADERS = {
   Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
 };
 
-async function fetchHistoryRows(userId, limit) {
+async function fetchHistoryRows(userId, limit, currentWeekStart) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return [];
   try {
-    const url = `${SUPABASE_URL}/rest/v1/plan_history`
+    let url = `${SUPABASE_URL}/rest/v1/plan_history`
       + `?user_id=eq.${userId}`
       + `&select=week_start,strategy,cards`
       + `&order=week_start.desc`
       + `&limit=${limit || 3}`;
+    // Exclude the current week's row so a same-week regenerate doesn't
+    // count as a prior week (which would otherwise bump the weekNumber in
+    // the prompt and make the strategy talk about "week 2" when the user
+    // is still regenerating "week 1"). The client owns the week_start key
+    // when upserting plan_history (weekStartISO in index.html), so we use
+    // the same value the client computed to avoid timezone drift between
+    // the read filter and the write key.
+    if (currentWeekStart) {
+      url += `&week_start=lt.${encodeURIComponent(currentWeekStart)}`;
+    }
     const res = await fetch(url, { headers: SUPABASE_HEADERS });
     if (!res.ok) return [];
     return await res.json();
@@ -86,10 +96,13 @@ function summarizeWeek(row, resultsByCardId) {
 
 // Main entry. Returns an array (most-recent-first) of week summaries.
 // Empty when the user has no history (week 1) or when the table isn't
-// provisioned yet.
-export async function loadPlanHistoryForPrompt(userId, limit) {
+// provisioned yet. `currentWeekStart` (ISO YYYY-MM-DD of this week's
+// Monday, computed by the client) is used to exclude the user's own
+// in-progress week from the returned history — without it, a same-week
+// regenerate would mis-count as week N+1.
+export async function loadPlanHistoryForPrompt(userId, limit, currentWeekStart) {
   const [rows, results] = await Promise.all([
-    fetchHistoryRows(userId, limit),
+    fetchHistoryRows(userId, limit, currentWeekStart),
     fetchUserResults(userId),
   ]);
   if (!rows.length) return [];

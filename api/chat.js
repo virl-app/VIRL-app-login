@@ -577,7 +577,7 @@ export default async function handler(req, res) {
     (generationType === "plan" && !demoMode) ? fetchVaultPatterns(userId)         : Promise.resolve(null),
     loadPlaybook(),
     loadLatestTrends(),
-    (generationType === "plan" && !demoMode) ? loadPlanHistoryForPrompt(userId,3) : Promise.resolve([]),
+    (generationType === "plan" && !demoMode) ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart) : Promise.resolve([]),
   ]);
 
   let built;
