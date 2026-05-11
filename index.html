@@ -4427,7 +4427,6 @@ function App() {
   const [goal,setGoal] = useState(stored.goal||"Grow my following");
   const [formats,setFormats] = useState(stored.formats||["Talking-head video","Day in my life"]);
   const [followers,setFollowers] = useState(stored.followers||"Under 1K");
-  const [trending,setTrending] = useState("");
   const [context,setContext] = useState("");
   // [AUDIENCE 1] Week-context state for the "What's happening in your
   // business this week?" field. Seeded blank (we don't auto-fill from
@@ -5197,7 +5196,6 @@ function App() {
       goal:         goal,
       formats:      formats,
       followers:    followers,
-      trending:     trending || "",
       context:      context || "",
       weekContext:  weekContext || "",
       strategy:     strategy || null,
@@ -5395,7 +5393,6 @@ function App() {
       goal:         goal,
       formats:      formats,
       followers:    followers,
-      trending:     trending || "",
       context:      context || "",
       // [AUDIENCE 1] Week-of business context. Server-side prompt
       // builder appends a dedicated section so the LLM treats this as
@@ -5768,7 +5765,6 @@ function App() {
       goal:      "Grow my audience",
       formats:   ["Photo + caption", "Short video"],
       followers: "0-1K",
-      trending:  "",
       context:   "",
     };
     fetch("/api/chat", {
@@ -6451,16 +6447,9 @@ return (
                 </div>
               );})}
               <div style={{padding:"18px 22px",borderTop:"1px solid "+B.divider}}>
-                <Label>{"📈 What's trending this week? (optional)"}</Label>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:8}}>Paste trending sounds, challenges, or hashtags. VIRL will weave them into your plan.</div>
-                <textarea value={trending} onChange={function(e){setTrending(e.target.value);}}
-                  placeholder="e.g. Roman Empire trend, #WhatIEatInADay, trending audio: Espresso by Sabrina Carpenter..."
-                  style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:13,fontWeight:300,fontStyle:"italic",padding:"10px 14px",resize:"vertical",minHeight:54,lineHeight:1.6}}/>
-              </div>
-              <div style={{padding:"18px 22px",borderTop:"1px solid "+B.divider}}>
-                <Label>Anything else? (optional)</Label>
+                <Label>Anything specific to lean into? (optional)</Label>
                 <textarea value={context} onChange={function(e){setContext(e.target.value);}}
-                  placeholder="e.g. I have unposted videos from last week, my audience responds well to tutorials..."
+                  placeholder="e.g. unposted videos from last week, a trend you want to ride, a topic your audience keeps asking about..."
                   style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:13,fontWeight:300,fontStyle:"italic",padding:"10px 14px",resize:"vertical",minHeight:60,lineHeight:1.6}}/>
               </div>
             </div>
