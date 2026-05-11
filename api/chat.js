@@ -115,110 +115,142 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
     res.write('data: '  + JSON.stringify(dataObj) + '\n\n');
   }
 
-  let anthropicRes;
-  try {
-    anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key':         ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type':      'application/json',
-        accept:              'text/event-stream',
-        ...(useCache ? { 'anthropic-beta': 'prompt-caching-2024-07-31' } : {}),
-      },
-      body: JSON.stringify({ ...payload, stream: true }),
-    });
-  } catch (e) {
-    sendEvent('error', { error: 'Could not reach AI provider: ' + (e.message || 'unknown') });
-    res.end();
-    return res;
-  }
-
-  if (!anthropicRes.ok) {
-    const errBody = await anthropicRes.text().catch(() => '');
-    let parsed = null;
-    try { parsed = JSON.parse(errBody); } catch (e) { /* keep raw */ }
-    console.error('Anthropic error:', anthropicRes.status, parsed || errBody);
-    sendEvent('error', {
-      error: 'AI error ' + anthropicRes.status + ': ' + ((parsed && parsed.error && parsed.error.message) || 'Unknown'),
-    });
-    res.end();
-    return res;
-  }
-
-  // Accumulators populated by parsing the upstream SSE stream.
-  let inputTokens       = 0;
-  let cacheReadTokens   = 0;
-  let cacheWriteTokens  = 0;
-  let outputTokens      = 0;
-  let stopReason        = null;
-  let fullText          = '';
-
-  // Parse Anthropic SSE: events are separated by "\n\n"; each event has
-  // `event: <name>` and `data: <json>` lines. We're only interested in the
-  // JSON data — the line type carries the same info as `data.type`.
-  let sseBuf = '';
-  const decoder = new TextDecoder('utf-8');
-  const reader  = anthropicRes.body.getReader();
-
-  function processSseEvent(rawEvent) {
-    // Pull the data: line out — Anthropic puts the full JSON on one data line.
-    const lines = rawEvent.split('\n');
-    let jsonStr = '';
-    for (const line of lines) {
-      if (line.startsWith('data: ')) jsonStr += line.slice(6);
-      else if (line.startsWith('data:')) jsonStr += line.slice(5);
+  // One Anthropic streaming call: POSTs the payload, parses the SSE stream,
+  // forwards text deltas to the client, and returns the accumulated usage +
+  // stop_reason. Returns { errored: true } once any transport/upstream error
+  // has already been signalled to the client; the caller should end the
+  // response and not retry in that case.
+  async function streamAnthropicOnce(currentPayload) {
+    let anthropicRes;
+    try {
+      anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key':         ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'Content-Type':      'application/json',
+          accept:              'text/event-stream',
+          ...(useCache ? { 'anthropic-beta': 'prompt-caching-2024-07-31' } : {}),
+        },
+        body: JSON.stringify({ ...currentPayload, stream: true }),
+      });
+    } catch (e) {
+      sendEvent('error', { error: 'Could not reach AI provider: ' + (e.message || 'unknown') });
+      return { errored: true };
     }
-    if (!jsonStr) return;
-    let evt;
-    try { evt = JSON.parse(jsonStr); } catch (e) { return; }
-    const type = evt.type;
-    if (type === 'message_start' && evt.message && evt.message.usage) {
-      const u = evt.message.usage;
-      inputTokens      = u.input_tokens                || 0;
-      cacheReadTokens  = u.cache_read_input_tokens     || 0;
-      cacheWriteTokens = u.cache_creation_input_tokens || 0;
-      outputTokens     = u.output_tokens               || 0;
-    } else if (type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta') {
-      const piece = evt.delta.text || '';
-      if (piece) {
-        fullText += piece;
-        sendEvent('text', { delta: piece });
-      }
-    } else if (type === 'message_delta') {
-      if (evt.delta && evt.delta.stop_reason) stopReason = evt.delta.stop_reason;
-      // Final output_tokens count lands here, not in message_start.
-      if (evt.usage && typeof evt.usage.output_tokens === 'number') {
-        outputTokens = evt.usage.output_tokens;
-      }
-    }
-  }
 
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      sseBuf += decoder.decode(value, { stream: true });
-      // SSE events end with a blank line — split on the double newline.
-      let idx;
-      while ((idx = sseBuf.indexOf('\n\n')) >= 0) {
-        const raw = sseBuf.slice(0, idx);
-        sseBuf = sseBuf.slice(idx + 2);
-        if (raw.trim()) processSseEvent(raw);
+    if (!anthropicRes.ok) {
+      const errBody = await anthropicRes.text().catch(() => '');
+      let parsed = null;
+      try { parsed = JSON.parse(errBody); } catch (e) { /* keep raw */ }
+      console.error('Anthropic error:', anthropicRes.status, parsed || errBody);
+      sendEvent('error', {
+        error: 'AI error ' + anthropicRes.status + ': ' + ((parsed && parsed.error && parsed.error.message) || 'Unknown'),
+      });
+      return { errored: true };
+    }
+
+    let inputTokens       = 0;
+    let cacheReadTokens   = 0;
+    let cacheWriteTokens  = 0;
+    let outputTokens      = 0;
+    let stopReason        = null;
+    let fullText          = '';
+
+    let sseBuf = '';
+    const decoder = new TextDecoder('utf-8');
+    const reader  = anthropicRes.body.getReader();
+
+    function processSseEvent(rawEvent) {
+      const lines = rawEvent.split('\n');
+      let jsonStr = '';
+      for (const line of lines) {
+        if (line.startsWith('data: ')) jsonStr += line.slice(6);
+        else if (line.startsWith('data:')) jsonStr += line.slice(5);
+      }
+      if (!jsonStr) return;
+      let evt;
+      try { evt = JSON.parse(jsonStr); } catch (e) { return; }
+      const type = evt.type;
+      if (type === 'message_start' && evt.message && evt.message.usage) {
+        const u = evt.message.usage;
+        inputTokens      = u.input_tokens                || 0;
+        cacheReadTokens  = u.cache_read_input_tokens     || 0;
+        cacheWriteTokens = u.cache_creation_input_tokens || 0;
+        outputTokens     = u.output_tokens               || 0;
+      } else if (type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta') {
+        const piece = evt.delta.text || '';
+        if (piece) {
+          fullText += piece;
+          sendEvent('text', { delta: piece });
+        }
+      } else if (type === 'message_delta') {
+        if (evt.delta && evt.delta.stop_reason) stopReason = evt.delta.stop_reason;
+        if (evt.usage && typeof evt.usage.output_tokens === 'number') {
+          outputTokens = evt.usage.output_tokens;
+        }
       }
     }
-    if (sseBuf.trim()) processSseEvent(sseBuf);
-  } catch (e) {
-    console.error('Plan stream read error:', e.message);
-    sendEvent('error', { error: 'Stream interrupted: ' + (e.message || 'unknown') });
-    res.end();
-    return res;
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        sseBuf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = sseBuf.indexOf('\n\n')) >= 0) {
+          const raw = sseBuf.slice(0, idx);
+          sseBuf = sseBuf.slice(idx + 2);
+          if (raw.trim()) processSseEvent(raw);
+        }
+      }
+      if (sseBuf.trim()) processSseEvent(sseBuf);
+    } catch (e) {
+      console.error('Plan stream read error:', e.message);
+      sendEvent('error', { error: 'Stream interrupted: ' + (e.message || 'unknown') });
+      return { errored: true };
+    }
+
+    return {
+      errored: false,
+      stopReason,
+      fullText,
+      inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens,
+    };
+  }
+
+  const first = await streamAnthropicOnce(payload);
+  if (first.errored) { res.end(); return res; }
+
+  let inputTokens      = first.inputTokens;
+  let cacheReadTokens  = first.cacheReadTokens;
+  let cacheWriteTokens = first.cacheWriteTokens;
+  let outputTokens     = first.outputTokens;
+  let stopReason       = first.stopReason;
+  let retried          = false;
+
+  // One-shot retry when Anthropic truncated on max_tokens. Tell the client
+  // to discard the partial plan it streamed so far (event: reset clears the
+  // progressive JSON parser + any rendered cards), then re-stream from
+  // scratch at a larger budget. Sonnet 4.6's output ceiling is 64K, so 16K
+  // is comfortably within bounds for the heaviest carousel/long_form plans.
+  if (stopReason === 'max_tokens') {
+    sendEvent('reset', {});
+    const retryPayload = { ...payload, max_tokens: 16000 };
+    const second = await streamAnthropicOnce(retryPayload);
+    if (second.errored) { res.end(); return res; }
+    retried = true;
+    inputTokens      += second.inputTokens;
+    cacheReadTokens  += second.cacheReadTokens;
+    cacheWriteTokens += second.cacheWriteTokens;
+    outputTokens     += second.outputTokens;
+    stopReason        = second.stopReason;
   }
 
   const truncated = stopReason === 'max_tokens';
 
-  // [COST 1] Same shape as the non-streaming branch so downstream consumers
-  // (admin trends, client logEvent) don't have to special-case streaming.
+  // [COST 1] Tokens are summed across both attempts so usage_events records
+  // what Anthropic actually billed, not just the final attempt.
   const usage = {
     generationType,
     model:              selectedModel,
@@ -240,6 +272,7 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
     truncated,
     stopReason,
     model:               selectedModel,
+    retried,
   };
 
   // Fire-and-forget onboarding hooks, same as the non-streaming branch.

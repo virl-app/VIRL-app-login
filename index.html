@@ -1253,11 +1253,12 @@ function createStreamingPlanParser() {
 }
 
 // [PERF 3] SSE-stream consumer for the plan endpoint. Reads the chunked
-// response, parses out our wire events ("text", "meta", "error"), and fires
-// callbacks. Wire format (see api/chat.js handleStreamingPlan):
+// response, parses out our wire events ("text", "meta", "error", "reset"),
+// and fires callbacks. Wire format (see api/chat.js handleStreamingPlan):
 //   event: text\n data: {"delta":"..."}\n\n
 //   event: meta\n data: {"cost":N,"usage":{...}}\n\n
 //   event: error\n data: {"error":"..."}\n\n
+//   event: reset\n data: {}\n\n   (server retrying after max_tokens truncation)
 // Resolves with { meta } once the upstream stream completes; rejects on
 // transport errors or upstream `error` events.
 async function consumePlanStream(generationType, params, opts, callbacks) {
@@ -1307,6 +1308,9 @@ async function consumePlanStream(generationType, params, opts, callbacks) {
     if (eventName === "text" && callbacks.onText) callbacks.onText(payload.delta || "");
     else if (eventName === "meta") meta = payload;
     else if (eventName === "error") upstreamErr = payload.error || "AI error";
+    // Server retries on max_tokens truncation. Caller resets its progressive
+    // parser + UI so subsequent text deltas are treated as a fresh response.
+    else if (eventName === "reset" && callbacks.onReset) callbacks.onReset();
   }
 
   while (true) {
@@ -5105,6 +5109,14 @@ function App() {
           },
           onStats:    function (s) { setStats(s); },
         });
+      },
+      // Server hit max_tokens on the first attempt and is retrying with a
+      // larger budget. Discard the partial plan rendered so far so the
+      // retry stream renders against a clean slate.
+      onReset: function () {
+        parser = createStreamingPlanParser();
+        progressiveCards = [];
+        setCards(null); setStrategy(null); setStats(null);
       },
     }).then(function (result) {
       var meta = (result && result.meta) || {};

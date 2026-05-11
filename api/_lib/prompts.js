@@ -579,7 +579,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    maxTokens: 6000,
+    // Heavy plans (carousel-rich, long_form_text, story-heavy) routinely
+    // exceeded 6000 and surfaced the "cut off mid-thought" error to users.
+    // Sonnet 4.6 supports up to 64K; handleStreamingPlan retries once at a
+    // larger budget when this still truncates.
+    maxTokens: 10000,
     cost:      isRegen ? CREDIT_COSTS.regen : CREDIT_COSTS.plan,
   };
 }
