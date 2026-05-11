@@ -448,7 +448,6 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
   const niche     = params.niche     || "";
   const goal      = params.goal      || "";
   const followers = params.followers || "";
-  const trending  = params.trending  || "";
   const context   = params.context   || "";
   // [AUDIENCE 1] Week-of business context. Optional free-text from the
   // creator describing what is actually happening in their business
@@ -539,7 +538,6 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
   const userPrompt = "This is week " + weekNumber + " of an ongoing plan. Generate this week's content plan with these settings: "
     + "platforms=" + platforms + " niche=" + niche + " goal=" + goal
     + " formats=" + formats + " followers=" + followers
-    + (trending ? " TRENDING THIS WEEK - incorporate these where natural: " + trending : "")
     + (context  ? " Extra context: " + context : "")
     // [AUDIENCE 1] Week-of business context as a hard constraint, not
     // generic flavor. The creator told us what is happening in their
