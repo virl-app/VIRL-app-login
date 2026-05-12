@@ -171,7 +171,7 @@ async function loadCreditsFromSupabase(userId, accessToken) {
       "Pragma": "no-cache",
     };
     const res = await fetch(
-      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at&user_id=eq." + userId + "&limit=1&_=" + Date.now(),
+      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining&user_id=eq." + userId + "&limit=1&_=" + Date.now(),
       { headers, cache: "no-store" }
     );
     if (!res.ok) return null;
@@ -214,25 +214,29 @@ function weekStartISO(d) {
 async function loadPlanFromSupabase(userId) {
   try {
     const { data, error } = await supabaseClient
-      .from("plans").select("cards,stats,strategy,expires_at").eq("user_id", userId).maybeSingle();
+      .from("plans").select("cards,stats,strategy,expires_at,trends_snapshot").eq("user_id", userId).maybeSingle();
     if (error || !data) return null;
     return data;
   } catch(e) { return null; }
 }
-async function savePlanToSupabase(userId, cards, stats, expiresAt, strategy) {
+async function savePlanToSupabase(userId, cards, stats, expiresAt, strategy, trendsSnapshot) {
   // Dual-write: current `plans` row (one per user, replaced on regenerate)
   // PLUS a `plan_history` row keyed by (user_id, week_start) so past weeks
   // accumulate. The history row is what the server reads on the next plan
-  // generation to build narratively week-over-week.
+  // generation to build narratively week-over-week. trends_snapshot caches
+  // the Perplexity result used to generate this plan so plan_partial /
+  // plan_strategy regens can re-use it without re-charging the user's
+  // weekly fresh-trends allowance.
   let ok = true;
   try {
     const { error } = await supabaseClient.from("plans").upsert({
-      user_id:    userId,
-      cards:      cards,
-      stats:      stats    || null,
-      strategy:   strategy || null,
-      expires_at: new Date(expiresAt).toISOString(),
-      updated_at: new Date().toISOString(),
+      user_id:        userId,
+      cards:          cards,
+      stats:          stats    || null,
+      strategy:       strategy || null,
+      trends_snapshot: trendsSnapshot || null,
+      expires_at:     new Date(expiresAt).toISOString(),
+      updated_at:     new Date().toISOString(),
     });
     if (error) { console.error("Plan save error:", error.message); ok = false; }
   } catch(e) { ok = false; }
@@ -1268,6 +1272,9 @@ function createStreamingPlanParser(opts) {
 async function consumePlanStream(generationType, params, opts, callbacks) {
   opts = opts || {};
   var body = { generationType: generationType, params: params || {} };
+  // plan_partial reuses the parent plan's Perplexity snapshot so the
+  // single-card regen sees the same trend signal as the cards it's joining.
+  if (opts.trendsSnapshot) body.trendsSnapshot = opts.trendsSnapshot;
   var headers = { "Content-Type": "application/json", "Accept": "text/event-stream" };
   if (opts.token) headers["Authorization"] = "Bearer " + opts.token;
   var res;
@@ -1347,6 +1354,10 @@ async function callAPI(generationType, params, opts) {
   opts = opts || {};
   const body = { generationType, params: params || {} };
   if (opts.imageBase64) { body.imageBase64 = opts.imageBase64; body.imageType = opts.imageType; }
+  // Caller may pass the parent plan's Perplexity snapshot on regen flows
+  // (plan_strategy / future regen types) so the server reuses it instead
+  // of firing a duplicate inline call and re-charging the user's freebie.
+  if (opts.trendsSnapshot) body.trendsSnapshot = opts.trendsSnapshot;
   const headers = { "Content-Type": "application/json" };
   if (opts.token) headers["Authorization"] = "Bearer " + opts.token;
   let res;
@@ -1821,6 +1832,103 @@ const MTag = ({type,children}) => {
   return <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"3px 10px",borderRadius:99,...s}}>{children}</span>;
 };
 
+// [FRESH-TRENDS] Ambient chip rendered above each gen-type's primary
+// action button. Communicates the per-week fresh-trends allowance for
+// free trial users, and "unlimited" for paid. Copy is anchored to the
+// gen-type label so the value is concrete ("pulls today's signal into
+// this plan" / "...this scan" / "...this caption"). The upgrade affordance
+// only renders when the user has consumed their freebie — otherwise the
+// chip stays informational, not promotional.
+const FreshTrendsChip = ({kind, remaining, isPaid, daysUntilReset, onUpgrade}) => {
+  const label =
+    kind === "plan"    ? "this plan" :
+    kind === "scan"    ? "this scan" :
+    kind === "caption" ? "this caption" : "this generation";
+  if (isPaid) {
+    return (
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,
+                   fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,
+                   letterSpacing:"0.12em",textTransform:"uppercase",color:B.navy}}>
+        <span style={{fontSize:13,lineHeight:1}}>✦</span>
+        <span>Fresh trends · unlimited</span>
+      </div>
+    );
+  }
+  if (remaining > 0) {
+    return (
+      <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10,
+                   fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted}}>
+        <span style={{fontSize:13,lineHeight:1,color:B.navy}}>✦</span>
+        <span style={{fontWeight:600,letterSpacing:"0.12em",textTransform:"uppercase",color:B.muted}}>
+          {"Fresh trends · 1 of 1 this week"}
+        </span>
+        <span style={{fontWeight:300,letterSpacing:"0.02em",color:B.muted}}>
+          {"— pulls today's signal into " + label}
+        </span>
+      </div>
+    );
+  }
+  const resetCopy = daysUntilReset === 1
+    ? "resets in 1 day"
+    : "resets in " + daysUntilReset + " days";
+  return (
+    <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10,
+                 fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted}}>
+      <span style={{fontSize:13,lineHeight:1,color:B.amber}}>✦</span>
+      <span style={{fontWeight:600,letterSpacing:"0.12em",textTransform:"uppercase",color:B.amber}}>
+        {"Fresh trends · used"}
+      </span>
+      <span style={{fontWeight:300,letterSpacing:"0.02em",color:B.muted}}>
+        {"— " + resetCopy + " · "}
+        <button onClick={onUpgrade}
+                style={{background:"none",border:"none",padding:0,color:B.blue,
+                        fontFamily:"inherit",fontSize:"inherit",fontWeight:600,
+                        textDecoration:"underline",cursor:"pointer"}}>
+          upgrade for unlimited
+        </button>
+      </span>
+    </div>
+  );
+};
+
+// [FRESH-TRENDS] Post-action banner. Renders above the generated plan
+// (or scan result / caption set) when the just-completed generation
+// consumed an inline Perplexity call. Honest framing: "this one was
+// backed by today's research; the next one this week falls back to
+// cached" — so the user doesn't feel sandbagged on generation #2.
+const FreshTrendsBanner = ({kind, daysUntilReset, onUpgrade}) => {
+  const noun =
+    kind === "plan"    ? "plan" :
+    kind === "scan"    ? "scan" :
+    kind === "caption" ? "caption set" : "result";
+  const nextCopy = daysUntilReset === 1
+    ? "resets in 1 day"
+    : "resets in " + daysUntilReset + " days";
+  return (
+    <div style={{background:B.skySoft,border:"1px solid "+B.blueSoft,borderRadius:12,
+                 padding:"14px 18px",marginBottom:16,
+                 display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+      <div style={{minWidth:0,flex:1}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                     letterSpacing:"0.18em",textTransform:"uppercase",color:B.navy,marginBottom:4}}>
+          {"✦ Fresh trends — this " + noun}
+        </div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,
+                     color:B.sub,lineHeight:1.6}}>
+          {"Backed by trend research pulled today. Your next " + noun + " this week uses cached trends (up to 7 days old) — " + nextCopy + "."}
+        </div>
+      </div>
+      <button onClick={onUpgrade}
+              style={{background:B.navy,color:B.white,border:"none",borderRadius:8,
+                      padding:"10px 16px",fontFamily:"'Jost',sans-serif",fontSize:11,
+                      fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",
+                      cursor:"pointer",flexShrink:0}}>
+        Upgrade for unlimited
+      </button>
+    </div>
+  );
+};
+
 // [UX-01] PlanCard refactored to progressive disclosure. Collapsed view
 // (default) shows day + platform metadata, the hook in Italiana 18px,
 // and three primary actions (Tap to expand, Save, Mark as posted). The
@@ -2008,7 +2116,7 @@ function FormatSpecificBody({card}) {
   }
 }
 
-function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing}) {
+function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends}) {
   // When `replacing` is true, this card slot is awaiting a streaming
   // replacement from /api/chat?generationType=plan_partial. Render a
   // skeleton instead of the real card so the user sees their kept cards
@@ -2096,6 +2204,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
           )}
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
+          {usedFreshTrends && <MTag type="result">✦ Fresh trend</MTag>}
           {hasSavedScript && <MTag type="result">Script saved</MTag>}
           {result && <MTag type="result">Logged</MTag>}
           {editMode ? (
@@ -2325,7 +2434,12 @@ function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUs
   );
 }
 
-function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
+function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft,isPaid,daysUntilReset,onUpgrade}) {
+  // [FRESH-TRENDS] Server returns usedFreshTrends in the caption response
+  // when it consumed an inline Perplexity call. Captured here so the
+  // post-action banner renders only on the generations that actually
+  // benefited; resets on each new generation in the generate() handler.
+  const [usedFreshTrends,setUsedFreshTrends] = useState(false);
   const [topic,setTopic] = useState("");
   const [platform,setPlatform] = useState("TikTok");
   const [tone,setTone] = useState("Warm & relatable");
@@ -2369,11 +2483,12 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
   function generate() {
     if (!topic.trim()) return;
     // Credit check + prompt construction handled server-side.
-    setLoading(true); setResult(null); setError("");
+    setLoading(true); setResult(null); setError(""); setUsedFreshTrends(false);
     callAPI("caption", { topic: topic.trim(), platform: platform, tone: tone, length: length }, { token: userToken }).then(function(data) {
       const parsed = extractJSON(data.text);
       if (parsed&&parsed.hook&&parsed.captions) {
         setResult(parsed);
+        setUsedFreshTrends(!!(data && data.usedFreshTrends));
         try {
           var uid = window.__virlUserId||null;
           // [COST 1] Forward Anthropic usage signal alongside the existing
@@ -2427,11 +2542,20 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed}) {
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted}}>{lengthHints[length]}</div>
         </div>
       </div>
+      <FreshTrendsChip
+        kind="caption"
+        remaining={freshTrendsLeft}
+        isPaid={isPaid}
+        daysUntilReset={daysUntilReset}
+        onUpgrade={onUpgrade}/>
       <GenBtn onClick={generate} loading={loading} disabled={!topic.trim()}>
         {loading?"Writing captions...":"Generate captions & hook"}
       </GenBtn>
       <ErrBox msg={error}/>
       {loading&&!result&&<Spinner/>}
+      {result && usedFreshTrends && !isPaid && (
+        <FreshTrendsBanner kind="caption" daysUntilReset={daysUntilReset} onUpgrade={onUpgrade}/>
+      )}
       {result&&(
         <div>
           <div style={{background:B.navy,borderRadius:14,padding:"18px 20px",marginBottom:8}}>
@@ -2667,11 +2791,15 @@ function ShareScoreCard({score,platform,hook}) {
   );
 }
 
-function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
+function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft,isPaid,daysUntilReset,onUpgrade}) {
   var [files,setFiles]       = useState([]);
   var [results,setResults]   = useState([]);
   var [scanning,setScanning] = useState(false);
   var [current,setCurrent]   = useState(0);
+  // [FRESH-TRENDS] Banner state — true after a scan that consumed the
+  // user's weekly fresh-trends allowance (or fired Perplexity inline
+  // for a paid user). Reset on each new scan attempt below.
+  var [usedFreshTrends,setUsedFreshTrends] = useState(false);
   var [total,setTotal]       = useState(0);
   var [error,setError]       = useState("");
   var [consented,setConsented] = useState(function(){
@@ -2697,7 +2825,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
 
   function scan() {
     if (!files.length) return;
-    setScanning(true); setResults([]); setError("");
+    setScanning(true); setResults([]); setError(""); setUsedFreshTrends(false);
     setTotal(files.length); setCurrent(0);
 
     // Process files sequentially. Prompt + JSON schema live server-side now;
@@ -2706,6 +2834,14 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
       var out = [];
       var idx = 0;
       var totalCost = 0;
+      // [FRESH-TRENDS] First call in the batch may fire an inline
+      // Perplexity call (paid users always, free users once per week
+      // per the scan counter). Snapshot is cached locally and passed
+      // to every subsequent call in the batch via opts.trendsSnapshot
+      // so the whole batch shares one trend signal — one freebie
+      // covers the entire scan, not per-image.
+      var batchSnapshot = null;
+      var batchUsedFresh = false;
       // [COST 1] Aggregate Anthropic usage across the scan batch so the
       // single scan_completed event carries the same telemetry shape as
       // single-call generations. truncated is OR'd — one truncation in the
@@ -2730,6 +2866,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
         if (idx >= files.length) {
           setResults(out);
           setScanning(false);
+          setUsedFreshTrends(batchUsedFresh);
           try {
             var scores = out.filter(function(r){return !r.error&&r.score;})
               .map(function(r){ var m=String(r.score).match(/(\d+\.?\d*)/); return m?parseFloat(m[1]):0; });
@@ -2759,10 +2896,12 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
         if (isVideo) {
           extractVideoFrame(file, 1)
             .then(function(fd) {
-              return callAPI("scan_video_frame", {}, { token: userToken, imageBase64: fd.b64, imageType: "image/jpeg" })
+              return callAPI("scan_video_frame", {}, { token: userToken, imageBase64: fd.b64, imageType: "image/jpeg", trendsSnapshot: batchSnapshot })
                 .then(function(data) {
                   totalCost += data.cost || 0;
                   accumulateUsage(data && data.usage);
+                  if (data && data.trendsSnapshot && !batchSnapshot) batchSnapshot = data.trendsSnapshot;
+                  if (data && data.usedFreshTrends) batchUsedFresh = true;
                   var parsed = extractJSON(data.text);
                   if (parsed && parsed.score) {
                     out.push(Object.assign({name:file.name,isVideo:true,duration:fd.dur}, parsed));
@@ -2784,11 +2923,13 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
           var imageUrl = URL.createObjectURL(file);
           fileToBase64(file)
             .then(function(b64) {
-              return callAPI("scan_image", {}, { token: userToken, imageBase64: b64, imageType: file.type });
+              return callAPI("scan_image", {}, { token: userToken, imageBase64: b64, imageType: file.type, trendsSnapshot: batchSnapshot });
             })
             .then(function(data) {
               totalCost += data.cost || 0;
               accumulateUsage(data && data.usage);
+              if (data && data.trendsSnapshot && !batchSnapshot) batchSnapshot = data.trendsSnapshot;
+              if (data && data.usedFreshTrends) batchUsedFresh = true;
               var parsed = extractJSON(data.text);
               if (parsed && parsed.score) {
                 out.push(Object.assign({name:file.name,url:imageUrl}, parsed));
@@ -2851,8 +2992,17 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed}) {
               </div>
             );})}
           </div>
+          <FreshTrendsChip
+            kind="scan"
+            remaining={freshTrendsLeft}
+            isPaid={isPaid}
+            daysUntilReset={daysUntilReset}
+            onUpgrade={onUpgrade}/>
           <GenBtn onClick={scan} loading={scanning}>Scan for viral potential</GenBtn>
         </div>
+      )}
+      {results.length > 0 && !scanning && usedFreshTrends && !isPaid && (
+        <FreshTrendsBanner kind="scan" daysUntilReset={daysUntilReset} onUpgrade={onUpgrade}/>
       )}
 
       {scanning&&(
@@ -4489,6 +4639,17 @@ function App() {
   // Strategy-only regen: cards stay, only the strategic framing rewrites.
   // The button on the strategy banner gates on this loading flag.
   const [strategyRegenLoading,setStrategyRegenLoading] = useState(false);
+  // [FRESH-TRENDS] Snapshot of the Perplexity trends map used to generate
+  // the current plan. Server returns this in the streaming `meta` event
+  // when the plan consumed an inline fresh-trends call; persisted to the
+  // plans table so a regen after a page reload still has it. Passed back
+  // to the server on plan_partial / plan_strategy so they reuse the same
+  // trend signal without firing a new Perplexity call.
+  const [planTrendsSnapshot,setPlanTrendsSnapshot] = useState(null);
+  // [FRESH-TRENDS] True iff the latest plan generation consumed the
+  // user's weekly fresh-trends allowance (or fired Perplexity inline for
+  // a paid user). Drives the post-action banner above the plan.
+  const [planUsedFreshTrends,setPlanUsedFreshTrends] = useState(false);
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
   const [results,setResults] = useState(stored.results||[]);
@@ -4698,6 +4859,11 @@ function App() {
         setCards(row.cards);
         if (row.stats)    setStats(row.stats);
         if (row.strategy) setStrategy(row.strategy);
+        // [FRESH-TRENDS] Restore the cached snapshot so a regen-after-reload
+        // still reuses the original Perplexity result. usedFreshTrends does
+        // not survive a reload (the post-action banner is intentionally
+        // single-session — it's a "you just consumed your freebie" notice).
+        if (row.trends_snapshot) setPlanTrendsSnapshot(row.trends_snapshot);
         // [TAB-PERSIST FIX] Only auto-swap the default profile tab to plan on
         // first sign-in, when no tab was remembered. If the user refreshed
         // while intentionally on the profile tab, sessionStorage hydrated the
@@ -4807,6 +4973,19 @@ function App() {
   })();
   var creditsLabel = creditsLoaded ? String(credits) : "—";
   var isFoundingOrPro = sbPlan==="founding" || sbPlan==="pro";
+  // [FRESH-TRENDS] Single source of truth for "this user has a paid
+  // subscription" — mirrors PAID_PLANS in api/chat.js. Distinct from
+  // isFoundingOrPro (which is used for in-product gating of *credits-
+  // based* features and excludes standard by design). Standard subs are
+  // paid for the fresh-trends gate; don't lump them in with free trial.
+  var isPaid = isFoundingOrPro || sbPlan === "standard";
+  // [FRESH-TRENDS] Per-gen-type weekly counters from the same credits
+  // row that drives daysUntilReset. Coalesce nulls to 1 so a user whose
+  // row predates the migration sees the freebie until the lazy server
+  // reset writes the column. Paid users always render "unlimited".
+  var freshTrendsPlanLeft    = sbCredits && sbCredits.fresh_trends_plan_remaining    != null ? sbCredits.fresh_trends_plan_remaining    : 1;
+  var freshTrendsScanLeft    = sbCredits && sbCredits.fresh_trends_scan_remaining    != null ? sbCredits.fresh_trends_scan_remaining    : 1;
+  var freshTrendsCaptionLeft = sbCredits && sbCredits.fresh_trends_caption_remaining != null ? sbCredits.fresh_trends_caption_remaining : 1;
 
   // User token for server-side credit checks
   var userToken = session ? session.access_token : null;
@@ -5204,7 +5383,7 @@ function App() {
       // Skip plan_history's prior-week lookup — this is a same-week
       // edit, not a new week.
       currentWeekStart: weekStartISO(Date.now()),
-    }, { token: userToken }, {
+    }, { token: userToken, trendsSnapshot: planTrendsSnapshot }, {
       onText: function (delta) {
         parser.push(delta, {
           onCard: function (card) {
@@ -5265,7 +5444,7 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch (e) {}
-      if (session) savePlanToSupabase(session.user.id, working, stats, planExpiresAt, strategy);
+      if (session) savePlanToSupabase(session.user.id, working, stats, planExpiresAt, strategy, planTrendsSnapshot);
 
       try {
         var meta = (result && result.meta) || {};
@@ -5322,7 +5501,7 @@ function App() {
     callAPI("plan_strategy", {
       cards:    condensedCards,
       strategy: strategy,
-    }, { token: userToken }).then(function (data) {
+    }, { token: userToken, trendsSnapshot: planTrendsSnapshot }).then(function (data) {
       var parsed = extractJSON(data && data.text);
       var hasFields = parsed && (parsed.thesis || parsed.the_bet || parsed.optimizing_for || parsed.audience_read || parsed.success_metric);
       if (!hasFields) {
@@ -5345,7 +5524,7 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch (e) {}
-      if (session) savePlanToSupabase(session.user.id, cards, stats, planExpiresAt, nextStrategy);
+      if (session) savePlanToSupabase(session.user.id, cards, stats, planExpiresAt, nextStrategy, planTrendsSnapshot);
 
       try {
         var usage = (data && data.usage) || {};
@@ -5380,6 +5559,10 @@ function App() {
     // hides it naturally; loading stays true until the stream completes
     // so the Generate button can't be double-clicked mid-stream.
     setLoading(true); setError(""); setCards(null); setStats(null); setStrategy(null);
+    // [FRESH-TRENDS] Reset the per-plan snapshot + banner flag — they'll
+    // be repopulated from the streaming meta event if this generation
+    // consumed an inline Perplexity call.
+    setPlanTrendsSnapshot(null); setPlanUsedFreshTrends(false);
     // Clear edit-mode state — selections were against the old cards
     // array, so they'd point at the wrong slots once the new plan
     // streams in.
@@ -5427,6 +5610,14 @@ function App() {
     }).then(function (result) {
       var meta = (result && result.meta) || {};
       appliedCost = meta.cost || 0;
+      // [FRESH-TRENDS] Capture the trends signal the server used so a
+      // regen later can reuse it without firing another Perplexity call.
+      // Banner flag also rides on meta so the UI surfaces it only on
+      // generations that actually consumed an inline call.
+      var freshSnapshot = meta.trendsSnapshot || null;
+      var usedFresh     = !!meta.usedFreshTrends;
+      setPlanTrendsSnapshot(freshSnapshot);
+      setPlanUsedFreshTrends(usedFresh);
       // Final parse on the full accumulated buffer is the canonical source
       // of truth — overrides anything the streaming parser may have missed.
       // Any persistence / logging downstream uses these values, not the
@@ -5519,7 +5710,7 @@ function App() {
           current.planExpiresAt = planExpiresAt;
           localStorage.setItem(KEY, JSON.stringify(current));
         } catch(e){}
-        if (session) savePlanToSupabase(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy);
+        if (session) savePlanToSupabase(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot);
         try {
           // [PREMIUM 10] weekStart anchors the plan to a specific week
           // so the Sunday Review can group events by plan cycle. Use
@@ -5698,7 +5889,7 @@ function App() {
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy);
+      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot);
       return next;
     });
   }
@@ -6001,11 +6192,25 @@ return (
         // Dismiss text stays state-driven because the call to "Wait
         // for tomorrow's reset" is genuinely useful, not feature-list
         // marketing.
-        var modalState = trialExpired
-          ? "trial"
-          : (credits <= 0 ? "noCredits" : (credits <= 5 ? "lowCredits" : "hasCredits"));
+        // [FRESH-TRENDS] When the chip / banner is what triggered the
+        // modal, the user isn't out of credits — they're out of fresh-
+        // trends allowance. Use a dedicated eyebrow so the headline
+        // copy below doesn't feel mis-targeted ("low credits" would
+        // confuse a user who hit the unrelated trends gate). Falls
+        // through to the standard state-driven flow otherwise.
+        var modalState = (upgradeReason === "fresh_trends" && !trialExpired)
+          ? "freshTrends"
+          : (trialExpired
+              ? "trial"
+              : (credits <= 0 ? "noCredits" : (credits <= 5 ? "lowCredits" : "hasCredits")));
         var eyebrow, eyebrowColor, dismiss;
-        if (modalState === "trial") {
+        if (modalState === "freshTrends") {
+          eyebrow      = daysUntilReset === 1
+            ? "Fresh trends used — resets in 1 day"
+            : ("Fresh trends used — resets in " + daysUntilReset + " days");
+          eyebrowColor = B.amber;
+          dismiss      = "Use cached trends this time";
+        } else if (modalState === "trial") {
           eyebrow      = "Your free trial has ended";
           eyebrowColor = B.coral;
           dismiss      = "Browse my vault instead";
@@ -6474,11 +6679,23 @@ return (
                 )}
               </div>
             </div>
+            <FreshTrendsChip
+              kind="plan"
+              remaining={freshTrendsPlanLeft}
+              isPaid={isPaid}
+              daysUntilReset={daysUntilReset}
+              onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
             <GenBtn onClick={generate} loading={loading} disabled={!platforms.length||!formats.length}>
               {loading?"Strategizing...":"Generate my 7-day plan"}
             </GenBtn>
             <ErrBox msg={error}/>
             {loading&&!cards&&<Spinner/>}
+            {cards && planUsedFreshTrends && !isPaid && (
+              <FreshTrendsBanner
+                kind="plan"
+                daysUntilReset={daysUntilReset}
+                onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
+            )}
 
             {stats&&(
               <div style={{marginTop:20}}>
@@ -6716,6 +6933,7 @@ return (
                       markedReplace={replaceSet.has(i)}
                       onToggleReplace={toggleReplaceAt}
                       replacing={partialReplacing.has(i)}
+                      usedFreshTrends={planUsedFreshTrends}
                     />
                   );
                   return acc;
@@ -6871,7 +7089,9 @@ return (
               </div>
               {profileComplete&&<div style={{background:B.navySoft,borderRadius:10,padding:"10px 16px",fontFamily:"'Jost',sans-serif",fontSize:13,color:B.navy}}>{"Writing in "+profile.name+"'s voice - tuned to your platform's style."}</div>}
             </div>
-            <CaptionGen profile={profile} onSaveCaption={saveCaption} userToken={userToken} onCreditsUsed={refreshCredits}/>
+            <CaptionGen profile={profile} onSaveCaption={saveCaption} userToken={userToken} onCreditsUsed={refreshCredits}
+              freshTrendsLeft={freshTrendsCaptionLeft} isPaid={isPaid} daysUntilReset={daysUntilReset}
+              onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
           </div>
         )}
 
@@ -6886,7 +7106,9 @@ return (
                 Upload a photo or video. VIRL scores it for viral potential out of 10, recommends the best platform, and writes a ready-to-post caption you can edit and save.
               </div>
             </div>
-            <VIRLScan profile={profile} onSaveCaption={saveCaption} userToken={userToken} onCreditsUsed={refreshCredits}/>
+            <VIRLScan profile={profile} onSaveCaption={saveCaption} userToken={userToken} onCreditsUsed={refreshCredits}
+              freshTrendsLeft={freshTrendsScanLeft} isPaid={isPaid} daysUntilReset={daysUntilReset}
+              onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
           </div>
         )}
 
