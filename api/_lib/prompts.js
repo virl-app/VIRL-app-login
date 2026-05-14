@@ -731,6 +731,23 @@ function buildScript(params, profile, _vaultPatterns, playbook) {
   };
 }
 
+// Caption output budget. A fixed 900-token ceiling truncated LinkedIn "Long"
+// captions mid-JSON (7-10 narrative lines × 3 options + hook + 7 hashtags
+// easily clears 900 output tokens). When extractJSON fails on the client, the
+// user sees "Almost there — tap generate again..." which is just a polite way
+// of saying the response got cut off. Scaling by length + a platform bump for
+// the long-form-text platforms (LinkedIn, Facebook, YouTube) gives the right
+// headroom without paying for it on TikTok/X.
+const CAPTION_TOKEN_BUDGET = { Short: 600, Medium: 1100, Long: 2200 };
+const CAPTION_LONG_FORM_PLATFORMS = { LinkedIn: 1.4, Facebook: 1.2, YouTube: 1.2 };
+function captionMaxTokens(platform, length) {
+  const base = CAPTION_TOKEN_BUDGET[length] || CAPTION_TOKEN_BUDGET.Medium;
+  const mult = CAPTION_LONG_FORM_PLATFORMS[platform] || 1;
+  // Haiku's hard ceiling is well above this; cap at 4K so a bad arg never
+  // accidentally requests a huge response.
+  return Math.min(4000, Math.round(base * mult));
+}
+
 function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
   const platform = params.platform || "TikTok";
   const tone     = params.tone     || "Warm & relatable";
@@ -752,7 +769,7 @@ function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
     systemPrompt,
     userPrompt,
     model:     MODEL_HAIKU,
-    maxTokens: 900,
+    maxTokens: captionMaxTokens(platform, length),
     cost:      CREDIT_COSTS.caption,
   };
 }

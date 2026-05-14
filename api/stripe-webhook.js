@@ -177,14 +177,15 @@ export default async function handler(req, res) {
         break;
       }
 
+      case "customer.subscription.created":
       case "customer.subscription.updated": {
         if (!userId) {
-          console.warn("[webhook] subscription.updated missing userId in metadata");
+          console.warn("[webhook] " + event.type + " missing userId in metadata");
           break;
         }
         const status = obj.status;
         if (status === "past_due" || status === "unpaid") {
-          await patchUserPlan(userId, { plan: "past_due" });
+          await patchUserPlan(userId, { plan: "past_due", stripe_customer_id: obj.customer || null });
           console.log("[webhook] User " + userId + " marked past_due");
           // Payment failed email — dedupe by stripe sub id + month so the
           // user gets at most one nudge per billing cycle, even if Stripe
@@ -199,10 +200,13 @@ export default async function handler(req, res) {
               subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
             });
           }
-        } else if (status === "active") {
+        } else if (status === "active" || status === "trialing") {
+          // trialing also gets the paid plan — they've completed checkout and
+          // entered the subscription's trial window, which is functionally
+          // paid from our gating perspective.
           const plan = meta.isFoundingMember === "true" ? "founding" : "standard";
-          await patchUserPlan(userId, { plan: plan });
-          console.log("[webhook] User " + userId + " reactivated to " + plan);
+          await patchUserPlan(userId, { plan: plan, stripe_customer_id: obj.customer || null });
+          console.log("[webhook] User " + userId + " set to " + plan + " via " + event.type + " (" + status + ")");
         }
         break;
       }

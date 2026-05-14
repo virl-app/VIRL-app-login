@@ -102,18 +102,25 @@ export default async function handler(req, res) {
     // makes Stripe reject a subscription-mode session. Subscription
     // sessions create a customer automatically, so the flag is a
     // no-op at best and an error at worst. Removing it.
+    // Stripe applies `subscription_data.metadata` to the Subscription only —
+    // not to the Checkout Session — so without session-level metadata, the
+    // `checkout.session.completed` webhook fires with `obj.metadata.userId`
+    // missing and the user's plan never gets stamped "founding"/"standard"
+    // until a later `customer.subscription.updated` event arrives. Setting
+    // metadata at both levels closes that gap so the upgrade lands on the
+    // very first event.
+    const metadata = {
+      userId: userId,
+      planType: isAnnual ? "annual" : "monthly",
+      isFoundingMember: isFoundingMember ? "true" : "false",
+    };
     const sessionParams = {
       mode: "subscription",
       payment_method_types: ["card"],
       customer_email: email,
       line_items: [{ price: priceId, quantity: 1 }],
-      subscription_data: {
-        metadata: {
-          userId: userId,
-          planType: isAnnual ? "annual" : "monthly",
-          isFoundingMember: isFoundingMember ? "true" : "false",
-        },
-      },
+      metadata: metadata,
+      subscription_data: { metadata: metadata },
       ...(isFoundingMember && foundingCoupon
         ? { discounts: [{ coupon: foundingCoupon }] }
         : {}),
