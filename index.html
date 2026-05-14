@@ -1840,17 +1840,17 @@ const MTag = ({type,children}) => {
 // only renders when the user has consumed their freebie — otherwise the
 // chip stays informational, not promotional.
 const FreshTrendsChip = ({kind, remaining, isPaid, daysUntilReset, onUpgrade}) => {
-  const label =
-    kind === "plan"    ? "this plan" :
-    kind === "scan"    ? "this scan" :
-    kind === "caption" ? "this caption" : "this generation";
+  const noun =
+    kind === "plan"    ? "plan" :
+    kind === "scan"    ? "scan" :
+    kind === "caption" ? "caption" : "generation";
   if (isPaid) {
     return (
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,
                    fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,
                    letterSpacing:"0.12em",textTransform:"uppercase",color:B.navy}}>
         <span style={{fontSize:13,lineHeight:1}}>✦</span>
-        <span>Fresh trends · unlimited</span>
+        <span>{"Powered by today's trends research"}</span>
       </div>
     );
   }
@@ -1860,26 +1860,26 @@ const FreshTrendsChip = ({kind, remaining, isPaid, daysUntilReset, onUpgrade}) =
                    fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted}}>
         <span style={{fontSize:13,lineHeight:1,color:B.navy}}>✦</span>
         <span style={{fontWeight:600,letterSpacing:"0.12em",textTransform:"uppercase",color:B.muted}}>
-          {"Fresh trends · 1 of 1 this week"}
+          {"This " + noun + " pulls from today's trends research"}
         </span>
         <span style={{fontWeight:300,letterSpacing:"0.02em",color:B.muted}}>
-          {"— pulls today's signal into " + label}
+          {"— 1 free pull left this week"}
         </span>
       </div>
     );
   }
   const resetCopy = daysUntilReset === 1
-    ? "resets in 1 day"
-    : "resets in " + daysUntilReset + " days";
+    ? "back in 1 day"
+    : "back in " + daysUntilReset + " days";
   return (
     <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10,
                  fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted}}>
       <span style={{fontSize:13,lineHeight:1,color:B.amber}}>✦</span>
       <span style={{fontWeight:600,letterSpacing:"0.12em",textTransform:"uppercase",color:B.amber}}>
-        {"Fresh trends · used"}
+        {"Today's trends research used"}
       </span>
       <span style={{fontWeight:300,letterSpacing:"0.02em",color:B.muted}}>
-        {"— " + resetCopy + " · "}
+        {"— " + resetCopy + ", or "}
         <button onClick={onUpgrade}
                 style={{background:"none",border:"none",padding:0,color:B.blue,
                         fontFamily:"inherit",fontSize:"inherit",fontWeight:600,
@@ -1902,8 +1902,8 @@ const FreshTrendsBanner = ({kind, daysUntilReset, onUpgrade}) => {
     kind === "scan"    ? "scan" :
     kind === "caption" ? "caption set" : "result";
   const nextCopy = daysUntilReset === 1
-    ? "resets in 1 day"
-    : "resets in " + daysUntilReset + " days";
+    ? "back in 1 day"
+    : "back in " + daysUntilReset + " days";
   return (
     <div style={{background:B.skySoft,border:"1px solid "+B.blueSoft,borderRadius:12,
                  padding:"14px 18px",marginBottom:16,
@@ -1911,11 +1911,11 @@ const FreshTrendsBanner = ({kind, daysUntilReset, onUpgrade}) => {
       <div style={{minWidth:0,flex:1}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
                      letterSpacing:"0.18em",textTransform:"uppercase",color:B.navy,marginBottom:4}}>
-          {"✦ Fresh trends — this " + noun}
+          {"✦ Today's trends research — this " + noun}
         </div>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,
                      color:B.sub,lineHeight:1.6}}>
-          {"Backed by trend research pulled today. Your next " + noun + " this week uses cached trends (up to 7 days old) — " + nextCopy + "."}
+          {"Written against today's trends research. Your next " + noun + " this week draws from recent trends research — " + nextCopy + "."}
         </div>
       </div>
       <button onClick={onUpgrade}
@@ -4971,8 +4971,14 @@ function App() {
     if (diff <= 0) return 1; // reset is overdue; will fire on next call
     return Math.max(1, Math.ceil(diff / 86400000));
   })();
-  var creditsLabel = creditsLoaded ? String(credits) : "—";
   var isFoundingOrPro = sbPlan==="founding" || sbPlan==="pro";
+  // Paid plans have no per-call wallet — showing a raw credit number (e.g.
+  // "150 credits") on a founding member's HUD reads like a metered allowance
+  // that should decrement, which is the opposite of what founding/pro buys.
+  // Render "Unlimited" so the meaning matches the entitlement.
+  var creditsLabel = creditsLoaded
+    ? (isFoundingOrPro ? "Unlimited" : String(credits))
+    : "—";
   // [FRESH-TRENDS] Single source of truth for "this user has a paid
   // subscription" — mirrors PAID_PLANS in api/chat.js. Distinct from
   // isFoundingOrPro (which is used for in-product gating of *credits-
@@ -6206,10 +6212,10 @@ return (
         var eyebrow, eyebrowColor, dismiss;
         if (modalState === "freshTrends") {
           eyebrow      = daysUntilReset === 1
-            ? "Fresh trends used — resets in 1 day"
-            : ("Fresh trends used — resets in " + daysUntilReset + " days");
+            ? "Today's trends research used — back in 1 day"
+            : ("Today's trends research used — back in " + daysUntilReset + " days");
           eyebrowColor = B.amber;
-          dismiss      = "Use cached trends this time";
+          dismiss      = "Use recent trends research this time";
         } else if (modalState === "trial") {
           eyebrow      = "Your free trial has ended";
           eyebrowColor = B.coral;
@@ -6379,8 +6385,9 @@ return (
                 concrete actions so users see value instead of tokens. Only
                 renders in the useful middle range (3-150 inclusive); below 3
                 the low-credit banner takes over and above 150 the user is on
-                a paid tier and doesn't need reassurance. */}
-            {credits>=3&&credits<=150&&(
+                a paid tier and doesn't need reassurance. Founding/Pro skip
+                entirely — they have no metered allowance to translate. */}
+            {!isFoundingOrPro&&credits>=3&&credits<=150&&(
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.35)",marginTop:4,marginLeft:11,lineHeight:1.35}}>
                 {"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans, "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions, "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
               </div>
