@@ -2268,9 +2268,11 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
         </div>
       )}
 
-      {/* [UX-01] Action row. Collapsed: Tap to expand + Save + Mark as
-           posted only. Expanded: full action set including Log Results,
-           Write Script, Share, and Rate. */}
+      {/* [RESULTS-OVERHAUL] Action row. Third slot is state-dependent:
+           fresh card → "Mark as posted"; posted but unlogged →
+           "Log results" (expands + opens form); logged → passive
+           "Logged ✓" badge. Always 3 visible slots in collapsed mode,
+           never 4. */}
       <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
         <button onClick={toggleExpanded}
           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:expanded?B.bg:B.navySoft,color:expanded?B.sub:B.navy,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
@@ -2280,16 +2282,27 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:saved?B.navy:B.divider,color:saved?B.white:B.sub,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
           {saved?"Saved":"Save"}
         </button>
-        <button onClick={handleTogglePosted}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:posted?B.coralSoft:B.bg,color:posted?B.coral:B.sub,border:"1px solid "+(posted?B.coral:B.border),borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
-          {posted?"Marked posted":"Mark as posted"}
-        </button>
-        {expanded && (
-          <button onClick={function(){setShowLog(function(v){return !v;});}}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:B.sub,border:"none",borderRadius:99,cursor:"pointer"}}>
-            {showLog?"Cancel":result?"Update Results":"Log Results"}
+        {/* [RESULTS-OVERHAUL] State-dependent third slot. */}
+        {result ? (
+          <span
+            aria-label="Results logged"
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"8px 14px",background:B.greenSoft,color:B.green,border:"1px solid "+B.green,borderRadius:99}}>
+            {"Logged ✓"}
+          </span>
+        ) : posted ? (
+          <button
+            onClick={function(){ setExpanded(true); setShowLog(true); }}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.coral,color:B.white,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
+            {"Log results"}
+          </button>
+        ) : (
+          <button onClick={handleTogglePosted}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
+            {"Mark as posted"}
           </button>
         )}
+        {/* Expanded-only secondary actions. Log Results moved out — the
+             state-dependent third slot above replaces it. */}
         {expanded && (
           <button onClick={function(){ setShowScript(true); }}
             style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
@@ -2302,9 +2315,14 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
         )}
       </div>
 
-      {showLog && expanded && (
+      {/* [RESULTS-OVERHAUL] Inline log form. Renders in both collapsed
+           and expanded modes once showLog is true, so logging is never
+           gated behind an extra "tap to expand" hop. Also lets the user
+           edit a previously-logged result by tapping the green badge
+           after expanding (Update Results path stays). */}
+      {showLog && (
         <div style={{marginTop:12,padding:16,background:B.bg,borderRadius:12}}>
-          <Label>Log your actual results</Label>
+          <Label>{result ? "Update your results" : "Log your actual results"}</Label>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
             {[["Views",views,setViews],["Likes",likes,setLikes],["Saves",saves2,setSaves2]].map(function(item){
               var l=item[0],v=item[1],s=item[2];
@@ -2317,10 +2335,16 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
               );
             })}
           </div>
-          <button onClick={saveResults}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 20px",background:B.blue,color:B.white,border:"none",cursor:"pointer",borderRadius:99}}>
-            Save Results
-          </button>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={saveResults}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 20px",background:B.blue,color:B.white,border:"none",cursor:"pointer",borderRadius:99}}>
+              Save Results
+            </button>
+            <button onClick={function(){ setShowLog(false); }}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 16px",background:"transparent",color:B.muted,border:"1px solid "+B.border,cursor:"pointer",borderRadius:99}}>
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -4538,6 +4562,49 @@ function App() {
     } catch (e) {}
   }, [session]);
 
+  // [RESULTS-OVERHAUL] Last week's plan, pulled from plan_history once
+  // per session. Renders in a collapsible at the bottom of the Plan
+  // tab so users can still log results / mark posted / save to vault
+  // on past cards after the current week's cards rotate in. Fail-soft:
+  // empty when RLS blocks the read or the user has no history.
+  const [lastWeekPlan,setLastWeekPlan] = useState(null);
+  const [lastWeekExpanded,setLastWeekExpanded] = useState(false);
+
+  // [RESULTS-OVERHAUL] Fetch last week's plan from plan_history so the
+  // "Last week's plan" collapsible at the bottom of the Plan tab can
+  // render past cards with the same PlanCard component. We pull the
+  // two most recent rows (descending by week_start) and take index 1,
+  // since index 0 is the current week. RLS lets each user read their
+  // own rows; if it doesn't or the table is empty, we fail-soft and
+  // the collapsible stays hidden.
+  useEffect(function(){
+    if (!session || !session.user || !session.user.id) {
+      setLastWeekPlan(null);
+      return;
+    }
+    var cancelled = false;
+    supabaseClient.from("plan_history")
+      .select("week_start,strategy,cards")
+      .eq("user_id", session.user.id)
+      .order("week_start", { ascending: false })
+      .limit(2)
+      .then(function(out){
+        if (cancelled) return;
+        if (!out || !Array.isArray(out.data) || out.data.length < 2) {
+          setLastWeekPlan(null);
+          return;
+        }
+        var row = out.data[1];
+        if (!row || !Array.isArray(row.cards) || !row.cards.length) {
+          setLastWeekPlan(null);
+          return;
+        }
+        setLastWeekPlan(row);
+      })
+      .catch(function(){ if (!cancelled) setLastWeekPlan(null); });
+    return function(){ cancelled = true; };
+  }, [session]);
+
   // ── App data state ──────────────────────────────────────────────────────
   const stored = load();
   // Restore the user's last-active tab on refresh. sessionStorage scoped so
@@ -5246,15 +5313,27 @@ function App() {
       ? (TRIAL_DAYS - daysIntoTrial) + " days left — don't lose your plans"
       : "Last chance — lock in founding rate";
 
-  // [TASK 13] Sunday nudge — when it's Sunday and the current plan still has
-  // unlogged cards, surface a batch-log banner so users can close out the week
-  // in one sitting. "Unlogged" = no matching entry in results[] by title+day.
-  var isSunday = new Date().getDay() === 0;
-  var unloggedCards = (cards||[]).filter(function(c){
+  // [RESULTS-OVERHAUL] Cycle-end nudge. Was Sunday-only ("isSunday"); now
+  // fires when each user's personal credit cycle is one day from
+  // resetting, since plans rotate based on signup date, not the calendar
+  // week. daysUntilReset is computed above from sbCredits.reset_at.
+  var cycleEndingSoon = daysUntilReset != null && daysUntilReset <= 1;
+  // [RESULTS-OVERHAUL] unloggedCards now includes last week's plan too,
+  // not just this week's, so the batch-log modal covers everything that
+  // still needs results. Sorted: current week first, then last week,
+  // so the modal reads chronologically when the user opens it.
+  var thisWeekUnlogged = (cards||[]).filter(function(c){
+    if (!c || !c.title) return false;
     var id = c.title + c.day;
     return !results.some(function(r){ return r.id === id; });
   });
-  var showSundayNudge = isSunday && cards && cards.length>0 && unloggedCards.length>0 && !sundayNudgeDismissed;
+  var lastWeekUnlogged = (lastWeekPlan && Array.isArray(lastWeekPlan.cards) ? lastWeekPlan.cards : []).filter(function(c){
+    if (!c || !c.title) return false;
+    var id = c.title + c.day;
+    return !results.some(function(r){ return r.id === id; });
+  });
+  var unloggedCards = thisWeekUnlogged.concat(lastWeekUnlogged);
+  var showSundayNudge = cycleEndingSoon && cards && cards.length>0 && unloggedCards.length>0 && !sundayNudgeDismissed;
 
   // Auto-show upgrade modal when trial expires
   useEffect(function() {
@@ -5911,6 +5990,17 @@ function App() {
   // (Mark as posted / Log Results) are reflected without a manual
   // refresh signal. Cheap — single linear scan of localStorage keys.
   var postedLastWeekCount = countPostedLastWeekUnlogged(results);
+
+  // [RESULTS-OVERHAUL] Priority-ordered single-slot banner for the top
+  // of the Plan tab. Picks at most one banner to render so the page
+  // never stacks "posted last week" + "milestone 5" + "cycle ending"
+  // at once. Higher in the array = higher priority.
+  var planTopBanner = (function(){
+    if (postedLastWeekCount >= 2)        return "posted-last-week";
+    if (showSundayNudge)                 return "cycle-end";
+    if (showMilestone5)                  return "milestone-5";
+    return null;
+  })();
 
   // [UX-01] Vault remix handler — pulls the saved item's caption /
   // description into the Plan generator's context state and routes to
@@ -6615,7 +6705,42 @@ return (
                  a milestone most creators never reach. Dismissible —
                  once dismissed, never reappears (virl_milestone_5_seen
                  flag in localStorage). */}
-            {showMilestone5 && (
+            {/* [RESULTS-OVERHAUL] Single-slot priority banner. At most
+                 one renders at a time so we never stack "posted last
+                 week" on top of "milestone 5" on top of "cycle
+                 ending soon". planTopBanner is computed above with
+                 priority: posted-last-week > cycle-end > milestone-5. */}
+            {planTopBanner === "posted-last-week" && (
+              <div style={{background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:12,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,cursor:"pointer"}}
+                onClick={function(){ setSundayLogModalOpen(true); }}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.coral,lineHeight:1.45}}>
+                  {"You posted " + postedLastWeekCount + " cards last week. Log results now →"}
+                </div>
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.coral,flexShrink:0}}>{"Open log"}</span>
+              </div>
+            )}
+            {planTopBanner === "cycle-end" && (
+              <div style={{background:B.navySoft,borderRadius:14,padding:"14px 18px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy,lineHeight:1.2,marginBottom:4}}>Wrap up this week.</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.navy,lineHeight:1.55}}>
+                    {"Your week resets " + (daysUntilReset === 0 ? "today" : "tomorrow") + ". " + unloggedCards.length + " post" + (unloggedCards.length === 1 ? "" : "s") + " still to log."}
+                  </div>
+                </div>
+                <button onClick={function(){ setSundayLogModalOpen(true); }}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
+                  Log all at once
+                </button>
+                <button onClick={function(){
+                    try { sessionStorage.setItem("virl_sunday_nudge_dismissed","1"); } catch(e) {}
+                    setSundayNudgeDismissed(true);
+                  }} aria-label="Dismiss"
+                  style={{background:"none",border:"none",color:B.navy,fontSize:20,cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0,opacity:0.7}}>
+                  {"×"}
+                </button>
+              </div>
+            )}
+            {planTopBanner === "milestone-5" && (
               <div style={{background:"linear-gradient(135deg, "+B.coralSoft+" 0%, "+B.amber+"15 100%)",border:"1px solid "+B.coral+"33",borderRadius:14,padding:"18px 22px",marginBottom:18,position:"relative"}}>
                 <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:6}}>Five plans in. ✦</div>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65,paddingRight:24}}>
@@ -6628,20 +6753,6 @@ return (
                   style={{position:"absolute",top:14,right:14,background:"transparent",border:"none",color:B.muted,fontSize:18,cursor:"pointer",lineHeight:1}}>
                   {"×"}
                 </button>
-              </div>
-            )}
-            {/* [UX-01] Posted-last-week banner. Counts cards marked
-                 posted via the per-card localStorage flag in the
-                 7-to-14-day window that don't yet have results logged.
-                 Threshold of 2+ keeps it from nagging on a single
-                 stray post. Tap routes to the Vault. */}
-            {postedLastWeekCount >= 2 && (
-              <div style={{background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:12,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,cursor:"pointer"}}
-                onClick={function(){ setTab("vault"); }}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.coral,lineHeight:1.45}}>
-                  {"You posted " + postedLastWeekCount + " cards last week. Add their results in Vault →"}
-                </div>
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.coral,flexShrink:0}}>{"Vault"}</span>
               </div>
             )}
             <SherpaTip>Tell VIRL your setup and it builds your entire week across your platforms - 10 to 14 posts with timing, trend angles, and the strategic reason behind every post. Tap Write Script on any card to go even deeper.</SherpaTip>
@@ -7071,6 +7182,50 @@ return (
               </div>
             )}
 
+            {/* [RESULTS-OVERHAUL] Last week's plan collapsible. Pulled
+                 from plan_history when the user has at least one
+                 previous week. Past cards render through the existing
+                 PlanCard component so all per-card actions (save,
+                 mark posted, log results, write script) work normally.
+                 Tertiary visual weight — sits below the current plan
+                 and is collapsed by default. Hidden entirely if the
+                 user has no history. */}
+            {!loading && cards && lastWeekPlan && Array.isArray(lastWeekPlan.cards) && lastWeekPlan.cards.length > 0 && (
+              <div style={{marginTop:32}}>
+                <button
+                  onClick={function(){ setLastWeekExpanded(function(v){ return !v; }); }}
+                  style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"14px 18px",background:B.bg,border:"1px solid "+B.border,borderRadius:12,cursor:"pointer",fontFamily:"'Jost',sans-serif"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:11,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted}}>{"Last week's plan"}</span>
+                    <span style={{fontSize:11,fontWeight:300,color:B.muted}}>{"· " + lastWeekPlan.cards.length + " cards · " + lastWeekUnlogged.length + " still to log"}</span>
+                  </div>
+                  <span style={{fontSize:14,color:B.muted,fontWeight:300}}>{lastWeekExpanded ? "▴" : "▾"}</span>
+                </button>
+                {lastWeekExpanded && (
+                  <div style={{marginTop:12}}>
+                    {lastWeekPlan.cards.map(function(card, i){
+                      if (!card || !card.title) return null;
+                      return (
+                        <PlanCard
+                          key={"lw-" + i}
+                          card={card}
+                          idx={i}
+                          onSave={saveToVault}
+                          onLog={logResult}
+                          onSaveScript={null}
+                          saved={vault.some(function(v){ return v.id === card.title + card.day; })}
+                          result={results.find(function(r){ return r.id === card.title + card.day; })}
+                          profile={profile}
+                          userToken={userToken}
+                          onCreditsUsed={refreshCredits}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             {!loading&&!cards&&(
               /* [PREMIUM 1] Plan empty state. Premium voice. */
               <div style={{textAlign:"center",padding:"40px 20px",marginTop:24}}>
@@ -7226,16 +7381,18 @@ return (
                 See what's<br/><span style={{color:B.navy}}>actually working.</span>
               </div>
             </div>
-            {/* [TASK 13] Sunday batch-log nudge — surfaces on Sunday when the
-                current plan still has posts without logged results. Dismissal
-                is per-session via sessionStorage; the banner reappears on the
-                user's next Sunday visit. */}
+            {/* [RESULTS-OVERHAUL] Cycle-end batch-log nudge. Was Sunday-
+                only; now fires when the user's personal credit cycle
+                is one day from resetting (showSundayNudge is gated on
+                cycleEndingSoon). Mirrors the Plan-tab single-slot
+                banner so users see the prompt on both surfaces.
+                Dismissal is per-session via sessionStorage. */}
             {showSundayNudge&&(
               <div style={{background:B.navySoft,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",gap:14,alignItems:"flex-start"}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:19,color:B.navy,lineHeight:1.2,marginBottom:6}}>How did your posts perform this week?</div>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.navy,lineHeight:1.6,marginBottom:12}}>
-                    {"Log results in 90 seconds – it helps VIRL learn what's working for you. "+unloggedCards.length+" post"+(unloggedCards.length===1?"":"s")+" still to log."}
+                    {"Your week resets " + (daysUntilReset === 0 ? "today" : "tomorrow") + ". " + unloggedCards.length + " post" + (unloggedCards.length===1?"":"s") + " still to log."}
                   </div>
                   <button onClick={function(){ setSundayLogModalOpen(true); }}
                     style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
