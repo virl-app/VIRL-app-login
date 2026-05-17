@@ -1,0 +1,446 @@
+# VIRL — Pricing Update Implementation Brief
+
+**For pre-launch execution — May 2026**
+**Status: Approved, ready for implementation**
+**Owner: Lauren Doty**
+
+This brief consolidates every change required to ship VIRL's founding pricing structure before the June 1 launch. The pricing decisions are locked.
+
+---
+
+## 🎯 The pricing decisions being implemented
+
+**Founder Circle (first 50 paying customers):**
+- $20/month for life as long as continuously subscribed
+- $215/year for life as long as continuously subscribed (annual option)
+- Perks: direct line to Lauren, monthly Founder Office Hours call, beta feature access, name on a Founder Circle page on govirl.ai
+- Cap: 50 spots. When full, this tier closes permanently.
+
+**Standard (customers 51+):**
+- $25/month or $249/year
+- Standard product access
+
+**Continuous subscription rule:** Founder Circle pricing applies as long as the customer remains subscribed without interruption. If they cancel and later resubscribe, they come back at current Standard pricing.
+
+**Why one tier instead of two:** A single sharply-defined tier is cleaner than a tiered cascade. "First 50 get $20 for life" is a stronger marketing story, simpler to operationalize, easier for users to understand, and creates concentrated scarcity. It also limits margin exposure to a known, bounded cohort.
+
+---
+
+## 📋 Implementation order
+
+1. **Stripe configuration** — products, prices, cap enforcement
+2. **Database schema updates** — track founding tier
+3. **Application code changes** — display pricing, handle tier UI
+4. **Landing page copy update** — single-tier founding structure
+5. **Founder Circle perks delivery system** — what perks actually mean
+6. **Lifecycle email updates in Loops** — welcome flow updates
+7. **Perk fulfillment workflow** — operational systems
+8. **Post-launch monitoring** — what to watch in first 30 days
+
+---
+
+## ⚙️ STEP 1 — Stripe Configuration
+
+### 1a. Product structure
+
+Two Stripe products. Clean and simple.
+
+**Product: VIRL Founder Circle**
+- Price 1: $20.00/month USD, recurring
+- Price 2: $215.00/year USD, recurring
+- Metadata: `founding_tier: "founder_circle"`, `cap_limit: 50`
+
+**Product: VIRL Standard**
+- Price 1: $25.00/month USD, recurring
+- Price 2: $249.00/year USD, recurring
+- Metadata: `founding_tier: "standard"`
+
+### 1b. Cap enforcement
+
+Enforce in your application layer before creating Stripe Checkout sessions:
+
+```javascript
+// Pseudocode for /api/create-checkout.js
+async function createCheckoutSession(req, res) {
+  const { tier } = req.body; // 'founder_circle' or 'standard'
+
+  if (tier === 'founder_circle') {
+    const count = await getActiveSubscriberCountByTier('founder_circle');
+    if (count >= 50) {
+      return res.status(400).json({
+        error: 'founder_circle_full',
+        message: 'Founder Circle is full. Standard pricing now applies.'
+      });
+    }
+  }
+  // Proceed with Stripe Checkout
+}
+```
+
+**Race condition:** If two users hit checkout at spot 49/50 simultaneously, both might succeed. Acceptable to go 1-2 over occasionally. Document as "approximately 50 spots."
+
+### 1c. Webhook updates
+
+Update `/api/stripe-webhook.js`:
+
+| Webhook event | Action |
+|---|---|
+| `checkout.session.completed` | Identify tier from metadata, write `founding_tier` to credits table, assign founding position |
+| `customer.subscription.deleted` | Mark as cancelled. Do NOT free up the founder spot |
+| `customer.subscription.updated` | Log changes for audit |
+| `invoice.payment_failed` | Don't cancel founding status on first failure, only after grace period |
+
+### 1d. Cancellation policy
+
+**Decision: Once a Founder Circle spot is filled, it stays filled.** Cancellations don't free up spots. The cap is "first 50 to ever subscribe." Document this in Terms of Service.
+
+If a Founder Circle member cancels and later returns, they return at Standard pricing.
+
+---
+
+## ⚙️ STEP 2 — Database Schema Updates
+
+```sql
+ALTER TABLE credits
+ADD COLUMN founding_tier TEXT DEFAULT 'standard',
+ADD COLUMN founding_position INTEGER,
+ADD COLUMN subscription_started_at TIMESTAMP;
+
+CREATE INDEX idx_credits_founding_tier ON credits(founding_tier);
+
+CREATE TABLE founding_positions (
+  position INTEGER PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id),
+  filled_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Pre-populate with 50 empty slots
+INSERT INTO founding_positions (position)
+SELECT generate_series(1, 50);
+```
+
+---
+
+## ⚙️ STEP 3 — Application Code Changes
+
+### 3a. Tier-aware pricing display
+
+- If Founder Circle has spots remaining: show as primary option, Standard as alternative
+- If Founder Circle is full: show Standard only, with note "The Founder Circle is full — thank you to the 50 believers"
+
+### 3b. Founder Circle badge in app
+
+For users with `founding_tier = 'founder_circle'`:
+- "Founder Circle" badge on profile
+- First-login banner: *"Welcome to the Founder Circle. Your $20/month pricing is locked for life. Lauren will be in touch about our first Office Hours call."*
+- Dedicated "Founder Circle" tab with Office Hours info, direct email, beta features
+
+### 3c. Founder Circle UI
+
+The Founder Circle tab (visible only to those members) includes:
+- Next Office Hours date and Zoom link
+- Direct email link to `circle@govirl.ai`
+- Beta feature toggles (when available)
+- Their Founder Position number ("You are Founder #7")
+
+---
+
+## ⚙️ STEP 4 — Landing Page Copy Update
+
+### 4a. New copy structure
+
+```
+THE FOUNDER CIRCLE
+
+The first 50 paying customers. The deepest tier we'll ever offer.
+Built for the people who say yes before the proof exists.
+
+══════════════════════════════════════════════════════════════════════
+FOUNDER CIRCLE                                          [X of 50 left]
+══════════════════════════════════════════════════════════════════════
+
+$20/month for as long as you stay with VIRL
+(or $215/year — saves you almost $100)
+
+What's included beyond the price:
+  ✓  Direct line to Lauren — email her anytime
+  ✓  Monthly Founder Office Hours call (live with Lauren)
+  ✓  Beta access to new features before anyone else
+  ✓  Your name on the Founder Circle page on govirl.ai
+  ✓  Pricing locked for as long as you're with us — forever
+
+[Claim my Founder Circle spot]
+
+══════════════════════════════════════════════════════════════════════
+
+After the Founder Circle fills, Standard pricing applies —
+$25/month or $249/year. The founding spots, once gone, are gone forever.
+```
+
+### 4b. Live counter
+
+Real-time count pulled from `founding_positions` table.
+
+When the tier fills, replace with:
+```
+[THE FOUNDER CIRCLE IS FULL]
+Thank you to the 50 people who believed in this first.
+Standard pricing applies — $25/month or $249/year.
+```
+
+### 4c. Waitlist hero update
+
+> *"Launching June 1 — with 50 Founder Circle spots for the first believers. $20/month for life, plus direct access to Lauren. Claim yours when we launch."*
+
+---
+
+## ⚙️ STEP 5 — Founder Circle Perks Delivery System
+
+### 5a. Monthly Founder Office Hours
+
+**Commitment:** Last Friday of every month, 11:00 AM CT, 45 minutes. Zoom.
+**Format:** Open agenda. Brief update + Q&A. Recorded for those who can't attend.
+**First call:** Last Friday of June 2026 (June 26).
+**Backup if cancelled:** Reschedule to the following Friday. Never skip a month.
+
+### 5b. Direct line to Lauren
+
+**Commitment:** `circle@govirl.ai` forwards to Lauren's inbox.
+**SLA:** 24-hour response weekdays, 48 hours weekends. Personal, not support team.
+**Boundary:** For feedback and conversation. Technical support goes through normal channels.
+
+### 5c. Beta feature access
+
+**Commitment:** Founder Circle members get features 14 days before broader release.
+**How:** Feature flag system gated on `founding_tier = 'founder_circle'`.
+**First beta:** The Sunday Review feature when it ships in month 4-5.
+
+### 5d. Founder Circle page on govirl.ai
+
+**Commitment:** A page at govirl.ai/founders listing the 50 by first name and last initial, with city.
+**Privacy:** Opt-in. Members can remain private.
+**Format:** Editorial layout — looks like an end-credits roll.
+
+### 5e. What NOT to promise
+
+- ❌ Lifetime free upgrades to Pro tier (keep Pro separate)
+- ❌ Equity or revenue share
+- ❌ Lifetime support guarantee
+
+---
+
+## ⚙️ STEP 6 — Lifecycle Email Updates in Loops
+
+### 6a. Welcome email (Email 01) — tier-aware variants
+
+**Variant A — Founder Circle:**
+> Welcome to the Founder Circle. You're one of the first 50. The Office Hours invitation is coming separately. Email me anytime at `circle@govirl.ai`. Your pricing is locked at $20/month for as long as you're with us. — Lauren
+
+**Variant B — Standard:** Existing copy unchanged.
+
+### 6b. Payment confirmation email (Email 04) — tier-aware
+
+Founder Circle members get additional lines about Office Hours, the direct line, and confirmation that $20/month pricing is permanent.
+
+### 6c. New email — "Founder Circle is now full"
+
+**Trigger:** When 50th member signs up.
+**Audience:** Entire waitlist and existing Standard customers.
+**Subject:** "The Founder Circle is full"
+
+```
+The Founder Circle filled in [X days]. Thank you to the 50 people who
+believed in VIRL first.
+
+Standard pricing now applies for everyone — $25/month or $249/year.
+The Founder Circle is closed for good. There won't be another.
+
+If you've been waiting, this is your sign to try VIRL free for 14 days.
+No credit card required.
+
+— Lauren
+```
+
+### 6d. Remove the year-2 transition email
+
+Since Founder Circle pricing is permanent, the year-2 transition email is retired. Remove from Loops flow.
+
+---
+
+## ⚙️ STEP 7 — Perk Fulfillment Workflow
+
+### 7a. Office Hours operations
+
+| Task | Frequency | Owner |
+|---|---|---|
+| Send calendar invite to Founder Circle | Once on signup + monthly reminder | Loops automation |
+| Prepare 5-min update | Day before each call | Lauren |
+| Host the call | Last Friday at 11 AM CT | Lauren |
+| Record + upload to Founder Circle tab | Within 24 hours | Lauren |
+| Send post-call summary | Within 48 hours | Lauren via Loops |
+
+**Time:** ~90 minutes per month total.
+
+### 7b. Direct line workflow
+
+| Task | Frequency | Owner |
+|---|---|---|
+| Check `circle@govirl.ai` | 2x daily weekdays | Lauren |
+| Respond within 24 hours | Per email | Lauren |
+| Track recurring themes | Weekly review | Lauren |
+
+**Time:** 30-60 min/day first 60 days, scaling down.
+
+### 7c. Beta feature workflow
+
+1. Wrap feature behind feature flag
+2. Enable for `founding_tier = 'founder_circle'`
+3. Loops email announcing the beta
+4. Collect feedback via `circle@govirl.ai` or in-app
+5. After 14 days, enable for all paid users
+
+### 7d. Founder Circle page maintenance
+
+| Task | Frequency | Owner |
+|---|---|---|
+| Update govirl.ai/founders with new members | Weekly | Lauren or automated |
+| Send opt-in email to new members | On signup | Loops automation |
+| Honor opt-out requests | As needed | Lauren |
+
+---
+
+## ⚙️ STEP 8 — Post-Launch Monitoring (First 30 Days)
+
+### 8a. Daily metrics dashboard
+
+| Metric | Target | Action if missed |
+|---|---|---|
+| Founder Circle fill rate | 50% by day 14 | Increase direct outreach |
+| Standard conversion (post-Circle fill) | Steady growth | Verify pricing displays correctly |
+| Founder Circle perks delivery | 100% (Office Hours, emails) | Document misses, recover |
+| Stripe webhook errors | 0 | Investigate immediately |
+
+### 8b. Edge cases to monitor
+
+**Case 1: Founder Circle fills extremely fast (< 48 hours)**
+- Strong demand signal. Document the learning.
+- Post publicly: "Founder Circle filled in [X] hours. Standard pricing applies."
+- Use as a marketing moment.
+
+**Case 2: Founder Circle doesn't fill in 30 days**
+- Continue direct outreach. Don't panic.
+- Do NOT lower price or extend offer — breaks premium positioning.
+- Consider if messaging is reaching right audience.
+
+**Case 3: A Founder Circle member cancels in month 1**
+- Their spot does NOT free up.
+- Lauren sends personal email asking what happened.
+- Document the reason. Most valuable feedback you'll get.
+
+**Case 4: A Standard user asks to join Founder Circle after it's full**
+- Politely decline. Closed permanently.
+- This friction is what makes the original Founder Circle valuable.
+
+**Case 5: Perk delivery slips**
+- If Office Hours gets cancelled or email response time slips past 48 hours:
+- Send personal apology to affected members.
+- Recover the perk in the next cycle.
+- Trust cost of broken promises is higher than the cost of overdelivering.
+
+### 8c. Quarterly review
+
+Every 90 days, evaluate:
+- Founder Circle retention rate (target: 95%+)
+- Office Hours attendance rate
+- Themes from `circle@govirl.ai`
+- Whether tier rules need adjustment
+
+---
+
+## 📁 Files modified by this brief
+
+**Code:**
+- `index.html` — pricing display, founder badge, Founder Circle tab
+- `/api/create-checkout.js` — cap enforcement, tier-aware Stripe
+- `/api/stripe-webhook.js` — handle new metadata, write to founding_positions
+
+**Database:**
+- Add columns to `credits` table
+- Create `founding_positions` table with 50 rows
+
+**Landing page:**
+- Replace founding offer section with single-tier copy
+- Add live counter integration
+- Update waitlist hero copy
+
+**Stripe:**
+- Two products (Founder Circle + Standard)
+- Four prices (two per product)
+- Webhook updates
+
+**Loops:**
+- Two variants of Email 01 (Welcome)
+- Two variants of Email 04 (Payment Confirmation)
+- New email: "Founder Circle Full"
+- Remove year-2 transition email
+
+**New systems:**
+- Office Hours calendar (monthly Zoom)
+- `circle@govirl.ai` forwarding to Lauren
+- govirl.ai/founders page
+- Beta feature flag system
+- Monitoring dashboard
+
+---
+
+## 🛡️ Safety reminders
+
+1. **Test the Stripe flow with real money before launch.** End-to-end purchase for both tiers. Verify correct product/price, webhook fires, user lands in right tier.
+2. **Test the cap enforcement.** Simulate hitting 50th Founder Circle signup. Verify next signup redirects to Standard.
+3. **Document "no take-backs" cancellation policy in Terms of Service.** Explicit legal disclosure required.
+4. **Set up alert on `circle@govirl.ai`** if response time exceeds 24 hours.
+5. **Never change Founder Circle pricing for an existing customer.** Even by accident. Even with refund. The promise is the moat.
+
+---
+
+## ⏱️ Time estimates
+
+| Step | Estimated time |
+|---|---|
+| Stripe configuration | 2-3 hours |
+| Database schema | 1 hour |
+| Application code | 4-6 hours |
+| Landing page copy | 2-3 hours |
+| Founder Circle perks system | 2 hours planning |
+| Lifecycle emails | 2-3 hours |
+| Perk fulfillment workflow | 2-3 hours |
+| Post-launch monitoring | 2 hours |
+
+**Total: 17-23 hours pre-launch.** Spread across 22 days = under an hour per day.
+
+---
+
+## ✅ Pre-launch checklist
+
+Before June 1, check all:
+
+- [ ] Two Stripe products with correct prices and metadata
+- [ ] Cap enforcement deployed and tested
+- [ ] Webhook handlers updated and tested
+- [ ] Database migrations run in production Supabase
+- [ ] `founding_positions` pre-populated with 50 empty slots
+- [ ] Landing page updated with single-tier copy
+- [ ] Live counter working
+- [ ] Founder Circle badge visible in app for test users
+- [ ] Both Loops welcome variants written and tested
+- [ ] First Office Hours date set, invite drafted
+- [ ] `circle@govirl.ai` configured and forwarding
+- [ ] govirl.ai/founders page created
+- [ ] "Founder Circle Full" email drafted in Loops
+- [ ] Monitoring dashboard set up
+- [ ] Terms of Service updated with founding disclosures
+- [ ] End-to-end purchase tested for both tiers
+
+---
+
+**End of brief.** Once all checklist items are complete, the founding structure is ready for June 1 launch.
