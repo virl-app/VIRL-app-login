@@ -1,0 +1,465 @@
+# VIRL — App Repositioning Brief
+
+**For implementation by Claude Code**
+**Companion document to: virl-brand-positioning-doc.md**
+**Pre-launch implementation — to be completed by May 31, 2026**
+
+This brief details every change required to reposition the in-app experience from a generator interface to a strategist interface. These are surface-level changes that don't require new product features — they reframe existing functionality through the strategist lens.
+
+---
+
+## 🎯 The strategic goal
+
+The app is where users actually experience VIRL after they sign up. If the marketing positions VIRL as a strategist but the app feels like a generator, the positioning falls apart in the first session. The product must MATCH the positioning, not just the marketing.
+
+Three goals for this work:
+
+1. **Reframe every user-facing string** to use strategist language, not generator language
+2. **Make the in-app experience feel like working with a strategist** through small UX details
+3. **Reinforce the brand promise** at every interaction point
+
+These are small changes individually but compound dramatically in perceived value.
+
+---
+
+## 📋 Current state assessment
+
+The app currently uses generic AI-tool language throughout:
+
+- **Tab labels:** "Plan," "Captions," "Scan" (feature-named, not strategist-named)
+- **Button text:** "Generate," "Create," "Make" (generator verbs)
+- **Loading states:** "Generating..." "Creating..." (generator activity)
+- **Empty states:** "No content yet" (passive, transactional)
+- **Confirmations:** "Generation complete" (mechanical)
+- **Error messages:** Generic technical errors
+
+Almost every user-facing string in the app currently reinforces the generator positioning. This brief specifies every change needed.
+
+---
+
+## ✏️ Required changes — organized by area
+
+### Area 1 — Tab labels and navigation (CRITICAL)
+
+The primary tabs in the app navigation are the most visible labels. Update them to reflect strategist behavior:
+
+| Current label | New label | Why |
+|---|---|---|
+| Plan | Plan | Keep — "plan" is a strategist verb |
+| Captions | Captions | Keep — descriptive of the artifact |
+| Scan | Scan | Keep — descriptive of the action |
+| Algorithm Intel | REMOVE | Already retired per our earlier decision |
+| Profile | Your Voice | Reframes profile setup as voice training |
+| Settings | Settings | Keep |
+
+**The single most important change here:** Rename "Profile" to "Your Voice." This single rename does enormous strategist-positioning work because it reframes the most important user setup screen from "data entry" to "voice training."
+
+### Area 2 — Action buttons throughout the app (CRITICAL)
+
+Every "generate" or "create" button reinforces generator positioning. Replace with strategist verbs:
+
+| Current button | New button | Context |
+|---|---|---|
+| Generate Plan | Plan my week | Plan tab — primary CTA |
+| Generate Caption | Write this in my voice | Captions tab |
+| Generate Script | Script this in my voice | Script feature |
+| Scan Photo | Strategy this post | Scan feature |
+| Save | Save to Vault | Vault save action |
+| Edit | Refine | Edit action on any output |
+| Re-generate | Try a different angle | Re-generation action |
+| Copy | Copy to clipboard | Keep — descriptive |
+
+**Why these matter:**
+- "Plan my week" sounds like working with a strategist. "Generate Plan" sounds like asking a robot for output.
+- "Write this in my voice" reinforces the voice promise on every interaction.
+- "Refine" is what strategists do. "Edit" is what users do to broken AI output.
+- "Try a different angle" reframes regeneration as creative exploration, not mechanical retry.
+
+### Area 3 — Loading states (HIGH)
+
+Loading states are micro-moments that reinforce or undermine positioning. Current generic "Loading..." or "Generating..." should be replaced with strategist-flavored states:
+
+**For plan generation (60-90 second wait):**
+
+Rotate through these messages every 8-10 seconds:
+1. "Looking at what worked last week..."
+2. "Considering your voice and audience..."
+3. "Checking current trends for your niche..."
+4. "Building structure for the week..."
+5. "Drafting in your specific voice..."
+6. "Almost ready — refining the details..."
+
+**For caption generation (10-20 second wait):**
+
+Rotate through these:
+1. "Listening to your voice..."
+2. "Considering your audience..."
+3. "Drafting..."
+
+**For scan analysis (5-10 second wait):**
+
+Rotate through these:
+1. "Analyzing the photo..."
+2. "Comparing to what's working for you..."
+3. "Building recommendations..."
+
+**Why this matters:**
+- Loading states are dead time. Strategist-flavored loading turns dead time into brand-reinforcement time.
+- Users feel like VIRL is thinking, not just generating.
+- The specificity ("Looking at what worked last week," "Considering your voice") seeds the strategist mental model.
+
+### Area 4 — Empty states (HIGH)
+
+Empty states are first impressions. Generic empty states ("No content yet") miss the chance to reinforce positioning. Replace throughout:
+
+**Plan tab — when no plan exists:**
+
+```
+No plan yet.
+
+Tell me what's happening in your business this week, and I'll
+build you a week of content that actually sounds like you.
+
+[Plan my first week →]
+```
+
+**Vault tab — when no saved content:**
+
+```
+Your Vault is empty.
+
+Save the captions and posts that work — VIRL will use them to make
+next week's work even sharper.
+
+(A strategist learns. Your Vault is what teaches her.)
+```
+
+**Captions tab — when no captions generated:**
+
+```
+No captions yet.
+
+Captions are great for one-off posts. For a full week of content,
+start with Plan instead.
+
+[Write a caption →]    [Plan my week →]
+```
+
+**Scan tab — when no scans:**
+
+```
+No scans yet.
+
+Before you post a photo or video, run it through Scan. VIRL will
+tell you whether it'll resonate with your specific audience — not
+just whether it's a good image.
+
+[Scan your first post →]
+```
+
+**Why this matters:**
+- Every empty state reinforces strategist positioning ("A strategist learns. Your Vault is what teaches her.")
+- The language is warm and instructional, not transactional
+- Each empty state has a clear next-step CTA
+
+### Area 5 — Confirmation messages (MEDIUM)
+
+When an action completes, the confirmation should feel like working with a strategist:
+
+| Current confirmation | New confirmation |
+|---|---|
+| "Plan generated successfully" | "Your week is planned." |
+| "Caption created" | "Caption written in your voice." |
+| "Saved to Vault" | "Saved. VIRL will learn from this." |
+| "Profile updated" | "Voice updated. Your next plan will reflect this." |
+| "Scan complete" | "Strategy ready. Here's what VIRL thinks." |
+
+**Why this matters:**
+- Each confirmation reinforces strategist behavior ("planned," "in your voice," "will learn from this")
+- The language is calm and considered, not breathless ("successfully!" or "")
+
+### Area 6 — Error messages (MEDIUM)
+
+Error messages are negative micro-moments. Current generic errors compound the bad feeling. Replace with strategist-positioned errors that take responsibility:
+
+**Generic API failure:**
+
+```
+Something went wrong on VIRL's end.
+
+This isn't you — it's me. Try again in a moment, and if it keeps
+happening, email hello@govirl.ai and Lauren will look at it personally.
+
+[Try again]
+```
+
+**Missing profile information:**
+
+```
+VIRL needs to learn your voice first.
+
+To plan content that sounds like you, fill out Your Voice profile.
+It takes about 2 minutes — and it's the difference between generic
+AI output and content that actually sounds like you.
+
+[Set up Your Voice →]
+```
+
+**Out of credits:**
+
+```
+You've used your weekly credits.
+
+Your credits reset every Monday morning. If you need more this week,
+you can upgrade to Pro for unlimited generations.
+
+[Wait until Monday]    [Upgrade to Pro →]
+```
+
+**Why this matters:**
+- Errors are where products usually feel cheapest. Strategist-positioned errors actually strengthen the brand.
+- The voice stays consistent ("This isn't you — it's me.") — warm, responsible, founder-led.
+- Every error includes a clear next step.
+
+### Area 7 — The "Your Voice" profile setup (CRITICAL — significant rework)
+
+This is the most important reframe in the app. The current profile setup is a generic data entry form. The new "Your Voice" setup should feel like a thoughtful conversation with a strategist.
+
+**Restructure the profile into three sections with strategist framing:**
+
+**Section 1 — "Who you are"**
+
+Replace headers like "Name" and "About you" with:
+
+```
+Before VIRL can write in your voice, it needs to know you.
+
+Tell me about yourself — not the marketing version, the real one.
+What do you do? Who do you serve? What makes your voice different
+from everyone else doing similar work?
+
+[Name field]
+[Industry / role field]
+[Tell me about you — open text]
+```
+
+**Section 2 — "Your audience"**
+
+```
+Now tell me about who you're writing for.
+
+Specific is better than general. "Working moms in their 30s building
+service businesses" beats "women entrepreneurs."
+
+[Who's your audience? — open text]
+[Where are they? — platforms]
+[What do they want from your content? — open text]
+```
+
+**Section 3 — "Your voice"**
+
+```
+This is where most AI tools stop and you start sounding generic.
+
+Tell VIRL the specifics that make you sound like you. Words you use.
+Phrases you'd never use. Tone. Energy. What you'd never write about.
+
+[Words / phrases that sound like you]
+[Words / phrases you'd never use]
+[Topics that are off-limits]
+[Personal facts VIRL should always get right — children's names,
+business details, etc.]
+[Things you'd love VIRL to reference naturally]
+```
+
+**Why this matters:**
+- The new framing turns profile setup from "data entry" into "voice training"
+- Each section has a strategist-flavored intro that explains WHY the input matters
+- The "Personal facts" section addresses the sons-vs-daughters problem we identified in earlier work
+- Users finish the setup feeling like they've been listened to, not just surveyed
+
+### Area 8 — Plan output structure (MEDIUM)
+
+When VIRL generates a plan, the visual presentation should reinforce strategist positioning:
+
+**Add a strategy summary at the top of every plan:**
+
+Before the 7 days of cards, show a small "Strategy Notes" panel:
+
+```
+─────────────────────────────────────────
+STRATEGY NOTES — Week of [Date]
+
+This week's plan focuses on [specific theme based on what user inputted
+or what's been working]. We're emphasizing [format mix] across [platforms].
+
+Key trend referenced: [if trend integration was used]
+
+Top performer from last week: [if data available]
+─────────────────────────────────────────
+
+[7 cards below]
+```
+
+**Why this matters:**
+- Strategists explain their thinking. Generators just produce output.
+- This panel reinforces VIRL's strategic decision-making and gives users insight into WHY the plan is structured the way it is
+- It teaches users to think strategically alongside the tool
+
+### Area 9 — Onboarding sequence (HIGH)
+
+The first session after signup is critical. Currently it likely goes: signup → profile → generate. Improve with:
+
+**Step 1 (after signup):**
+
+A modal that says:
+```
+Welcome to VIRL.
+
+I'm Lauren — the human behind VIRL. Quick note before you start.
+
+VIRL is an AI content strategist, not a writer. That means it works
+best when you spend a few minutes telling it about you first.
+
+The profile takes 2-3 minutes. Skip it and your output will sound
+generic. Fill it out thoughtfully and the difference is dramatic.
+
+Ready?
+
+[Take me to Your Voice →]
+```
+
+**Step 2 (after profile):**
+
+```
+Voice set. Now let's plan your first week.
+
+Tell me what's happening in your business this week — even a sentence.
+Real context makes for a real plan.
+
+[Plan my first week →]
+```
+
+**Step 3 (after first plan):**
+
+```
+Your first plan is ready.
+
+Read through it. Save what you love. Try a few captions in your voice.
+Run a photo through Scan before you post it.
+
+The longer you use VIRL, the more it learns about you. By month 2,
+the strategy will feel meaningfully different from week 1.
+
+[See my plan →]
+```
+
+**Why this matters:**
+- Onboarding sets expectations for the entire relationship
+- The founder voice ("I'm Lauren — the human behind VIRL") establishes connection from second one
+- Each step explains WHY the action matters, reinforcing strategist behavior
+- The closing line ("the strategy will feel meaningfully different from week 1") sets expectation for compound value
+
+### Area 10 — Settings and account screens (LOW)
+
+These screens are less visible but should still match positioning:
+
+- "Subscription" → "Your VIRL plan" (or "Membership")
+- "Billing" → "Billing"
+- "Cancel subscription" → "Pause or cancel" (gives the pause option more weight)
+- "API usage" → REMOVE from user view (technical clutter)
+
+When a user views their plan, show:
+
+```
+Your VIRL plan: [Founder Circle / Founding Member / Standard]
+Member since: [date]
+
+[Tier-specific perks shown here for founding members]
+```
+
+---
+
+## 🎨 Visual specifications
+
+All in-app changes follow the brand guidelines in virl-brand-positioning-doc.md:
+
+- Use B.xxx color tokens consistently (no hardcoded hex values)
+- Italiana italic for emotional anchor words inside in-app headlines and confirmations
+- Jost/DM Sans for body text and buttons
+- No decorative shapes (no stars, asterisks, sparkles)
+- Generous spacing — premium brands give content room
+
+**One specific UI element to add:**
+
+A small "VIRL" wordmark in the top-left of every screen, in Italiana. This reinforces brand presence throughout the experience.
+
+---
+
+## ✅ Implementation checklist
+
+By May 31, 2026, all of these should be true:
+
+- [ ] Tab labels reviewed and updated ("Profile" → "Your Voice")
+- [ ] All action buttons throughout the app use strategist verbs
+- [ ] Loading states updated with rotating strategist-flavored messages
+- [ ] Empty states rewritten for all four primary tabs
+- [ ] Confirmation messages updated to reinforce strategist behavior
+- [ ] Error messages rewritten in founder-led, warm voice
+- [ ] "Your Voice" profile sections restructured with conversational framing
+- [ ] Strategy Notes panel added to top of every generated plan
+- [ ] 3-step onboarding modal sequence added for first-time users
+- [ ] Settings labels updated
+- [ ] All copy reviewed against brand voice guidelines
+- [ ] Mobile responsive testing complete on all reframed screens
+- [ ] All B.xxx color tokens used consistently
+
+---
+
+## 📈 What to watch for
+
+| Signal | Target | What it tells you |
+|---|---|---|
+| Profile completion rate | 70%+ of trial signups complete "Your Voice" | New framing is landing |
+| First-session plan generation rate | 60%+ of profile-completers generate a plan | Onboarding is converting |
+| Customer support emails mentioning "strategist" or "thinking" | Increasing over time | In-app positioning reinforcing marketing positioning |
+| Re-generation frequency | Decreasing over time | Voice matching is improving + onboarding is working |
+| Time spent in "Your Voice" profile | 2-4 minutes average | Users taking voice training seriously |
+
+If profile completion drops below 50%, the new "Your Voice" framing may be too long. Consider compressing.
+
+If re-generation rates stay high, voice matching isn't working — which is a product issue, not a copy issue.
+
+---
+
+## 🛡️ Implementation guidance for Claude Code
+
+When implementing these changes:
+
+1. **Work in priority order.** Tab labels and action buttons first (highest visibility). Loading states and empty states second. Error messages and onboarding third.
+
+2. **Don't break existing functionality.** Every reframe is a copy change, not a feature change. The product should work identically — it just sounds different.
+
+3. **Verify each change before committing.** Run the app, click through every screen with the change, confirm the new copy displays correctly.
+
+4. **Use existing component patterns.** Don't restructure components — just update the strings inside them. This is a content change, not a refactor.
+
+5. **Match the existing style system.** Use B.xxx color tokens. Use existing typography components. Maintain visual consistency.
+
+---
+
+## ⏱️ Time estimate
+
+Approximate Claude Code time for all changes: 8-12 hours across 4-5 PRs.
+
+**PR 1: Tab labels and action buttons** (2 hours)
+**PR 2: Loading states and empty states** (2-3 hours)
+**PR 3: Confirmation and error messages** (1-2 hours)
+**PR 4: "Your Voice" profile restructure** (2-3 hours)
+**PR 5: Onboarding modal sequence + Strategy Notes panel** (2-3 hours)
+
+These can ship sequentially over the final 21 days before launch, in parallel with other launch prep work.
+
+---
+
+**End of app repositioning brief.** Once implemented, the in-app experience will match the strategist positioning established in the marketing, creating a coherent brand experience from first website visit through first generated plan.
