@@ -1132,6 +1132,71 @@ function fileToBase64(file) {
   });
 }
 
+// [SCAN-FIX] Decode an image file, resize to Anthropic's recommended
+// max dimension (1568px on the longest side), and re-encode as JPEG
+// before sending to the vision API. Solves three real-world failure
+// modes that were eating scans:
+//   1. HEIC/HEIF iPhone photos — Anthropic only accepts JPEG/PNG/GIF/
+//      WebP. Routing through canvas converts HEIC to JPEG on browsers
+//      that can decode it (Safari always; Chrome/Firefox sometimes).
+//   2. 8-15MB phone photos — Vercel functions cap at 4.5MB and
+//      Anthropic caps at 5MB per image. Resizing brings them down to
+//      ~200-500KB.
+//   3. Unusual mime types (image/avif, image/jp2, etc.) — canvas
+//      re-encode normalises everything to image/jpeg.
+// Throws with a user-readable message if decode fails (HEIC on
+// non-Safari, corrupt file, unsupported format).
+async function decodeAndResizeImage(file) {
+  if (!file || !file.type || !file.type.indexOf || file.type.indexOf("image/") !== 0) {
+    throw new Error("Not an image file.");
+  }
+  var dataUrl = await new Promise(function(resolve, reject){
+    var r = new FileReader();
+    r.onload  = function(){ resolve(r.result); };
+    r.onerror = function(){ reject(new Error("Could not read this file.")); };
+    r.readAsDataURL(file);
+  });
+  var img = await new Promise(function(resolve, reject){
+    var i = new Image();
+    i.onload  = function(){ resolve(i); };
+    i.onerror = function(){
+      var isHeic = file.type === "image/heic" || file.type === "image/heif"
+        || /\.(heic|heif)$/i.test(file.name || "");
+      reject(new Error(isHeic
+        ? "HEIC photos aren't supported here. Save as JPEG from your photos app and try again."
+        : "Could not decode this image. Try saving it as JPEG."));
+    };
+    i.src = dataUrl;
+  });
+  var MAX_DIM = 1568;
+  var w = img.naturalWidth  || img.width  || 0;
+  var h = img.naturalHeight || img.height || 0;
+  if (!w || !h) throw new Error("Image has zero dimensions.");
+  if (w > MAX_DIM || h > MAX_DIM) {
+    var scale = Math.min(MAX_DIM / w, MAX_DIM / h);
+    w = Math.max(1, Math.round(w * scale));
+    h = Math.max(1, Math.round(h * scale));
+  }
+  var canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  var ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Image preview not supported in this browser.");
+  ctx.drawImage(img, 0, 0, w, h);
+  var blob = await new Promise(function(resolve, reject){
+    canvas.toBlob(function(b){
+      if (b) resolve(b);
+      else reject(new Error("Could not encode the image."));
+    }, "image/jpeg", 0.85);
+  });
+  var b64 = await new Promise(function(resolve, reject){
+    var fr = new FileReader();
+    fr.onload  = function(){ resolve(String(fr.result).split(",")[1]); };
+    fr.onerror = function(){ reject(new Error("Could not encode the image.")); };
+    fr.readAsDataURL(blob);
+  });
+  return { b64: b64, mediaType: "image/jpeg" };
+}
+
 function extractVideoFrame(file, atSeconds) {
   return new Promise(function(res,rej) {
     const url = URL.createObjectURL(file);
@@ -1142,9 +1207,22 @@ function extractVideoFrame(file, atSeconds) {
       vid.currentTime = Math.min(atSeconds||1, vid.duration*0.3);
     };
     vid.onseeked = function() {
+      // [SCAN-FIX] Resize the captured frame to Anthropic's 1568px
+      // longest-side guideline. A 4K video frame is 3840x2160 raw,
+      // which encodes to a 1-3MB JPEG and risks tipping over the
+      // 4.5MB Vercel function payload cap.
+      var MAX_DIM = 1568;
+      var vw = vid.videoWidth  || 0;
+      var vh = vid.videoHeight || 0;
+      var w = vw, h = vh;
+      if (w > MAX_DIM || h > MAX_DIM) {
+        var scale = Math.min(MAX_DIM / w, MAX_DIM / h);
+        w = Math.max(1, Math.round(w * scale));
+        h = Math.max(1, Math.round(h * scale));
+      }
       const c = document.createElement("canvas");
-      c.width = vid.videoWidth; c.height = vid.videoHeight;
-      c.getContext("2d").drawImage(vid,0,0);
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(vid, 0, 0, w, h);
       c.toBlob(function(blob) {
         const fr = new FileReader();
         fr.onload = function() { res({b64:fr.result.split(",")[1], dur:vid.duration}); };
@@ -2945,9 +3023,15 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
             });
         } else {
           var imageUrl = URL.createObjectURL(file);
-          fileToBase64(file)
-            .then(function(b64) {
-              return callAPI("scan_image", {}, { token: userToken, imageBase64: b64, imageType: file.type, trendsSnapshot: batchSnapshot });
+          // [SCAN-FIX] decodeAndResizeImage handles HEIC conversion +
+          // re-encodes to JPEG at <=1568px. Pass img.mediaType (always
+          // "image/jpeg") rather than file.type so the server never
+          // sees an unsupported mime. The catch block now surfaces
+          // the helper's user-readable error directly — no need for
+          // the old generic "try screenshotting" hint.
+          decodeAndResizeImage(file)
+            .then(function(img) {
+              return callAPI("scan_image", {}, { token: userToken, imageBase64: img.b64, imageType: img.mediaType, trendsSnapshot: batchSnapshot });
             })
             .then(function(data) {
               totalCost += data.cost || 0;
@@ -2962,7 +3046,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
               }
             })
             .catch(function(e) {
-              out.push({name:file.name,url:imageUrl,error:"Could not analyze: "+(e.message||"unknown error")+". Try screenshotting the image first."});
+              out.push({name:file.name,url:imageUrl,error:(e && e.message) || "Could not analyze this image. Try saving it as JPEG."});
             })
             .then(function() {
               processNext();
