@@ -725,7 +725,25 @@ export default async function handler(req, res) {
   // the alternative would be to over-fetch on every plan generation
   // for users who haven't enabled the feature. The hit on opted-in
   // users is one indexed events query (~50-100ms), acceptable.
-  const recentEdits = (generationType === "plan" && !demoMode && profile && profile.learnFromEdits)
+  //
+  // Applies to every generation type that produces user-facing copy:
+  //   - plan, plan_partial:           full + partial plan generation
+  //   - caption, caption_remix:       caption tab
+  //   - scan_image, scan_video_frame: scan tab
+  //
+  // Skipped intentionally:
+  //   - plan_strategy: regens the strategic thesis only, not card
+  //     content — voice diffs don't inform "what angle should this
+  //     week take." Including them would add noise.
+  //   - script: long-form video scripts have their own structure
+  //     that doesn't map cleanly to short before/after card diffs.
+  //   - demoMode anything: demo users have no profile, no edits.
+  const EDIT_LEARNING_TYPES = new Set([
+    "plan", "plan_partial",
+    "caption", "caption_remix",
+    "scan_image", "scan_video_frame",
+  ]);
+  const recentEdits = (EDIT_LEARNING_TYPES.has(generationType) && !demoMode && profile && profile.learnFromEdits)
     ? await fetchRecentEdits(userId)
     : [];
 

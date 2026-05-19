@@ -683,7 +683,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
 // declares the strategy locked, lists kept cards as do-not-duplicate
 // context, and demands exactly N replacements for the supplied day
 // labels — no strategy/stats in the output.
-function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _history) {
+function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _history, recentEdits) {
   const keptCards        = Array.isArray(params.keptCards)        ? params.keptCards        : [];
   const replaceDayLabels = Array.isArray(params.replaceDayLabels) ? params.replaceDayLabels : [];
   const strategy         = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
@@ -729,7 +729,13 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
     + "\n  - Follow ALL the same per-card field rules from the system prompt (universal fields + format-specific fields based on the card's `format`)."
     + "\n  - Hashtag arrays still follow the platform's playbook hashtag_count. Strings still omit the '#' prefix."
     + "\n\nOutput ONLY this JSON shape — NO strategy field, NO stats field, NO preamble:"
-    + "\n{\"cards\":[{...}, {...}]}";
+    + "\n{\"cards\":[{...}, {...}]}"
+    // [LEARN-FROM-EDITS] Voice signal from the user's recent diffs.
+    // Even though this is a partial regen anchored to a locked
+    // strategy, the new cards should still sound like the user —
+    // they're going to sit alongside (and be edited the same way as)
+    // the kept ones. Empty string when no edits / opt-out.
+    + formatEditsForPrompt(recentEdits);
 
   return {
     systemPrompt: fullBuilt.systemPrompt,
@@ -841,7 +847,7 @@ function captionMaxTokens(platform, length) {
   return Math.min(4000, Math.round(base * mult));
 }
 
-function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
+function buildCaption(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits) {
   const platform = params.platform || "TikTok";
   const tone     = params.tone     || "Warm & relatable";
   const length   = params.length   || "Medium";
@@ -857,7 +863,12 @@ function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
     + captionPlaybookContext(playbook, platform)
     + captionTrendsContext(trends, platform) + " "
     + "Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":" + hashtagSchema(slots) + "}"
-    + " Hashtag strings MUST NOT include the '#' prefix — plain words only.";
+    + " Hashtag strings MUST NOT include the '#' prefix — plain words only."
+    // [LEARN-FROM-EDITS] Voice diffs from recent plan-card edits.
+    // Caption generation benefits as much as plan generation: the
+    // hook + each caption variant should match the rewriting
+    // patterns the user applies. Empty string when no edits.
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -867,13 +878,17 @@ function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
   };
 }
 
-function buildCaptionRemix(params, profile) {
+function buildCaptionRemix(params, profile, _vaultPatterns, _playbook, _trends, _history, recentEdits) {
   const text = params.text || "";
   const systemPrompt = buildSystemPrompt(profile, "caption writer and remixer");
   const userPrompt = "Rewrite this caption 3 ways. Keep the core message but vary the angle. "
     + "Each version must sound like the creator — same voice, different approach. "
     + "Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"}} "
-    + "Caption to remix: " + text;
+    + "Caption to remix: " + text
+    // [LEARN-FROM-EDITS] Voice diffs as ground truth. Caption remix
+    // is specifically about voice ("different angle, same voice") —
+    // edits are the strongest signal we have for "same voice".
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -883,7 +898,7 @@ function buildCaptionRemix(params, profile) {
   };
 }
 
-function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
+function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits) {
   const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
   const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
     + scanPlaybookContext(playbook)
@@ -895,7 +910,11 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
     + "\"caption\":\"full ready-to-post caption sized to the platform's caption_limit\","
     + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
     + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
-    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\"}";
+    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\"}"
+    // [LEARN-FROM-EDITS] Voice signal — the hook + caption fields
+    // this scan emits are the same field types the user routinely
+    // edits on plan cards, so the diffs apply directly.
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -905,7 +924,7 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
   };
 }
 
-function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends) {
+function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits) {
   const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
   const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
     + scanPlaybookContext(playbook)
@@ -918,7 +937,11 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends) 
     + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
     + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
     + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\","
-    + "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
+    + "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}"
+    // [LEARN-FROM-EDITS] Same rationale as buildScanImage — the
+    // hook/caption fields emitted here are exactly the ones the
+    // user edits on plan cards.
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
