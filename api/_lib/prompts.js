@@ -175,6 +175,55 @@ function renderSuccessMetric(sm) {
   return "";
 }
 
+// [LEARN-FROM-EDITS] Format recent { field, before, after } diffs into
+// a prompt-ready voice-example block. The diffs themselves come from
+// edit-examples.js#fetchRecentEdits — that file owns the database
+// query; this function owns how the data is rendered for the model.
+// Returns "" when no diffs (toggle off, no qualifying events, fetch
+// failed) so the caller can append unconditionally.
+//
+// FIELD_LABELS gives the model a clean field name ("photo direction"
+// instead of "photoDirection") so the examples read like English, not
+// like JSON. Unknown future fields fall back to their raw key so a
+// schema addition still surfaces in the examples block without
+// touching this code.
+const EDIT_FIELD_LABELS = {
+  title:               "title",
+  description:         "description",
+  insight:             "insight",
+  hook:                "hook",
+  caption:             "caption",
+  body:                "body",
+  closing:             "closing",
+  quote:               "quote",
+  attribution:         "attribution",
+  photoDirection:      "photo direction",
+  compositionTip:      "composition tip",
+  audioRecommendation: "audio direction",
+  designDirection:     "design direction",
+  hashtags:            "hashtags",
+  onScreenText:        "on-screen text",
+  slides:              "carousel slides",
+  frames:              "story frames",
+};
+function formatEditsForPrompt(diffs) {
+  if (!Array.isArray(diffs) || diffs.length === 0) return "";
+  const lines = diffs.map(function(d){
+    const label = EDIT_FIELD_LABELS[d.field] || d.field;
+    // ↦ (mapsto) gives the model a distinctive visual cue versus the
+    // common → arrow used elsewhere in the prompt. before/after stay
+    // quoted so the model sees them as discrete strings.
+    return "  " + label + ": \"" + d.before + "\" ↦ \"" + d.after + "\"";
+  });
+  return "\n\nHOW THIS CREATOR REVISES VIRL DRAFTS (recent edits, newest first):\n"
+    + lines.join("\n")
+    + "\n\nUse these revisions as VOICE GROUND TRUTH. Match the rewriting patterns:"
+    + " if the creator shortened a hook, write shorter hooks; if the creator swapped"
+    + " a punchy word for a softer one, mirror that softness; if they tightened a"
+    + " caption from 3 sentences to 1, default to 1. The before/after diffs are the"
+    + " strongest available signal of how this creator actually sounds.";
+}
+
 // Plan history → prompt context. Surfaces last 1-3 weeks' strategy + each
 // week's top performer (by views+likes×2+saves×4) + how many cards never
 // got logged. The LLM uses this to build narratively, double down on what
@@ -466,7 +515,7 @@ const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mi
 
 // ── Builders, one per generation type ──────────────────────────────────────
 
-function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
+function buildPlan(params, profile, vaultPatterns, playbook, trends, history, recentEdits) {
   const platformsArr = params.platforms || [];
   const platforms = platformsArr.join(",");
   const formats   = (params.formats   || []).join(",");
@@ -483,6 +532,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
   const historyCtx  = planHistoryContext(history);
+  // [LEARN-FROM-EDITS] Recent before/after diffs from the user's
+  // own card edits, formatted as voice ground-truth examples. Empty
+  // string when no diffs (toggle off, no edits yet, or fetch failed)
+  // so concatenating below is a no-op.
+  const editsCtx    = formatEditsForPrompt(recentEdits);
   const weekNumber  = (history && history.length) ? (history.length + 1) : 1;
 
   // Vault patterns: server-derived from the user's user_data row, so the
@@ -605,7 +659,8 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     // trend against the trends list they see in-app.
     + " For the `trend` field: include it ONLY if a card genuinely builds on a current trend listed in the TRENDS block below. Use the trend item's exact phrasing (or a close paraphrase). If no listed trend authentically fits the card, OMIT the field entirely — do not invent generic riffs ('morning routine content', 'self-care vibes', 'aesthetic content'). It's better to have 3 cards with real trends and 7 without, than 10 cards with made-up trends."
     + playbookCtx
-    + trendsCtx;
+    + trendsCtx
+    + editsCtx;
 
   return {
     systemPrompt,
@@ -628,7 +683,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
 // declares the strategy locked, lists kept cards as do-not-duplicate
 // context, and demands exactly N replacements for the supplied day
 // labels — no strategy/stats in the output.
-function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _history) {
+function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _history, recentEdits) {
   const keptCards        = Array.isArray(params.keptCards)        ? params.keptCards        : [];
   const replaceDayLabels = Array.isArray(params.replaceDayLabels) ? params.replaceDayLabels : [];
   const strategy         = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
@@ -674,7 +729,13 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
     + "\n  - Follow ALL the same per-card field rules from the system prompt (universal fields + format-specific fields based on the card's `format`)."
     + "\n  - Hashtag arrays still follow the platform's playbook hashtag_count. Strings still omit the '#' prefix."
     + "\n\nOutput ONLY this JSON shape — NO strategy field, NO stats field, NO preamble:"
-    + "\n{\"cards\":[{...}, {...}]}";
+    + "\n{\"cards\":[{...}, {...}]}"
+    // [LEARN-FROM-EDITS] Voice signal from the user's recent diffs.
+    // Even though this is a partial regen anchored to a locked
+    // strategy, the new cards should still sound like the user —
+    // they're going to sit alongside (and be edited the same way as)
+    // the kept ones. Empty string when no edits / opt-out.
+    + formatEditsForPrompt(recentEdits);
 
   return {
     systemPrompt: fullBuilt.systemPrompt,
@@ -786,7 +847,7 @@ function captionMaxTokens(platform, length) {
   return Math.min(4000, Math.round(base * mult));
 }
 
-function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
+function buildCaption(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits) {
   const platform = params.platform || "TikTok";
   const tone     = params.tone     || "Warm & relatable";
   const length   = params.length   || "Medium";
@@ -802,7 +863,12 @@ function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
     + captionPlaybookContext(playbook, platform)
     + captionTrendsContext(trends, platform) + " "
     + "Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":" + hashtagSchema(slots) + "}"
-    + " Hashtag strings MUST NOT include the '#' prefix — plain words only.";
+    + " Hashtag strings MUST NOT include the '#' prefix — plain words only."
+    // [LEARN-FROM-EDITS] Voice diffs from recent plan-card edits.
+    // Caption generation benefits as much as plan generation: the
+    // hook + each caption variant should match the rewriting
+    // patterns the user applies. Empty string when no edits.
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -812,13 +878,17 @@ function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
   };
 }
 
-function buildCaptionRemix(params, profile) {
+function buildCaptionRemix(params, profile, _vaultPatterns, _playbook, _trends, _history, recentEdits) {
   const text = params.text || "";
   const systemPrompt = buildSystemPrompt(profile, "caption writer and remixer");
   const userPrompt = "Rewrite this caption 3 ways. Keep the core message but vary the angle. "
     + "Each version must sound like the creator — same voice, different approach. "
     + "Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"}} "
-    + "Caption to remix: " + text;
+    + "Caption to remix: " + text
+    // [LEARN-FROM-EDITS] Voice diffs as ground truth. Caption remix
+    // is specifically about voice ("different angle, same voice") —
+    // edits are the strongest signal we have for "same voice".
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -828,7 +898,7 @@ function buildCaptionRemix(params, profile) {
   };
 }
 
-function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
+function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits) {
   const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
   const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
     + scanPlaybookContext(playbook)
@@ -840,7 +910,11 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
     + "\"caption\":\"full ready-to-post caption sized to the platform's caption_limit\","
     + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
     + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
-    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\"}";
+    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\"}"
+    // [LEARN-FROM-EDITS] Voice signal — the hook + caption fields
+    // this scan emits are the same field types the user routinely
+    // edits on plan cards, so the diffs apply directly.
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -850,7 +924,7 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
   };
 }
 
-function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends) {
+function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits) {
   const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
   const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
     + scanPlaybookContext(playbook)
@@ -863,7 +937,11 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends) 
     + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
     + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
     + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\","
-    + "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
+    + "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}"
+    // [LEARN-FROM-EDITS] Same rationale as buildScanImage — the
+    // hook/caption fields emitted here are exactly the ones the
+    // user edits on plan cards.
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -899,8 +977,8 @@ export function requiresImage(t) {
 //   - `history`  — last N weeks' plan history for week-over-week continuity
 //                  (loadPlanHistoryForPrompt(), plan generation only)
 // All default to empty / [] on missing infra; builders skip injection gracefully.
-export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history) {
+export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits) {
   const builder = BUILDERS[generationType];
   if (!builder) throw new Error("Unknown generationType: " + generationType);
-  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {}, history || []);
+  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {}, history || [], recentEdits || []);
 }

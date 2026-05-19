@@ -103,7 +103,14 @@ async function saveProfileToSupabase(profile, userId) {
       // [INTEL 2] Per-platform format preferences. Empty object on missing
       // matches the column's JSONB default of '{}' so old rows and new rows
       // always upsert as the same shape.
-      platform_formats: profile.platformFormats||{}
+      platform_formats: profile.platformFormats||{},
+      // [LEARN-FROM-EDITS] Opt-in flag controlling whether plan-card edit
+      // diffs get captured + fed into future plan prompts. Boolean column,
+      // defaults to FALSE on the server side. NOT a privacy nightmare — it
+      // only takes effect once the user explicitly turns it on in the
+      // Profile tab; off-by-default means existing users see no behavior
+      // change until they opt in.
+      learn_from_edits: !!profile.learnFromEdits
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -151,7 +158,10 @@ async function loadProfileFromSupabase(userId) {
       loveToReference: data.love_to_reference||"",
       // [INTEL 2] Per-platform format preferences. Defaults to {} so old
       // rows hydrate the chip selectors as fully unselected.
-      platformFormats: data.platform_formats||{}
+      platformFormats: data.platform_formats||{},
+      // [LEARN-FROM-EDITS] Opt-in flag. Falls back to false on existing
+      // rows that don't yet have the column populated.
+      learnFromEdits: !!data.learn_from_edits
     };
   } catch(e) { return {}; }
 }
@@ -3761,6 +3771,12 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   const [personalFacts,setPersonalFacts] = useState(profile.personalFacts||"");
   const [neverAssume,setNeverAssume] = useState(profile.neverAssume||"");
   const [loveToReference,setLoveToReference] = useState(profile.loveToReference||"");
+  // [LEARN-FROM-EDITS] Opt-in flag. When ON, the diff between VIRL's
+  // generated text and the user's saved edit is captured on every
+  // plan-card edit and used as a voice example in future plan prompts.
+  // Default OFF — this is a data/privacy decision and shouldn't be
+  // surprise-enabled. Persists to profiles.learn_from_edits (boolean).
+  const [learnFromEdits,setLearnFromEdits] = useState(!!profile.learnFromEdits);
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -3815,7 +3831,7 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -4118,6 +4134,33 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           <div id="vp-sampleCaption" style={{marginBottom:20}}>
             <Label>Paste a caption you love <TierBadge tier="elite"/></Label>
             <textarea value={sampleCaption} onChange={function(e){setSample(e.target.value);}} placeholder="Paste a caption from one of your posts that felt totally like you..." style={Object.assign({},textareaStyle,{minHeight:88})}/>
+          </div>
+
+          {/* [LEARN-FROM-EDITS] Personalization & privacy. Opt-in toggle
+              that lets VIRL learn from the edits the user makes to plan
+              cards. Off by default — when the user clicks Edit and
+              saves a change, we capture the diff (before + after text
+              per field) and feed the most recent edits into future plan
+              prompts as voice examples. Explicit opt-in because the
+              diffs land in the server-side events table and that's a
+              data decision worth making consciously. Past edits made
+              before opting in are NOT retroactively captured. */}
+          <div style={{marginBottom:20,paddingTop:14,borderTop:"1px solid "+B.divider}}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:12}}>Personalization &amp; privacy</div>
+            <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromEdits?B.navySoft:B.bg,border:"1px solid "+(learnFromEdits?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s"}}
+              onClick={function(){ setLearnFromEdits(function(v){ return !v; }); }}>
+              <div style={{width:18,height:18,border:"2px solid "+(learnFromEdits?B.blue:B.border),borderRadius:4,background:learnFromEdits?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
+                {learnFromEdits&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromEdits?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
+                  Let VIRL learn from my edits
+                </div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
+                  When you tighten a hook or rewrite a caption, save the change as a voice example. VIRL uses your last few edits to make future plans sound more like you. Turn off any time — past edits stop being used going forward, and edits before turning this on are never captured.
+                </div>
+              </div>
+            </div>
           </div>
 
           {saved && (
@@ -6667,11 +6710,42 @@ function App() {
       } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
       if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot);
       try {
-        logEvent(session && session.user && session.user.id, "plan_card_edited", {
-          cardIdx: cardIdx,
-          fields:  Object.keys(updates),
+        // [LEARN-FROM-EDITS] When the profile opt-in is ON, capture
+        // per-field before/after text so the plan prompt can use the
+        // recent diffs as voice examples in future generations. Each
+        // value is truncated to 500 chars to keep the events payload
+        // small even if the user is editing long-form bodies. Arrays
+        // (hashtags, slides, frames, onScreenText) are serialized as
+        // compact JSON — the prompt-side formatter unpacks them. When
+        // the toggle is OFF we only log {fields touched} (no text),
+        // preserving the prior behavior so the events table doesn't
+        // backfill diffs the user didn't consent to.
+        var properties = {
+          cardIdx:   cardIdx,
+          fields:    Object.keys(updates),
           idChanged: idChanged,
-        });
+        };
+        if (profile && profile.learnFromEdits) {
+          var TRUNC = 500;
+          function compact(v) {
+            if (v == null) return "";
+            if (Array.isArray(v) || typeof v === "object") {
+              try { v = JSON.stringify(v); } catch(e) { return ""; }
+            } else {
+              v = String(v);
+            }
+            return v.length > TRUNC ? v.slice(0, TRUNC) : v;
+          }
+          var changes = Object.keys(updates).map(function(field){
+            return {
+              field:  field,
+              before: compact(oldCard[field]),
+              after:  compact(updates[field]),
+            };
+          });
+          properties.changes = changes;
+        }
+        logEvent(session && session.user && session.user.id, "plan_card_edited", properties);
       } catch(e){}
       return next;
     });
