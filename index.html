@@ -2381,8 +2381,32 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
   // left border to a dashed coral to make the state obvious at a glance.
   var cardBorderLeft = (editMode && markedReplace) ? ("3px dashed " + B.coral) : ("3px solid " + bl);
   var cardOpacity    = (editMode && markedReplace) ? 0.65 : 1;
+  // [Move #3] Variable card weight by state. The week was reading as a
+  // uniform stack because every card had identical visual weight regardless
+  // of whether it needed action or was already done. Three light-touch
+  // variants:
+  //   - HIGH priority + unposted → faint sky-tinted background + slightly
+  //     deeper navy-tinted shadow. Pulls the eye to what needs action now.
+  //   - posted OR logged → very faint warm-gray background + shadow nearly
+  //     gone. The "done" state visually recedes without becoming
+  //     unreadable (titles + body keep full contrast so the user can still
+  //     revisit and log results).
+  //   - everything else → current treatment.
+  // Skipped when editMode/markedReplace is active — the dashed-coral
+  // replacement state owns the visual loudly enough.
+  var isDone          = !!(posted || result);
+  var isHighUnposted  = card.priority === "HIGH" && !isDone;
+  var inReplaceState  = editMode && markedReplace;
+  var cardBackground  = inReplaceState ? B.card
+                        : isDone          ? "#FAFAF7"
+                        : isHighUnposted  ? "#F4F7FF"
+                        : B.card;
+  var cardShadow      = inReplaceState ? "0 1px 3px rgba(0,0,0,0.06)"
+                        : isDone          ? "0 0 0 1px rgba(15,23,42,0.03)"
+                        : isHighUnposted  ? "0 4px 14px rgba(31,58,138,0.09)"
+                        : "0 1px 3px rgba(0,0,0,0.06)";
   return (
-    <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity}}>
+    <div className="su" style={{background:cardBackground,borderRadius:12,boxShadow:cardShadow,borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity,transition:"background .15s, box-shadow .15s"}}>
       {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
 
       {/* [UX-01 / P3] Header row. postTime leads at high contrast — it's
