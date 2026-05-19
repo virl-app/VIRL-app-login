@@ -379,6 +379,41 @@ function isTodayDayLabel(dayLabel) {
   return typeof dayLabel === "string" && dayLabel.indexOf("Day 1") === 0;
 }
 
+// [Move #5] Pick a card to surface as an editorial pull-quote between
+// two day groups in the week. Walks the cards array starting from
+// index 5 (skips Day 1 + the first half of the week — pull-quote
+// should land MID-week to break up the dense middle) and returns the
+// first card with a substantive insight (≥40 chars to weed out
+// one-word filler). Returns null when no qualifying card exists, in
+// which case the pull-quote simply doesn't render.
+function pickPullQuoteCard(cardsArr) {
+  if (!Array.isArray(cardsArr) || cardsArr.length < 6) return null;
+  for (var i = 5; i < cardsArr.length; i++) {
+    var c = cardsArr[i];
+    if (c && c.insight && typeof c.insight === "string" && c.insight.trim().length >= 40) {
+      return { card: c, idx: i };
+    }
+  }
+  return null;
+}
+
+// Editorial pull-quote treatment — Italiana italic on a sky-tinted
+// left accent rule. Used between day groups in the main week view
+// and the demo flow to give the eye a rest point and to surface an
+// earned insight that would otherwise hide inside an expanded card.
+function PullQuote({insight}) {
+  if (!insight) return null;
+  return (
+    <div style={{padding:"30px 0 34px",marginTop:4,marginBottom:4}}>
+      <div style={{maxWidth:560,margin:"0 auto",borderLeft:"2px solid "+B.sky,paddingLeft:22}}>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:24,fontStyle:"italic",color:B.navy,lineHeight:1.4,letterSpacing:"0.005em"}}>
+          {"“"+insight.trim().replace(/^["“”]+|["“”]+$/g, "")+"”"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // [TASK 2] Pre-launch gate constants + access check.
 const LAUNCH_TIMESTAMP = new Date("2026-06-01T09:00:00-05:00").getTime();
 const BETA_CODE = "LETSGOVIRL";
@@ -2381,8 +2416,32 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
   // left border to a dashed coral to make the state obvious at a glance.
   var cardBorderLeft = (editMode && markedReplace) ? ("3px dashed " + B.coral) : ("3px solid " + bl);
   var cardOpacity    = (editMode && markedReplace) ? 0.65 : 1;
+  // [Move #3] Variable card weight by state. The week was reading as a
+  // uniform stack because every card had identical visual weight regardless
+  // of whether it needed action or was already done. Three light-touch
+  // variants:
+  //   - HIGH priority + unposted → faint sky-tinted background + slightly
+  //     deeper navy-tinted shadow. Pulls the eye to what needs action now.
+  //   - posted OR logged → very faint warm-gray background + shadow nearly
+  //     gone. The "done" state visually recedes without becoming
+  //     unreadable (titles + body keep full contrast so the user can still
+  //     revisit and log results).
+  //   - everything else → current treatment.
+  // Skipped when editMode/markedReplace is active — the dashed-coral
+  // replacement state owns the visual loudly enough.
+  var isDone          = !!(posted || result);
+  var isHighUnposted  = card.priority === "HIGH" && !isDone;
+  var inReplaceState  = editMode && markedReplace;
+  var cardBackground  = inReplaceState ? B.card
+                        : isDone          ? "#FAFAF7"
+                        : isHighUnposted  ? "#F4F7FF"
+                        : B.card;
+  var cardShadow      = inReplaceState ? "0 1px 3px rgba(0,0,0,0.06)"
+                        : isDone          ? "0 0 0 1px rgba(15,23,42,0.03)"
+                        : isHighUnposted  ? "0 4px 14px rgba(31,58,138,0.09)"
+                        : "0 1px 3px rgba(0,0,0,0.06)";
   return (
-    <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity}}>
+    <div className="su" style={{background:cardBackground,borderRadius:12,boxShadow:cardShadow,borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity,transition:"background .15s, box-shadow .15s"}}>
       {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
 
       {/* [UX-01 / P3] Header row. postTime leads at high contrast — it's
@@ -6419,27 +6478,69 @@ return (
                     Set up your profile (2 minutes) →
                   </button>
                 </div>
-                {demoCards.reduce(function(acc, card, i){
-                  if (i === 0 || demoCards[i-1].day !== card.day) {
-                    acc.push(
-                      <div key={"demoday-"+i} style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:B.navy,padding:"4px 0",marginTop:i>0?16:0,marginBottom:4,borderBottom:"2px solid "+B.navySoft}}>
-                        {card.day}
-                      </div>
+                {/* Demo flow uses the same editorial day-chapter
+                    treatment as the main week view — Italiana serif
+                    day headers for ordinary days, sky-soft section
+                    wash + "Today, Friday" headline for Day 1. Keeps
+                    the brand voice consistent from the first-impression
+                    sample plan through to the daily app. demo cards
+                    aren't savable/loggable so the PlanCard handlers
+                    are no-ops. */}
+                {(function(){
+                  var groups = [];
+                  demoCards.forEach(function(card, i){
+                    if (!card || typeof card !== "object" || !card.title) return;
+                    var last = groups[groups.length - 1];
+                    if (!last || last.day !== card.day) {
+                      groups.push({ day: card.day, items: [{ card: card, idx: i }] });
+                    } else {
+                      last.items.push({ card: card, idx: i });
+                    }
+                  });
+                  var pullQuote = pickPullQuoteCard(demoCards);
+                  var pullQuoteDay = pullQuote ? pullQuote.card.day : null;
+                  return groups.map(function(group, gi){
+                    var isToday = isTodayDayLabel(group.day);
+                    var dayName = parseDayName(group.day);
+                    var sectionStyle = isToday
+                      ? {background:B.skySoft,borderRadius:18,border:"1px solid rgba(59,130,246,0.18)",padding:"18px 16px 14px",marginTop:gi>0?20:0,marginBottom:8}
+                      : {marginTop:gi>0?28:0,marginBottom:8};
+                    var hasPullQuote = pullQuote && pullQuoteDay === group.day;
+                    return (
+                      <React.Fragment key={"demogroup-"+gi}>
+                        <div style={sectionStyle}>
+                          {isToday ? (
+                            <div style={{marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(59,130,246,0.22)"}}>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.24em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Up next</div>
+                              <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.05,letterSpacing:"-0.005em"}}>
+                                {"Today, "}<span style={{color:B.sky,fontStyle:"italic"}}>{dayName}</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{display:"flex",alignItems:"baseline",gap:14,marginBottom:10}}>
+                              <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,lineHeight:1,letterSpacing:"0.01em"}}>{dayName}</div>
+                              <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
+                            </div>
+                          )}
+                          {group.items.map(function(item){
+                            return (
+                              <PlanCard key={"demo-"+item.idx} card={item.card} idx={item.idx}
+                                onSave={function(){ /* demo cards are not savable */ }}
+                                onLog={function(){}}
+                                onSaveScript={null}
+                                saved={false}
+                                result={null}
+                                profile={profile}
+                                userToken={null}
+                                onCreditsUsed={function(){}}/>
+                            );
+                          })}
+                        </div>
+                        {hasPullQuote && <PullQuote insight={pullQuote.card.insight}/>}
+                      </React.Fragment>
                     );
-                  }
-                  acc.push(
-                    <PlanCard key={"demo-"+i} card={card} idx={i}
-                      onSave={function(){ /* demo cards are not savable */ }}
-                      onLog={function(){}}
-                      onSaveScript={null}
-                      saved={false}
-                      result={null}
-                      profile={profile}
-                      userToken={null}
-                      onCreditsUsed={function(){}}/>
-                  );
-                  return acc;
-                }, [])}
+                  });
+                })()}
               </div>
             )}
           </div>
@@ -7345,6 +7446,11 @@ return (
                       last.items.push({ card: card, idx: i });
                     }
                   });
+                  // [Move #5] Pull-quote target — null when no card
+                  // mid-week has a substantive insight. Rendered AFTER
+                  // the day group that contains the chosen card.
+                  var pullQuote = pickPullQuoteCard(cards);
+                  var pullQuoteDay = pullQuote ? pullQuote.card.day : null;
                   return groups.map(function(group, gi){
                     var isToday   = isTodayDayLabel(group.day);
                     var dayName   = parseDayName(group.day);
@@ -7355,42 +7461,46 @@ return (
                     var sectionStyle = isToday
                       ? {background:B.skySoft,borderRadius:18,border:"1px solid rgba(59,130,246,0.18)",padding:"18px 16px 14px",marginTop:gi>0?20:0,marginBottom:8}
                       : {marginTop:gi>0?28:0,marginBottom:8};
+                    var hasPullQuote = pullQuote && pullQuoteDay === group.day;
                     return (
-                      <div key={"daygroup-"+gi} style={sectionStyle}>
-                        {isToday ? (
-                          <div style={{marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(59,130,246,0.22)"}}>
-                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.24em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Up next</div>
-                            <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.05,letterSpacing:"-0.005em"}}>
-                              {"Today, "}<span style={{color:B.sky,fontStyle:"italic"}}>{dayName}</span>
+                      <React.Fragment key={"daygroup-"+gi}>
+                        <div style={sectionStyle}>
+                          {isToday ? (
+                            <div style={{marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(59,130,246,0.22)"}}>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.24em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Up next</div>
+                              <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.05,letterSpacing:"-0.005em"}}>
+                                {"Today, "}<span style={{color:B.sky,fontStyle:"italic"}}>{dayName}</span>
+                              </div>
                             </div>
-                          </div>
-                        ) : (
-                          <div style={{display:"flex",alignItems:"baseline",gap:14,marginBottom:10}}>
-                            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,lineHeight:1,letterSpacing:"0.01em"}}>{dayName}</div>
-                            <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
-                          </div>
-                        )}
-                        {group.items.map(function(item){
-                          var card = item.card;
-                          var i    = item.idx;
-                          return (
-                            <PlanCard key={i} card={card} idx={i}
-                              onSave={saveToVault} onLog={logResult}
-                              onSaveScript={saveScriptForCard}
-                              saved={vault.some(function(v){return v.id===card.title+card.day;})}
-                              result={results.find(function(r){return r.id===card.title+card.day;})}
-                              profile={profile}
-                              userToken={userToken}
-                              onCreditsUsed={refreshCredits}
-                              editMode={editMode}
-                              markedReplace={replaceSet.has(i)}
-                              onToggleReplace={toggleReplaceAt}
-                              replacing={partialReplacing.has(i)}
-                              usedFreshTrends={planUsedFreshTrends}
-                            />
-                          );
-                        })}
-                      </div>
+                          ) : (
+                            <div style={{display:"flex",alignItems:"baseline",gap:14,marginBottom:10}}>
+                              <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,lineHeight:1,letterSpacing:"0.01em"}}>{dayName}</div>
+                              <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
+                            </div>
+                          )}
+                          {group.items.map(function(item){
+                            var card = item.card;
+                            var i    = item.idx;
+                            return (
+                              <PlanCard key={i} card={card} idx={i}
+                                onSave={saveToVault} onLog={logResult}
+                                onSaveScript={saveScriptForCard}
+                                saved={vault.some(function(v){return v.id===card.title+card.day;})}
+                                result={results.find(function(r){return r.id===card.title+card.day;})}
+                                profile={profile}
+                                userToken={userToken}
+                                onCreditsUsed={refreshCredits}
+                                editMode={editMode}
+                                markedReplace={replaceSet.has(i)}
+                                onToggleReplace={toggleReplaceAt}
+                                replacing={partialReplacing.has(i)}
+                                usedFreshTrends={planUsedFreshTrends}
+                              />
+                            );
+                          })}
+                        </div>
+                        {hasPullQuote && <PullQuote insight={pullQuote.card.insight}/>}
+                      </React.Fragment>
                     );
                   });
                 })()}
