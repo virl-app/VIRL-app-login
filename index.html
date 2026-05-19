@@ -342,6 +342,23 @@ const brandTaglineOnDark = {
   marginBottom: 48,
 };
 
+// Warm-bone chrome surface used by the mobile top nav. Pure white reads
+// as institutional B2B; this warmer off-white tone (a touch of ivory)
+// reads as paper/editorial. The inverted dot texture mirrors the navy
+// hero's pattern at the same 22px grid — same visual language, opposite
+// values — which threads brand continuity through the chrome instead
+// of leaving it visually disconnected from the hero.
+const brandWarmSurface = {
+  background: "#F8F5EE",
+  backgroundImage: "radial-gradient(circle, rgba(31,58,138,0.04) 1px, transparent 1px)",
+  backgroundSize: "22px 22px",
+};
+// Hairline borders in a navy-tinted alpha read warmer than the gray
+// B.divider/B.border tokens against the bone surface. Two strengths:
+// the section divider (under the wordmark row) and the bottom edge of
+// the tab strip.
+const brandWarmHairline = "1px solid rgba(31,58,138,0.08)";
+
 // [TASK 2] Pre-launch gate constants + access check.
 const LAUNCH_TIMESTAMP = new Date("2026-06-01T09:00:00-05:00").getTime();
 const BETA_CODE = "LETSGOVIRL";
@@ -6693,26 +6710,40 @@ return (
            pattern exactly. Desktop sidebar (CSS hidden ≥900px) stays
            navy — the two-tone effect of white header + navy sidebar is
            the landing's hero structure transplanted into the app shell. */}
-      <nav id="virl-topnav" style={{background:B.white,position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 8px rgba(15,23,42,0.04)"}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 16px",height:56,borderBottom:"1px solid "+B.divider}}>
+      {/* Mobile top nav — warm-bone editorial masthead. Pure white was
+           correct but cold ("B2B SaaS chrome"); this revision swaps the
+           background to a warm bone tone, mirrors the navy hero's dot
+           pattern (inverted to dark dots on light), softens the divider
+           to a navy hairline at 8% alpha, and demotes the credits pill
+           + sign-out from filled chrome to outline-only data. The
+           wordmark is bumped to 26px / 0.16em letterspacing to match
+           the landing's nav exactly. Goal: feel like a magazine
+           masthead, not a SaaS toolbar. */}
+      <nav id="virl-topnav" style={{...brandWarmSurface,position:"sticky",top:0,zIndex:100}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 18px",height:60,borderBottom:brandWarmHairline}}>
           <a href="/" style={{textDecoration:"none",display:"flex",alignItems:"center"}}>
-            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,letterSpacing:"0.12em",lineHeight:1}}>VIRL</div>
+            <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.navy,letterSpacing:"0.16em",lineHeight:1}}>VIRL</div>
           </a>
-          <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{display:"flex",alignItems:"center",gap:6,background:creditsLoaded&&credits<=5?B.coralSoft:B.navySoft,borderRadius:99,padding:"5px 11px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.35)":"rgba(31,58,138,0.18)")}}>
+          <div style={{display:"flex",alignItems:"center",gap:14}}>
+            {/* Credits as outline-only data, not filled chrome. Coral
+                outline when low so the urgency still registers. */}
+            <div style={{display:"flex",alignItems:"center",gap:7,background:"transparent",borderRadius:99,padding:"5px 12px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.4)":"rgba(31,58,138,0.22)")}}>
               <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.navy}}/>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:creditsLoaded&&credits<=5?B.coral:B.navy}}>{creditsLabel+" credits"}</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.04em",color:creditsLoaded&&credits<=5?B.coral:B.navy}}>{creditsLabel+" credits"}</div>
             </div>
+            {/* Sign out as a text link, not a button. Underline on
+                hover via the global anchor-style behavior isn't here,
+                but the chrome reduction alone reads more refined. */}
             <button onClick={function(){clearLocalUserData();supabaseClient.auth.signOut();}}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"5px 10px",background:"transparent",color:B.muted,border:"1px solid "+B.border,borderRadius:6,cursor:"pointer"}}>
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:500,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 2px",background:"transparent",color:B.muted,border:"none",cursor:"pointer",lineHeight:1}}>
               Sign out
             </button>
           </div>
         </div>
-        <div style={{display:"flex",gap:0,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",padding:"0 8px",borderBottom:"1px solid "+B.divider,background:B.white}}>
+        <div style={{display:"flex",gap:0,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",padding:"0 10px",borderBottom:brandWarmHairline}}>
           {TABS.map(function(t){return (
             <button key={t.key} onClick={function(){setTab(t.key);}}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:tab===t.key?700:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"12px 12px",background:"transparent",color:tab===t.key?B.navy:B.muted,border:"none",borderBottom:tab===t.key?"2px solid "+B.navy:"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s",position:"relative"}}>
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:tab===t.key?700:500,letterSpacing:"0.1em",textTransform:"uppercase",padding:"13px 12px",background:"transparent",color:tab===t.key?B.navy:B.muted,border:"none",borderBottom:tab===t.key?"2px solid "+B.navy:"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s",position:"relative"}}>
               {t.label}
               {t.key==="profile"&&!profileComplete&&<span style={{position:"absolute",top:6,right:6,width:5,height:5,borderRadius:"50%",background:B.sky}}/>}
             </button>
