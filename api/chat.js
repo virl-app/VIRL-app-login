@@ -500,6 +500,10 @@ async function fetchProfile(userId) {
       // without any selections get an empty object and the prompt builder
       // skips the per-platform formats block entirely.
       platformFormats:   data.platform_formats  || {},
+      // [LEARN-FROM-EDITS] Opt-in flag — when true the plan builder is
+      // allowed to fetch + inject recent edit diffs as voice examples.
+      // False on existing rows where the column isn't yet populated.
+      learnFromEdits:    !!data.learn_from_edits,
     };
   } catch (e) {
     return {};
