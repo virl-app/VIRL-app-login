@@ -92,7 +92,12 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+  // [PRICING 1b] Accept either env var name. Restricted keys (rk_live_…)
+  // are now the recommended Stripe key type; STRIPE_RESTRICTED_KEY reflects
+  // that more accurately than STRIPE_SECRET_KEY. The Stripe Node SDK treats
+  // both rk_ and sk_ values identically — they're just Bearer tokens.
+  const stripeSecretKey = process.env.STRIPE_RESTRICTED_KEY
+    || process.env.STRIPE_SECRET_KEY;
   const supabaseUrl     = process.env.SUPABASE_URL;
   const supabaseKey     = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
   const appUrl          = process.env.APP_URL || "https://app.govirl.ai";

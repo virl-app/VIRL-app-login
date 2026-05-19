@@ -159,7 +159,11 @@ export default async function handler(req, res) {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+    // [PRICING 1b] Accept either env var name — matches the same change in
+    // create-checkout.js so a restricted-key (rk_live_…) deployment can be
+    // named accurately as STRIPE_RESTRICTED_KEY without a code change.
+    const stripeSecretKey = process.env.STRIPE_RESTRICTED_KEY
+      || process.env.STRIPE_SECRET_KEY;
     const webhookSecret   = process.env.STRIPE_WEBHOOK_SECRET;
 
     // If Stripe isn't configured yet, swallow the event with 200 so Stripe
