@@ -9,6 +9,7 @@ import { loadPlaybook }              from "./_lib/playbook.js";
 import { loadLatestTrends }          from "./_lib/trends.js";
 import { fetchInlineTrends, isValidTrendsSnapshot } from "./_lib/fresh-trends-inline.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
+import { fetchRecentEdits }          from "./_lib/edit-examples.js";
 import { sendEmail }                 from "./_lib/email-send.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
@@ -717,6 +718,17 @@ export default async function handler(req, res) {
     (generationType === "plan" && !demoMode) ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart) : Promise.resolve([]),
   ]);
 
+  // [LEARN-FROM-EDITS] Fetch the user's recent edit diffs as voice
+  // examples — but only when they're opted in (profile.learnFromEdits).
+  // Sequential after profile load (rather than parallelized into the
+  // Promise.all above) because we need to read the opt-in flag first;
+  // the alternative would be to over-fetch on every plan generation
+  // for users who haven't enabled the feature. The hit on opted-in
+  // users is one indexed events query (~50-100ms), acceptable.
+  const recentEdits = (generationType === "plan" && !demoMode && profile && profile.learnFromEdits)
+    ? await fetchRecentEdits(userId)
+    : [];
+
   // ── Decide trends source ─────────────────────────────────────────────────
   // Three paths, in priority order:
   //   1. Client-supplied snapshot (regen paths) → reuse, no Perplexity
@@ -748,7 +760,7 @@ export default async function handler(req, res) {
 
   let built;
   try {
-    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history);
+    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits);
   } catch (e) {
     return res.status(400).json({ error: e.message || 'Bad request.' });
   }

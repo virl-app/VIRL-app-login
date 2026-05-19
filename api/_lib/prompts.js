@@ -175,6 +175,55 @@ function renderSuccessMetric(sm) {
   return "";
 }
 
+// [LEARN-FROM-EDITS] Format recent { field, before, after } diffs into
+// a prompt-ready voice-example block. The diffs themselves come from
+// edit-examples.js#fetchRecentEdits — that file owns the database
+// query; this function owns how the data is rendered for the model.
+// Returns "" when no diffs (toggle off, no qualifying events, fetch
+// failed) so the caller can append unconditionally.
+//
+// FIELD_LABELS gives the model a clean field name ("photo direction"
+// instead of "photoDirection") so the examples read like English, not
+// like JSON. Unknown future fields fall back to their raw key so a
+// schema addition still surfaces in the examples block without
+// touching this code.
+const EDIT_FIELD_LABELS = {
+  title:               "title",
+  description:         "description",
+  insight:             "insight",
+  hook:                "hook",
+  caption:             "caption",
+  body:                "body",
+  closing:             "closing",
+  quote:               "quote",
+  attribution:         "attribution",
+  photoDirection:      "photo direction",
+  compositionTip:      "composition tip",
+  audioRecommendation: "audio direction",
+  designDirection:     "design direction",
+  hashtags:            "hashtags",
+  onScreenText:        "on-screen text",
+  slides:              "carousel slides",
+  frames:              "story frames",
+};
+function formatEditsForPrompt(diffs) {
+  if (!Array.isArray(diffs) || diffs.length === 0) return "";
+  const lines = diffs.map(function(d){
+    const label = EDIT_FIELD_LABELS[d.field] || d.field;
+    // ↦ (mapsto) gives the model a distinctive visual cue versus the
+    // common → arrow used elsewhere in the prompt. before/after stay
+    // quoted so the model sees them as discrete strings.
+    return "  " + label + ": \"" + d.before + "\" ↦ \"" + d.after + "\"";
+  });
+  return "\n\nHOW THIS CREATOR REVISES VIRL DRAFTS (recent edits, newest first):\n"
+    + lines.join("\n")
+    + "\n\nUse these revisions as VOICE GROUND TRUTH. Match the rewriting patterns:"
+    + " if the creator shortened a hook, write shorter hooks; if the creator swapped"
+    + " a punchy word for a softer one, mirror that softness; if they tightened a"
+    + " caption from 3 sentences to 1, default to 1. The before/after diffs are the"
+    + " strongest available signal of how this creator actually sounds.";
+}
+
 // Plan history → prompt context. Surfaces last 1-3 weeks' strategy + each
 // week's top performer (by views+likes×2+saves×4) + how many cards never
 // got logged. The LLM uses this to build narratively, double down on what
@@ -466,7 +515,7 @@ const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mi
 
 // ── Builders, one per generation type ──────────────────────────────────────
 
-function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
+function buildPlan(params, profile, vaultPatterns, playbook, trends, history, recentEdits) {
   const platformsArr = params.platforms || [];
   const platforms = platformsArr.join(",");
   const formats   = (params.formats   || []).join(",");
@@ -483,6 +532,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
   const historyCtx  = planHistoryContext(history);
+  // [LEARN-FROM-EDITS] Recent before/after diffs from the user's
+  // own card edits, formatted as voice ground-truth examples. Empty
+  // string when no diffs (toggle off, no edits yet, or fetch failed)
+  // so concatenating below is a no-op.
+  const editsCtx    = formatEditsForPrompt(recentEdits);
   const weekNumber  = (history && history.length) ? (history.length + 1) : 1;
 
   // Vault patterns: server-derived from the user's user_data row, so the
@@ -605,7 +659,8 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     // trend against the trends list they see in-app.
     + " For the `trend` field: include it ONLY if a card genuinely builds on a current trend listed in the TRENDS block below. Use the trend item's exact phrasing (or a close paraphrase). If no listed trend authentically fits the card, OMIT the field entirely — do not invent generic riffs ('morning routine content', 'self-care vibes', 'aesthetic content'). It's better to have 3 cards with real trends and 7 without, than 10 cards with made-up trends."
     + playbookCtx
-    + trendsCtx;
+    + trendsCtx
+    + editsCtx;
 
   return {
     systemPrompt,
@@ -899,8 +954,8 @@ export function requiresImage(t) {
 //   - `history`  — last N weeks' plan history for week-over-week continuity
 //                  (loadPlanHistoryForPrompt(), plan generation only)
 // All default to empty / [] on missing infra; builders skip injection gracefully.
-export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history) {
+export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits) {
   const builder = BUILDERS[generationType];
   if (!builder) throw new Error("Unknown generationType: " + generationType);
-  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {}, history || []);
+  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {}, history || [], recentEdits || []);
 }
