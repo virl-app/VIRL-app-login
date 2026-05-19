@@ -92,6 +92,67 @@ async function patchUserPlan(userId, fields) {
   }
 }
 
+// [PRICING 1] Fetch the current credits row so we can tell first-signup
+// (subscription_started_at IS NULL) from resubscription. Returns null on
+// any failure — caller treats null as "assume first signup," which only
+// affects the resubscription counter (cosmetic for admin dashboards).
+async function getCreditRow(userId) {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !serviceKey || !userId) return null;
+  try {
+    const res = await fetch(
+      supabaseUrl + "/rest/v1/credits?user_id=eq."
+        + encodeURIComponent(userId)
+        + "&select=subscription_started_at,resubscription_count,founding_tier,founding_position",
+      {
+        headers: { apikey: serviceKey, Authorization: "Bearer " + serviceKey },
+      }
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows && rows[0] ? rows[0] : null;
+  } catch (e) {
+    console.error("[webhook] getCreditRow error:", e.message);
+    return null;
+  }
+}
+
+// [PRICING 1] Atomically claim a founding_position via the Postgres RPC.
+// Returns the position number (1..50), or null if all positions are
+// already filled (documented overflow window per the brief). Idempotent
+// inside the RPC itself — a webhook retry returns the same position.
+async function claimFoundingPosition(userId) {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !serviceKey || !userId) return null;
+  try {
+    const res = await fetch(
+      supabaseUrl + "/rest/v1/rpc/claim_founding_position",
+      {
+        method: "POST",
+        headers: {
+          apikey: serviceKey,
+          Authorization: "Bearer " + serviceKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ p_user_id: userId }),
+      }
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      console.error("[webhook] claim_founding_position RPC failed:", res.status, text);
+      return null;
+    }
+    const data = await res.json();
+    // PostgREST RPC returns the scalar directly for scalar-returning fns.
+    return (typeof data === "number") ? data : null;
+  } catch (e) {
+    console.error("[webhook] claim_founding_position error:", e.message);
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -127,19 +188,61 @@ export default async function handler(req, res) {
 
     switch (event.type) {
       case "checkout.session.completed": {
-        const isFoundingMember = meta.isFoundingMember;
-        const plan = isFoundingMember === "true" ? "founding" : "standard";
+        // [PRICING 1] Prefer the new foundingTier metadata key; fall back
+        // to the legacy isFoundingMember boolean for any pre-cutover
+        // sessions still in flight when this code deployed.
+        const foundingTier = meta.foundingTier
+          || (meta.isFoundingMember === "true" ? "founder_circle" : "standard");
+        const plan = foundingTier === "founder_circle" ? "founding" : "standard";
         // [PREMIUM 7] planType reflects the user's billing cadence
         // (monthly vs annual) so Loops can pick between the standard
         // welcome and the annual-thank-you variants. Pulled from
         // checkout metadata where the client stamped it.
         const planType = (meta.planType === "annual") ? "annual" : "monthly";
         if (userId) {
-          await patchUserPlan(userId, {
+          // [PRICING 1] Atomically claim a founding_position for new
+          // Founder Circle members. Returns null when all 50 slots are
+          // already filled — caller still sets founding_tier to keep the
+          // user's identity correct, but founding_position stays NULL
+          // (the documented 1-2-over race window).
+          let foundingPosition = null;
+          if (foundingTier === "founder_circle") {
+            foundingPosition = await claimFoundingPosition(userId);
+            if (foundingPosition === null) {
+              console.warn("[webhook] Founder Circle overflow — user " + userId + " has no position");
+            } else {
+              console.log("[webhook] User " + userId + " assigned founder position " + foundingPosition);
+            }
+          }
+
+          // [PRICING 1] Distinguish first signup from resubscription so
+          // subscription_started_at is locked once and resubscription
+          // metadata is bumped on returns. getCreditRow returning null
+          // (Supabase blip) degrades to treating as first signup — only
+          // affects the resub counter, never breaks the upgrade.
+          const existing = await getCreditRow(userId);
+          const isFirstSignup = !existing || !existing.subscription_started_at;
+          const nowIso = new Date().toISOString();
+
+          const patchFields = {
             plan: plan,
             stripe_customer_id: obj.customer || null,
-          });
-          console.log("[webhook] User " + userId + " upgraded to " + plan);
+            founding_tier: foundingTier,
+          };
+          if (foundingPosition !== null) {
+            patchFields.founding_position = foundingPosition;
+          }
+          if (isFirstSignup) {
+            patchFields.subscription_started_at = nowIso;
+          } else {
+            patchFields.last_resubscribed_at = nowIso;
+            patchFields.resubscription_count = (existing && existing.resubscription_count
+              ? existing.resubscription_count
+              : 0) + 1;
+          }
+
+          await patchUserPlan(userId, patchFields);
+          console.log("[webhook] User " + userId + " upgraded to " + plan + " (" + foundingTier + ")");
           // Subscription welcome — dedupe by stripe subscription id so a
           // resubscribe creates a new send, but a webhook replay does not.
           const subId = obj.subscription || obj.id || "session";
@@ -204,7 +307,13 @@ export default async function handler(req, res) {
           // trialing also gets the paid plan — they've completed checkout and
           // entered the subscription's trial window, which is functionally
           // paid from our gating perspective.
-          const plan = meta.isFoundingMember === "true" ? "founding" : "standard";
+          // [PRICING 1] Match the checkout.session.completed handler's
+          // tier resolution so subscription-level events agree with
+          // session-level ones. Don't overwrite founding_tier here —
+          // identity is set once at checkout and is immutable.
+          const foundingTier = meta.foundingTier
+            || (meta.isFoundingMember === "true" ? "founder_circle" : "standard");
+          const plan = foundingTier === "founder_circle" ? "founding" : "standard";
           await patchUserPlan(userId, { plan: plan, stripe_customer_id: obj.customer || null });
           console.log("[webhook] User " + userId + " set to " + plan + " via " + event.type + " (" + status + ")");
         }
