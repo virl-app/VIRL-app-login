@@ -3,8 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "description": "VIRL app — single-page React frontend (index.html via Babel standalone) plus Vercel serverless API functions in /api.",
+  "scripts": {
+    "check:index": "node scripts/check-index-syntax.mjs"
+  },
   "dependencies": {
     "resend": "^4.0.0",
     "stripe": "^14.0.0"
+  },
+  "devDependencies": {
+    "sucrase": "^3.35.0"
   }
 }

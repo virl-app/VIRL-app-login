@@ -181,7 +181,7 @@ async function loadCreditsFromSupabase(userId, accessToken) {
       "Pragma": "no-cache",
     };
     const res = await fetch(
-      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining&user_id=eq." + userId + "&limit=1&_=" + Date.now(),
+      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,founding_tier,founding_position&user_id=eq." + userId + "&limit=1&_=" + Date.now(),
       { headers, cache: "no-store" }
     );
     if (!res.ok) return null;
@@ -392,10 +392,36 @@ function isTodayDayLabel(dayLabel) {
 // [TASK 2] Pre-launch gate constants + access check.
 const LAUNCH_TIMESTAMP = new Date("2026-06-01T09:00:00-05:00").getTime();
 const BETA_CODE = "LETSGOVIRL";
-// [TASK 7] Founding-member cap. Once this many users are on the "founding" plan,
-// the app swaps all pricing copy to standard pricing. Server-side Stripe price
-// selection should mirror this flag.
-const FOUNDING_CAP = 100;
+// [PRICING 3] Founder Circle cap — first 50 paying customers get $20/mo for
+// life. After 50 are filled, all new signups land on Standard pricing.
+// Server-side enforcement is in api/create-checkout.js + api/stripe-webhook.js
+// (atomic position claim). Kept as FOUNDING_CAP for back-compat with existing
+// references throughout this file.
+const FOUNDING_CAP = 50;
+
+// [PRICING 3] Founder Circle Office Hours — last Friday of every month at
+// 8:00 AM CT. First call: Friday, June 26, 2026. Returns a label like
+// "Friday, June 26 at 8:00 AM CT" for the Founder Circle tab.
+function getNextFounderOfficeHoursLabel() {
+  function lastFridayOf(year, m) {
+    var d = new Date(year, m + 1, 0); // last day of month m
+    var back = (d.getDay() + 2) % 7;  // Fri=5: (5+2)%7=0; Thu=4: 6 days back; etc.
+    d.setDate(d.getDate() - back);
+    return d;
+  }
+  var now = new Date();
+  var candidate = lastFridayOf(now.getFullYear(), now.getMonth());
+  // 1-day cushion so the day-of indicator stays visible until midnight
+  // local. Past that, advance to next month's last Friday.
+  if (now.getTime() > candidate.getTime() + 86400000) {
+    candidate = lastFridayOf(now.getFullYear(), now.getMonth() + 1);
+  }
+  return candidate.toLocaleDateString("en-US", {
+    weekday: "long",
+    month:   "long",
+    day:     "numeric",
+  }) + " at 8:00 AM CT";
+}
 function checkAccess() {
   if (Date.now() >= LAUNCH_TIMESTAMP) return true;
   try {
@@ -5515,33 +5541,30 @@ function App() {
     } catch(e){}
   }, []);
 
-  // Handle post-checkout redirect
+  // Handle post-checkout redirect.
+  // [PRICING 3] Generic message that works for both tiers. The tier-specific
+  // welcome (Founder Circle banner) renders once credits refresh and
+  // isFounderCircle flips true on the next render pass.
   useEffect(function() {
     var params = new URLSearchParams(window.location.search);
     if (params.get('upgraded') === 'true') {
-      alert('Welcome to VIRL Standard! Your credits have been upgraded to 150 per week.');
+      alert("Welcome! Your VIRL subscription is active. Check your inbox for confirmation.");
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
 
-  // [TASK 7] Load the founding-plan count. Fires once on mount and again
+  // [PRICING 3] Load Founder Circle fill state. Fires once on mount and again
   // whenever the upgrade modal opens, so a user who leaves a tab open during
   // the launch window sees an accurate spots-remaining count rather than the
-  // stale value cached at first paint. Uses an RPC that returns only an
-  // integer, so no personal data is exposed. Silent failure keeps the default
-  // "founding available" fallback in place.
+  // stale value cached at first paint. Public endpoint — no auth required.
+  // Silent failure keeps the default "available" fallback in place so a brief
+  // network blip never hides the offer.
   function loadFoundingCount() {
-    fetch(SUPABASE_URL + "/rest/v1/rpc/get_founding_count", {
-      method: "POST",
-      headers: {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
-        "Content-Type": "application/json"
-      },
-      body: "{}",
-      cache: "no-store"
-    }).then(function(r){ return r.ok ? r.json() : null; })
-      .then(function(n){ if (typeof n === "number") setFoundingCount(n); })
+    fetch("/api/founder-count", { cache: "no-store" })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(d){
+        if (d && typeof d.filled === "number") setFoundingCount(d.filled);
+      })
       .catch(function(){});
   }
   useEffect(function() { loadFoundingCount(); }, []);
@@ -5715,6 +5738,14 @@ function App() {
     if (diff <= 0) return 1; // reset is overdue; will fire on next call
     return Math.max(1, Math.ceil(diff / 86400000));
   })();
+  // [PRICING 3] Founder Circle identity, set once at first paid signup and
+  // never changed. Distinct from `plan` (which tracks current subscription
+  // status: founding | standard | cancelled | past_due). Grandfathered
+  // legacy plan='founding' rows were migrated to founding_tier='founder_circle'
+  // with positions assigned by signup order — see migrations/001.
+  var foundingTier     = sbCredits && sbCredits.founding_tier ? sbCredits.founding_tier : "standard";
+  var foundingPosition = sbCredits && sbCredits.founding_position ? sbCredits.founding_position : null;
+  var isFounderCircle  = foundingTier === "founder_circle";
   var isFoundingOrPro = sbPlan==="founding" || sbPlan==="pro";
   // Paid plans have no per-call wallet — showing a raw credit number (e.g.
   // "150 credits") on a founding member's HUD reads like a metered allowance
@@ -5759,6 +5790,16 @@ function App() {
   const [planNudgeDismissed,setPlanNudgeDismissed] = useState(function(){
     try { return sessionStorage.getItem("virl_plan_nudge_shown")==="1"; } catch(e) { return false; }
   });
+  // [PRICING 3] First-login Founder Circle welcome banner. Dismissed
+  // permanently (localStorage, not sessionStorage) so members see it once
+  // and only once — first visit after their checkout completes.
+  const [founderWelcomeDismissed,setFounderWelcomeDismissed] = useState(function(){
+    try { return localStorage.getItem("virl_founder_welcome_seen")==="1"; } catch(e) { return false; }
+  });
+  function dismissFounderWelcome() {
+    try { localStorage.setItem("virl_founder_welcome_seen","1"); } catch(e) {}
+    setFounderWelcomeDismissed(true);
+  }
 
 
 
@@ -5767,9 +5808,14 @@ function App() {
   // instead of swallowing it into a generic "Something went wrong".
   // Hides real Stripe / config issues during testing — without this
   // fix, a missing annual price ID looks identical to a network blip.
-  async function handleCheckout(planType) {
+  // [PRICING 3] Tier defaults to "founder_circle" if FC spots remain,
+  // "standard" otherwise. Caller can override (e.g. the Standard CTA
+  // in the upgrade modal explicitly passes "standard").
+  async function handleCheckout(planType, tierOverride) {
     if (!session) return;
     setShowUpgrade(false);
+    var tier = tierOverride
+      || (foundingAvailable ? "founder_circle" : "standard");
     try {
       var res = await fetch("/api/create-checkout", {
         method: "POST",
@@ -5778,6 +5824,7 @@ function App() {
           userId: session.user.id,
           email: session.user.email,
           planType: planType||"monthly",
+          tier: tier,
         }),
       });
       var data = {};
@@ -5785,6 +5832,16 @@ function App() {
       if (data.url) {
         window.location.href = data.url;
         return;
+      }
+      // [PRICING 3] founder_circle_full is a deliberate signal from the
+      // server, not a generic failure — refresh the count + transparently
+      // retry on Standard so the user lands on a working checkout instead
+      // of staring at an error.
+      if (data.error === "founder_circle_full") {
+        setFoundingCount(FOUNDING_CAP);
+        if (tier === "founder_circle") {
+          return handleCheckout(planType, "standard");
+        }
       }
       var msg = data.message || data.error || ("Checkout failed (" + res.status + "). Please try again.");
       alert(msg);
@@ -6052,6 +6109,10 @@ function App() {
     // {key:"algo",    label:"Algorithm"},
     {key:"vault",   label:"Vault ("+vault.length+")"},
     {key:"results", label:"Results"},
+    // [PRICING 3] Founder Circle tab — only visible to members. Includes
+    // Office Hours date, direct email to hello@govirl.ai, and the user's
+    // Founder Position number.
+    ...(isFounderCircle?[{key:"circle", label:"Founder Circle"}]:[]),
     ...(isAdmin?[{key:"admin", label:"Dashboard"}]:[]),
   ];
 
@@ -7174,55 +7235,149 @@ return (
               </button>
             </div>
 
-            {foundingAvailable&&(
-              <div style={{background:B.navySoft,borderRadius:12,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founding</div>
-                <div style={{flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,lineHeight:1.4}}>
+            {/* [PRICING 3] Spots-remaining banner above the cards. When FC is
+                full, this becomes the celebration / sold-out copy. */}
+            {foundingAvailable ? (
+              <div style={{
+                background:B.navySoft,borderRadius:12,padding:"10px 14px",marginBottom:14,
+                display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"
+              }}>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                  letterSpacing:"0.18em",textTransform:"uppercase",
+                  padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99
+                }}>Founder Circle</div>
+                <div style={{
+                  flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",
+                  fontSize:12,fontWeight:600,color:B.navy,lineHeight:1.4
+                }}>
                   {foundingCount!==null
-                    ? "Founding member rate — only " + (FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " spots left"
-                    : "Founding member rate — limited to the first " + FOUNDING_CAP}
+                    ? (FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " spots left"
+                    : "First " + FOUNDING_CAP + " paying members — $20/mo for life"}
                 </div>
+              </div>
+            ) : (
+              <div style={{
+                background:B.navySoft,borderRadius:12,padding:"12px 14px",marginBottom:14,
+                fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,
+                color:B.navy,lineHeight:1.5,textAlign:"center"
+              }}>
+                The Founder Circle is full – thank you to the 50 believers.
               </div>
             )}
 
+            {/* [PRICING 3] Two-tier card stack. Founder Circle on top
+                (primary, navy) when available, Standard always shown as the
+                fallback. When FC is full, only Standard renders. */}
             <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
-              {/* [CHANGE 2a] Single price card driven by selectedPlan.
-                  Founding pricing is shown alongside struck-through standard
-                  pricing whenever a founding spot is still open, so users see
-                  the same number on Stripe's checkout page (the founding
-                  coupon is applied server-side in api/create-checkout.js). */}
-              <div style={{background:B.navy,borderRadius:16,padding:"18px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"}}
-                onClick={function(){handleCheckout(selectedPlan);}}>
+              {foundingAvailable && (
+                <div style={{
+                  background:B.navy,borderRadius:16,padding:"18px 20px",
+                  display:"flex",alignItems:"center",justifyContent:"space-between",
+                  gap:12,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"
+                }}
+                  onClick={function(){handleCheckout(selectedPlan,"founder_circle");}}>
+                  <div style={{flex:1}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
+                      <div style={{
+                        fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                        letterSpacing:"0.2em",textTransform:"uppercase",
+                        color:"rgba(255,255,255,0.6)"
+                      }}>Founder Circle &middot; {selectedPlan==="annual"?"Annual":"Monthly"}</div>
+                      {selectedPlan==="annual"&&(
+                        <div style={{
+                          fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                          padding:"2px 8px",background:B.green,color:"white",
+                          borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"
+                        }}>Save $25</div>
+                      )}
+                    </div>
+                    <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:"white",lineHeight:1}}>
+                        {selectedPlan==="annual"?"$215/yr":"$20/mo"}
+                      </div>
+                      <div style={{
+                        fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,
+                        color:"rgba(255,255,255,0.55)"
+                      }}>
+                        {selectedPlan==="annual"
+                          ? "locked for life"
+                          : "locked for life"}
+                      </div>
+                    </div>
+                    <div style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,
+                      color:"rgba(255,255,255,0.7)",lineHeight:1.5,marginTop:8
+                    }}>
+                      Direct line to Lauren &middot; Monthly Office Hours &middot; Beta access first
+                    </div>
+                  </div>
+                  <div style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                    letterSpacing:"0.06em",textTransform:"uppercase",color:"white",
+                    background:"rgba(255,255,255,0.12)",padding:"8px 14px",
+                    borderRadius:99,flexShrink:0
+                  }}>
+                    Claim
+                  </div>
+                </div>
+              )}
+
+              {/* [PRICING 3] Standard card — primary when FC is full, secondary
+                  when FC is available. Visual de-emphasis through a softer
+                  background + smaller price type so the Founder Circle option
+                  reads as the lead choice without hiding the alternative. */}
+              <div style={{
+                background:foundingAvailable?B.white:B.navy,
+                border:foundingAvailable?"1px solid "+B.border:"none",
+                borderRadius:16,padding:"16px 20px",
+                display:"flex",alignItems:"center",justifyContent:"space-between",
+                gap:12,cursor:"pointer",
+                boxShadow:foundingAvailable?"none":"0 4px 14px rgba(31,58,138,0.25)"
+              }}
+                onClick={function(){handleCheckout(selectedPlan,"standard");}}>
                 <div style={{flex:1}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>{selectedPlan==="annual"?"Annual":"Monthly"}</div>
-                    {foundingAvailable&&(
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:"rgba(255,255,255,0.18)",color:B.white,borderRadius:99,letterSpacing:"0.15em",textTransform:"uppercase"}}>Founding</div>
-                    )}
+                    <div style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                      letterSpacing:"0.2em",textTransform:"uppercase",
+                      color:foundingAvailable?B.muted:"rgba(255,255,255,0.6)"
+                    }}>Standard &middot; {selectedPlan==="annual"?"Annual":"Monthly"}</div>
                     {selectedPlan==="annual"&&(
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:B.green,color:"white",borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"}}>{foundingAvailable?"3 months free":"2 months free"}</div>
+                      <div style={{
+                        fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                        padding:"2px 8px",
+                        background:foundingAvailable?B.navySoft:"rgba(255,255,255,0.18)",
+                        color:foundingAvailable?B.navy:B.white,
+                        borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"
+                      }}>Save $51</div>
                     )}
                   </div>
                   <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
-                    <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:"white",lineHeight:1}}>
-                      {selectedPlan==="annual"
-                        ? (foundingAvailable?"$225/yr":"$249/yr")
-                        : (foundingAvailable?"$20/mo":"$25/mo")}
+                    <div style={{
+                      fontFamily:"'Italiana',serif",
+                      fontSize:foundingAvailable?22:30,
+                      color:foundingAvailable?B.ink:"white",
+                      lineHeight:1
+                    }}>
+                      {selectedPlan==="annual"?"$249/yr":"$25/mo"}
                     </div>
-                    {foundingAvailable&&(
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.45)",textDecoration:"line-through"}}>
-                        {selectedPlan==="annual"?"$249/yr":"$25/mo"}
-                      </div>
-                    )}
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.55)"}}>
-                      {selectedPlan==="annual"
-                        ? (foundingAvailable?"saves $75 vs monthly":"saves $51")
-                        : "cancel anytime"}
+                    <div style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,
+                      color:foundingAvailable?B.muted:"rgba(255,255,255,0.55)"
+                    }}>
+                      cancel anytime
                     </div>
                   </div>
                 </div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:"white",background:"rgba(255,255,255,0.12)",padding:"8px 14px",borderRadius:99,flexShrink:0}}>
-                  Get started
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                  letterSpacing:"0.06em",textTransform:"uppercase",
+                  color:foundingAvailable?B.navy:"white",
+                  background:foundingAvailable?B.bg:"rgba(255,255,255,0.12)",
+                  padding:"8px 14px",borderRadius:99,flexShrink:0
+                }}>
+                  {foundingAvailable ? "Choose" : "Get started"}
                 </div>
               </div>
             </div>
@@ -7277,7 +7432,16 @@ return (
                 <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?"#F43F5E":"#3B82F6"}}/>
                 <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.5)"}}>{creditsLabel+" credit"+(credits===1?"":"s")}</span>
               </div>
-              {isFoundingOrPro&&<span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:"#10B981"}}>Pro</span>}
+              {/* [PRICING 3] Founder Circle members get a distinct badge with
+                  their position number. Standard paid users keep the existing
+                  "Pro" green badge. */}
+              {isFounderCircle ? (
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",color:B.sky}}>
+                  {foundingPosition ? "Founder #"+foundingPosition : "Founder Circle"}
+                </span>
+              ) : (isFoundingOrPro && (
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:"#10B981"}}>Pro</span>
+              ))}
             </div>
             {/* [TASK 8] Friendly credit counter — translates raw credits into
                 concrete actions so users see value instead of tokens. Only
@@ -7346,6 +7510,24 @@ return (
               <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.white}}/>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.04em",color:creditsLoaded&&credits<=5?B.coral:B.white}}>{creditsLabel+" credits"}</div>
             </div>
+            {/* [PRICING 3] Founder Circle pill in the mobile topnav. Position
+                number reads as a quiet point of pride next to the credits
+                widget without competing for visual weight. */}
+            {isFounderCircle && (
+              <div style={{
+                display:"flex",alignItems:"center",
+                background:"rgba(125,211,252,0.14)",
+                border:"1px solid rgba(125,211,252,0.35)",
+                borderRadius:99,padding:"5px 12px"
+              }}>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                  letterSpacing:"0.06em",color:B.sky
+                }}>
+                  {foundingPosition ? "Founder #"+foundingPosition : "Founder"}
+                </div>
+              </div>
+            )}
             {/* Sign out as a text link, not a button. Translucent
                 white reads as a quiet utility against the navy. */}
             <button onClick={function(){clearLocalUserData();supabaseClient.auth.signOut();}}
@@ -7406,6 +7588,66 @@ return (
               style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 12px",background:B.coral,color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
               Upgrade
             </button>
+          </div>
+        )}
+
+        {/* [PRICING 3] First-login Founder Circle welcome. Renders on every
+            tab until the member dismisses it once (localStorage persisted).
+            The "Office Hours" detail nods at the brief without committing
+            to a specific date string — that lives on the Founder Circle tab. */}
+        {isFounderCircle && !founderWelcomeDismissed && (
+          <div style={{
+            background:B.navy,borderRadius:16,padding:"18px 22px",marginBottom:18,
+            color:B.white,boxShadow:"0 4px 14px rgba(31,58,138,0.18)"
+          }}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                  letterSpacing:"0.18em",textTransform:"uppercase",
+                  color:B.sky,marginBottom:6
+                }}>
+                  Welcome to the Founder Circle
+                </div>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:"white",lineHeight:1.2,marginBottom:8}}>
+                  Your $20/month pricing is locked for life.
+                </div>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,
+                  color:"rgba(255,255,255,0.75)",lineHeight:1.55
+                }}>
+                  Lauren will be in touch about our first Office Hours call. In the meantime, you can find everything – Office Hours date, direct email to Lauren, your position number – on the Founder Circle tab.
+                </div>
+              </div>
+              <button onClick={dismissFounderWelcome} aria-label="Dismiss"
+                style={{
+                  background:"none",border:"none",color:"rgba(255,255,255,0.55)",
+                  fontSize:20,cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0
+                }}>
+                {"×"}
+              </button>
+            </div>
+            <div style={{display:"flex",gap:12,marginTop:14,flexWrap:"wrap"}}>
+              <button onClick={function(){setTab("circle");dismissFounderWelcome();}}
+                style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                  letterSpacing:"0.08em",textTransform:"uppercase",
+                  padding:"8px 16px",background:B.white,color:B.navy,
+                  border:"none",borderRadius:99,cursor:"pointer"
+                }}>
+                See Founder Circle
+              </button>
+              <button onClick={dismissFounderWelcome}
+                style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,
+                  letterSpacing:"0.08em",textTransform:"uppercase",
+                  padding:"8px 16px",background:"transparent",
+                  color:"rgba(255,255,255,0.7)",
+                  border:"1px solid rgba(255,255,255,0.25)",borderRadius:99,cursor:"pointer"
+                }}>
+                Got it
+              </button>
+            </div>
           </div>
         )}
 
@@ -8329,6 +8571,110 @@ return (
               </div>
             )}
             <Results results={results} onPlanWithInsights={handlePlanWithInsights}/>
+          </div>
+        )}
+
+        {/* [PRICING 3] Founder Circle tab — members-only. Surfaces the
+            commitments from the brief: monthly Office Hours, the direct
+            line to Lauren, and the user's permanent position number. */}
+        {tab==="circle"&&isFounderCircle&&(
+          <div>
+            <div style={{marginBottom:24,paddingBottom:24,borderBottom:"1px solid "+B.divider}}>
+              <Eyebrow>Founder Circle</Eyebrow>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+                Welcome to<br/><span style={{color:B.navy}}>the Founder Circle.</span>
+              </div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.65,maxWidth:560}}>
+                You said yes before the proof existed. Your $20/month pricing is locked for as long as you stay with VIRL — forever.
+              </div>
+            </div>
+
+            {/* Position number card */}
+            {foundingPosition && (
+              <div style={{
+                background:B.navy,borderRadius:16,padding:"22px 24px",marginBottom:16,
+                display:"flex",alignItems:"center",justifyContent:"space-between",
+                gap:16,flexWrap:"wrap",boxShadow:"0 4px 14px rgba(31,58,138,0.18)"
+              }}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                    letterSpacing:"0.2em",textTransform:"uppercase",
+                    color:"rgba(255,255,255,0.55)",marginBottom:6
+                  }}>Your position</div>
+                  <div style={{fontFamily:"'Italiana',serif",fontSize:34,color:"white",lineHeight:1}}>
+                    Founder #{foundingPosition}
+                  </div>
+                  <div style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,
+                    color:"rgba(255,255,255,0.65)",marginTop:8,lineHeight:1.5
+                  }}>
+                    One of the first 50. Yours for as long as you stay subscribed.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Office Hours card */}
+            <div style={{
+              background:B.white,border:"1px solid "+B.border,borderRadius:16,
+              padding:"20px 22px",marginBottom:16
+            }}>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                letterSpacing:"0.2em",textTransform:"uppercase",
+                color:B.muted,marginBottom:6
+              }}>Next Office Hours</div>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,lineHeight:1.15,marginBottom:8}}>
+                {getNextFounderOfficeHoursLabel()}
+              </div>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,
+                color:B.sub,lineHeight:1.6
+              }}>
+                Live with Lauren on Zoom – brief update + open Q&amp;A, 45 minutes. You'll receive a calendar invite by email. Can't make it live? Every session is recorded.
+              </div>
+            </div>
+
+            {/* Direct line card */}
+            <div style={{
+              background:B.white,border:"1px solid "+B.border,borderRadius:16,
+              padding:"20px 22px",marginBottom:16
+            }}>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                letterSpacing:"0.2em",textTransform:"uppercase",
+                color:B.muted,marginBottom:6
+              }}>Direct line to Lauren</div>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.2,marginBottom:8}}>
+                <a href="mailto:hello@govirl.ai" style={{color:B.navy,textDecoration:"none"}}>
+                  hello@govirl.ai
+                </a>
+              </div>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,
+                color:B.sub,lineHeight:1.6
+              }}>
+                For feedback, questions, ideas, conversation. Reply within 24 hours on weekdays. For technical support, please use the Feedback button instead so the team can route it.
+              </div>
+            </div>
+
+            {/* What you have access to */}
+            <div style={{
+              background:B.bg,borderRadius:16,padding:"20px 22px",marginBottom:16
+            }}>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                letterSpacing:"0.2em",textTransform:"uppercase",
+                color:B.muted,marginBottom:12
+              }}>What's included beyond the price</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.ink,lineHeight:1.9}}>
+                <div>&middot; $20/month locked for life as long as you stay subscribed</div>
+                <div>&middot; Monthly Founder Office Hours – live with Lauren</div>
+                <div>&middot; Direct line to Lauren at hello@govirl.ai</div>
+                <div>&middot; Beta access to new features 14 days before broader release</div>
+              </div>
+            </div>
           </div>
         )}
 
