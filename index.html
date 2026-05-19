@@ -358,6 +358,26 @@ const brandWarmSurface = {
 // the section divider (under the wordmark row) and the bottom edge of
 // the tab strip.
 const brandWarmHairline = "1px solid rgba(31,58,138,0.08)";
+// White-tinted hairline used inside the navy hero chrome (matches the
+// brandHeroSurface). 10% alpha sits a hair above invisible so the
+// structure reads without becoming a hard line.
+const brandHeroHairline = "1px solid rgba(255,255,255,0.1)";
+
+// Expand "Day N - Abbr" day labels into editorial-friendly full day
+// names ("Day 1 - Mon" → "Monday"). Day 1 is always today (the plan
+// generator builds labels relative to the generation date). Returns
+// the original string if it can't parse, so legacy/malformed labels
+// degrade gracefully.
+function parseDayName(dayLabel) {
+  if (!dayLabel || typeof dayLabel !== "string") return "";
+  const parts = dayLabel.split(" - ");
+  const abbr  = (parts[1] || parts[0] || "").trim();
+  const map   = { Sun:"Sunday", Mon:"Monday", Tue:"Tuesday", Wed:"Wednesday", Thu:"Thursday", Fri:"Friday", Sat:"Saturday" };
+  return map[abbr] || abbr || dayLabel;
+}
+function isTodayDayLabel(dayLabel) {
+  return typeof dayLabel === "string" && dayLabel.indexOf("Day 1") === 0;
+}
 
 // [TASK 2] Pre-launch gate constants + access check.
 const LAUNCH_TIMESTAMP = new Date("2026-06-01T09:00:00-05:00").getTime();
@@ -6724,31 +6744,39 @@ return (
            wordmark is bumped to 26px / 0.16em letterspacing to match
            the landing's nav exactly. Goal: feel like a magazine
            masthead, not a SaaS toolbar. */}
-      <nav id="virl-topnav" style={{...brandWarmSurface,position:"sticky",top:0,zIndex:100}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 18px",height:60,borderBottom:brandWarmHairline}}>
+      {/* Mobile top nav — navy hero treatment matching the govirl.ai
+           hero (and the auth flow already using brandHeroSurface). The
+           bone variant felt more "considered" but read closer to the
+           rest of the light-gray app than to the brand's navy hero;
+           moving the chrome to navy gives the app a strong brand
+           anchor at the top and lets the content area below feel
+           lighter by contrast. Wordmark white, refined letterspacing
+           kept. Active tab underline switches to sky for legibility
+           against navy. */}
+      <nav id="virl-topnav" style={{...brandHeroSurface,position:"sticky",top:0,zIndex:100}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 18px",height:60,borderBottom:brandHeroHairline}}>
           <a href="/" style={{textDecoration:"none",display:"flex",alignItems:"center"}}>
-            <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.navy,letterSpacing:"0.16em",lineHeight:1}}>VIRL</div>
+            <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,letterSpacing:"0.16em",lineHeight:1}}>VIRL</div>
           </a>
           <div style={{display:"flex",alignItems:"center",gap:14}}>
-            {/* Credits as outline-only data, not filled chrome. Coral
-                outline when low so the urgency still registers. */}
-            <div style={{display:"flex",alignItems:"center",gap:7,background:"transparent",borderRadius:99,padding:"5px 12px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.4)":"rgba(31,58,138,0.22)")}}>
-              <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.navy}}/>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.04em",color:creditsLoaded&&credits<=5?B.coral:B.navy}}>{creditsLabel+" credits"}</div>
+            {/* Credits as outline-only data on the navy field. Coral
+                outline + text when low so the urgency still registers. */}
+            <div style={{display:"flex",alignItems:"center",gap:7,background:"transparent",borderRadius:99,padding:"5px 12px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.55)":"rgba(255,255,255,0.32)")}}>
+              <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.white}}/>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.04em",color:creditsLoaded&&credits<=5?B.coral:B.white}}>{creditsLabel+" credits"}</div>
             </div>
-            {/* Sign out as a text link, not a button. Underline on
-                hover via the global anchor-style behavior isn't here,
-                but the chrome reduction alone reads more refined. */}
+            {/* Sign out as a text link, not a button. Translucent
+                white reads as a quiet utility against the navy. */}
             <button onClick={function(){clearLocalUserData();supabaseClient.auth.signOut();}}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:500,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 2px",background:"transparent",color:B.muted,border:"none",cursor:"pointer",lineHeight:1}}>
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:500,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 2px",background:"transparent",color:"rgba(255,255,255,0.55)",border:"none",cursor:"pointer",lineHeight:1}}>
               Sign out
             </button>
           </div>
         </div>
-        <div style={{display:"flex",gap:0,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",padding:"0 10px",borderBottom:brandWarmHairline}}>
+        <div style={{display:"flex",gap:0,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",padding:"0 10px",borderBottom:brandHeroHairline}}>
           {TABS.map(function(t){return (
             <button key={t.key} onClick={function(){setTab(t.key);}}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:tab===t.key?700:500,letterSpacing:"0.1em",textTransform:"uppercase",padding:"13px 12px",background:"transparent",color:tab===t.key?B.navy:B.muted,border:"none",borderBottom:tab===t.key?"2px solid "+B.navy:"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s",position:"relative"}}>
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:tab===t.key?700:500,letterSpacing:"0.1em",textTransform:"uppercase",padding:"13px 12px",background:"transparent",color:tab===t.key?B.white:"rgba(255,255,255,0.5)",border:"none",borderBottom:tab===t.key?"2px solid "+B.sky:"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s",position:"relative"}}>
               {t.label}
               {t.key==="profile"&&!profileComplete&&<span style={{position:"absolute",top:6,right:6,width:5,height:5,borderRadius:"50%",background:B.sky}}/>}
             </button>
@@ -7290,38 +7318,82 @@ return (
                   );
                 })()}
 
-                <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink}}>Your <span style={{color:B.navy}}>week</span></div>
                   <div style={{flex:1,height:1,background:B.border}}/>
                 </div>
-                {cards.reduce(function(acc,card,i){
-                  if (!card||typeof card!=="object"||!card.title) return acc;
-                  const prevDay = i>0?cards[i-1].day:"";
-                  if (card.day!==prevDay) {
-                    acc.push(
-                      <div key={"day-"+i} style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:B.navy,padding:"4px 0",marginTop:i>0?16:0,marginBottom:4,borderBottom:"2px solid "+B.navySoft}}>
-                        {card.day}
+                {/* Group cards into day-buckets so each day can be
+                    rendered as a discrete editorial "chapter" — today
+                    gets a sky-tinted hero wash + "Today, Friday" Italiana
+                    header, other days get Italiana day-name headers
+                    without the wash. The previous flat reduce treated
+                    every day identically, which made a 14-card week
+                    read as one uniform stack with no visual rhythm. */}
+                {(function(){
+                  // Build a [{ day, items: [{card, idx}] }] structure
+                  // out of the flat cards array. Cards already arrive
+                  // chronologically from the generator, so a simple
+                  // sequential scan + day-change detection groups
+                  // them correctly.
+                  var groups = [];
+                  cards.forEach(function(card, i){
+                    if (!card || typeof card !== "object" || !card.title) return;
+                    var last = groups[groups.length - 1];
+                    if (!last || last.day !== card.day) {
+                      groups.push({ day: card.day, items: [{ card: card, idx: i }] });
+                    } else {
+                      last.items.push({ card: card, idx: i });
+                    }
+                  });
+                  return groups.map(function(group, gi){
+                    var isToday   = isTodayDayLabel(group.day);
+                    var dayName   = parseDayName(group.day);
+                    // Section wrapper. Today gets a sky-soft wash with
+                    // hairline border so the chapter reads as elevated
+                    // without becoming loud. Other days are transparent
+                    // — they share the page background.
+                    var sectionStyle = isToday
+                      ? {background:B.skySoft,borderRadius:18,border:"1px solid rgba(59,130,246,0.18)",padding:"18px 16px 14px",marginTop:gi>0?20:0,marginBottom:8}
+                      : {marginTop:gi>0?28:0,marginBottom:8};
+                    return (
+                      <div key={"daygroup-"+gi} style={sectionStyle}>
+                        {isToday ? (
+                          <div style={{marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(59,130,246,0.22)"}}>
+                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.24em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Up next</div>
+                            <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.05,letterSpacing:"-0.005em"}}>
+                              {"Today, "}<span style={{color:B.sky,fontStyle:"italic"}}>{dayName}</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{display:"flex",alignItems:"baseline",gap:14,marginBottom:10}}>
+                            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,lineHeight:1,letterSpacing:"0.01em"}}>{dayName}</div>
+                            <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
+                          </div>
+                        )}
+                        {group.items.map(function(item){
+                          var card = item.card;
+                          var i    = item.idx;
+                          return (
+                            <PlanCard key={i} card={card} idx={i}
+                              onSave={saveToVault} onLog={logResult}
+                              onSaveScript={saveScriptForCard}
+                              saved={vault.some(function(v){return v.id===card.title+card.day;})}
+                              result={results.find(function(r){return r.id===card.title+card.day;})}
+                              profile={profile}
+                              userToken={userToken}
+                              onCreditsUsed={refreshCredits}
+                              editMode={editMode}
+                              markedReplace={replaceSet.has(i)}
+                              onToggleReplace={toggleReplaceAt}
+                              replacing={partialReplacing.has(i)}
+                              usedFreshTrends={planUsedFreshTrends}
+                            />
+                          );
+                        })}
                       </div>
                     );
-                  }
-                  acc.push(
-                    <PlanCard key={i} card={card} idx={i}
-                      onSave={saveToVault} onLog={logResult}
-                      onSaveScript={saveScriptForCard}
-                      saved={vault.some(function(v){return v.id===card.title+card.day;})}
-                      result={results.find(function(r){return r.id===card.title+card.day;})}
-                      profile={profile}
-                      userToken={userToken}
-                      onCreditsUsed={refreshCredits}
-                      editMode={editMode}
-                      markedReplace={replaceSet.has(i)}
-                      onToggleReplace={toggleReplaceAt}
-                      replacing={partialReplacing.has(i)}
-                      usedFreshTrends={planUsedFreshTrends}
-                    />
-                  );
-                  return acc;
-                },[])}
+                  });
+                })()}
                 <div style={{background:B.navy,borderRadius:16,padding:"20px 24px",marginTop:8,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
                   <div>
                     <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,marginBottom:4}}>
