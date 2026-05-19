@@ -524,8 +524,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     // per-request in userPrompt.
     + " Return ONLY one JSON object with this exact shape: {"
     + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":[{\"value\":\"...\",\"label\":\"...\"}],\"the_bet\":\"...\"},"
-    + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
-    + " (Optional `insight` field on roughly 1 in 3 cards.)"
+    + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"ONE-sentence pitch, ≤20 words.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"<exact phrase from a listed trend below, or omit field entirely>\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"insight\":\"1-2 sentences — the strategic call behind this card.\"}],"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
     + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
@@ -590,11 +589,21 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     + "  - success_metric: an ARRAY of 3-4 objects, each {\"value\": \"<number or threshold>\", \"label\": \"<3-6 word descriptor>\"}. Concrete only — no prose, no compound clauses, no commas inside a single label. Example: [{\"value\":\"5\",\"label\":\"posts past 1K views\"},{\"value\":\"60+\",\"label\":\"saves on carousels\"},{\"value\":\"+100\",\"label\":\"net followers\"},{\"value\":\"10\",\"label\":\"beta-tester DMs\"}]."
     + "  - the_bet: ONE sentence, MAX 25 words. The specific lean for this week and why. Must add NEW information vs the thesis — not a paraphrase. Cite prior weeks if relevant. Example: \"Lean into launch proximity — urgency makes behind-the-scenes posts feel like insider access.\""
     + " For each post: description is ONE sentence pitch, MAX 20 words — the angle / why this post exists. NOT a recap of the format-specific fields below it (hook / caption / slides / etc handle the how). Acts as the kicker, not the brief."
-    // [PREMIUM 4] Strategic micro-insights replace the always-on "why"
-    // field. Sparseness is intentional: one in three feels like a
-    // strategist sharing earned wisdom; on every card it reads like
-    // marketing filler.
-    + " Add an `insight` field to roughly 1 in 3 cards (NEVER every card). On the other ~2/3, OMIT the field entirely — do not return it as null or empty. Insights are short, specific, and earned. Examples of good insights: 'This hook leads with curiosity — strongest format for educational content.' / 'Tuesday at 7pm — when your audience is most active based on your platforms.' / 'The rule of three makes this caption more memorable.' Never say things like 'engagement-boosting', 'go viral', or generic platitudes. Voice is honest, not hypey."
+    // [P6] Insight on EVERY card. The earlier "1 in 3" version was meant
+    // to avoid filler, but it backfired — the 2/3 of cards without an
+    // insight read as weaker by comparison. The new bar is honesty over
+    // wisdom: if a card is a sensible default (e.g. a regular Tuesday
+    // Reel on the creator's strongest format), the insight names it as
+    // such instead of pretending there's a hidden lever. Never reach for
+    // hype to fill the slot.
+    + " Add an `insight` field to EVERY card. 1-2 short specific sentences explaining the strategic call — hook structure, timing choice, format pick, audience read, anything the creator can learn from. Examples: 'This hook leads with curiosity — strongest format for educational content.' / 'Tuesday at 7pm — when your audience is most active.' / 'Quote-on-image plays well on Instagram saves in this niche.' If a card is a sensible default with no specific strategic angle, say so honestly: 'A solid default — your audience already shows up for this format on Tuesdays.' / 'Standard cadence pick — this slot exists to keep your week consistent, not to break new ground.' NEVER use 'engagement-boosting', 'go viral', 'algorithm hack', or generic platitudes. Voice is honest strategist, not hypey marketer."
+    // [P10] Trend honesty. The `trend` field used to be a free-text
+    // string and the model filled it with vague riffs ('morning routine
+    // content', 'self-care vibes') even when no real trend was on the
+    // table. Now: tie it to the actual trends snapshot the model is
+    // given, or omit. The creator should be able to verify any cited
+    // trend against the trends list they see in-app.
+    + " For the `trend` field: include it ONLY if a card genuinely builds on a current trend listed in the TRENDS block below. Use the trend item's exact phrasing (or a close paraphrase). If no listed trend authentically fits the card, OMIT the field entirely — do not invent generic riffs ('morning routine content', 'self-care vibes', 'aesthetic content'). It's better to have 3 cards with real trends and 7 without, than 10 cards with made-up trends."
     + playbookCtx
     + trendsCtx;
 

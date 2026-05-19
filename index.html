@@ -306,6 +306,42 @@ const B = {
   amber:"#F59E0B"
 };
 
+// Landing-aligned brand surface tokens. The marketing landing at
+// govirl.ai is built on a two-tone system: a clean WHITE header with
+// the navy VIRL wordmark + navy pill CTA, sitting above a NAVY hero
+// with a subtle dotted texture, white Italiana headlines, sky-blue
+// italic accents, and white-pill CTAs. These tokens let the auth
+// flow, loading/error screens, demo intro, and (post-login) mobile
+// top nav share that visual language instead of each surface
+// reinventing it. Desktop sidebar already uses B.navy so it stays
+// untouched.
+const brandHeroSurface = {
+  background: B.navy,
+  // Whisper-quiet dot pattern from the landing — adds texture without
+  // competing with content. Tuned to ~22px grid + 6% alpha so it
+  // reads as material, not decoration.
+  backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px)",
+  backgroundSize: "22px 22px",
+  color: B.white,
+};
+const brandLogoOnDark = {
+  fontFamily: "'Italiana',serif",
+  fontSize: 52,
+  color: B.white,
+  letterSpacing: "0.1em",
+  lineHeight: 1,
+  marginBottom: 6,
+};
+const brandTaglineOnDark = {
+  fontFamily: "'Jost',sans-serif",
+  fontSize: 13,
+  fontWeight: 300,
+  fontStyle: "italic",
+  color: "rgba(147,197,253,0.85)",
+  letterSpacing: "0.01em",
+  marginBottom: 48,
+};
+
 // [TASK 2] Pre-launch gate constants + access check.
 const LAUNCH_TIMESTAMP = new Date("2026-06-01T09:00:00-05:00").getTime();
 const BETA_CODE = "LETSGOVIRL";
@@ -4068,9 +4104,9 @@ function GateScreen({onAuth}) {
   }
 
   if (emailSent) return (
-    <div style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:48}}>Finally, a strategy that sounds like you.</div>
+    <div style={{minHeight:"100vh",...brandHeroSurface,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
+      <div style={brandLogoOnDark}>VIRL</div>
+      <div style={brandTaglineOnDark}>Finally, a strategy that sounds like you.</div>
       <div style={{width:"100%",maxWidth:380,background:B.white,borderRadius:24,padding:"44px 36px",boxShadow:"0 4px 32px rgba(0,0,0,0.08)"}}>
         <div style={{width:56,height:56,borderRadius:"50%",background:B.navySoft,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px"}}>
           <div style={{fontSize:26}}>{"✉"}</div>
@@ -4098,9 +4134,9 @@ function GateScreen({onAuth}) {
   );
 
   if (resetSent) return (
-    <div style={{minHeight:"100vh",background:B.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:48}}>Finally, a strategy that sounds like you.</div>
+    <div style={{minHeight:"100vh",...brandHeroSurface,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
+      <div style={brandLogoOnDark}>VIRL</div>
+      <div style={brandTaglineOnDark}>Finally, a strategy that sounds like you.</div>
       <div style={{width:"100%",maxWidth:380,background:B.white,borderRadius:24,padding:"44px 36px",boxShadow:"0 4px 32px rgba(0,0,0,0.08)"}}>
         <div style={{width:56,height:56,borderRadius:"50%",background:B.navySoft,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px"}}>
           <div style={{fontSize:26}}>{"🔑"}</div>
@@ -4120,9 +4156,9 @@ function GateScreen({onAuth}) {
   );
 
   if (resetMode) return (
-    <div style={{minHeight:"100vh",background:B.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:40}}>Finally, a strategy that sounds like you.</div>
+    <div style={{minHeight:"100vh",...brandHeroSurface,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
+      <div style={brandLogoOnDark}>VIRL</div>
+      <div style={{...brandTaglineOnDark,marginBottom:40}}>Finally, a strategy that sounds like you.</div>
       <div style={{width:"100%",maxWidth:340,background:B.white,borderRadius:24,padding:"36px 28px",boxShadow:"0 4px 24px rgba(0,0,0,0.08)"}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.3em",textTransform:"uppercase",color:B.muted,marginBottom:16,textAlign:"center"}}>Reset your password</div>
         <input value={email} onChange={function(e){setEmail(e.target.value);setAuthError("");}}
@@ -4144,11 +4180,11 @@ function GateScreen({onAuth}) {
   );
 
   return (
-    <div style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:40}}>Finally, a strategy that sounds like you.</div>
+    <div style={{minHeight:"100vh",...brandHeroSurface,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
+      <div style={brandLogoOnDark}>VIRL</div>
+      <div style={{...brandTaglineOnDark,marginBottom:40}}>Finally, a strategy that sounds like you.</div>
 
-      <div style={{width:"100%",maxWidth:340,background:B.card,borderRadius:24,padding:"36px 28px",boxShadow:"0 4px 24px rgba(0,0,0,0.08)"}}>
+      <div style={{width:"100%",maxWidth:340,background:B.card,borderRadius:24,padding:"36px 28px",boxShadow:"0 20px 50px rgba(15,23,42,0.25)"}}>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.3em",textTransform:"uppercase",color:B.muted,marginBottom:16,textAlign:"center"}}>
             {mode==="signup"?"Create your account":"Sign in to VIRL"}
           </div>
@@ -6262,27 +6298,27 @@ function App() {
 
   // ── Auth gate - show loading, then auth screen, then app ────────────────
   if (appError) return (
-    <div style={{minHeight:"100vh",background:B.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px",fontFamily:"'Jost',sans-serif"}}>
+    <div style={{minHeight:"100vh",...brandHeroSurface,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px",fontFamily:"'Jost',sans-serif"}}>
       <div style={{textAlign:"center",maxWidth:360}}>
-        <div style={{fontFamily:"'Italiana',serif",fontSize:48,color:B.navy,marginBottom:8}}>VIRL</div>
-        <div style={{fontSize:15,fontWeight:600,color:B.ink,marginBottom:8}}>Something went wrong.</div>
-        <div style={{fontSize:13,fontWeight:300,color:B.muted,marginBottom:8,lineHeight:1.6}}>{"Error: "+String(appError)}</div>
-        <div style={{fontSize:13,fontWeight:300,color:B.muted,marginBottom:24,lineHeight:1.6}}>Try clearing your browser data for this site, then reload.</div>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:48,color:B.white,letterSpacing:"0.1em",marginBottom:8,lineHeight:1}}>VIRL</div>
+        <div style={{fontSize:15,fontWeight:600,color:B.white,marginBottom:8}}>Something went wrong.</div>
+        <div style={{fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.7)",marginBottom:8,lineHeight:1.6}}>{"Error: "+String(appError)}</div>
+        <div style={{fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.7)",marginBottom:24,lineHeight:1.6}}>Try clearing your browser data for this site, then reload.</div>
         <button onClick={function(){
           try{localStorage.clear();}catch(e){}
           window.location.reload();
         }}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 28px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",marginRight:8}}>
+          style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 28px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",marginRight:8,boxShadow:"0 12px 28px rgba(15,23,42,0.18)"}}>
           Clear cache &amp; reload
         </button>
       </div>
     </div>
   );
   if (authLoading) return (
-    <div style={{minHeight:"100vh",background:B.bg,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{minHeight:"100vh",...brandHeroSurface,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{textAlign:"center"}}>
-        <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:12}}>VIRL</div>
-        <svg style={{animation:"spin .75s linear infinite"}} width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={B.sky} strokeWidth={2}>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.white,letterSpacing:"0.1em",marginBottom:12,lineHeight:1}}>VIRL</div>
+        <svg style={{animation:"spin .75s linear infinite"}} width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="rgba(147,197,253,0.9)" strokeWidth={2}>
           <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
         </svg>
       </div>
@@ -6649,27 +6685,34 @@ return (
         </div>
       </div>
 
-      <nav id="virl-topnav" style={{background:B.black,position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 8px rgba(0,0,0,0.2)"}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 16px",height:52,borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
-          <a href="/" style={{textDecoration:"none"}}>
-            <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.white,letterSpacing:"0.06em"}}>VIRL</div>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:8,fontWeight:400,fontStyle:"italic",color:"#93C5FD"}}>Finally, a strategy that sounds like you.</div>
+      {/* Mobile top nav — landing-aligned WHITE header treatment.
+           Previously a pure-black bar with translucent-white elements;
+           that read as harsh and unrelated to the marketing site. The
+           landing uses a clean white header with navy logo + navy pill
+           CTA on the right, so the authenticated app now mirrors that
+           pattern exactly. Desktop sidebar (CSS hidden ≥900px) stays
+           navy — the two-tone effect of white header + navy sidebar is
+           the landing's hero structure transplanted into the app shell. */}
+      <nav id="virl-topnav" style={{background:B.white,position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 8px rgba(15,23,42,0.04)"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 16px",height:56,borderBottom:"1px solid "+B.divider}}>
+          <a href="/" style={{textDecoration:"none",display:"flex",alignItems:"center"}}>
+            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,letterSpacing:"0.12em",lineHeight:1}}>VIRL</div>
           </a>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{display:"flex",alignItems:"center",gap:5,background:creditsLoaded&&credits<=5?"rgba(244,63,94,0.15)":"rgba(59,130,246,0.12)",borderRadius:99,padding:"4px 10px"}}>
-              <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.sky}}/>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:creditsLoaded&&credits<=5?B.coral:B.white}}>{creditsLabel+" credits"}</div>
+            <div style={{display:"flex",alignItems:"center",gap:6,background:creditsLoaded&&credits<=5?B.coralSoft:B.navySoft,borderRadius:99,padding:"5px 11px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.35)":"rgba(31,58,138,0.18)")}}>
+              <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.navy}}/>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:creditsLoaded&&credits<=5?B.coral:B.navy}}>{creditsLabel+" credits"}</div>
             </div>
             <button onClick={function(){clearLocalUserData();supabaseClient.auth.signOut();}}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"5px 10px",background:"rgba(255,255,255,0.07)",color:"rgba(255,255,255,0.45)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:6,cursor:"pointer"}}>
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"5px 10px",background:"transparent",color:B.muted,border:"1px solid "+B.border,borderRadius:6,cursor:"pointer"}}>
               Sign out
             </button>
           </div>
         </div>
-        <div style={{display:"flex",gap:0,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",padding:"0 8px"}}>
+        <div style={{display:"flex",gap:0,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",padding:"0 8px",borderBottom:"1px solid "+B.divider,background:B.white}}>
           {TABS.map(function(t){return (
             <button key={t.key} onClick={function(){setTab(t.key);}}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 12px",background:"transparent",color:tab===t.key?B.white:"rgba(255,255,255,0.45)",border:"none",borderBottom:tab===t.key?"2px solid "+B.sky:"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s",position:"relative"}}>
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:tab===t.key?700:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"12px 12px",background:"transparent",color:tab===t.key?B.navy:B.muted,border:"none",borderBottom:tab===t.key?"2px solid "+B.navy:"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s",position:"relative"}}>
               {t.label}
               {t.key==="profile"&&!profileComplete&&<span style={{position:"absolute",top:6,right:6,width:5,height:5,borderRadius:"50%",background:B.sky}}/>}
             </button>
