@@ -2318,7 +2318,7 @@ function FormatSpecificBody({card}) {
 // — each requires its own per-item UI that's a separate pass.
 // onScreenText (video) is supported as a newline-separated textarea.
 // Hashtags collapse to a comma-separated input and re-split on save.
-function EditCardBody({draftCard, format, updateDraft}) {
+function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
   var fmt = normalizeFormat(format);
   // Per-format text fields. Multiline = textarea, otherwise = input.
   // Order matches how the read view presents the same fields, so the
@@ -2359,7 +2359,8 @@ function EditCardBody({draftCard, format, updateDraft}) {
     .concat([{key:"hashtags", label:"Hashtags — comma-separated, no #", multiline:false}]);
   var inputBase = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:8,padding:"10px 12px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,lineHeight:1.6,outline:"none",boxSizing:"border-box"};
   var textareaStyle = Object.assign({}, inputBase, {resize:"vertical",minHeight:60});
-  var nested = (fmt === "carousel" || fmt === "story");
+  var compactInput    = Object.assign({}, inputBase, {padding:"8px 10px",fontSize:13});
+  var compactTextarea = Object.assign({}, compactInput, {resize:"vertical",minHeight:48});
   return (
     <div style={{marginBottom:14}}>
       {fields.map(function(f){
@@ -2378,11 +2379,65 @@ function EditCardBody({draftCard, format, updateDraft}) {
           </div>
         );
       })}
-      {nested && (
-        <div style={{padding:"10px 14px",background:B.cardAlt,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:12,fontStyle:"italic",color:B.muted,lineHeight:1.5}}>
-          {fmt === "carousel"
-            ? "Carousel slides shown as-is — slide-by-slide editing coming soon."
-            : "Story frames shown as-is — frame-by-frame editing coming soon."}
+      {/* Carousel slide editor — mirrors the read view's left-accent
+           slide blocks, with each text field swapped for an input. The
+           slide number + slide count are immutable in this pass; only
+           headline / body / design direction can be edited. */}
+      {fmt === "carousel" && Array.isArray(draftCard.slides) && draftCard.slides.length > 0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Slides ("+draftCard.slides.length+")"}</div>
+          {draftCard.slides.map(function(slide, sIdx){
+            var num = slide.slideNumber || (sIdx + 1);
+            return (
+              <div key={sIdx} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.blue,marginBottom:8}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.blue,letterSpacing:"0.05em",flexShrink:0,minWidth:18,paddingTop:8}}>{num}</div>
+                <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+                  <input value={slide.headline||""}
+                    placeholder="Headline"
+                    onChange={function(e){ updateDraftItem("slides", sIdx, "headline", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontWeight:600,color:B.ink})}/>
+                  <textarea value={slide.body||""}
+                    placeholder="Body (1-2 sentences)"
+                    onChange={function(e){ updateDraftItem("slides", sIdx, "body", e.target.value); }}
+                    style={compactTextarea}/>
+                  <input value={slide.designDirection||""}
+                    placeholder="Design direction"
+                    onChange={function(e){ updateDraftItem("slides", sIdx, "designDirection", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontStyle:"italic",color:B.sub})}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {/* Story frame editor — same shape as the carousel slide editor,
+           coral accent instead of blue, and the field set matches the
+           Story schema (content / textOverlay / interactiveElement). */}
+      {fmt === "story" && Array.isArray(draftCard.frames) && draftCard.frames.length > 0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Story frames ("+draftCard.frames.length+")"}</div>
+          {draftCard.frames.map(function(frame, fIdx){
+            var num = frame.frameNumber || (fIdx + 1);
+            return (
+              <div key={fIdx} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.coral,marginBottom:8}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.coral,letterSpacing:"0.05em",flexShrink:0,minWidth:18,paddingTop:8}}>{num}</div>
+                <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+                  <textarea value={frame.content||""}
+                    placeholder="What the frame shows"
+                    onChange={function(e){ updateDraftItem("frames", fIdx, "content", e.target.value); }}
+                    style={compactTextarea}/>
+                  <input value={frame.textOverlay||""}
+                    placeholder="Text overlay"
+                    onChange={function(e){ updateDraftItem("frames", fIdx, "textOverlay", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontWeight:600,color:B.ink})}/>
+                  <input value={frame.interactiveElement||""}
+                    placeholder="Interactive element (poll, slider, sticker, etc.)"
+                    onChange={function(e){ updateDraftItem("frames", fIdx, "interactiveElement", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontStyle:"italic",color:B.coral})}/>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -2419,6 +2474,16 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profil
   const [editing,setEditing]     = useState(false);
   const [draftCard,setDraftCard] = useState(null);
   function enterEdit() {
+    // Deep-clone slides and frames so the form can mutate items
+    // without touching the underlying card. Both are intentionally
+    // kept structured (not flattened to text) so the per-item UI
+    // can render fields the same way the read view does.
+    var draftSlides = Array.isArray(card.slides)
+      ? card.slides.map(function(s){ return Object.assign({}, s); })
+      : null;
+    var draftFrames = Array.isArray(card.frames)
+      ? card.frames.map(function(f){ return Object.assign({}, f); })
+      : null;
     setDraftCard({
       title:               card.title || "",
       description:         card.description || "",
@@ -2435,12 +2500,25 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profil
       audioRecommendation: card.audioRecommendation || "",
       designDirection:     card.designDirection || "",
       onScreenText:        Array.isArray(card.onScreenText) ? card.onScreenText.join("\n") : "",
+      slides:              draftSlides,
+      frames:              draftFrames,
     });
     setEditing(true);
     setExpanded(true);
   }
   function updateDraft(field, value) {
     setDraftCard(function(d){ return Object.assign({}, d || {}, { [field]: value }); });
+  }
+  // Nested-array updater for slides + frames. Replaces one item's
+  // field at a time so React state stays immutable all the way down.
+  function updateDraftItem(arrKey, itemIdx, field, value) {
+    setDraftCard(function(d){
+      if (!d) return d;
+      var arr = Array.isArray(d[arrKey]) ? d[arrKey].slice() : [];
+      if (itemIdx < 0 || itemIdx >= arr.length) return d;
+      arr[itemIdx] = Object.assign({}, arr[itemIdx], { [field]: value });
+      return Object.assign({}, d, { [arrKey]: arr });
+    });
   }
   function saveEdit() {
     if (!draftCard || !onEdit) { setEditing(false); return; }
@@ -2484,6 +2562,40 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profil
         .filter(Boolean);
       var currOst  = Array.isArray(card.onScreenText) ? card.onScreenText : [];
       if (draftOst.join("|") !== currOst.join("|")) updates.onScreenText = draftOst;
+    }
+    // Carousel slides: diff each item's editable text fields. The
+    // slideNumber + count are preserved from the original; only
+    // headline/body/designDirection can be edited in this pass.
+    if (fmt === "carousel" && Array.isArray(draftCard.slides)) {
+      var currSlides = Array.isArray(card.slides) ? card.slides : [];
+      var nextSlides = draftCard.slides.map(function(s, i){
+        return Object.assign({}, currSlides[i] || s, {
+          slideNumber:     (currSlides[i] && currSlides[i].slideNumber) || s.slideNumber || (i + 1),
+          headline:        (s.headline || "").trim(),
+          body:            (s.body || "").trim(),
+          designDirection: (s.designDirection || "").trim(),
+        });
+      });
+      // Cheap deep equality — serialize to canonical JSON.
+      if (JSON.stringify(nextSlides) !== JSON.stringify(currSlides)) {
+        updates.slides = nextSlides;
+      }
+    }
+    // Story frames: same shape — edit content/textOverlay/interactiveElement,
+    // preserve frameNumber + count.
+    if (fmt === "story" && Array.isArray(draftCard.frames)) {
+      var currFrames = Array.isArray(card.frames) ? card.frames : [];
+      var nextFrames = draftCard.frames.map(function(f, i){
+        return Object.assign({}, currFrames[i] || f, {
+          frameNumber:        (currFrames[i] && currFrames[i].frameNumber) || f.frameNumber || (i + 1),
+          content:            (f.content || "").trim(),
+          textOverlay:        (f.textOverlay || "").trim(),
+          interactiveElement: (f.interactiveElement || "").trim(),
+        });
+      });
+      if (JSON.stringify(nextFrames) !== JSON.stringify(currFrames)) {
+        updates.frames = nextFrames;
+      }
     }
     if (Object.keys(updates).length > 0) onEdit(idx, updates);
     setEditing(false);
@@ -2642,7 +2754,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profil
            edit mode. Renders inputs/textareas for every top-level text
            field the model emits for this card's format. */}
       {editing && draftCard && (
-        <EditCardBody draftCard={draftCard} format={card.format} updateDraft={updateDraft}/>
+        <EditCardBody draftCard={draftCard} format={card.format} updateDraft={updateDraft} updateDraftItem={updateDraftItem}/>
       )}
 
       {/* [UX-01] Expanded section: full description, why-this-works,
