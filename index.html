@@ -379,41 +379,6 @@ function isTodayDayLabel(dayLabel) {
   return typeof dayLabel === "string" && dayLabel.indexOf("Day 1") === 0;
 }
 
-// [Move #5] Pick a card to surface as an editorial pull-quote between
-// two day groups in the week. Walks the cards array starting from
-// index 5 (skips Day 1 + the first half of the week — pull-quote
-// should land MID-week to break up the dense middle) and returns the
-// first card with a substantive insight (≥40 chars to weed out
-// one-word filler). Returns null when no qualifying card exists, in
-// which case the pull-quote simply doesn't render.
-function pickPullQuoteCard(cardsArr) {
-  if (!Array.isArray(cardsArr) || cardsArr.length < 6) return null;
-  for (var i = 5; i < cardsArr.length; i++) {
-    var c = cardsArr[i];
-    if (c && c.insight && typeof c.insight === "string" && c.insight.trim().length >= 40) {
-      return { card: c, idx: i };
-    }
-  }
-  return null;
-}
-
-// Editorial pull-quote treatment — Italiana italic on a sky-tinted
-// left accent rule. Used between day groups in the main week view
-// and the demo flow to give the eye a rest point and to surface an
-// earned insight that would otherwise hide inside an expanded card.
-function PullQuote({insight}) {
-  if (!insight) return null;
-  return (
-    <div style={{padding:"30px 0 34px",marginTop:4,marginBottom:4}}>
-      <div style={{maxWidth:560,margin:"0 auto",borderLeft:"2px solid "+B.sky,paddingLeft:22}}>
-        <div style={{fontFamily:"'Italiana',serif",fontSize:24,fontStyle:"italic",color:B.navy,lineHeight:1.4,letterSpacing:"0.005em"}}>
-          {"“"+insight.trim().replace(/^["“”]+|["“”]+$/g, "")+"”"}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // [TASK 2] Pre-launch gate constants + access check.
 const LAUNCH_TIMESTAMP = new Date("2026-06-01T09:00:00-05:00").getTime();
 const BETA_CODE = "LETSGOVIRL";
@@ -2345,7 +2310,141 @@ function FormatSpecificBody({card}) {
   }
 }
 
-function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends}) {
+// In-card edit form. VIRL writes the cards but users often need to revise
+// a hook, swap a caption, tighten a description before posting. This
+// renders editable inputs for every text field the model emits at the
+// top level (universal + format-specific). Nested arrays (carousel
+// slides, story frames) are intentionally NOT exposed for editing yet
+// — each requires its own per-item UI that's a separate pass.
+// onScreenText (video) is supported as a newline-separated textarea.
+// Hashtags collapse to a comma-separated input and re-split on save.
+function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
+  var fmt = normalizeFormat(format);
+  // Per-format text fields. Multiline = textarea, otherwise = input.
+  // Order matches how the read view presents the same fields, so the
+  // user's eye doesn't have to remap during the edit-save round trip.
+  var perFormat = {
+    video: [
+      {key:"hook",                label:"Hook",                multiline:true},
+      {key:"caption",             label:"Caption",             multiline:true},
+      {key:"onScreenText",        label:"On-screen text — one per line",  multiline:true, isList:true},
+      {key:"audioRecommendation", label:"Audio",               multiline:false},
+    ],
+    single_image: [
+      {key:"caption",        label:"Caption",         multiline:true},
+      {key:"photoDirection", label:"Photo direction", multiline:true},
+      {key:"compositionTip", label:"Composition tip", multiline:true},
+    ],
+    carousel: [
+      {key:"caption",        label:"Caption",         multiline:true},
+    ],
+    quote_graphic: [
+      {key:"quote",           label:"Quote",            multiline:true},
+      {key:"attribution",     label:"Attribution",      multiline:false},
+      {key:"caption",         label:"Caption",          multiline:true},
+      {key:"designDirection", label:"Design direction", multiline:true},
+    ],
+    story: [],
+    long_form_text: [
+      {key:"hook",    label:"Hook",    multiline:false},
+      {key:"body",    label:"Body",    multiline:true},
+      {key:"closing", label:"Closing", multiline:false},
+    ],
+  };
+  var fields = [
+    {key:"description", label:"Description", multiline:true},
+    {key:"insight",     label:"Why this works", multiline:true},
+  ]
+    .concat(perFormat[fmt] || [])
+    .concat([{key:"hashtags", label:"Hashtags — comma-separated, no #", multiline:false}]);
+  var inputBase = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:8,padding:"10px 12px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,lineHeight:1.6,outline:"none",boxSizing:"border-box"};
+  var textareaStyle = Object.assign({}, inputBase, {resize:"vertical",minHeight:60});
+  var compactInput    = Object.assign({}, inputBase, {padding:"8px 10px",fontSize:13});
+  var compactTextarea = Object.assign({}, compactInput, {resize:"vertical",minHeight:48});
+  return (
+    <div style={{marginBottom:14}}>
+      {fields.map(function(f){
+        return (
+          <div key={f.key} style={{marginBottom:10}}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{f.label}</div>
+            {f.multiline ? (
+              <textarea value={draftCard[f.key]||""}
+                onChange={function(e){ updateDraft(f.key, e.target.value); }}
+                style={textareaStyle}/>
+            ) : (
+              <input value={draftCard[f.key]||""}
+                onChange={function(e){ updateDraft(f.key, e.target.value); }}
+                style={inputBase}/>
+            )}
+          </div>
+        );
+      })}
+      {/* Carousel slide editor — mirrors the read view's left-accent
+           slide blocks, with each text field swapped for an input. The
+           slide number + slide count are immutable in this pass; only
+           headline / body / design direction can be edited. */}
+      {fmt === "carousel" && Array.isArray(draftCard.slides) && draftCard.slides.length > 0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Slides ("+draftCard.slides.length+")"}</div>
+          {draftCard.slides.map(function(slide, sIdx){
+            var num = slide.slideNumber || (sIdx + 1);
+            return (
+              <div key={sIdx} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.blue,marginBottom:8}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.blue,letterSpacing:"0.05em",flexShrink:0,minWidth:18,paddingTop:8}}>{num}</div>
+                <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+                  <input value={slide.headline||""}
+                    placeholder="Headline"
+                    onChange={function(e){ updateDraftItem("slides", sIdx, "headline", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontWeight:600,color:B.ink})}/>
+                  <textarea value={slide.body||""}
+                    placeholder="Body (1-2 sentences)"
+                    onChange={function(e){ updateDraftItem("slides", sIdx, "body", e.target.value); }}
+                    style={compactTextarea}/>
+                  <input value={slide.designDirection||""}
+                    placeholder="Design direction"
+                    onChange={function(e){ updateDraftItem("slides", sIdx, "designDirection", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontStyle:"italic",color:B.sub})}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {/* Story frame editor — same shape as the carousel slide editor,
+           coral accent instead of blue, and the field set matches the
+           Story schema (content / textOverlay / interactiveElement). */}
+      {fmt === "story" && Array.isArray(draftCard.frames) && draftCard.frames.length > 0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Story frames ("+draftCard.frames.length+")"}</div>
+          {draftCard.frames.map(function(frame, fIdx){
+            var num = frame.frameNumber || (fIdx + 1);
+            return (
+              <div key={fIdx} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.coral,marginBottom:8}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.coral,letterSpacing:"0.05em",flexShrink:0,minWidth:18,paddingTop:8}}>{num}</div>
+                <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+                  <textarea value={frame.content||""}
+                    placeholder="What the frame shows"
+                    onChange={function(e){ updateDraftItem("frames", fIdx, "content", e.target.value); }}
+                    style={compactTextarea}/>
+                  <input value={frame.textOverlay||""}
+                    placeholder="Text overlay"
+                    onChange={function(e){ updateDraftItem("frames", fIdx, "textOverlay", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontWeight:600,color:B.ink})}/>
+                  <input value={frame.interactiveElement||""}
+                    placeholder="Interactive element (poll, slider, sticker, etc.)"
+                    onChange={function(e){ updateDraftItem("frames", fIdx, "interactiveElement", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontStyle:"italic",color:B.coral})}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends}) {
   // When `replacing` is true, this card slot is awaiting a streaming
   // replacement from /api/chat?generationType=plan_partial. Render a
   // skeleton instead of the real card so the user sees their kept cards
@@ -2365,6 +2464,147 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
   const [expanded,setExpanded] = useState(false);
   const [showLog,setShowLog]   = useState(false);
   const [showScript,setShowScript] = useState(false);
+  // [EDIT] Inline card editing. Tapping Edit opens an in-place form
+  // showing every top-level text field the model emitted for this
+  // card's format. Save commits via onEdit prop (parent updates the
+  // cards array + persists to localStorage + Supabase + migrates
+  // saved/posted/results keys if the title changed). Cancel discards.
+  // Edit forces the card open (so the user can see what they're
+  // editing) but doesn't change the underlying expanded state on cancel.
+  const [editing,setEditing]     = useState(false);
+  const [draftCard,setDraftCard] = useState(null);
+  function enterEdit() {
+    // Deep-clone slides and frames so the form can mutate items
+    // without touching the underlying card. Both are intentionally
+    // kept structured (not flattened to text) so the per-item UI
+    // can render fields the same way the read view does.
+    var draftSlides = Array.isArray(card.slides)
+      ? card.slides.map(function(s){ return Object.assign({}, s); })
+      : null;
+    var draftFrames = Array.isArray(card.frames)
+      ? card.frames.map(function(f){ return Object.assign({}, f); })
+      : null;
+    setDraftCard({
+      title:               card.title || "",
+      description:         card.description || "",
+      insight:             card.insight || card.why || "",
+      hashtags:            Array.isArray(card.hashtags) ? card.hashtags.join(", ") : (card.hashtags || ""),
+      hook:                card.hook || "",
+      caption:             card.caption || "",
+      body:                card.body || "",
+      closing:             card.closing || "",
+      quote:               card.quote || "",
+      attribution:         card.attribution || "",
+      photoDirection:      card.photoDirection || "",
+      compositionTip:      card.compositionTip || "",
+      audioRecommendation: card.audioRecommendation || "",
+      designDirection:     card.designDirection || "",
+      onScreenText:        Array.isArray(card.onScreenText) ? card.onScreenText.join("\n") : "",
+      slides:              draftSlides,
+      frames:              draftFrames,
+    });
+    setEditing(true);
+    setExpanded(true);
+  }
+  function updateDraft(field, value) {
+    setDraftCard(function(d){ return Object.assign({}, d || {}, { [field]: value }); });
+  }
+  // Nested-array updater for slides + frames. Replaces one item's
+  // field at a time so React state stays immutable all the way down.
+  function updateDraftItem(arrKey, itemIdx, field, value) {
+    setDraftCard(function(d){
+      if (!d) return d;
+      var arr = Array.isArray(d[arrKey]) ? d[arrKey].slice() : [];
+      if (itemIdx < 0 || itemIdx >= arr.length) return d;
+      arr[itemIdx] = Object.assign({}, arr[itemIdx], { [field]: value });
+      return Object.assign({}, d, { [arrKey]: arr });
+    });
+  }
+  function saveEdit() {
+    if (!draftCard || !onEdit) { setEditing(false); return; }
+    // Only save fields that EditCardBody actually renders for this
+    // card's format — that way a user editing a video card can't
+    // accidentally write a `body` field (the long-form-only field
+    // they never see) onto a video card, and unchanged hidden fields
+    // can't be inadvertently wiped to "".
+    var fmt = normalizeFormat(card.format);
+    var formatTextKeys = {
+      video:          ["hook","caption","audioRecommendation"],
+      single_image:   ["caption","photoDirection","compositionTip"],
+      carousel:       ["caption"],
+      quote_graphic:  ["quote","attribution","caption","designDirection"],
+      story:          [],
+      long_form_text: ["hook","body","closing"],
+    };
+    var textKeys = ["title","description","insight"].concat(formatTextKeys[fmt] || []);
+    var updates = {};
+    textKeys.forEach(function(k){
+      var draftVal = (draftCard[k] || "").trim();
+      // Title can't be empty — buildCardId depends on it and an empty
+      // title would orphan vault/posted/saved/results keys. Skip the
+      // update silently rather than overwriting with "".
+      if (k === "title" && draftVal === "") return;
+      var currVal  = (card[k] || (k === "insight" ? card.why : "") || "").toString().trim();
+      if (draftVal !== currVal) updates[k] = draftVal;
+    });
+    // Hashtags: comma/newline-separated string → array of plain words, "#" stripped.
+    var draftTags = (draftCard.hashtags || "")
+      .split(/[,\n]/)
+      .map(function(t){ return t.trim().replace(/^#+/, ""); })
+      .filter(Boolean);
+    var currTags  = Array.isArray(card.hashtags) ? card.hashtags : [];
+    if (draftTags.join("|") !== currTags.join("|")) updates.hashtags = draftTags;
+    // onScreenText (video only): newline-separated → array.
+    if (fmt === "video") {
+      var draftOst = (draftCard.onScreenText || "")
+        .split(/\n+/)
+        .map(function(t){ return t.trim(); })
+        .filter(Boolean);
+      var currOst  = Array.isArray(card.onScreenText) ? card.onScreenText : [];
+      if (draftOst.join("|") !== currOst.join("|")) updates.onScreenText = draftOst;
+    }
+    // Carousel slides: diff each item's editable text fields. The
+    // slideNumber + count are preserved from the original; only
+    // headline/body/designDirection can be edited in this pass.
+    if (fmt === "carousel" && Array.isArray(draftCard.slides)) {
+      var currSlides = Array.isArray(card.slides) ? card.slides : [];
+      var nextSlides = draftCard.slides.map(function(s, i){
+        return Object.assign({}, currSlides[i] || s, {
+          slideNumber:     (currSlides[i] && currSlides[i].slideNumber) || s.slideNumber || (i + 1),
+          headline:        (s.headline || "").trim(),
+          body:            (s.body || "").trim(),
+          designDirection: (s.designDirection || "").trim(),
+        });
+      });
+      // Cheap deep equality — serialize to canonical JSON.
+      if (JSON.stringify(nextSlides) !== JSON.stringify(currSlides)) {
+        updates.slides = nextSlides;
+      }
+    }
+    // Story frames: same shape — edit content/textOverlay/interactiveElement,
+    // preserve frameNumber + count.
+    if (fmt === "story" && Array.isArray(draftCard.frames)) {
+      var currFrames = Array.isArray(card.frames) ? card.frames : [];
+      var nextFrames = draftCard.frames.map(function(f, i){
+        return Object.assign({}, currFrames[i] || f, {
+          frameNumber:        (currFrames[i] && currFrames[i].frameNumber) || f.frameNumber || (i + 1),
+          content:            (f.content || "").trim(),
+          textOverlay:        (f.textOverlay || "").trim(),
+          interactiveElement: (f.interactiveElement || "").trim(),
+        });
+      });
+      if (JSON.stringify(nextFrames) !== JSON.stringify(currFrames)) {
+        updates.frames = nextFrames;
+      }
+    }
+    if (Object.keys(updates).length > 0) onEdit(idx, updates);
+    setEditing(false);
+    setDraftCard(null);
+  }
+  function cancelEdit() {
+    setEditing(false);
+    setDraftCard(null);
+  }
   const [views,setViews]       = useState((result&&result.views)||"");
   const [likes,setLikes]       = useState((result&&result.likes)||"");
   const [saves2,setSaves2]     = useState((result&&result.saves)||"");
@@ -2490,20 +2730,38 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
 
       {/* [UX-01] Hook in Italiana 18px. Always visible, both states.
            Margin tightens when a preview line follows so the title +
-           preview read as one block. */}
-      <div style={{fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
+           preview read as one block. In edit mode the title becomes a
+           text input keeping the same Italiana treatment so the edit
+           visually feels like overwriting the same line rather than
+           moving to a form-field. */}
+      {editing ? (
+        <input value={draftCard ? (draftCard.title || "") : ""}
+          onChange={function(e){ updateDraft("title", e.target.value); }}
+          placeholder="Title"
+          style={{width:"100%",fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,background:B.bg,border:"1px solid "+B.border,borderRadius:8,padding:"8px 12px",marginBottom:12,outline:"none",boxSizing:"border-box"}}/>
+      ) : (
+        <div style={{fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
+      )}
       {/* [P1] Collapsed-only preview line — the format-specific opening
            (hook / first slide / photo direction / quote / first frame /
            description fallback). Clamped to 2 lines so the card stays
-           short; the full versions live in the expanded body. */}
-      {preview && (
+           short; the full versions live in the expanded body. Hidden in
+           edit mode (the user is editing the source fields themselves). */}
+      {preview && !editing && (
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.5,marginBottom:14,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{preview}</div>
+      )}
+      {/* Edit form body — replaces the read-view expanded body when in
+           edit mode. Renders inputs/textareas for every top-level text
+           field the model emits for this card's format. */}
+      {editing && draftCard && (
+        <EditCardBody draftCard={draftCard} format={card.format} updateDraft={updateDraft} updateDraftItem={updateDraftItem}/>
       )}
 
       {/* [UX-01] Expanded section: full description, why-this-works,
            tag chips, hashtags, copy-reminder strip. Mounted only when
-           expanded so collapsed cards stay scannable. */}
-      {expanded && (
+           expanded so collapsed cards stay scannable. Hidden in edit
+           mode — EditCardBody above replaces it with form fields. */}
+      {expanded && !editing && (
         <div>
           {/* [PREMIUM 4] Insight callout — only on cards that earned
                one (LLM emits the field on roughly 1 in 3 posts). The
@@ -2547,7 +2805,21 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
            fresh card → "Mark as posted"; posted but unlogged →
            "Log results" (expands + opens form); logged → passive
            "Logged ✓" badge. Always 3 visible slots in collapsed mode,
-           never 4. */}
+           never 4. In edit mode the entire row is swapped for a
+           Save / Cancel pair — every other action would be misleading
+           or destructive against an in-flight draft. */}
+      {editing ? (
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginTop:6}}>
+          <button onClick={saveEdit}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 20px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"}}>
+            Save changes
+          </button>
+          <button onClick={cancelEdit}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 16px",background:"transparent",color:B.muted,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
+            Cancel
+          </button>
+        </div>
+      ) : (
       <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
         <button onClick={toggleExpanded}
           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:expanded?B.bg:B.navySoft,color:expanded?B.sub:B.navy,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
@@ -2576,6 +2848,16 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
             {"Mark as posted"}
           </button>
         )}
+        {/* [EDIT] Edit lives in the expanded-only action set so the
+             collapsed card stays simple. Disabled when no onEdit prop
+             is passed — demo cards have null handlers, so the button
+             won't render at all there. */}
+        {expanded && onEdit && (
+          <button onClick={enterEdit}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
+            {"Edit"}
+          </button>
+        )}
         {/* Expanded-only secondary actions. Log Results moved out — the
              state-dependent third slot above replaces it. */}
         {expanded && (
@@ -2589,6 +2871,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
           <RatingButtons sessionToken={userToken} generationType="plan_card" targetRef={(card.title||"")+"|"+(card.day||"")} size="sm"/>
         )}
       </div>
+      )}
 
       {/* [RESULTS-OVERHAUL] Inline log form. Renders in both collapsed
            and expanded modes once showLog is true, so logging is never
@@ -2733,6 +3016,60 @@ function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUs
   );
 }
 
+// Editable hook block on a navy card surface — shared by the Captions
+// result panel and the per-result Scan block. Both surfaces previously
+// rendered the hook as a read-only Italiana headline with a Copy
+// button; in practice users routinely want to tighten the hook before
+// they post. Optional eyebrow + fontSize accommodate the two usage
+// sites (Captions = bigger headline + "Your hook" eyebrow; Scan =
+// smaller headline, no eyebrow, sits inline with other result fields).
+function EditableHook({value, onSave, eyebrow, fontSize}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value || "");
+  const sz = fontSize || 24;
+  function commit() {
+    var trimmed = (draft || "").trim();
+    if (trimmed) onSave(trimmed);
+    setEditing(false);
+  }
+  function cancel() { setDraft(value || ""); setEditing(false); }
+  return (
+    <div style={{background:B.navy,borderRadius:14,padding:"16px 20px",marginBottom:12}}>
+      {eyebrow && !editing && (
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>{eyebrow}</div>
+      )}
+      {editing ? (
+        <div>
+          <textarea value={draft}
+            onChange={function(e){ setDraft(e.target.value); }}
+            style={{width:"100%",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.22)",borderRadius:10,color:B.white,fontFamily:"'Italiana',serif",fontSize:sz,lineHeight:1.3,padding:"10px 14px",resize:"vertical",minHeight:60,outline:"none",boxSizing:"border-box"}}/>
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <button onClick={commit}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer"}}>
+              Save
+            </button>
+            <button onClick={cancel}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:"transparent",color:"rgba(255,255,255,0.7)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:99,cursor:"pointer"}}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div style={{fontFamily:"'Italiana',serif",fontSize:sz,color:B.white,lineHeight:1.3,marginBottom:10}}>{'"'+(value||"")+'"'}</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <CopyBtn text={value||""} label="Copy hook"/>
+            <button onClick={function(){ setDraft(value||""); setEditing(true); }}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:"rgba(255,255,255,0.12)",color:"rgba(255,255,255,0.9)",border:"1px solid rgba(255,255,255,0.25)",borderRadius:99,cursor:"pointer"}}>
+              Edit
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft,isPaid,daysUntilReset,onUpgrade}) {
   // [FRESH-TRENDS] Server returns usedFreshTrends in the caption response
   // when it consumed an inline Perplexity call. Captured here so the
@@ -2857,11 +3194,10 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLe
       )}
       {result&&(
         <div>
-          <div style={{background:B.navy,borderRadius:14,padding:"18px 20px",marginBottom:8}}>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>Your hook - use as on-screen text</div>
-            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,marginBottom:12}}>{'"'+result.hook+'"'}</div>
-            <CopyBtn text={result.hook} label="Copy hook"/>
-          </div>
+          <EditableHook
+            eyebrow="Your hook - use as on-screen text"
+            value={result.hook}
+            onSave={function(next){ setResult(function(prev){ return prev ? Object.assign({}, prev, {hook: next}) : prev; }); }}/>
           {(result.captions||[]).map(function(cap,i){return (
             <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
           );})}
@@ -3093,6 +3429,18 @@ function ShareScoreCard({score,platform,hook}) {
 function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft,isPaid,daysUntilReset,onUpgrade}) {
   var [files,setFiles]       = useState([]);
   var [results,setResults]   = useState([]);
+  // [EDIT] Immutable per-result update — used by EditableHook's onSave
+  // for each scan card so a user-revised hook persists in component
+  // state without re-running the scan. Results are transient (live for
+  // the session) so no Supabase persistence needed.
+  function updateResultAt(idx, updates) {
+    setResults(function(prev){
+      if (!Array.isArray(prev) || idx < 0 || idx >= prev.length) return prev;
+      var next = prev.slice();
+      next[idx] = Object.assign({}, prev[idx], updates);
+      return next;
+    });
+  }
   var [scanning,setScanning] = useState(false);
   var [current,setCurrent]   = useState(0);
   // [FRESH-TRENDS] Banner state — true after a scan that consumed the
@@ -3357,10 +3705,10 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
                 </div>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,padding:"6px 16px",background:B.navySoft,color:B.navy,borderRadius:99}}>{"→ "+r.platform}</div>
               </div>
-              <div style={{background:B.navy,borderRadius:12,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,flex:1,lineHeight:1.3}}>{"\""+r.hook+"\""}</div>
-                <CopyBtn text={r.hook||""} label="Copy hook"/>
-              </div>
+              <EditableHook
+                value={r.hook}
+                fontSize={18}
+                onSave={function(next){ updateResultAt(idx, {hook: next}); }}/>
               <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
               <HashtagRow hashtags={r.hashtags}/>
               {r.tip&&<div style={{background:B.blueSoft,borderRadius:10,padding:"10px 14px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.blue,lineHeight:1.6,marginTop:8}}>{"✦ "+r.tip}</div>}
@@ -6264,6 +6612,70 @@ function App() {
       return next;
     });
   }
+  // [EDIT] Apply an in-place edit to one plan card. Mirrors the
+  // save/persist pattern from saveScriptForCard (immutable cards update +
+  // localStorage + Supabase under the same plan expiry). Extra job: when
+  // the title changes the buildCardId result changes too, which would
+  // orphan the localStorage saved/posted flags, the vault entry's id,
+  // and the results row's id. Migrating all three keeps "Saved" /
+  // "Posted" / "Logged" state stuck to the card after an edit.
+  function updateCardAt(cardIdx, updates) {
+    setCards(function(prev){
+      if (!prev || !Array.isArray(prev) || cardIdx < 0 || cardIdx >= prev.length) return prev;
+      var oldCard = prev[cardIdx];
+      var newCard = Object.assign({}, oldCard, updates);
+      var oldId = buildCardId(oldCard);
+      var newId = buildCardId(newCard);
+      var idChanged = oldId !== newId;
+      if (idChanged) {
+        try {
+          var savedAt  = localStorage.getItem("virl_saved_"  + oldId);
+          var postedAt = localStorage.getItem("virl_posted_" + oldId);
+          if (savedAt)  { localStorage.setItem("virl_saved_"  + newId, savedAt);  localStorage.removeItem("virl_saved_"  + oldId); }
+          if (postedAt) { localStorage.setItem("virl_posted_" + newId, postedAt); localStorage.removeItem("virl_posted_" + oldId); }
+        } catch(e){}
+        setVault(function(v){
+          return v.map(function(x){
+            return x.id === oldId
+              ? Object.assign({}, x, {
+                  id:          newId,
+                  title:       newCard.title,
+                  description: newCard.description || null,
+                  insight:     newCard.insight || newCard.why || null,
+                  why:         newCard.why || newCard.insight || null,
+                  hashtags:    Array.isArray(newCard.hashtags) ? newCard.hashtags.slice() : [],
+                })
+              : x;
+          });
+        });
+        setResults(function(r){
+          return r.map(function(x){
+            return x.id === oldId ? Object.assign({}, x, { id: newId, title: newCard.title }) : x;
+          });
+        });
+      }
+      var next = prev.slice();
+      next[cardIdx] = newCard;
+      var expiresAt;
+      try {
+        var current = JSON.parse(localStorage.getItem(KEY)||"{}");
+        expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
+          ? current.planExpiresAt : computePlanExpiry(sbCredits);
+        current.plan = next;
+        current.planExpiresAt = expiresAt;
+        localStorage.setItem(KEY, JSON.stringify(current));
+      } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
+      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot);
+      try {
+        logEvent(session && session.user && session.user.id, "plan_card_edited", {
+          cardIdx: cardIdx,
+          fields:  Object.keys(updates),
+          idChanged: idChanged,
+        });
+      } catch(e){}
+      return next;
+    });
+  }
   function dismissExplainer() {
     setHasSeenExplainer(true);
     try { localStorage.setItem("virl_seen_explainer","1"); } catch(e) {}
@@ -6497,47 +6909,41 @@ return (
                       last.items.push({ card: card, idx: i });
                     }
                   });
-                  var pullQuote = pickPullQuoteCard(demoCards);
-                  var pullQuoteDay = pullQuote ? pullQuote.card.day : null;
                   return groups.map(function(group, gi){
                     var isToday = isTodayDayLabel(group.day);
                     var dayName = parseDayName(group.day);
                     var sectionStyle = isToday
                       ? {background:B.skySoft,borderRadius:18,border:"1px solid rgba(59,130,246,0.18)",padding:"18px 16px 14px",marginTop:gi>0?20:0,marginBottom:8}
                       : {marginTop:gi>0?28:0,marginBottom:8};
-                    var hasPullQuote = pullQuote && pullQuoteDay === group.day;
                     return (
-                      <React.Fragment key={"demogroup-"+gi}>
-                        <div style={sectionStyle}>
-                          {isToday ? (
-                            <div style={{marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(59,130,246,0.22)"}}>
-                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.24em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Up next</div>
-                              <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.05,letterSpacing:"-0.005em"}}>
-                                {"Today, "}<span style={{color:B.sky,fontStyle:"italic"}}>{dayName}</span>
-                              </div>
+                      <div key={"demogroup-"+gi} style={sectionStyle}>
+                        {isToday ? (
+                          <div style={{marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(59,130,246,0.22)"}}>
+                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.24em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Up next</div>
+                            <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.05,letterSpacing:"-0.005em"}}>
+                              {"Today, "}<span style={{color:B.sky,fontStyle:"italic"}}>{dayName}</span>
                             </div>
-                          ) : (
-                            <div style={{display:"flex",alignItems:"baseline",gap:14,marginBottom:10}}>
-                              <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,lineHeight:1,letterSpacing:"0.01em"}}>{dayName}</div>
-                              <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
-                            </div>
-                          )}
-                          {group.items.map(function(item){
-                            return (
-                              <PlanCard key={"demo-"+item.idx} card={item.card} idx={item.idx}
-                                onSave={function(){ /* demo cards are not savable */ }}
-                                onLog={function(){}}
-                                onSaveScript={null}
-                                saved={false}
-                                result={null}
-                                profile={profile}
-                                userToken={null}
-                                onCreditsUsed={function(){}}/>
-                            );
-                          })}
-                        </div>
-                        {hasPullQuote && <PullQuote insight={pullQuote.card.insight}/>}
-                      </React.Fragment>
+                          </div>
+                        ) : (
+                          <div style={{display:"flex",alignItems:"baseline",gap:14,marginBottom:10}}>
+                            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,lineHeight:1,letterSpacing:"0.01em"}}>{dayName}</div>
+                            <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
+                          </div>
+                        )}
+                        {group.items.map(function(item){
+                          return (
+                            <PlanCard key={"demo-"+item.idx} card={item.card} idx={item.idx}
+                              onSave={function(){ /* demo cards are not savable */ }}
+                              onLog={function(){}}
+                              onSaveScript={null}
+                              saved={false}
+                              result={null}
+                              profile={profile}
+                              userToken={null}
+                              onCreditsUsed={function(){}}/>
+                          );
+                        })}
+                      </div>
                     );
                   });
                 })()}
@@ -7446,11 +7852,6 @@ return (
                       last.items.push({ card: card, idx: i });
                     }
                   });
-                  // [Move #5] Pull-quote target — null when no card
-                  // mid-week has a substantive insight. Rendered AFTER
-                  // the day group that contains the chosen card.
-                  var pullQuote = pickPullQuoteCard(cards);
-                  var pullQuoteDay = pullQuote ? pullQuote.card.day : null;
                   return groups.map(function(group, gi){
                     var isToday   = isTodayDayLabel(group.day);
                     var dayName   = parseDayName(group.day);
@@ -7461,46 +7862,43 @@ return (
                     var sectionStyle = isToday
                       ? {background:B.skySoft,borderRadius:18,border:"1px solid rgba(59,130,246,0.18)",padding:"18px 16px 14px",marginTop:gi>0?20:0,marginBottom:8}
                       : {marginTop:gi>0?28:0,marginBottom:8};
-                    var hasPullQuote = pullQuote && pullQuoteDay === group.day;
                     return (
-                      <React.Fragment key={"daygroup-"+gi}>
-                        <div style={sectionStyle}>
-                          {isToday ? (
-                            <div style={{marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(59,130,246,0.22)"}}>
-                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.24em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Up next</div>
-                              <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.05,letterSpacing:"-0.005em"}}>
-                                {"Today, "}<span style={{color:B.sky,fontStyle:"italic"}}>{dayName}</span>
-                              </div>
+                      <div key={"daygroup-"+gi} style={sectionStyle}>
+                        {isToday ? (
+                          <div style={{marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(59,130,246,0.22)"}}>
+                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.24em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Up next</div>
+                            <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.05,letterSpacing:"-0.005em"}}>
+                              {"Today, "}<span style={{color:B.sky,fontStyle:"italic"}}>{dayName}</span>
                             </div>
-                          ) : (
-                            <div style={{display:"flex",alignItems:"baseline",gap:14,marginBottom:10}}>
-                              <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,lineHeight:1,letterSpacing:"0.01em"}}>{dayName}</div>
-                              <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
-                            </div>
-                          )}
-                          {group.items.map(function(item){
-                            var card = item.card;
-                            var i    = item.idx;
-                            return (
-                              <PlanCard key={i} card={card} idx={i}
-                                onSave={saveToVault} onLog={logResult}
-                                onSaveScript={saveScriptForCard}
-                                saved={vault.some(function(v){return v.id===card.title+card.day;})}
-                                result={results.find(function(r){return r.id===card.title+card.day;})}
-                                profile={profile}
-                                userToken={userToken}
-                                onCreditsUsed={refreshCredits}
-                                editMode={editMode}
-                                markedReplace={replaceSet.has(i)}
-                                onToggleReplace={toggleReplaceAt}
-                                replacing={partialReplacing.has(i)}
-                                usedFreshTrends={planUsedFreshTrends}
-                              />
-                            );
-                          })}
-                        </div>
-                        {hasPullQuote && <PullQuote insight={pullQuote.card.insight}/>}
-                      </React.Fragment>
+                          </div>
+                        ) : (
+                          <div style={{display:"flex",alignItems:"baseline",gap:14,marginBottom:10}}>
+                            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,lineHeight:1,letterSpacing:"0.01em"}}>{dayName}</div>
+                            <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
+                          </div>
+                        )}
+                        {group.items.map(function(item){
+                          var card = item.card;
+                          var i    = item.idx;
+                          return (
+                            <PlanCard key={i} card={card} idx={i}
+                              onSave={saveToVault} onLog={logResult}
+                              onSaveScript={saveScriptForCard}
+                              onEdit={updateCardAt}
+                              saved={vault.some(function(v){return v.id===card.title+card.day;})}
+                              result={results.find(function(r){return r.id===card.title+card.day;})}
+                              profile={profile}
+                              userToken={userToken}
+                              onCreditsUsed={refreshCredits}
+                              editMode={editMode}
+                              markedReplace={replaceSet.has(i)}
+                              onToggleReplace={toggleReplaceAt}
+                              replacing={partialReplacing.has(i)}
+                              usedFreshTrends={planUsedFreshTrends}
+                            />
+                          );
+                        })}
+                      </div>
                     );
                   });
                 })()}
