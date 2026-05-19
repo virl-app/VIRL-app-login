@@ -151,6 +151,30 @@ function captionTrendsContext(trends, platform) {
   return "\n\n" + block + "\n\nIf any of these naturally apply to the topic, lean into them. Otherwise ignore.";
 }
 
+// Strategy `success_metric` can be either a string (legacy plans + the
+// pre-bundle prompt shape) or an array of { value, label } objects (the
+// new structured shape that powers the stat-tile UI). This helper renders
+// both back to a single readable string so the formatters below — plan
+// history, plan_partial locked-strategy block, plan_strategy
+// previous-strategy block — show the model the same text regardless of
+// which shape was stored.
+function renderSuccessMetric(sm) {
+  if (Array.isArray(sm)) {
+    return sm
+      .filter(function (m) { return m && (m.value || m.label); })
+      .map(function (m) {
+        const v = (m.value || "").toString().trim();
+        const l = (m.label || "").toString().trim();
+        if (v && l) return v + " " + l;
+        return v || l;
+      })
+      .filter(Boolean)
+      .join(", ");
+  }
+  if (typeof sm === "string") return sm;
+  return "";
+}
+
 // Plan history → prompt context. Surfaces last 1-3 weeks' strategy + each
 // week's top performer (by views+likes×2+saves×4) + how many cards never
 // got logged. The LLM uses this to build narratively, double down on what
@@ -164,9 +188,10 @@ function planHistoryContext(history) {
     if (w.week_start) lines.push("  Week of " + w.week_start + ":");
     if (w.strategy) {
       const s = w.strategy;
-      if (s.thesis)         lines.push("    Strategy thesis: " + s.thesis);
-      if (s.the_bet)        lines.push("    The bet: " + s.the_bet);
-      if (s.success_metric) lines.push("    Success metric: " + s.success_metric);
+      if (s.thesis)  lines.push("    Strategy thesis: " + s.thesis);
+      if (s.the_bet) lines.push("    The bet: " + s.the_bet);
+      const sm = renderSuccessMetric(s.success_metric);
+      if (sm)        lines.push("    Success metric: " + sm);
     }
     if (w.top_performer) {
       const tp = w.top_performer;
@@ -498,7 +523,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     // stable across generation dates; the actual day labels still arrive
     // per-request in userPrompt.
     + " Return ONLY one JSON object with this exact shape: {"
-    + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"},"
+    + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":[{\"value\":\"...\",\"label\":\"...\"}],\"the_bet\":\"...\"},"
     + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
     + " (Optional `insight` field on roughly 1 in 3 cards.)"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
@@ -558,13 +583,13 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     // this user's specific industry.
     + " FORMAT MIX FOR THIS USER'S INDUSTRY: " + industryFormatGuidance
     + " Create 10-14 total posts for THIS week. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
-    + " Open the plan with a STRATEGY object that frames the week. The strategy must:"
-    + "  - State a one-sentence thesis for the week (specific to this creator, not generic)."
-    + "  - Name the dominant signal you're optimizing for (e.g. 'watch time + saves')."
-    + "  - Read the audience in one sentence so the user can verify."
-    + "  - Define a concrete success metric (e.g. '3 posts past 1K views or 50 saves')."
-    + "  - Articulate the bet — what you're leaning into this week and why, citing prior weeks if relevant."
-    + " For each post: description is 2 punchy sentences max."
+    + " Open the plan with a STRATEGY object that frames the week. Every field has a strict length cap — the UI breaks on overruns, and the value to the creator comes from sharpness, not volume. The strategy must:"
+    + "  - thesis: ONE sentence, MAX 15 words. A specific claim about THIS week for THIS creator. No preamble, no throat-clearing, no semicolons stacking two ideas. Example: \"Launch week — every post narrows the gap between you-the-person and you-the-founder.\""
+    + "  - optimizing_for: MAX 8 words naming the dominant signals. No sentence. Example: \"Saves + profile visits + launch-day follow-through.\""
+    + "  - audience_read: ONE sentence, MAX 25 words. Who this week lands for, written so the creator can verify it sounds like them. Example: \"Women 25-45 building something who follow you because you make doing-both feel possible.\""
+    + "  - success_metric: an ARRAY of 3-4 objects, each {\"value\": \"<number or threshold>\", \"label\": \"<3-6 word descriptor>\"}. Concrete only — no prose, no compound clauses, no commas inside a single label. Example: [{\"value\":\"5\",\"label\":\"posts past 1K views\"},{\"value\":\"60+\",\"label\":\"saves on carousels\"},{\"value\":\"+100\",\"label\":\"net followers\"},{\"value\":\"10\",\"label\":\"beta-tester DMs\"}]."
+    + "  - the_bet: ONE sentence, MAX 25 words. The specific lean for this week and why. Must add NEW information vs the thesis — not a paraphrase. Cite prior weeks if relevant. Example: \"Lean into launch proximity — urgency makes behind-the-scenes posts feel like insider access.\""
+    + " For each post: description is ONE sentence pitch, MAX 20 words — the angle / why this post exists. NOT a recap of the format-specific fields below it (hook / caption / slides / etc handle the how). Acts as the kicker, not the brief."
     // [PREMIUM 4] Strategic micro-insights replace the always-on "why"
     // field. Sparseness is intentional: one in three feels like a
     // strategist sharing earned wisdom; on every card it reads like
@@ -621,7 +646,8 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   if (strategy.thesis)         strategyLines.push("Thesis: "         + strategy.thesis);
   if (strategy.optimizing_for) strategyLines.push("Optimizing for: " + strategy.optimizing_for);
   if (strategy.audience_read)  strategyLines.push("Audience read: "  + strategy.audience_read);
-  if (strategy.success_metric) strategyLines.push("Success metric: " + strategy.success_metric);
+  const partialSm = renderSuccessMetric(strategy.success_metric);
+  if (partialSm)               strategyLines.push("Success metric: " + partialSm);
   if (strategy.the_bet)        strategyLines.push("The bet: "        + strategy.the_bet);
   const strategyBlock = strategyLines.length ? strategyLines.join("\n") : "(no strategy provided — improvise from the kept cards)";
 
@@ -684,7 +710,8 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
   if (previous.thesis)         previousLines.push("Thesis: "         + previous.thesis);
   if (previous.optimizing_for) previousLines.push("Optimizing for: " + previous.optimizing_for);
   if (previous.audience_read)  previousLines.push("Audience read: "  + previous.audience_read);
-  if (previous.success_metric) previousLines.push("Success metric: " + previous.success_metric);
+  const previousSm = renderSuccessMetric(previous.success_metric);
+  if (previousSm)              previousLines.push("Success metric: " + previousSm);
   if (previous.the_bet)        previousLines.push("The bet: "        + previous.the_bet);
   const previousBlock = previousLines.length ? previousLines.join("\n") : "(no previous strategy on file)";
 
@@ -692,14 +719,16 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
     + "Re-frame this week's plan with a DIFFERENT strategic angle."
     + "\n\nTHIS WEEK'S CARDS (already finalized — do NOT propose changes to them):\n" + cardLines
     + "\n\nPREVIOUS STRATEGY (the user disagreed with this — find a different lens that still genuinely describes the same cards):\n" + previousBlock
-    + "\n\nRules:"
+    + "\n\nRules — every field has a strict length cap; the UI breaks on overruns:"
     + "\n  - The new framing must honestly describe what is ON THE PLAN. Do not invent posts that aren't there."
     + "\n  - The new thesis and bet must be MEANINGFULLY DIFFERENT from the previous ones — not a paraphrase."
-    + "\n  - One sentence each for thesis / optimizing_for / audience_read / success_metric / the_bet."
-    + "\n  - success_metric should be concrete (e.g. \"3 posts past 1K views or 50 saves\"), not vague."
-    + "\n  - the_bet should be the specific thing this plan is leaning into and why, in plain language."
+    + "\n  - thesis: ONE sentence, MAX 15 words. Sharp, specific, no preamble."
+    + "\n  - optimizing_for: MAX 8 words naming the dominant signals."
+    + "\n  - audience_read: ONE sentence, MAX 25 words."
+    + "\n  - success_metric: ARRAY of 3-4 objects, each {\"value\":\"<number or threshold>\",\"label\":\"<3-6 word descriptor>\"}. Concrete numbers only — no prose, no commas inside a single label. Example: [{\"value\":\"5\",\"label\":\"posts past 1K views\"},{\"value\":\"60+\",\"label\":\"saves on carousels\"},{\"value\":\"+100\",\"label\":\"net followers\"}]."
+    + "\n  - the_bet: ONE sentence, MAX 25 words. The specific lean and why — new information vs the thesis, not a paraphrase."
     + "\n\nReturn ONLY this JSON shape — no markdown, no preamble:"
-    + "\n{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"}";
+    + "\n{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":[{\"value\":\"...\",\"label\":\"...\"}],\"the_bet\":\"...\"}";
 
   return {
     systemPrompt,

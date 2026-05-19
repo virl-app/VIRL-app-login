@@ -2034,6 +2034,49 @@ function normalizeFormat(raw) {
   return "video";
 }
 
+// Human-readable label for a card's format. The raw snake_case values
+// (single_image, long_form_text, quote_graphic) are the contract with the
+// model and the renderer; they should never leak into user-facing chips.
+function humanizeFormat(raw) {
+  var map = {
+    video:          "Video",
+    single_image:   "Image",
+    carousel:       "Carousel",
+    quote_graphic:  "Quote graphic",
+    story:          "Story",
+    long_form_text: "Long-form post",
+  };
+  var key = normalizeFormat(raw);
+  return map[key] || (raw && typeof raw === "string" ? raw : "");
+}
+
+// One-line preview shown UNDER the headline on collapsed plan cards so
+// the user can scan 10-14 cards without expanding each one. Picks the
+// most representative opening line per format (video/long-form → hook,
+// carousel → first slide headline, image → photo direction, quote →
+// the quote, story → first frame). Falls back to description for legacy
+// cards that have no format-specific fields populated.
+function cardPreview(card) {
+  if (!card) return "";
+  var fmt = normalizeFormat(card.format);
+  var preview = "";
+  if (fmt === "video" || fmt === "long_form_text") {
+    preview = card.hook && card.hook !== card.title ? card.hook : "";
+  } else if (fmt === "carousel") {
+    var slides = Array.isArray(card.slides) ? card.slides : [];
+    preview = slides[0] && slides[0].headline ? slides[0].headline : "";
+  } else if (fmt === "single_image") {
+    preview = card.photoDirection || "";
+  } else if (fmt === "quote_graphic") {
+    preview = card.quote ? "“" + card.quote + "”" : "";
+  } else if (fmt === "story") {
+    var frames = Array.isArray(card.frames) ? card.frames : [];
+    preview = frames[0] && frames[0].content ? frames[0].content : "";
+  }
+  if (!preview && card.description) preview = card.description;
+  return preview || "";
+}
+
 // [INTEL 4] Format-specific body components rendered inside the PlanCard
 // expanded section, ABOVE the existing description paragraph. Each body
 // only renders fields it actually has — missing fields are skipped silently
@@ -2223,7 +2266,11 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
   const [posted,setPosted]     = useState(function(){ return isCardPosted(cardId); });
   var reminder = "VIRL "+card.day+": "+card.title+" - Post at "+card.postTime+" on "+card.platform;
   var hasSavedScript = !!card.savedScript;
-  var dayPlatformLabel = card.day + " | " + card.platform + " | " + card.postTime;
+  // [P1] One-line preview shown beneath the title on collapsed cards so
+  // the user can differentiate 10-14 stacked cards without expanding each.
+  // Computed only when collapsed so the expanded view (which renders the
+  // full hook/slides/etc inline) doesn't duplicate it.
+  var preview = !expanded ? cardPreview(card) : "";
 
   function saveResults() { onLog(card,{views:views,likes:likes,saves:saves2}); setShowLog(false); }
   // [UX-01] Save handler — also writes the localStorage status flag so
@@ -2265,13 +2312,18 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
     <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity}}>
       {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
 
-      {/* [UX-01] Header row: day | platform | postTime metadata plus
-           status indicators (navy dot for saved, coral checkmark for
-           posted), priority badge, and any "logged / script saved"
-           tags from existing flows. */}
+      {/* [UX-01 / P3] Header row. postTime leads at high contrast — it's
+           the most actionable atom on the card and previously sat at 9px
+           muted gray equal-weight with day/platform. Day + platform
+           remain as the supporting eyebrow next to it. Status indicators
+           (saved dot, posted check), priority badge, and "logged /
+           script saved" tags keep their slots. */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
-        <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,flex:1}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.22em",textTransform:"uppercase",color:B.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{dayPlatformLabel}</div>
+        <div style={{display:"flex",alignItems:"baseline",gap:10,minWidth:0,flex:1,flexWrap:"wrap"}}>
+          {card.postTime && (
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.ink,letterSpacing:"0.01em",lineHeight:1.1,flexShrink:0}}>{card.postTime}</div>
+          )}
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{card.day + " · " + card.platform}</div>
           {saved && (
             <span aria-label="Saved to vault" title="Saved"
               style={{display:"inline-block",width:8,height:8,borderRadius:99,background:B.navy,flexShrink:0}}/>
@@ -2304,8 +2356,17 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
         </div>
       </div>
 
-      {/* [UX-01] Hook in Italiana 18px. Always visible, both states. */}
-      <div style={{fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,marginBottom:expanded?10:14}}>{card.title}</div>
+      {/* [UX-01] Hook in Italiana 18px. Always visible, both states.
+           Margin tightens when a preview line follows so the title +
+           preview read as one block. */}
+      <div style={{fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
+      {/* [P1] Collapsed-only preview line — the format-specific opening
+           (hook / first slide / photo direction / quote / first frame /
+           description fallback). Clamped to 2 lines so the card stays
+           short; the full versions live in the expanded body. */}
+      {preview && (
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.5,marginBottom:14,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{preview}</div>
+      )}
 
       {/* [UX-01] Expanded section: full description, why-this-works,
            tag chips, hashtags, copy-reminder strip. Mounted only when
@@ -2330,12 +2391,16 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>{card.insight || card.why}</div>
             </div>
           )}
-          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:14}}>
-            <MTag type="time">{"🕐 "+card.postTime}</MTag>
-            <MTag>{"📱 "+card.platform}</MTag>
-            {card.trend && <MTag>{"✦ "+card.trend}</MTag>}
-            {card.format && <MTag>{card.format}</MTag>}
-          </div>
+          {/* [P5] Time + platform live in the header eyebrow now — no
+               need to repeat them. Only render chips for what's NOT in
+               the eyebrow: the trend angle and the humanized format
+               label (P9 — raw snake_case shouldn't reach the user). */}
+          {(card.trend || card.format) && (
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:14}}>
+              {card.trend && <MTag>{"✦ "+card.trend}</MTag>}
+              {card.format && <MTag>{humanizeFormat(card.format)}</MTag>}
+            </div>
+          )}
           <HashtagRow hashtags={card.hashtags}/>
           <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.navy,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
@@ -7062,51 +7127,89 @@ return (
                     </div>
                   );
                 })()}
-                {/* Strategy hero card — written by VIRL alongside the cards.
-                    Frames the week so the user sees the thesis + audience
-                    read + success metric + what VIRL is betting on, instead
-                    of a flat list of tasks. */}
-                {strategy && (strategy.thesis || strategy.the_bet) && (
-                  <div style={{background:B.navy,borderRadius:16,padding:"22px 24px",marginBottom:16,boxShadow:"0 4px 20px rgba(31,58,138,0.18)"}}>
-                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.sky}}>This week's strategy</div>
-                      <button onClick={regenerateStrategy} disabled={strategyRegenLoading}
-                        title="Re-frame this same plan with a different angle"
-                        style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",padding:"5px 10px",background:"rgba(255,255,255,0.08)",color:"rgba(255,255,255,0.85)",border:"1px solid rgba(255,255,255,0.18)",cursor:strategyRegenLoading?"default":"pointer",borderRadius:99,opacity:strategyRegenLoading?0.55:1}}>
-                        {strategyRegenLoading ? "Reframing…" : "Try a different angle"}
-                      </button>
+                {/* [S2] Strategy hero card — editorial hierarchy, not a
+                    flat grid. The previous version gave thesis / the_bet /
+                    optimizing_for / audience_read / success_metric equal
+                    weight as four boxes in a grid, which read as a wall of
+                    text. The new layout ranks them: thesis as the headline,
+                    success_metric as a row of stat tiles (the scoreboard),
+                    optimizing_for + audience_read side-by-side as the
+                    supporting reads, the_bet as the closing strategist note
+                    with a sky-blue accent rule.
+
+                    success_metric arrives as an ARRAY of {value, label}
+                    from the new prompt shape. Legacy plans stored the
+                    field as a free-form string; those render as a single
+                    full-width tile so old plans still look intentional
+                    until the user regenerates. */}
+                {strategy && (strategy.thesis || strategy.the_bet) && (function(){
+                  var smRaw = strategy.success_metric;
+                  var smTiles = [];
+                  var smLegacy = false;
+                  if (Array.isArray(smRaw)) {
+                    smTiles = smRaw.filter(function(m){ return m && (m.value || m.label); }).slice(0, 4);
+                  } else if (typeof smRaw === "string" && smRaw.trim()) {
+                    smTiles = [{ value: "", label: smRaw.trim() }];
+                    smLegacy = true;
+                  }
+                  var hasSidePair = !!(strategy.optimizing_for || strategy.audience_read);
+                  var hasTiles    = smTiles.length > 0;
+                  var hasBet      = !!strategy.the_bet;
+                  return (
+                    <div style={{background:B.navy,borderRadius:16,padding:"24px 26px",marginBottom:16,boxShadow:"0 4px 20px rgba(31,58,138,0.18)"}}>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.sky}}>This week's strategy</div>
+                        <button onClick={regenerateStrategy} disabled={strategyRegenLoading}
+                          title="Re-frame this same plan with a different angle"
+                          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"7px 14px",background:strategyRegenLoading?"rgba(255,255,255,0.06)":"rgba(255,255,255,0.14)",color:B.white,border:"1px solid rgba(255,255,255,0.32)",cursor:strategyRegenLoading?"default":"pointer",borderRadius:99,opacity:strategyRegenLoading?0.55:1,transition:"all .15s"}}>
+                          {strategyRegenLoading ? "Reframing…" : "Try a different angle"}
+                        </button>
+                      </div>
+                      {strategy.thesis && (
+                        <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.25,marginBottom:(hasTiles || hasSidePair || hasBet) ? 20 : 0,opacity:strategyRegenLoading?0.55:1}}>{strategy.thesis}</div>
+                      )}
+                      {hasTiles && (
+                        <div style={{display:"grid",gridTemplateColumns:smLegacy ? "1fr" : "repeat(auto-fit, minmax(120px, 1fr))",gap:10,marginBottom:(hasSidePair || hasBet) ? 18 : 0}}>
+                          {smTiles.map(function(tile, i){
+                            return (
+                              <div key={i} style={{background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,padding:"12px 14px"}}>
+                                {tile.value && (
+                                  <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,lineHeight:1.05,marginBottom:4}}>{tile.value}</div>
+                                )}
+                                {!tile.value && smLegacy && (
+                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>Success looks like</div>
+                                )}
+                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:smLegacy?13:10,fontWeight:smLegacy?400:600,letterSpacing:smLegacy?"0":"0.06em",textTransform:smLegacy?"none":"uppercase",color:smLegacy?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.6)",lineHeight:smLegacy?1.55:1.4}}>{tile.label}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {hasSidePair && (
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))",gap:18,marginBottom:hasBet ? 18 : 0}}>
+                          {strategy.optimizing_for && (
+                            <div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Optimizing for</div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.optimizing_for}</div>
+                            </div>
+                          )}
+                          {strategy.audience_read && (
+                            <div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Audience read</div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.audience_read}</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {hasBet && (
+                        <div style={{borderLeft:"2px solid "+B.sky,paddingLeft:14}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>The bet</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontStyle:"italic",fontWeight:300,color:B.white,lineHeight:1.55}}>{strategy.the_bet}</div>
+                        </div>
+                      )}
                     </div>
-                    {strategy.thesis && (
-                      <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.25,marginBottom:18,opacity:strategyRegenLoading?0.55:1}}>{strategy.thesis}</div>
-                    )}
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))",gap:14}}>
-                      {strategy.the_bet && (
-                        <div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>The bet</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.9)",lineHeight:1.55}}>{strategy.the_bet}</div>
-                        </div>
-                      )}
-                      {strategy.optimizing_for && (
-                        <div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Optimizing for</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.9)",lineHeight:1.55}}>{strategy.optimizing_for}</div>
-                        </div>
-                      )}
-                      {strategy.audience_read && (
-                        <div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Audience read</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.9)",lineHeight:1.55}}>{strategy.audience_read}</div>
-                        </div>
-                      )}
-                      {strategy.success_metric && (
-                        <div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>Success looks like</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.white,lineHeight:1.55}}>{strategy.success_metric}</div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:8}}>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink}}>Your <span style={{color:B.navy}}>week</span></div>
