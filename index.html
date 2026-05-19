@@ -4068,6 +4068,14 @@ function GateScreen({onAuth}) {
   function handleEmailAuth() {
     if (!email.trim()||!password.trim()) return;
     if (mode==="signup") {
+      // Single combined message when either or both required boxes are
+      // unchecked — cleaner than firing one error, having the user fix
+      // it, then firing the second on the next submit. Marketing
+      // opt-in stays optional and is not part of this gate.
+      if (!ageConfirmed && !tosAccepted) {
+        setAuthError("Please check the age confirmation and Terms boxes above to create your account.");
+        return;
+      }
       if (!ageConfirmed) { setAuthError("Please confirm you are 18 or older to create an account."); return; }
       if (!tosAccepted)  { setAuthError("Please accept the Terms of Service and Privacy Policy to continue."); return; }
     }
@@ -4205,7 +4213,6 @@ function GateScreen({onAuth}) {
             onKeyDown={function(e){if(e.key==="Enter")handleEmailAuth();}}
             placeholder="Password" type="password"
             style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:12,color:B.ink,fontFamily:"'Jost',sans-serif",fontSize:15,padding:"13px 16px",marginBottom:12,outline:"none"}}/>
-          {authError&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:mode==="signup"&&authError.includes("Check")?B.blue:B.coral,textAlign:"center",marginBottom:10,lineHeight:1.5}}>{authError}</div>}
           {mode==="login"&&(
             <div style={{textAlign:"right",marginBottom:10,marginTop:-4}}>
               <button onClick={function(){setResetMode(true);setAuthError("");}}
@@ -4256,25 +4263,25 @@ function GateScreen({onAuth}) {
               </div>
             </div>
           )}
-          {/* Signup gate: the age + ToS checkboxes (NOT the optional
-               marketing one) must be ticked before this button enables.
-               Login mode only needs email + password. The disabled style
-               adds opacity + not-allowed cursor so the inert state is
-               obvious instead of just "grayed out". */}
-          <button onClick={handleEmailAuth} disabled={authLoading||!email.trim()||!password.trim()||(mode==="signup"&&(!ageConfirmed||!tosAccepted))}
-            style={{width:"100%",background:authLoading?B.muted:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:(authLoading||!email.trim()||!password.trim()||(mode==="signup"&&(!ageConfirmed||!tosAccepted)))?"not-allowed":"pointer",borderRadius:14,marginBottom:14,boxShadow:authLoading?"none":"0 4px 14px rgba(31,58,138,0.3)",opacity:(authLoading||!email.trim()||!password.trim()||(mode==="signup"&&(!ageConfirmed||!tosAccepted)))?0.55:1,transition:"all .2s"}}>
+          {/* Error display sits directly above the submit button so it
+               renders in the user's line of sight at the moment of the
+               tap — instead of flashing into the gap above the
+               checkboxes, far from the action they just took. Covers
+               server errors (bad credentials), inline validation
+               errors (missing required checkboxes), and the
+               "Check your email" confirmation tint in signup. */}
+          {authError&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:mode==="signup"&&authError.includes("Check your email")?B.blue:B.coral,textAlign:"center",marginBottom:12,lineHeight:1.5,padding:"10px 12px",background:mode==="signup"&&authError.includes("Check your email")?B.navySoft:B.coralSoft,borderRadius:10,border:"1px solid "+(mode==="signup"&&authError.includes("Check your email")?"rgba(31,58,138,0.15)":"rgba(244,63,94,0.2)")}}>{authError}</div>}
+          {/* Submit button is only disabled while a request is in flight
+               or before email + password are filled — the age + ToS
+               checkbox gate is enforced inside handleEmailAuth (it sets
+               an inline error above instead of a silent disable). This
+               keeps the form feeling inviting and ensures the optional
+               marketing checkbox stays visible rather than being hidden
+               behind a "your form is broken" disabled state. */}
+          <button onClick={handleEmailAuth} disabled={authLoading||!email.trim()||!password.trim()}
+            style={{width:"100%",background:authLoading?B.muted:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:(authLoading||!email.trim()||!password.trim())?"not-allowed":"pointer",borderRadius:14,marginBottom:12,boxShadow:authLoading?"none":"0 4px 14px rgba(31,58,138,0.3)",opacity:(authLoading||!email.trim()||!password.trim())?0.55:1,transition:"all .2s"}}>
             {authLoading?"Signing in...":(mode==="signup"?"Create account":"Sign in")}
           </button>
-          {/* Soft inline hint when signup is gated on the two required
-               checkboxes. Only renders after email + password are filled
-               (first-time visitors aren't told to check boxes before
-               they've typed anything) and at least one required box is
-               still unchecked. */}
-          {mode==="signup" && email.trim() && password.trim() && (!ageConfirmed || !tosAccepted) && (
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,color:B.muted,textAlign:"center",marginBottom:14,lineHeight:1.5}}>
-              {"Confirm the two boxes above to create your account."}
-            </div>
-          )}
           <div style={{borderTop:"1px solid "+B.divider,paddingTop:16,textAlign:"center"}}>
             {mode==="login"?(
               <button onClick={function(){setMode("signup");setAuthError("");}}
