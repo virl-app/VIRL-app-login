@@ -153,6 +153,59 @@ async function claimFoundingPosition(userId) {
   }
 }
 
+// [PRICING 3b] Write plan fields to the user's credits row, creating the
+// row if it doesn't exist yet. VIRL provisions the credits row lazily (on
+// first plan generation), so a user who signs up and upgrades before
+// generating anything has no row — a plain PATCH would silently no-op and
+// the upgrade would be lost. `rowExists` comes from the getCreditRow call
+// the caller already made, so this adds no extra round-trip.
+async function writeUserPlan(userId, fields, rowExists) {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !serviceKey || !userId) return;
+  try {
+    let res;
+    if (rowExists) {
+      res = await fetch(
+        supabaseUrl + "/rest/v1/credits?user_id=eq." + encodeURIComponent(userId),
+        {
+          method: "PATCH",
+          headers: {
+            apikey: serviceKey,
+            Authorization: "Bearer " + serviceKey,
+            "Content-Type": "application/json",
+            Prefer: "return=minimal",
+          },
+          body: JSON.stringify(fields),
+        }
+      );
+    } else {
+      // No row yet — insert. credits:150 mirrors the paid-tier allowance
+      // other paid users carry (the HUD renders "Unlimited" for paid plans
+      // regardless, so the number is a convention, not a gate).
+      res = await fetch(
+        supabaseUrl + "/rest/v1/credits",
+        {
+          method: "POST",
+          headers: {
+            apikey: serviceKey,
+            Authorization: "Bearer " + serviceKey,
+            "Content-Type": "application/json",
+            Prefer: "return=minimal",
+          },
+          body: JSON.stringify(Object.assign({ user_id: userId, credits: 150 }, fields)),
+        }
+      );
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      console.error("[webhook] credits write failed:", res.status, text);
+    }
+  } catch (e) {
+    console.error("[webhook] credits write error:", e.message);
+  }
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -245,7 +298,9 @@ export default async function handler(req, res) {
               : 0) + 1;
           }
 
-          await patchUserPlan(userId, patchFields);
+          // [PRICING 3b] writeUserPlan creates the credits row if it's
+          // missing (lazy-provisioned users who upgrade before generating).
+          await writeUserPlan(userId, patchFields, existing != null);
           console.log("[webhook] User " + userId + " upgraded to " + plan + " (" + foundingTier + ")");
           // Subscription welcome — dedupe by stripe subscription id so a
           // resubscribe creates a new send, but a webhook replay does not.
