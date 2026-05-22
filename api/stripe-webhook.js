@@ -316,11 +316,16 @@ export default async function handler(req, res) {
             // [PREMIUM 7] Fire subscriptionStarted into Loops + sync
             // plan-state properties so time-based segments (annual
             // upgrade nudge at day 60, etc) have what they need.
+            // [PRICING 6] foundingTier + foundingPosition let Loops branch
+            // the welcome (Email 01) and payment confirmation (Email 04)
+            // into tier-aware variants and personalize "You're Founder #N".
             await sendLoopsEvent({
               userId, email: ctx.email, eventName: "subscriptionStarted",
               properties: {
                 firstName:        ctx.name || "",
                 planType:         planType,
+                foundingTier:     foundingTier,
+                foundingPosition: foundingPosition || 0,
                 isFoundingMember: plan === "founding",
               },
             });
@@ -329,9 +334,25 @@ export default async function handler(req, res) {
               properties: {
                 plan:             plan,
                 planType:         planType,
+                foundingTier:     foundingTier,
+                foundingPosition: foundingPosition || 0,
                 isFoundingMember: plan === "founding",
               },
             });
+            // [PRICING 6] When the 50th Founder Circle position is claimed,
+            // fire foundingCircleFull. claim_founding_position always takes
+            // the lowest empty slot, so position 50 is necessarily the last
+            // filled — this fires exactly once. The event lands on the 50th
+            // member's contact; broadcasting the "Founder Circle is full"
+            // email to the wider waitlist is a Loops campaign triggered
+            // separately (the event is the signal that the moment arrived).
+            if (foundingTier === "founder_circle" && foundingPosition === 50) {
+              await sendLoopsEvent({
+                userId, email: ctx.email, eventName: "foundingCircleFull",
+                properties: { filledCount: 50 },
+              });
+              console.log("[webhook] Founder Circle filled — foundingCircleFull fired");
+            }
           }
         } else {
           console.warn("[webhook] checkout.session.completed missing userId in metadata");
@@ -438,10 +459,17 @@ export default async function handler(req, res) {
           console.warn("[webhook] subscription.deleted missing userId in metadata");
           break;
         }
+        // [PRICING 6] Read the member's tier before flipping plan state so
+        // the cancellation event tells Loops whether a Founder Circle member
+        // churned (worth Lauren's personal follow-up per the brief) versus a
+        // Standard one. founding_tier itself is never cleared on cancel —
+        // the position stays filled forever (no-take-backs rule).
+        const cancelledCredit = await getCreditRow(userId);
+        const cancelledTier = (cancelledCredit && cancelledCredit.founding_tier) || "standard";
         // Mark the plan cancelled but DO NOT delete user data — they may
         // resubscribe and we want their vault, profile, and history intact.
         await patchUserPlan(userId, { plan: "cancelled" });
-        console.log("[webhook] User " + userId + " cancelled");
+        console.log("[webhook] User " + userId + " cancelled (" + cancelledTier + ")");
         const ctx = await fetchUserContext(userId);
         if (ctx.email) {
           const tpl = subscriptionCancelled({ name: ctx.name });
@@ -455,11 +483,11 @@ export default async function handler(req, res) {
           // can target this user.
           await sendLoopsEvent({
             userId, email: ctx.email, eventName: "subscriptionCancelled",
-            properties: { firstName: ctx.name || "" },
+            properties: { firstName: ctx.name || "", foundingTier: cancelledTier },
           });
           await updateLoopsContact({
             userId, email: ctx.email,
-            properties: { plan: "cancelled" },
+            properties: { plan: "cancelled", foundingTier: cancelledTier },
           });
         }
         break;
