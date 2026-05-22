@@ -795,9 +795,13 @@ export default async function handler(req, res) {
       if (!isPaid && currentCredits < creditCost) {
         return res.status(402).json({ error: 'Not enough credits this week.' });
       }
-      // Founding + Pro skip credit deduction (unlimited within the tier).
-      // Standard + free pay per-generation. Mirrors prior behavior.
-      if (!['founding','pro'].includes(plan)) {
+      // [PRICING credit-model] Only Pro is unlimited. Founder Circle
+      // ('founding') now meters at 150/week like Standard — credits
+      // decrement per generation and refill on the weekly reset. Free
+      // users pay per-generation too. The 402 gate above still exempts
+      // all paid plans, so a Founder Circle member who reaches 0 is not
+      // hard-blocked — the count just floors at 0 until the weekly reset.
+      if (plan !== 'pro') {
         await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
           method: 'PATCH',
           headers: {

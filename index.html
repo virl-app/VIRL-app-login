@@ -5747,12 +5747,13 @@ function App() {
   var foundingPosition = sbCredits && sbCredits.founding_position ? sbCredits.founding_position : null;
   var isFounderCircle  = foundingTier === "founder_circle";
   var isFoundingOrPro = sbPlan==="founding" || sbPlan==="pro";
-  // Paid plans have no per-call wallet — showing a raw credit number (e.g.
-  // "150 credits") on a founding member's HUD reads like a metered allowance
-  // that should decrement, which is the opposite of what founding/pro buys.
-  // Render "Unlimited" so the meaning matches the entitlement.
+  // [PRICING credit-model] Only the Pro tier has truly unlimited credits.
+  // Founder Circle now meters at 150/week like Standard — the HUD shows the
+  // live count ticking down. isUnlimitedCredits gates the "Unlimited" label
+  // and the friendly credit-counter (which Pro doesn't need).
+  var isUnlimitedCredits = sbPlan==="pro";
   var creditsLabel = creditsLoaded
-    ? (isFoundingOrPro ? "Unlimited" : String(credits))
+    ? (isUnlimitedCredits ? "Unlimited" : String(credits))
     : "—";
   // [FRESH-TRENDS] Single source of truth for "this user has a paid
   // subscription" — mirrors PAID_PLANS in api/chat.js. Distinct from
@@ -7446,10 +7447,10 @@ return (
             {/* [TASK 8] Friendly credit counter — translates raw credits into
                 concrete actions so users see value instead of tokens. Only
                 renders in the useful middle range (3-150 inclusive); below 3
-                the low-credit banner takes over and above 150 the user is on
-                a paid tier and doesn't need reassurance. Founding/Pro skip
-                entirely — they have no metered allowance to translate. */}
-            {!isFoundingOrPro&&credits>=3&&credits<=150&&(
+                the low-credit banner takes over. [PRICING credit-model] Only
+                Pro skips it now — Founder Circle is metered like Standard and
+                benefits from the same translation. */}
+            {!isUnlimitedCredits&&credits>=3&&credits<=150&&(
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.35)",marginTop:4,marginLeft:11,lineHeight:1.35}}>
                 {"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans, "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions, "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
               </div>
