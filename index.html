@@ -4815,6 +4815,127 @@ function GateScreen({onAuth}) {
 // ErrorBoundary removed — static class methods not supported in Babel standalone
 // Error handling done via try/catch inside App
 
+// [CX-FIX 1] Shown when the user is in PASSWORD_RECOVERY mode after clicking
+// the "Forgot password?" email link. Without this screen, Supabase silently
+// signs them in via the recovery session and they have no way to actually
+// change their password — the entire forgot-password flow was a dead end.
+//
+// On submit:
+//   1. supabase.auth.updateUser({ password }) — applies the new password
+//   2. Fires /api/email/password-changed so the email-of-record gets a
+//      "your password was just changed" notification (security best
+//      practice; Supabase doesn't do this on its own)
+//   3. Clears recoveryMode so the next render drops the user into the
+//      normal dashboard
+function SetNewPasswordScreen({ onDone }) {
+  const [password,setPassword]   = useState("");
+  const [confirm,setConfirm]     = useState("");
+  const [busy,setBusy]           = useState(false);
+  const [err,setErr]             = useState("");
+  const [done,setDone]           = useState(false);
+
+  function handleSave() {
+    if (password.length < 8) { setErr("Password must be at least 8 characters."); return; }
+    if (password !== confirm) { setErr("Passwords don't match."); return; }
+    setBusy(true); setErr("");
+    supabaseClient.auth.updateUser({ password: password })
+      .then(function(result) {
+        if (result.error) { setBusy(false); setErr(result.error.message); return; }
+        // Fire-and-forget the confirmation email. Failure to send doesn't
+        // block the password change itself — the password is already saved.
+        try {
+          supabaseClient.auth.getSession().then(function(r) {
+            var token = r && r.data && r.data.session && r.data.session.access_token;
+            if (!token) return;
+            fetch("/api/email/password-changed", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+            }).catch(function(){});
+          });
+        } catch(e) {}
+        setBusy(false);
+        setDone(true);
+        // Small delay so the user reads the "saved" confirmation before
+        // landing on the dashboard.
+        setTimeout(function(){ onDone(); }, 1200);
+      })
+      .catch(function(e){ setBusy(false); setErr(e.message || "Could not update password."); });
+  }
+
+  return (
+    <div style={{
+      minHeight:"100vh",background:B.navy,display:"flex",alignItems:"center",
+      justifyContent:"center",padding:24,fontFamily:"'Jost',sans-serif"
+    }}>
+      <div style={{
+        width:"100%",maxWidth:420,background:B.white,borderRadius:16,
+        padding:"32px 28px",boxShadow:"0 12px 40px rgba(0,0,0,0.25)"
+      }}>
+        <div style={{
+          fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+          letterSpacing:"0.3em",textTransform:"uppercase",
+          color:B.muted,marginBottom:16,textAlign:"center"
+        }}>
+          Set a new password
+        </div>
+        <div style={{
+          fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,
+          lineHeight:1.2,marginBottom:8,textAlign:"center"
+        }}>
+          Pick something you'll remember.
+        </div>
+        <div style={{
+          fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,
+          color:B.sub,lineHeight:1.5,marginBottom:24,textAlign:"center"
+        }}>
+          You're almost in. Set a new password to finish.
+        </div>
+        {done ? (
+          <div style={{
+            fontFamily:"'Jost',sans-serif",fontSize:13,color:B.green,
+            textAlign:"center",padding:"24px 0"
+          }}>
+            Password saved. Taking you in&hellip;
+          </div>
+        ) : (
+          <React.Fragment>
+            <input type="password" value={password} placeholder="New password"
+              onChange={function(e){setPassword(e.target.value);setErr("");}}
+              style={{
+                width:"100%",fontFamily:"'Jost',sans-serif",fontSize:14,
+                padding:"12px 14px",border:"1px solid "+B.border,
+                borderRadius:10,marginBottom:12,boxSizing:"border-box"
+              }}/>
+            <input type="password" value={confirm} placeholder="Confirm new password"
+              onChange={function(e){setConfirm(e.target.value);setErr("");}}
+              style={{
+                width:"100%",fontFamily:"'Jost',sans-serif",fontSize:14,
+                padding:"12px 14px",border:"1px solid "+B.border,
+                borderRadius:10,marginBottom:16,boxSizing:"border-box"
+              }}/>
+            {err && (
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:12,color:B.coral,
+                marginBottom:12,textAlign:"center"
+              }}>{err}</div>
+            )}
+            <button onClick={handleSave} disabled={busy||!password||!confirm}
+              style={{
+                width:"100%",fontFamily:"'Jost',sans-serif",fontSize:12,
+                fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",
+                padding:"12px 20px",background:busy?B.muted:B.navy,
+                color:B.white,border:"none",borderRadius:99,
+                cursor:busy?"default":"pointer"
+              }}>
+              {busy?"Saving...":"Save new password"}
+            </button>
+          </React.Fragment>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // [TASK 2] Pre-launch gate screen — shown when checkAccess() returns false.
 // Aesthetic mirrors the live govirl.ai landing page: navy hero with dotted texture,
 // white CTAs with navy text, Italiana headlines, green-dot feature pills, and a
@@ -5220,6 +5341,12 @@ function App() {
   const [session,setSession]         = useState(null);
   const [authLoading,setAuthLoading] = useState(true);
   const [appError,setAppError]       = useState(null);
+  // [CX-FIX 1] Password recovery: when a user clicks the reset link in
+  // their email, Supabase signs them in via a recovery session AND fires
+  // a PASSWORD_RECOVERY event. Without this flag the app would just drop
+  // them into the dashboard with no way to actually set a new password —
+  // the entire forgot-password flow was a dead end until we noticed.
+  const [passwordRecoveryMode,setPasswordRecoveryMode] = useState(false);
 
   useEffect(function() {
     // Check for existing session on load (handles OAuth redirects too)
@@ -5230,6 +5357,13 @@ function App() {
     // Listen for auth state changes
     var listener = supabaseClient.auth.onAuthStateChange(function(event, s) {
       setSession(s);
+      // [CX-FIX 1] User just clicked their reset email link — flip into
+      // recovery mode so the app renders the SetNewPassword screen
+      // instead of the normal dashboard. Cleared once the password is
+      // saved (see SetNewPasswordScreen).
+      if (event === "PASSWORD_RECOVERY") {
+        setPasswordRecoveryMode(true);
+      }
       // [TASK 1] Clear cached profile on sign-out so the next user on this browser starts clean.
       if (event === "SIGNED_OUT") {
         try {
@@ -6996,6 +7130,14 @@ function App() {
 
   if (!session) return (
     <GateScreen onAuth={function(s){setSession(s);}}/>
+  );
+
+  // [CX-FIX 1] User clicked their password-reset email link. Show the
+  // set-new-password screen instead of the dashboard until they save a
+  // new password. SetNewPasswordScreen calls onDone() which flips this
+  // off and drops them into the normal dashboard.
+  if (passwordRecoveryMode) return (
+    <SetNewPasswordScreen onDone={function(){ setPasswordRecoveryMode(false); }}/>
   );
 
 return (
