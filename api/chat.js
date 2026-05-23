@@ -813,11 +813,28 @@ export default async function handler(req, res) {
       ? [{ type: 'text', text: built.systemPrompt, cache_control: { type: 'ephemeral' } }]
       : undefined;
 
+    // [DATE-FIX] Prepend the user's local date to the (uncached) userPrompt so
+    // every generation type — captions, plans, scripts, scans — has the real
+    // current year + weekday. Models default to their training-era guess
+    // otherwise (e.g. captions referencing "2024" mid-2026). Lives in the
+    // userPrompt instead of the cached systemPrompt to avoid invalidating
+    // the per-user prompt cache once per day.
+    const WEEKDAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+    const cn = params && params.clientNow;
+    let nowLine;
+    if (cn && cn.iso && typeof cn.weekday === "number" && cn.weekday >= 0 && cn.weekday <= 6) {
+      nowLine = "TODAY'S DATE: " + cn.iso + " (" + WEEKDAY_NAMES[cn.weekday] + "). The current year is " + (cn.year || cn.iso.slice(0,4)) + ". Any reference in your output to the current date, year, day of week, or what is happening 'now' must be consistent with this. Never refer to a past year as the current year.";
+    } else {
+      const sNow = new Date();
+      const sIso = sNow.getUTCFullYear() + "-" + String(sNow.getUTCMonth()+1).padStart(2,"0") + "-" + String(sNow.getUTCDate()).padStart(2,"0");
+      nowLine = "TODAY'S DATE: " + sIso + " (" + WEEKDAY_NAMES[sNow.getUTCDay()] + " UTC). The current year is " + sNow.getUTCFullYear() + ". Any reference in your output to the current date, year, day of week, or what is happening 'now' must be consistent with this. Never refer to a past year as the current year.";
+    }
+
     const content = [];
     if (imageBase64 && imageType) {
       content.push({ type: 'image', source: { type: 'base64', media_type: imageType, data: imageBase64 } });
     }
-    content.push({ type: 'text', text: built.userPrompt });
+    content.push({ type: 'text', text: nowLine + "\n\n" + built.userPrompt });
 
     const payload = {
       model:      selectedModel,

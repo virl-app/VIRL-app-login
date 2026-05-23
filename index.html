@@ -1338,6 +1338,18 @@ function createStreamingPlanParser(opts) {
   };
 }
 
+// [DATE-FIX] Snapshot of the browser's local now, sent on every /api/chat
+// call. The server runs in UTC; using server-side getUTCDay() to label plan
+// days caused "Friday" plans when a US-evening user generated on Thursday.
+// Sending the user's actual local date + weekday lets the server label days
+// correctly across timezones, and lets the prompt inject the real current
+// year so models stop referencing 2024 in 2026.
+function buildClientNow() {
+  var d = new Date();
+  var iso = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+  return { iso: iso, weekday: d.getDay(), year: d.getFullYear() };
+}
+
 // [PERF 3] SSE-stream consumer for the plan endpoint. Reads the chunked
 // response, parses out our wire events ("text", "meta", "error", "reset"),
 // and fires callbacks. Wire format (see api/chat.js handleStreamingPlan):
@@ -1349,7 +1361,9 @@ function createStreamingPlanParser(opts) {
 // transport errors or upstream `error` events.
 async function consumePlanStream(generationType, params, opts, callbacks) {
   opts = opts || {};
-  var body = { generationType: generationType, params: params || {} };
+  // [DATE-FIX] Merge browser-local date into params so buildPlan can label
+  // days against the user's local weekday instead of UTC.
+  var body = { generationType: generationType, params: Object.assign({}, params || {}, { clientNow: buildClientNow() }) };
   // plan_partial reuses the parent plan's Perplexity snapshot so the
   // single-card regen sees the same trend signal as the cards it's joining.
   if (opts.trendsSnapshot) body.trendsSnapshot = opts.trendsSnapshot;
@@ -1430,7 +1444,9 @@ async function consumePlanStream(generationType, params, opts, callbacks) {
 // the cost table client-side.
 async function callAPI(generationType, params, opts) {
   opts = opts || {};
-  const body = { generationType, params: params || {} };
+  // [DATE-FIX] See buildClientNow — used by every generation type so the
+  // model gets the user's actual current year + weekday.
+  const body = { generationType, params: Object.assign({}, params || {}, { clientNow: buildClientNow() }) };
   if (opts.imageBase64) { body.imageBase64 = opts.imageBase64; body.imageType = opts.imageType; }
   // Caller may pass the parent plan's Perplexity snapshot on regen flows
   // (plan_strategy / future regen types) so the server reuses it instead
@@ -3356,7 +3372,7 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
       <div style={{background:B.card,borderRadius:14,padding:"16px 20px",marginBottom:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,gap:10}}>
           <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.ink}}>Profile tier</div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.ink}}>Profile completeness</div>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:tierInfo.color,border:"1px solid "+tierInfo.color,padding:"2px 9px",borderRadius:99,lineHeight:1.4,whiteSpace:"nowrap"}}>{tierInfo.label}</div>
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,flexShrink:0}}>{tierInfo.percent+"%"}</div>
@@ -6137,6 +6153,10 @@ function App() {
       formats:   ["Photo + caption", "Short video"],
       followers: "0-1K",
       context:   "",
+      // [DATE-FIX] Demo skips callAPI/consumePlanStream so it needs to
+      // attach clientNow itself; otherwise sample plans label days against
+      // server UTC and can show tomorrow as "today".
+      clientNow: buildClientNow(),
     };
     fetch("/api/chat", {
       method:  "POST",
@@ -6243,22 +6263,33 @@ return (
             <div style={{textAlign:"center",fontFamily:"'Italiana',serif",fontSize:36,letterSpacing:"0.06em",color:B.navy,marginBottom:28}}>VIRL</div>
 
             {/* State 1: pre-generation intro */}
+            {/* [UX] Editorial refresh of the demo intro: pill kicker establishes
+                the 60-second promise, headline gets one navy color-accent on
+                the verb to match the Creator Profile header pattern, body is
+                tightened to a readable measure, CTA carries a coral glow as
+                the sole coral moment, skip is restyled as a quiet secondary. */}
             {!demoCards && (
-              <div style={{background:B.card,borderRadius:18,border:"1px solid "+B.border,padding:"32px 28px",boxShadow:"0 4px 18px rgba(15,23,42,0.06)"}}>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.ink,lineHeight:1.1,marginBottom:14}}>Before you do anything else,<br/>let me show you what VIRL can do.</div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:15,fontWeight:300,color:B.sub,lineHeight:1.7,marginBottom:24}}>
-                  I'll generate a sample plan with no information about you yet, just to show what 60 seconds of generation looks like. Then we'll set up your profile so VIRL actually sounds like you.
+              <div style={{background:B.card,borderRadius:20,border:"1px solid "+B.border,padding:"44px 36px 36px",boxShadow:"0 12px 36px rgba(15,23,42,0.08)"}}>
+                <div style={{display:"inline-flex",alignItems:"center",gap:8,marginBottom:24,background:B.navySoft,padding:"5px 14px",borderRadius:99}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.navy}}>Sample plan · 60 seconds</div>
+                </div>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(30px,4.6vw,44px)",lineHeight:1.05,letterSpacing:"-0.01em",color:B.ink,marginBottom:20}}>
+                  Before you do anything else,<br/>
+                  let me <span style={{color:B.navy}}>show</span> you what VIRL can do.
+                </div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:15,fontWeight:300,color:B.sub,lineHeight:1.75,marginBottom:32,maxWidth:520}}>
+                  I'll generate a sample plan with no information about you yet – just to show what 60 seconds of generation looks like. Then we'll set up your profile so VIRL actually sounds like you.
                 </div>
                 {!!demoError && (
-                  <div style={{background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:10,padding:"10px 14px",marginBottom:14,fontFamily:"'Jost',sans-serif",fontSize:13,color:B.coral,lineHeight:1.55}}>{demoError}</div>
+                  <div style={{background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:10,padding:"10px 14px",marginBottom:18,fontFamily:"'Jost',sans-serif",fontSize:13,color:B.coral,lineHeight:1.55}}>{demoError}</div>
                 )}
                 <button onClick={handleGenerateDemoPlan} disabled={generatingDemo}
-                  style={{padding:"14px 28px",background:generatingDemo?B.muted:B.coral,color:B.white,border:"none",borderRadius:99,fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,cursor:generatingDemo?"default":"pointer"}}>
+                  style={{padding:"16px 32px",background:generatingDemo?B.muted:B.coral,color:B.white,border:"none",borderRadius:99,fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:700,letterSpacing:"0.04em",cursor:generatingDemo?"default":"pointer",boxShadow:generatingDemo?"none":"0 8px 22px rgba(244,63,94,0.28)",transition:"all .2s"}}>
                   {generatingDemo?"Generating your sample plan...":"Show me a sample plan →"}
                 </button>
                 <button onClick={handleDemoComplete}
-                  style={{display:"block",marginTop:18,background:"transparent",border:"none",color:B.muted,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,textDecoration:"underline",cursor:"pointer"}}>
-                  Skip and set up my profile
+                  style={{display:"block",marginTop:24,background:"transparent",border:"none",color:B.muted,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,letterSpacing:"0.02em",cursor:"pointer",padding:0}}>
+                  Skip and set up my profile →
                 </button>
               </div>
             )}
@@ -6673,12 +6704,9 @@ return (
           <div>
             {!profileComplete&&(
               <div style={{background:B.navy,borderRadius:16,padding:"20px",marginBottom:20,color:B.white}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.sky}}>Getting started</div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:"rgba(255,255,255,0.4)"}}>
-                    {"Getting started"}
-                  </div>
-                </div>
+                {/* [UX] Single editorial kicker. Replaces the prior "Getting started"
+                    heading + redundant gray label in the same row. */}
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.sky,marginBottom:12}}>Start here</div>
                 {[
                   {label:"Fill in your Creator Profile", sub:"Unlocks personalized AI plans", action:null},
                   {label:"Generate your first VIRL Plan", sub:"Your full week in 60 seconds*", action:function(){setTab("plan");}},
