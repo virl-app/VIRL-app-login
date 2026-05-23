@@ -6152,6 +6152,36 @@ function App() {
     setAdminLoading(false);
   }
 
+  // [CX-FIX 2] Open Stripe's hosted Customer Portal so the user can manage
+  // their own subscription — update card, view invoices, cancel — without
+  // emailing support. The endpoint validates the bearer token and looks up
+  // the user's stripe_customer_id; we just kick off a navigation.
+  const [portalLoading,setPortalLoading] = useState(false);
+  async function handleManageSubscription() {
+    if (!session) return;
+    setPortalLoading(true);
+    try {
+      var res = await fetch("/api/create-portal-session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:  "Bearer " + session.access_token,
+        },
+      });
+      var data = {};
+      try { data = await res.json(); } catch(e) {}
+      if (data.url) {
+        window.location.href = data.url;
+        return;
+      }
+      var msg = data.message || data.error || ("Couldn't open billing (" + res.status + ").");
+      alert(msg);
+    } catch (e) {
+      alert("Could not reach the billing service. Try again shortly.");
+    }
+    setPortalLoading(false);
+  }
+
   async function handleDeleteAccount() {
     if (!session) return;
     setDeleteLoading(true);
@@ -7891,8 +7921,35 @@ return (
               }
             }}/>
 
+            {/* [CX-FIX 2] Self-serve billing for paid members — opens the
+                Stripe Customer Portal to update card, view invoices, or
+                cancel. Hidden for free / trial users since there's no
+                subscription to manage. Sits above the Danger zone so the
+                most common action ("update my card") is the more prominent
+                of the two account-management buttons. */}
+            {isPaid && (
+              <div style={{marginTop:48,paddingTop:20,borderTop:"1px solid "+B.divider,textAlign:"center"}}>
+                <button onClick={handleManageSubscription} disabled={portalLoading}
+                  style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,
+                    letterSpacing:"0.06em",textTransform:"uppercase",
+                    padding:"10px 22px",background:portalLoading?B.muted:B.navy,
+                    color:B.white,border:"none",borderRadius:99,
+                    cursor:portalLoading?"default":"pointer"
+                  }}>
+                  {portalLoading?"Opening...":"Manage subscription"}
+                </button>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,
+                  color:B.muted,marginTop:10,lineHeight:1.5
+                }}>
+                  Update payment, view invoices, or cancel.
+                </div>
+              </div>
+            )}
+
             {/* ── Danger zone — subtle, at the very bottom ────────────── */}
-            <div style={{marginTop:48,paddingTop:20,borderTop:"1px solid "+B.divider,textAlign:"center"}}>
+            <div style={{marginTop:isPaid?32:48,paddingTop:20,borderTop:"1px solid "+B.divider,textAlign:"center"}}>
               {!showDeleteConfirm?(
                 <button onClick={function(){setShowDeleteConfirm(true);}}
                   style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,color:B.muted,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",textDecorationColor:"rgba(100,116,139,0.4)",textUnderlineOffset:"3px"}}>
