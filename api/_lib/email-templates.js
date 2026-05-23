@@ -354,6 +354,26 @@ export function renewalUpcoming({ name, plan, amountUsd, renewalDate }) {
 }
 
 // 17. Account deleted — last email the address gets from VIRL. Trust signal.
+// [CX-FIX 1] Sent whenever a user changes their password — both the
+// "forgot password" recovery flow and the (future) signed-in change-
+// password flow trigger this. Security best practice: if an attacker
+// compromised the account and reset the password, the rightful owner
+// sees this email and can react. Supabase doesn't send this on its own.
+export function passwordChanged({ name }) {
+  const headline = "Your VIRL password was just changed.";
+  const greeting = name ? `${name},` : "Hi,";
+  const body = `
+    <p style="margin:0 0 12px">${greeting} the password on your VIRL account was just updated.</p>
+    <p style="margin:0 0 12px">If this was you, no action needed.</p>
+    <p style="margin:0 0 16px"><strong>If it wasn't you</strong>, reply to this email immediately so we can secure your account.</p>
+    <p style="margin:0;color:#6B7280;font-size:12px">For your reference, this notification is sent automatically every time the password changes.</p>`;
+  return {
+    subject: "Your VIRL password was changed",
+    html:    layout({ eyebrow: "Security", headline, body }),
+    text:    `${headline}\n\n${greeting} the password on your VIRL account was just updated.\n\nIf this was you, no action needed.\n\nIf it wasn't you, reply to this email immediately so we can secure your account.`,
+  };
+}
+
 export function accountDeleted({ name }) {
   const headline = "Your VIRL account is closed.";
   const body = `
