@@ -6182,6 +6182,61 @@ function App() {
     setPortalLoading(false);
   }
 
+  // [CX-FIX 3] Change password while signed in. Separate from CX-FIX 1's
+  // recovery flow (that one runs after a "forgot password" email link
+  // click). Supabase's updateUser({password}) doesn't require the
+  // current password to succeed — the security backstop is the
+  // passwordChanged email that fires on every change (added in
+  // CX-FIX 1). If an attacker ever changes the password through a
+  // hijacked session, the real owner sees the email and can act.
+  const [changePwOpen,setChangePwOpen]   = useState(false);
+  const [changePwNew,setChangePwNew]     = useState("");
+  const [changePwConfirm,setChangePwConfirm] = useState("");
+  const [changePwBusy,setChangePwBusy]   = useState(false);
+  const [changePwErr,setChangePwErr]     = useState("");
+  const [changePwDone,setChangePwDone]   = useState(false);
+  function resetChangePwForm() {
+    setChangePwNew("");
+    setChangePwConfirm("");
+    setChangePwErr("");
+    setChangePwBusy(false);
+    setChangePwDone(false);
+  }
+  async function handleChangePassword() {
+    if (changePwNew.length < 8) { setChangePwErr("Password must be at least 8 characters."); return; }
+    if (changePwNew !== changePwConfirm) { setChangePwErr("Passwords don't match."); return; }
+    setChangePwBusy(true); setChangePwErr("");
+    try {
+      var result = await supabaseClient.auth.updateUser({ password: changePwNew });
+      if (result.error) {
+        setChangePwBusy(false);
+        setChangePwErr(result.error.message || "Could not update password.");
+        return;
+      }
+      // Fire the confirmation email — non-blocking; if it fails, the
+      // password change has already succeeded.
+      if (session) {
+        try {
+          await fetch("/api/email/password-changed", {
+            method: "POST",
+            headers: {
+              "Content-Type":  "application/json",
+              Authorization:   "Bearer " + session.access_token,
+            },
+          });
+        } catch(e) {}
+      }
+      setChangePwBusy(false);
+      setChangePwDone(true);
+      // Auto-collapse after a beat so the user reads the confirmation
+      // before the form vanishes.
+      setTimeout(function(){ resetChangePwForm(); setChangePwOpen(false); }, 1800);
+    } catch (e) {
+      setChangePwBusy(false);
+      setChangePwErr(e.message || "Could not update password.");
+    }
+  }
+
   async function handleDeleteAccount() {
     if (!session) return;
     setDeleteLoading(true);
@@ -7921,6 +7976,99 @@ return (
               }
             }}/>
 
+            {/* [CX-FIX 3] Change password — visible to every signed-in
+                user. Collapsed by default to keep the profile page tidy;
+                expands into a two-field form on click. The passwordChanged
+                email (CX-FIX 1) is the security backstop so we don't have
+                to gate this on current-password reauth. */}
+            <div style={{marginTop:48,paddingTop:20,borderTop:"1px solid "+B.divider}}>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                letterSpacing:"0.18em",textTransform:"uppercase",
+                color:B.muted,marginBottom:14,textAlign:"center"
+              }}>Account security</div>
+              {!changePwOpen ? (
+                <div style={{textAlign:"center"}}>
+                  <button onClick={function(){setChangePwOpen(true);}}
+                    style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,
+                      letterSpacing:"0.04em",padding:"8px 18px",
+                      background:"transparent",color:B.navy,
+                      border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"
+                    }}>
+                    Change password
+                  </button>
+                </div>
+              ) : (
+                <div style={{
+                  background:B.bg,border:"1px solid "+B.border,
+                  borderRadius:14,padding:"20px",maxWidth:380,margin:"0 auto"
+                }}>
+                  {changePwDone ? (
+                    <div style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:13,
+                      color:B.green,textAlign:"center",padding:"4px 0"
+                    }}>
+                      Password updated. Check your inbox for confirmation.
+                    </div>
+                  ) : (
+                    <React.Fragment>
+                      <div style={{
+                        fontFamily:"'Jost',sans-serif",fontSize:12,
+                        fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:14
+                      }}>
+                        Choose something at least 8 characters. We'll email you a confirmation once it's saved.
+                      </div>
+                      <input type="password" value={changePwNew} placeholder="New password"
+                        onChange={function(e){setChangePwNew(e.target.value);setChangePwErr("");}}
+                        style={{
+                          width:"100%",fontFamily:"'Jost',sans-serif",fontSize:13,
+                          padding:"11px 13px",border:"1px solid "+B.border,
+                          borderRadius:10,marginBottom:10,boxSizing:"border-box",
+                          background:B.white
+                        }}/>
+                      <input type="password" value={changePwConfirm} placeholder="Confirm new password"
+                        onChange={function(e){setChangePwConfirm(e.target.value);setChangePwErr("");}}
+                        style={{
+                          width:"100%",fontFamily:"'Jost',sans-serif",fontSize:13,
+                          padding:"11px 13px",border:"1px solid "+B.border,
+                          borderRadius:10,marginBottom:12,boxSizing:"border-box",
+                          background:B.white
+                        }}/>
+                      {changePwErr && (
+                        <div style={{
+                          fontFamily:"'Jost',sans-serif",fontSize:12,
+                          color:B.coral,marginBottom:12,textAlign:"center"
+                        }}>{changePwErr}</div>
+                      )}
+                      <div style={{display:"flex",gap:10}}>
+                        <button onClick={function(){resetChangePwForm();setChangePwOpen(false);}}
+                          style={{
+                            flex:1,fontFamily:"'Jost',sans-serif",fontSize:12,
+                            fontWeight:600,color:B.muted,background:B.bg,
+                            border:"1px solid "+B.border,borderRadius:10,
+                            padding:"11px",cursor:"pointer"
+                          }}>
+                          Cancel
+                        </button>
+                        <button onClick={handleChangePassword}
+                          disabled={changePwBusy||!changePwNew||!changePwConfirm}
+                          style={{
+                            flex:1,fontFamily:"'Jost',sans-serif",fontSize:12,
+                            fontWeight:700,color:B.white,
+                            background:changePwBusy?B.muted:B.navy,
+                            border:"none",borderRadius:10,
+                            padding:"11px",cursor:changePwBusy?"default":"pointer"
+                          }}>
+                          {changePwBusy?"Saving...":"Save password"}
+                        </button>
+                      </div>
+                    </React.Fragment>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* [CX-FIX 2] Self-serve billing for paid members — opens the
                 Stripe Customer Portal to update card, view invoices, or
                 cancel. Hidden for free / trial users since there's no
@@ -7928,7 +8076,7 @@ return (
                 most common action ("update my card") is the more prominent
                 of the two account-management buttons. */}
             {isPaid && (
-              <div style={{marginTop:48,paddingTop:20,borderTop:"1px solid "+B.divider,textAlign:"center"}}>
+              <div style={{marginTop:32,paddingTop:20,borderTop:"1px solid "+B.divider,textAlign:"center"}}>
                 <button onClick={handleManageSubscription} disabled={portalLoading}
                   style={{
                     fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,
