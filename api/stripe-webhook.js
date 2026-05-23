@@ -15,7 +15,6 @@
 import Stripe from "stripe";
 import { sendEmail } from "./_lib/email-send.js";
 import {
-  subscriptionWelcome,
   paymentFailed,
   subscriptionCancelled,
   renewalUpcoming,
@@ -304,15 +303,17 @@ export default async function handler(req, res) {
           console.log("[webhook] User " + userId + " upgraded to " + plan + " (" + foundingTier + ")");
           // Subscription welcome — dedupe by stripe subscription id so a
           // resubscribe creates a new send, but a webhook replay does not.
-          const subId = obj.subscription || obj.id || "session";
           const ctx   = await fetchUserContext(userId);
           if (ctx.email) {
-            const tpl = subscriptionWelcome({ name: ctx.name, plan });
-            await sendEmail({
-              userId, to: ctx.email, template: "subscription_welcome",
-              dedupeKey: "sub_" + subId,
-              subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
-            });
+            // [CX-FIX 5] Loops now owns the post-subscription welcome
+            // (driven by the subscriptionStarted event below) — tier-
+            // aware variants are easier to author there than in code.
+            // The Resend transactional welcome that used to fire here
+            // is intentionally removed; otherwise new subscribers
+            // received two welcomes (one from Resend, one from Loops).
+            // The subscriptionWelcome template is kept in
+            // email-templates.js for now in case we want to fall back.
+            //
             // [PREMIUM 7] Fire subscriptionStarted into Loops + sync
             // plan-state properties so time-based segments (annual
             // upgrade nudge at day 60, etc) have what they need.
