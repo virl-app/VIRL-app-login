@@ -603,13 +603,27 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // weekday, Day 2 = tomorrow, etc. This lets a Wednesday-generated plan
   // start on Wednesday instead of awkwardly anchoring to a calendar
   // Monday the user has already passed.
-  const today = new Date();
+  // [DATE-FIX] Prefer the client's local weekday (params.clientNow.weekday,
+  // 0=Sun..6=Sat) over server UTC. Server runs in UTC, so a Thursday-evening
+  // US user generating after ~6pm Central was getting "Friday" labels.
+  // Fallback path keeps the legacy UTC behavior for any caller that does
+  // not yet send clientNow.
   const WEEKDAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-  const startWeekday = WEEKDAYS[today.getUTCDay()];
+  const clientNow = params && params.clientNow;
+  let startWeekday;
   const dayLabels = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(today.getTime() + i * 86400000);
-    dayLabels.push("Day " + (i + 1) + " - " + WEEKDAYS[d.getUTCDay()]);
+  if (clientNow && typeof clientNow.weekday === "number" && clientNow.weekday >= 0 && clientNow.weekday <= 6) {
+    startWeekday = WEEKDAYS[clientNow.weekday];
+    for (let i = 0; i < 7; i++) {
+      dayLabels.push("Day " + (i + 1) + " - " + WEEKDAYS[(clientNow.weekday + i) % 7]);
+    }
+  } else {
+    const today = new Date();
+    startWeekday = WEEKDAYS[today.getUTCDay()];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(today.getTime() + i * 86400000);
+      dayLabels.push("Day " + (i + 1) + " - " + WEEKDAYS[d.getUTCDay()]);
+    }
   }
   const dayLabelsLine = dayLabels.join(", ");
 

@@ -851,11 +851,47 @@ export default async function handler(req, res) {
       ? [{ type: 'text', text: built.systemPrompt, cache_control: { type: 'ephemeral' } }]
       : undefined;
 
+    // [DATE-FIX] Prepend the user's local date to the (uncached) userPrompt so
+    // every generation type — captions, plans, scripts, scans — has the real
+    // current year + month + day + weekday. Models default to their
+    // training-era guess otherwise (e.g. captions referencing "2024" or
+    // "January" mid-year-2026). Lives in the userPrompt instead of the
+    // cached systemPrompt to avoid invalidating the per-user prompt cache
+    // once per day. Spelling out month name, ordinal day, and weekday in
+    // prose form gives the model multiple natural-language anchors instead
+    // of relying on it to parse an ISO string.
+    const WEEKDAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+    const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const ordinal = (n) => {
+      const s = ["th","st","nd","rd"];
+      const v = n % 100;
+      return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    };
+    const cn = params && params.clientNow;
+    let nowLine;
+    if (cn && cn.iso && typeof cn.weekday === "number" && cn.weekday >= 0 && cn.weekday <= 6) {
+      const parts = String(cn.iso).split("-");
+      const yr = parseInt(parts[0], 10) || cn.year || new Date().getUTCFullYear();
+      const mo = parseInt(parts[1], 10) || 1;
+      const dy = parseInt(parts[2], 10) || 1;
+      const monthName = MONTH_NAMES[mo - 1] || "";
+      const wday = WEEKDAY_NAMES[cn.weekday];
+      nowLine = "TODAY'S DATE: " + cn.iso + " (" + wday + ", " + monthName + " " + ordinal(dy) + ", " + yr + "). The current year is " + yr + ", the current month is " + monthName + ", and today is the " + ordinal(dy) + ". Any reference in your output to the current date, year, month, day of the month, or day of the week — including phrases like 'this year', 'this month', 'today', 'right now', or seasonal/holiday timing — must be consistent with this. Never refer to a past year, month, or date as the current one.";
+    } else {
+      const sNow = new Date();
+      const yr = sNow.getUTCFullYear();
+      const mo = sNow.getUTCMonth() + 1;
+      const dy = sNow.getUTCDate();
+      const sIso = yr + "-" + String(mo).padStart(2,"0") + "-" + String(dy).padStart(2,"0");
+      const monthName = MONTH_NAMES[mo - 1];
+      nowLine = "TODAY'S DATE: " + sIso + " (" + WEEKDAY_NAMES[sNow.getUTCDay()] + ", " + monthName + " " + ordinal(dy) + ", " + yr + " UTC). The current year is " + yr + ", the current month is " + monthName + ", and today is the " + ordinal(dy) + ". Any reference in your output to the current date, year, month, day of the month, or day of the week — including phrases like 'this year', 'this month', 'today', 'right now', or seasonal/holiday timing — must be consistent with this. Never refer to a past year, month, or date as the current one.";
+    }
+
     const content = [];
     if (imageBase64 && imageType) {
       content.push({ type: 'image', source: { type: 'base64', media_type: imageType, data: imageBase64 } });
     }
-    content.push({ type: 'text', text: built.userPrompt });
+    content.push({ type: 'text', text: nowLine + "\n\n" + built.userPrompt });
 
     const payload = {
       model:      selectedModel,
