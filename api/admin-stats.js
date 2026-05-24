@@ -50,7 +50,7 @@ export default async function handler(req, res) {
     // swallowed into an empty list. Sort by user_id for stable order.
     const [credRes, evRes] = await Promise.all([
       fetch(
-        `${SUPABASE_URL}/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id&order=user_id`,
+        `${SUPABASE_URL}/rest/v1/credits?select=user_id,plan,credits,stripe_customer_id,founding_tier,founding_position,subscription_started_at,last_resubscribed_at,resubscription_count&order=user_id`,
         {
           headers: {
             'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
