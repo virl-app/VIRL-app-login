@@ -167,8 +167,10 @@ async function loadProfileFromSupabase(userId) {
 }
 
 async function loadCreditsFromSupabase(userId, accessToken) {
+  // Primary: direct PostgREST fetch with the user's JWT. Works for almost
+  // everyone — the RLS policy on credits permits a user to read their
+  // own row.
   try {
-    // Use REST API with the user's own token to bypass RLS issues
     const headers = {
       "apikey": SUPABASE_ANON_KEY,
       "Authorization": "Bearer " + (accessToken || SUPABASE_ANON_KEY),
@@ -184,10 +186,43 @@ async function loadCreditsFromSupabase(userId, accessToken) {
       SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,founding_tier,founding_position&user_id=eq." + userId + "&limit=1&_=" + Date.now(),
       { headers, cache: "no-store" }
     );
-    if (!res.ok) return null;
-    const rows = await res.json();
-    return (Array.isArray(rows) && rows.length > 0) ? rows[0] : null;
-  } catch(e) { return null; }
+    if (res.ok) {
+      const rows = await res.json();
+      if (Array.isArray(rows) && rows.length > 0) return rows[0];
+      // 200 OK but no rows — diagnostic so a legitimately-missing row
+      // doesn't get conflated with an RLS / token failure further down.
+      console.warn("[credits] primary fetch returned 0 rows for user", userId);
+    } else {
+      const bodyText = await res.text().catch(function(){ return ""; });
+      console.warn("[credits] primary fetch failed:", res.status, bodyText);
+    }
+  } catch(e) {
+    console.warn("[credits] primary fetch threw:", e && e.message);
+  }
+  // [CX-FIX 6] Fallback: server-side fetch via service key. Bypasses
+  // whatever's wrong on the RLS / token path so a user whose row exists
+  // (verified server-side) sees their HUD load instead of "—" forever.
+  // Lauren's admin account had this exact failure mode for months before
+  // this fallback existed.
+  try {
+    const r = await fetch("/api/me-credits", {
+      headers: { Authorization: "Bearer " + (accessToken || "") },
+      cache: "no-store",
+    });
+    if (!r.ok) {
+      console.warn("[credits] fallback /api/me-credits failed:", r.status);
+      return null;
+    }
+    const data = await r.json();
+    if (data && data.credits) {
+      console.info("[credits] loaded via server fallback (primary path failed for this user)");
+      return data.credits;
+    }
+    return null;
+  } catch(e) {
+    console.warn("[credits] fallback threw:", e && e.message);
+    return null;
+  }
 }
 
 // Per-user cache so a refresh in the same browser paints the last-known
