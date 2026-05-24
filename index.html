@@ -5053,7 +5053,7 @@ function PreLaunchGate() {
 
             {/* Founding member micro-copy */}
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.65)",marginTop:14}}>
-              First 100 founding members get $5 off / month for the first year.
+              First 50 paying members lock in $20/month for life — the Founder Circle.
             </div>
 
             {/* Beta code toggle */}
@@ -6281,7 +6281,7 @@ function App() {
     ? "Upgrade anytime — 150 credits/week"
     : daysIntoTrial <= 11
       ? (TRIAL_DAYS - daysIntoTrial) + " days left — don't lose your plans"
-      : "Last chance — lock in founding rate";
+      : "Last chance — claim your Founder Circle spot";
 
   // [RESULTS-OVERHAUL] Cycle-end nudge. Was Sunday-only ("isSunday"); now
   // fires when each user's personal credit cycle is one day from
@@ -7490,7 +7490,7 @@ return (
                   boxShadow:selectedPlan==="annual"?"0 1px 3px rgba(0,0,0,0.08)":"none",
                   transition:"all .15s"
                 }}>
-                {foundingAvailable?"Annual — 3 months free":"Annual — save $51"}
+                {foundingAvailable?"Annual — save $25":"Annual — save $51"}
               </button>
             </div>
 
@@ -7815,9 +7815,9 @@ return (
           <div style={{background:B.coralSoft,borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:12}}>
             <div style={{flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",fontSize:13,color:B.coral,lineHeight:1.5}}>
               {daysIntoTrial===11&&(<span><span style={{fontWeight:700}}>3 days left</span> in your free trial</span>)}
-              {daysIntoTrial===12&&foundingAvailable&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – lock in 20% off your first year"}</span>)}
+              {daysIntoTrial===12&&foundingAvailable&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – lock in $20/mo for life (Founder Circle)"}</span>)}
               {daysIntoTrial===12&&!foundingAvailable&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – pick a plan to keep your momentum"}</span>)}
-              {daysIntoTrial===13&&foundingAvailable&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – continue for $20/mo (save $60 year one)"}</span>)}
+              {daysIntoTrial===13&&foundingAvailable&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – lock in $20/mo for life (Founder Circle)"}</span>)}
               {daysIntoTrial===13&&!foundingAvailable&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – continue for $25/mo or $249/yr (2 months free)"}</span>)}
             </div>
             <button onClick={function(){ setUpgradeReason("trial"); setShowUpgrade(true); }}
@@ -8302,7 +8302,7 @@ return (
                       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                         <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy,lineHeight:1.2}}>{"✦ Loving this plan?"}</div>
                         {foundingAvailable&&(
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founding</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founder Circle</div>
                         )}
                       </div>
                       <button onClick={function(){ setPlanNudgeDismissed(true); }} aria-label="Dismiss"
@@ -8312,12 +8312,12 @@ return (
                     </div>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,marginTop:6,lineHeight:1.55}}>
                       {foundingAvailable
-                        ? "Lock in founding pricing — 150 credits every week. Plans, captions, scans, and scripts, every single week."
+                        ? "Lock in $20/month for life as a Founder Circle member — 150 credits every week. Plans, captions, scans, and scripts."
                         : "Upgrade to Standard — 150 credits every week. Plans, captions, scans, and scripts, every single week."}
                     </div>
                     {foundingAvailable&&foundingCount!==null&&(
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",color:B.blue,marginTop:6}}>
-                        {(FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " founding spots left"}
+                        {(FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " Founder Circle spots left"}
                       </div>
                     )}
                     <div style={{display:"flex",alignItems:"center",gap:14,marginTop:12,flexWrap:"wrap"}}>
@@ -8326,7 +8326,7 @@ return (
                           setShowUpgrade(true);
                         }}
                         style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-                        {foundingAvailable?"Upgrade for $225/yr →":"Upgrade for $249/yr →"}
+                        {foundingAvailable?"Upgrade for $215/yr →":"Upgrade for $249/yr →"}
                       </button>
                       <button onClick={function(){ setPlanNudgeDismissed(true); }}
                         style={{background:"none",border:"none",color:B.muted,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,cursor:"pointer",padding:0}}>
@@ -8664,29 +8664,30 @@ return (
                     <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.5)"}}>{"✦ While you have this plan in front of you"}</div>
                       {foundingAvailable&&(
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:"rgba(255,255,255,0.18)",color:B.white,borderRadius:99}}>Founding</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:"rgba(255,255,255,0.18)",color:B.white,borderRadius:99}}>Founder Circle</div>
                       )}
                     </div>
                     <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.white,marginBottom:6,lineHeight:1.1}}>Like what you see?</div>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.6,marginBottom:16}}>
                       {foundingAvailable
-                        ? "Lock in founding pricing — 150 credits per week, every week. Plans, captions, scripts, and scans."
+                        ? "Join the Founder Circle and lock in $20/month for life — 150 credits per week. Plans, captions, scripts, and scans."
                         : "Upgrade for 150 credits per week - enough for a full plan, captions, scripts, and scans every single week."}
                     </div>
                     {foundingAvailable?(
                       <div>
                         <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap",marginBottom:4}}>
-                          <span style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.white,lineHeight:1}}>$225/yr</span>
+                          <span style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.white,lineHeight:1}}>$215/yr</span>
                           <span style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.45)",textDecoration:"line-through"}}>$249/yr</span>
-                          <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"2px 8px",background:B.green,color:B.white,borderRadius:99}}>3 months free</span>
+                          <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"2px 8px",background:B.green,color:B.white,borderRadius:99}}>Save $25</span>
                         </div>
                         <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.55)",marginBottom:14}}>
                           {"or $20/mo "}<span style={{textDecoration:"line-through",opacity:0.7}}>$25/mo</span>
+                          {" — locked for life"}
                         </div>
                         <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
                           <button onClick={function(){setUpgradeReason("plan");setShowUpgrade(true);}}
                             style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 22px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
-                            Claim founding rate
+                            Claim my spot
                           </button>
                           {foundingCount!==null&&(
                             <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",color:"rgba(255,255,255,0.7)"}}>
@@ -9574,7 +9575,7 @@ return (
                 </div>
 
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:12,textAlign:"center"}}>
-                  {"Est. MRR assumes $25/mo per paid user. Founding members counted at $20 equivalent for first year. Data from Supabase credits table only."}
+                  {"Est. MRR assumes $25/mo per Standard user, $20/mo per Founder Circle member (locked for life). Data from Supabase credits table only."}
                 </div>
               </div>
             )}
