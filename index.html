@@ -9507,6 +9507,179 @@ return (
                   );
                 })()}
 
+                {/* [PRICING 8] Launch monitoring — what to watch in the
+                    first 30 days. Three panels: projected fill rate for
+                    the Founder Circle, recent signups by tier, and a
+                    quick link to Stripe's webhook delivery log (which is
+                    canonical for webhook health — building a tracker
+                    here would just duplicate it). All computed from the
+                    same adminData.credits array we already load. */}
+                {(function(){
+                  var allMembers = (adminData.credits || []);
+                  var now        = Date.now();
+                  var WEEK_MS    = 7 * 86400000;
+                  var weekAgoMs  = now - WEEK_MS;
+
+                  // Filter to credits rows with a subscription_started_at
+                  // in the last 7 days. founding_tier discriminates.
+                  var recentSignups = allMembers
+                    .filter(function(c){
+                      if (!c.subscription_started_at) return false;
+                      var t = Date.parse(c.subscription_started_at);
+                      return !isNaN(t) && t >= weekAgoMs;
+                    })
+                    .sort(function(a,b){
+                      return Date.parse(b.subscription_started_at) - Date.parse(a.subscription_started_at);
+                    });
+
+                  var fcSignupsThisWeek = recentSignups.filter(function(c){
+                    return c.founding_tier === "founder_circle";
+                  }).length;
+
+                  var fcFilledCount = allMembers.filter(function(c){
+                    return c.founding_tier === "founder_circle";
+                  }).length;
+                  var fcSlotsLeft = Math.max(0, 50 - fcFilledCount);
+
+                  // Projection: at the trailing-7-day FC signup rate,
+                  // how many days until fill? Cap displayed days at
+                  // "180+" so a quiet week doesn't render "1,247 days."
+                  var projectionLabel;
+                  if (fcSlotsLeft === 0) {
+                    projectionLabel = "Founder Circle is full";
+                  } else if (fcSignupsThisWeek === 0) {
+                    projectionLabel = "No Founder Circle signups in last 7 days";
+                  } else {
+                    var daysPerSlot = 7 / fcSignupsThisWeek;
+                    var projectedDays = Math.ceil(fcSlotsLeft * daysPerSlot);
+                    projectionLabel = projectedDays > 180
+                      ? "180+ days at current rate"
+                      : "~" + projectedDays + " day" + (projectedDays === 1 ? "" : "s") + " at current rate";
+                  }
+
+                  return (
+                    <div style={{marginBottom:20}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>
+                        Launch monitoring
+                      </div>
+
+                      {/* Projection + this-week counts */}
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
+                        <div style={{background:B.card,borderRadius:14,padding:"14px 14px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>FC fill rate</div>
+                          <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.navy,lineHeight:1.1,marginBottom:4}}>
+                            {fcSlotsLeft}/50
+                          </div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.4}}>
+                            slots left
+                          </div>
+                        </div>
+                        <div style={{background:B.card,borderRadius:14,padding:"14px 14px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>FC signups (7d)</div>
+                          <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.navy,lineHeight:1.1,marginBottom:4}}>
+                            {fcSignupsThisWeek}
+                          </div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.4}}>
+                            this week
+                          </div>
+                        </div>
+                        <div style={{background:B.card,borderRadius:14,padding:"14px 14px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>Projection</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,lineHeight:1.4,marginTop:8}}>
+                            {projectionLabel}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Recent signups list */}
+                      <div style={{background:B.card,borderRadius:14,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",overflow:"hidden",marginBottom:12}}>
+                        <div style={{
+                          padding:"10px 16px",background:B.bg,
+                          fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                          letterSpacing:"0.12em",textTransform:"uppercase",color:B.muted,
+                          display:"flex",justifyContent:"space-between",alignItems:"center"
+                        }}>
+                          <div>Recent signups (7d)</div>
+                          <div style={{color:B.navy,fontWeight:600}}>{recentSignups.length} total</div>
+                        </div>
+                        {recentSignups.length === 0 ? (
+                          <div style={{
+                            padding:"24px 16px",textAlign:"center",
+                            fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,
+                            color:B.muted,fontStyle:"italic"
+                          }}>
+                            No new subscribers in the last 7 days.
+                          </div>
+                        ) : (
+                          recentSignups.slice(0, 10).map(function(s){
+                            var when = (function(){
+                              try {
+                                return new Date(s.subscription_started_at).toLocaleDateString("en-US", {
+                                  month: "short", day: "numeric"
+                                });
+                              } catch(e){ return ""; }
+                            })();
+                            var isFC = s.founding_tier === "founder_circle";
+                            return (
+                              <div key={s.user_id} style={{
+                                display:"grid",gridTemplateColumns:"1fr 110px 90px",
+                                gap:8,padding:"10px 16px",borderTop:"1px solid "+B.divider,
+                                alignItems:"center"
+                              }}>
+                                <div style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.ink}}>
+                                    {s.email || s.name || "—"}
+                                  </div>
+                                </div>
+                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.sub}}>
+                                  {when}
+                                </div>
+                                <div style={{textAlign:"right"}}>
+                                  <span style={{
+                                    fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                                    letterSpacing:"0.08em",textTransform:"uppercase",
+                                    padding:"3px 8px",borderRadius:99,
+                                    background:isFC?B.navySoft:B.bg,
+                                    color:isFC?B.navy:B.muted
+                                  }}>
+                                    {isFC?"Founder #" + (s.founding_position||"?"):"Standard"}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      {/* Webhook health — link out to Stripe rather than
+                          duplicating their delivery log here. */}
+                      <div style={{
+                        background:B.bg,border:"1px dashed "+B.border,borderRadius:14,
+                        padding:"14px 18px",display:"flex",alignItems:"center",
+                        justifyContent:"space-between",gap:12,flexWrap:"wrap"
+                      }}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy,marginBottom:2}}>
+                            Stripe webhook health
+                          </div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.4}}>
+                            Watch delivery attempts + 4xx/5xx failures in Stripe's webhook log. Investigate any non-200 in the last 24h.
+                          </div>
+                        </div>
+                        <a href="https://dashboard.stripe.com/webhooks" target="_blank" rel="noopener noreferrer"
+                          style={{
+                            fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                            letterSpacing:"0.08em",textTransform:"uppercase",
+                            padding:"8px 14px",background:B.navy,color:B.white,
+                            borderRadius:99,textDecoration:"none",flexShrink:0
+                          }}>
+                          Open in Stripe →
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* ── Feature usage ── */}
                 {adminData.eventStats&&(
                   <div style={{marginBottom:20}}>
