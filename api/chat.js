@@ -7,6 +7,7 @@ import {
 } from "./_lib/prompts.js";
 import { loadPlaybook }              from "./_lib/playbook.js";
 import { loadLatestTrends }          from "./_lib/trends.js";
+import { loadComplianceRules, getComplianceForNiche, scrubCompliance } from "./_lib/compliance.js";
 import { fetchInlineTrends, isValidTrendsSnapshot } from "./_lib/fresh-trends-inline.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
@@ -123,7 +124,7 @@ async function recordUsageEvent(userId, usage) {
 // Mirrors the side-effects of the non-streaming branch: writes usage_events,
 // fires the first-plan + milestone emails. Returns the underlying Express
 // response so the caller's `return` semantics still hold.
-async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot }) {
+async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot, complianceForNiche }) {
   res.statusCode = 200;
   res.setHeader('Content-Type',  'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -250,6 +251,11 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
   let outputTokens     = first.outputTokens;
   let stopReason       = first.stopReason;
   let retried          = false;
+  // [COMPLIANCE 1] Track the final, complete model output for the
+  // post-stream scrub. On retry the first attempt's text is discarded
+  // (client got the `reset` event); the second attempt's text is the
+  // canonical output. Without retry, first.fullText is canonical.
+  let finalText        = first.fullText;
 
   // One-shot retry when Anthropic truncated on max_tokens. Tell the client
   // to discard the partial plan it streamed so far (event: reset clears the
@@ -267,6 +273,7 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
     cacheWriteTokens += second.cacheWriteTokens;
     outputTokens     += second.outputTokens;
     stopReason        = second.stopReason;
+    finalText         = second.fullText;
   }
 
   const truncated = stopReason === 'max_tokens';
@@ -300,6 +307,44 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
   // Fire-and-forget onboarding hooks, same as the non-streaming branch.
   maybeSendFirstPlanEmail(userId).catch(() => {});
   setTimeout(function () { maybeSendReferralMilestoneEmail(userId).catch(() => {}); }, 800);
+
+  // [COMPLIANCE 1] Post-stream scrub. Parse the accumulated final text,
+  // run the niche's denylist, and emit any flags / scrubbed payload to the
+  // client via a `compliance` event. The progressive text already streamed
+  // to the client stays as-is (rewrites are advisory for streaming paths
+  // in v1 — see api/_lib/compliance.js header for the rationale). Wrapped
+  // in try/catch so a malformed model output (truncated mid-JSON, etc.)
+  // never blocks the `meta` event or the response close.
+  if (complianceForNiche) {
+    try {
+      const parsed = finalText ? JSON.parse(finalText) : null;
+      if (parsed) {
+        const { scrubbed, flags } = scrubCompliance(complianceForNiche, parsed);
+        if (flags.length > 0) {
+          console.log('virl_compliance', JSON.stringify({
+            generationType,
+            niche:        complianceForNiche.nicheKey,
+            locale:       complianceForNiche.locale,
+            flag_count:   flags.length,
+            rewritten:    flags.filter(f => f.rewritten).length,
+          }));
+          sendEvent('compliance', {
+            flags,
+            // Stringify the scrubbed payload so a future client that opts
+            // into "use scrubbed text" can swap it in atomically. v1
+            // clients ignore unknown events, so this is forward-compatible
+            // wire data without any UI work.
+            scrubbed: JSON.stringify(scrubbed),
+          });
+        }
+      }
+    } catch (e) {
+      // JSON.parse failure on a streamed plan is not actionable here —
+      // the client's progressive parser has the same input and produces
+      // user-facing error UI if it can't parse. Log once and continue.
+      console.warn('[compliance] post-stream scrub skipped:', e.message);
+    }
+  }
 
   sendEvent('meta', {
     cost: creditCost,
@@ -704,7 +749,7 @@ export default async function handler(req, res) {
   // minimal canned profile so the LLM has just enough context to produce
   // a generic-but-coherent plan. Vault / history fetches are also
   // bypassed: the user has neither.
-  const [profile, vaultPatterns, playbook, cachedTrends, history] = await Promise.all([
+  const [profile, vaultPatterns, playbook, cachedTrends, history, complianceRules] = await Promise.all([
     demoMode
       ? Promise.resolve({
           name:     "Sample User",
@@ -716,7 +761,21 @@ export default async function handler(req, res) {
     loadPlaybook(),
     loadLatestTrends(),
     (generationType === "plan" && !demoMode) ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart) : Promise.resolve([]),
+    // [COMPLIANCE 1] Per-niche compliance rules (Real Estate, Wellness in
+    // v1). Loader returns {} on any infra failure so the get-for-niche
+    // call below falls through to the hardcoded safe-defaults floor.
+    // Demo mode skips compliance — the demo profile has no niche.
+    demoMode ? Promise.resolve({}) : loadComplianceRules(),
   ]);
+
+  // [COMPLIANCE 1] Resolve the effective compliance bundle once per
+  // request. Niche comes from params (plan/plan_partial pass it explicitly;
+  // for other gen types the client injects it from localStorage — see the
+  // patches to callAPI / consumePlanStream in index.html). Locale defaults
+  // to "US" until a per-user country field ships; non-US locales no-op.
+  const complianceForNiche = demoMode
+    ? null
+    : getComplianceForNiche(complianceRules, params && params.niche, "US");
 
   // [LEARN-FROM-EDITS] Fetch the user's recent edit diffs as voice
   // examples — but only when they're opted in (profile.learnFromEdits).
@@ -778,7 +837,7 @@ export default async function handler(req, res) {
 
   let built;
   try {
-    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits);
+    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits, complianceForNiche);
   } catch (e) {
     return res.status(400).json({ error: e.message || 'Bad request.' });
   }
@@ -912,6 +971,7 @@ export default async function handler(req, res) {
         res, payload, useCache, selectedModel, generationType,
         userId, creditCost,
         usedFreshTrends, trendsSnapshot: trendsSnapshotEcho,
+        complianceForNiche,
       });
     }
 
@@ -973,7 +1033,38 @@ export default async function handler(req, res) {
       };
     }
 
-    const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    let text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+
+    // [COMPLIANCE 1] Post-generation scrub for non-streaming gen types
+    // (script, caption, caption_remix, scan_image, scan_video_frame). The
+    // model output here is the full JSON in one shot, so we can safely
+    // re-stringify the scrubbed payload back into the `text` field. Plan +
+    // plan_partial go through handleStreamingPlan and scrub there instead.
+    // Failures here are non-fatal: if the model returned non-JSON or the
+    // walker throws, we surface the original text — the client's
+    // extractJSON handles weird responses with its own error UI.
+    let complianceFlags = [];
+    if (complianceForNiche) {
+      try {
+        const parsedOutput = JSON.parse(text);
+        const { scrubbed, flags } = scrubCompliance(complianceForNiche, parsedOutput);
+        complianceFlags = flags;
+        if (flags.length > 0) {
+          console.log('virl_compliance', JSON.stringify({
+            generationType,
+            niche:      complianceForNiche.nicheKey,
+            locale:     complianceForNiche.locale,
+            flag_count: flags.length,
+            rewritten:  flags.filter(f => f.rewritten).length,
+          }));
+          text = JSON.stringify(scrubbed);
+        }
+      } catch (e) {
+        // Malformed JSON from the model — let the original text pass
+        // through so the existing extractJSON fallback in index.html can
+        // try to recover. Scrub does not run in that case.
+      }
+    }
 
     // Fire-and-forget first-plan onboarding email. The send wrapper's
     // dedupe table makes this idempotent — only the very first plan a
@@ -999,6 +1090,11 @@ export default async function handler(req, res) {
       usage: clientUsage,
       usedFreshTrends,
       trendsSnapshot: trendsSnapshotEcho,
+      // [COMPLIANCE 1] Forwarded to the client so future UI work can
+      // surface flags as a "review before posting" badge. Empty array
+      // for any out-of-scope niche / non-US locale / no-violations
+      // response. v1 client ignores the field — wire-only for now.
+      complianceFlags,
     });
 
   } catch (e) {
