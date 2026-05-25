@@ -1494,6 +1494,26 @@ function buildClientNow() {
   return { iso: iso, weekday: d.getDay(), year: d.getFullYear() };
 }
 
+// [COMPLIANCE 1] Read the user's last-selected niche from localStorage so
+// every /api/chat call can carry it server-side. Plan / plan_partial
+// already include `niche` in their params; caption / script / caption_remix
+// / scan_image / scan_video_frame do not, but the server's compliance
+// loader needs the niche to pick the right per-niche guardrail block.
+// Doing this in the wire layer (vs. wiring `niche` through every component
+// as a prop) keeps the gen-type call sites untouched. Returns null when
+// nothing is stored — the server treats that as out-of-scope and skips
+// the compliance block entirely.
+function storedNiche() {
+  try {
+    var raw = localStorage.getItem(KEY);
+    if (!raw) return null;
+    var parsed = JSON.parse(raw);
+    return (parsed && parsed.niche) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // [PERF 3] SSE-stream consumer for the plan endpoint. Reads the chunked
 // response, parses out our wire events ("text", "meta", "error", "reset"),
 // and fires callbacks. Wire format (see api/chat.js handleStreamingPlan):
@@ -1507,7 +1527,15 @@ async function consumePlanStream(generationType, params, opts, callbacks) {
   opts = opts || {};
   // [DATE-FIX] Merge browser-local date into params so buildPlan can label
   // days against the user's local weekday instead of UTC.
-  var body = { generationType: generationType, params: Object.assign({}, params || {}, { clientNow: buildClientNow() }) };
+  // [COMPLIANCE 1] Also fall back to the stored niche when callers don't
+  // pass one explicitly — keeps the server's compliance loader from
+  // missing real-estate / wellness creators on regen flows.
+  var mergedParams = Object.assign({}, params || {}, { clientNow: buildClientNow() });
+  if (!mergedParams.niche) {
+    var n = storedNiche();
+    if (n) mergedParams.niche = n;
+  }
+  var body = { generationType: generationType, params: mergedParams };
   // plan_partial reuses the parent plan's Perplexity snapshot so the
   // single-card regen sees the same trend signal as the cards it's joining.
   if (opts.trendsSnapshot) body.trendsSnapshot = opts.trendsSnapshot;
@@ -1590,7 +1618,17 @@ async function callAPI(generationType, params, opts) {
   opts = opts || {};
   // [DATE-FIX] See buildClientNow — used by every generation type so the
   // model gets the user's actual current year + weekday.
-  const body = { generationType, params: Object.assign({}, params || {}, { clientNow: buildClientNow() }) };
+  // [COMPLIANCE 1] Inject the user's last-selected niche from localStorage
+  // so non-plan gen types (caption / script / caption_remix / scan_image /
+  // scan_video_frame) reach the server with the niche signal the
+  // compliance loader keys off. Explicit params.niche still wins so
+  // callers can override per request.
+  const mergedParams = Object.assign({}, params || {}, { clientNow: buildClientNow() });
+  if (!mergedParams.niche) {
+    const n = storedNiche();
+    if (n) mergedParams.niche = n;
+  }
+  const body = { generationType, params: mergedParams };
   if (opts.imageBase64) { body.imageBase64 = opts.imageBase64; body.imageType = opts.imageType; }
   // Caller may pass the parent plan's Perplexity snapshot on regen flows
   // (plan_strategy / future regen types) so the server reuses it instead
