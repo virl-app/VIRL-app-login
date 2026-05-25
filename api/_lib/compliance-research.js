@@ -86,13 +86,15 @@ function htmlToText(html) {
 }
 
 // Fetch one source page. Honors Retry-After on 429, caps body size, times
-// out the request. Returns { text, etag, pdf } or throws.
+// out the request. Returns { text, pdfBase64, etag, pdf } — text is set
+// for HTML responses, pdfBase64 for PDF responses (consumed directly by
+// Claude as a document attachment, no Node-side PDF parser required).
 async function fetchSource(url) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
-      headers:  { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" },
+      headers:  { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml,application/pdf" },
       signal:   controller.signal,
       redirect: "follow",
     });
@@ -104,19 +106,26 @@ async function fetchSource(url) {
     }
     if (!res.ok) throw new Error("HTTP " + res.status + " fetching " + url);
     const ct = (res.headers.get("content-type") || "").toLowerCase();
-    if (ct.includes("application/pdf") || url.toLowerCase().endsWith(".pdf")) {
-      // [TODO] PDF distillation. v1 skips PDFs per the spec.
-      return { text: null, etag: null, pdf: true };
-    }
+    const isPdf = ct.includes("application/pdf") || url.toLowerCase().endsWith(".pdf");
     const buf = await res.arrayBuffer();
     if (buf.byteLength > FETCH_MAX_BYTES) {
       throw new Error("Body too large (" + buf.byteLength + " bytes) for " + url);
+    }
+    if (isPdf) {
+      // Claude accepts PDFs as inline base64 document attachments, so we
+      // skip Node-side PDF parsing entirely — no pdf-parse / pdfjs-dist
+      // dependency, no native binary. The model reads the document
+      // directly. Etag is over the raw bytes so a content change to the
+      // PDF still triggers re-distillation.
+      const bytes = Buffer.from(buf);
+      const etag = res.headers.get("etag") || crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+      return { text: null, pdfBase64: bytes.toString("base64"), etag, pdf: true };
     }
     const decoder = new TextDecoder("utf-8", { fatal: false });
     const html = decoder.decode(buf);
     const text = htmlToText(html);
     const etag = res.headers.get("etag") || crypto.createHash("sha256").update(text).digest("hex").slice(0, 32);
-    return { text, etag, pdf: false };
+    return { text, pdfBase64: null, etag, pdf: false };
   } finally {
     clearTimeout(t);
   }
@@ -197,12 +206,19 @@ async function insertDraftRule(sourceId, version, parsed, sourceExcerpt) {
 // Hard rails matter: agency pages contain plenty of unrelated guidance
 // and we only want rules a content-generation model can act on at write
 // time.
+//
+// PDF path: when `pageText` is null, the caller is sending the page as
+// a Claude document attachment instead — the prompt swaps the inline
+// "PAGE TEXT" block for a sentence pointing the model at the attached
+// document, so the schema + hard rails stay identical across formats.
 function distillPrompt(entry, pageText) {
+  const sourceBlock = pageText
+    ? ["PAGE TEXT (boilerplate stripped):", pageText.slice(0, 60000)]
+    : ["The page is attached as a PDF document. Read the entire document before distilling."];
   return [
     "You are auditing a canonical " + entry.agency + " page for the VIRL content-generation system. The page covers " + entry.category.replace(/_/g, " ") + " for " + entry.niche.replace(/_/g, " ") + " creators in " + entry.locale + ".",
     "",
-    "PAGE TEXT (boilerplate stripped):",
-    pageText.slice(0, 60000),
+    ...sourceBlock,
     "",
     "YOUR TASK:",
     "Distill the page into rules a content-generation model can apply at write time. Return ONLY valid JSON (no markdown, no preamble). Schema:",
@@ -222,7 +238,20 @@ function distillPrompt(entry, pageText) {
   ].join("\n");
 }
 
-async function callClaudeDistill(prompt) {
+// Single Anthropic call. Accepts either text (HTML path) or a base64-encoded
+// PDF (PDF path) — the latter is sent as a `document` content block so
+// Claude reads it natively without a Node-side PDF parser. The prompt is
+// the same in both cases; only the content array shape differs.
+async function callClaudeDistill(prompt, pdfBase64) {
+  const content = [];
+  if (pdfBase64) {
+    content.push({
+      type:   "document",
+      source: { type: "base64", media_type: "application/pdf", data: pdfBase64 },
+    });
+  }
+  content.push({ type: "text", text: prompt });
+
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -233,7 +262,7 @@ async function callClaudeDistill(prompt) {
     body: JSON.stringify({
       model:      DISTILL_MODEL,
       max_tokens: 2000,
-      messages:   [{ role: "user", content: prompt }],
+      messages:   [{ role: "user", content }],
     }),
   });
   if (!res.ok) {
@@ -268,11 +297,7 @@ export async function runIngestion() {
     const label = entry.niche + " / " + entry.locale + " / " + entry.category;
     try {
       const fetched = await fetchSource(entry.source_url);
-      if (fetched.pdf) {
-        summary.skipped.push({ label, reason: "PDF — v1 skips PDF distillation" });
-        continue;
-      }
-      if (!fetched.text) {
+      if (!fetched.text && !fetched.pdfBase64) {
         summary.skipped.push({ label, reason: "empty body" });
         continue;
       }
@@ -294,7 +319,7 @@ export async function runIngestion() {
       }
 
       const prompt = distillPrompt(entry, fetched.text);
-      const distilled = tryParseJSON(await callClaudeDistill(prompt));
+      const distilled = tryParseJSON(await callClaudeDistill(prompt, fetched.pdfBase64));
       if (!distilled) {
         summary.errored.push({ label, reason: "distillation JSON parse failed" });
         continue;

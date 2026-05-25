@@ -110,7 +110,14 @@ async function saveProfileToSupabase(profile, userId) {
       // only takes effect once the user explicitly turns it on in the
       // Profile tab; off-by-default means existing users see no behavior
       // change until they opt in.
-      learn_from_edits: !!profile.learnFromEdits
+      learn_from_edits: !!profile.learnFromEdits,
+      // [COMPLIANCE 2] ISO-3166 alpha-2 country code (migration 004).
+      // Drives whether the niche compliance block fires for this user —
+      // see api/_lib/compliance.js#SUPPORTED_LOCALES. NOT NULL with a
+      // default of 'US' in the schema, so the explicit fallback here
+      // keeps any client-side wipe (empty string in the input) from
+      // patching a NULL into a NOT NULL column.
+      country: (profile.country && profile.country.trim().toUpperCase()) || "US"
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -161,7 +168,11 @@ async function loadProfileFromSupabase(userId) {
       platformFormats: data.platform_formats||{},
       // [LEARN-FROM-EDITS] Opt-in flag. Falls back to false on existing
       // rows that don't yet have the column populated.
-      learnFromEdits: !!data.learn_from_edits
+      learnFromEdits: !!data.learn_from_edits,
+      // [COMPLIANCE 2] Country code (migration 004). Schema default is
+      // 'US' so existing users hydrate as US automatically; the fallback
+      // here protects against an old row that pre-dates the migration.
+      country: data.country || "US"
     };
   } catch(e) { return {}; }
 }
@@ -531,6 +542,23 @@ function getFormatsForPlatform(platform) {
   }
 }
 const NICHES = ["Lifestyle","Fitness","Food & Recipes","Finance","Beauty","Travel","Education","Parenting","Home & Family","Wellness","Small Business","Real Estate","Gaming","Tech","Sports","Fashion"];
+// [COMPLIANCE 2] ISO-3166 alpha-2 codes for the per-user country selector.
+// Only "US" actually fires the compliance block in v1 (see SUPPORTED_LOCALES
+// in api/_lib/compliance.js); every other value is treated the same as "no
+// compliance coverage for your locale yet". Listed in rough order of where
+// the current user base lives so the dropdown isn't a 200-row scroll.
+const COUNTRIES = [
+  {code:"US", label:"United States"},
+  {code:"CA", label:"Canada"},
+  {code:"GB", label:"United Kingdom"},
+  {code:"AU", label:"Australia"},
+  {code:"NZ", label:"New Zealand"},
+  {code:"IE", label:"Ireland"},
+  {code:"ZA", label:"South Africa"},
+  {code:"IN", label:"India"},
+  {code:"SG", label:"Singapore"},
+  {code:"OTHER", label:"Other"},
+];
 const GOALS = ["Grow my following","Land brand deals","Sell products","Build community","Go viral"];
 const FORMATS = ["Talking-head video","Aesthetic B-roll","Day in my life","Tutorial","Trend duets","Carousel"];
 const FOLLOWERS = ["Under 1K","1K-5K","5K-20K","20K-100K","100K+"];
@@ -1566,6 +1594,7 @@ async function consumePlanStream(generationType, params, opts, callbacks) {
   var decoder = new TextDecoder("utf-8");
   var sseBuf  = "";
   var meta    = null;
+  var compliance = null;
   var upstreamErr = null;
 
   function processEvent(rawEvent) {
@@ -1582,6 +1611,13 @@ async function consumePlanStream(generationType, params, opts, callbacks) {
     try { payload = JSON.parse(dataStr); } catch (e) { return; }
     if (eventName === "text" && callbacks.onText) callbacks.onText(payload.delta || "");
     else if (eventName === "meta") meta = payload;
+    // [COMPLIANCE 3] Post-stream scrub result from api/chat.js — array of
+    // { pattern, original, rewritten, path } flags + (optionally) the full
+    // scrubbed JSON string. Captured here so the caller can wire flags
+    // into per-card state for the "Review before posting" footer. Server
+    // only emits this event when at least one flag fired, so it's null on
+    // clean generations.
+    else if (eventName === "compliance") compliance = payload;
     else if (eventName === "error") upstreamErr = payload.error || "AI error";
     // Server retries on max_tokens truncation. Caller resets its progressive
     // parser + UI so subsequent text deltas are treated as a fresh response.
@@ -1604,7 +1640,31 @@ async function consumePlanStream(generationType, params, opts, callbacks) {
   if (sseBuf.trim()) processEvent(sseBuf);
 
   if (upstreamErr) throw new Error(upstreamErr);
-  return { meta: meta };
+  return { meta: meta, compliance: compliance };
+}
+
+// [COMPLIANCE 3] Walk a complianceFlags array and bucket each flag by the
+// `cards[N]` segment of its path. Flags whose path starts with cards[N] get
+// added to flagsByIndex[N]; everything else (plan-level strategy fields,
+// non-card outputs like script/caption/scan) lands in `topLevel`. Cheap
+// pre-render bucketing so PlanCard doesn't have to filter the full flag
+// array per card on every render.
+function bucketComplianceFlags(flags) {
+  var result = { byIndex: {}, topLevel: [] };
+  if (!Array.isArray(flags)) return result;
+  for (var i = 0; i < flags.length; i++) {
+    var f = flags[i];
+    if (!f) continue;
+    var m = (f.path || "").match(/^cards\[(\d+)\]/);
+    if (m) {
+      var idx = parseInt(m[1], 10);
+      if (!result.byIndex[idx]) result.byIndex[idx] = [];
+      result.byIndex[idx].push(f);
+    } else {
+      result.topLevel.push(f);
+    }
+  }
+  return result;
 }
 
 // Calls the unified /api/chat endpoint. Server owns prompt construction,
@@ -1942,6 +2002,14 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
     callAPI("script", { card: card }, { token: userToken }).then(function(data) {
       const parsed = extractJSON(data.text);
       if (parsed&&parsed.hook) {
+        // [COMPLIANCE 3] Stash the server's scrub flags on the parsed
+        // object so the script modal's footer can render them alongside
+        // the model's compliance_note. Empty array on clean generations
+        // / out-of-scope niches — the footer renders nothing in that
+        // case.
+        if (Array.isArray(data.complianceFlags) && data.complianceFlags.length) {
+          parsed._complianceFlags = data.complianceFlags;
+        }
         setScript(parsed);
         setSavedOnCard(false);
         if (onCreditsUsed) onCreditsUsed({cost: data.cost});
@@ -2059,6 +2127,11 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
                   </div>
                 </div>
               )}
+              {/* [COMPLIANCE 3] Renders the script's compliance_note and
+                  any flagged phrases above the save/copy/download row so
+                  the creator sees disclosure language before pressing
+                  "Save to card". No-op when neither is present. */}
+              <ComplianceFooter note={script.compliance_note} flags={script._complianceFlags}/>
               {onSaveScript&&(
                 <button onClick={function(){ onSaveScript(script); setSavedOnCard(true); }}
                   disabled={savedOnCard}
@@ -2433,6 +2506,75 @@ function FormatSpecificBody({card}) {
     case "video":
     default:               return <VideoCardBody card={card}/>;
   }
+}
+
+// [COMPLIANCE 3] "Review before posting" footer. Renders the model's
+// compliance_note (the suggested EHO / FDA-disclaimer / individual-results
+// text the creator should add) and any phrases the server-side scrub
+// flagged. Server already rewrote clear-cut violations in place when
+// possible, so flags here are the ones the model should fix in context
+// (the rewrites would distort meaning) or that the creator should be
+// aware of before publishing.
+//
+// Renders nothing when there's no note and no flags — keeps the card
+// chrome quiet for clean generations and for niches that aren't in the
+// compliance program. Used by PlanCard, the script result, the caption
+// result, and the scan result so the visual language is identical
+// wherever VIRL emits creator-facing copy.
+function ComplianceFooter({note, flags}) {
+  var flagList = Array.isArray(flags) ? flags.filter(Boolean) : [];
+  var hasNote = !!(note && note.trim());
+  if (!hasNote && flagList.length === 0) return null;
+  // Dedupe identical flags by (original, rewritten) so multiple matches
+  // for the same phrase across multiple fields don't clutter the list.
+  // The path stays available in the flag object for power users in the
+  // console; the user-facing list shows the phrase + outcome only.
+  var seen = {};
+  var deduped = [];
+  for (var i = 0; i < flagList.length; i++) {
+    var f = flagList[i];
+    var key = (f.original || "") + "|" + (f.rewritten ? "r:" + (f.replacement || "") : "f");
+    if (seen[key]) continue;
+    seen[key] = true;
+    deduped.push(f);
+  }
+  return (
+    <div style={{background:B.coralSoft,borderRadius:10,padding:"12px 14px",marginBottom:12,borderLeft:"3px solid "+B.coral}}>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.1em",color:B.coral,textTransform:"uppercase",marginBottom:hasNote||deduped.length?8:0,display:"flex",alignItems:"center",gap:6}}>
+        <span aria-hidden="true">⚠</span>
+        <span>Review before posting</span>
+      </div>
+      {hasNote && (
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,lineHeight:1.55,marginBottom:deduped.length?10:0}}>
+          {note}
+        </div>
+      )}
+      {deduped.length > 0 && (
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {deduped.map(function(f, i){
+            return (
+              <div key={i} style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.5}}>
+                {f.rewritten ? (
+                  <span>
+                    Rewrote{" "}
+                    <span style={{textDecoration:"line-through",color:B.muted}}>"{f.original}"</span>
+                    {" → "}
+                    <span style={{fontWeight:600,color:B.ink}}>"{f.replacement}"</span>
+                  </span>
+                ) : (
+                  <span>
+                    Flagged{" "}
+                    <span style={{fontWeight:600,color:B.ink}}>"{f.original}"</span>
+                    {" — consider rewording before posting."}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // In-card edit form. VIRL writes the cards but users often need to revise
@@ -2917,6 +3059,11 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profil
             </div>
           )}
           <HashtagRow hashtags={card.hashtags}/>
+          {/* [COMPLIANCE 3] "Review before posting" footer — the
+              compliance_note the model attached + any phrases the server
+              scrub flagged. Renders nothing on cards with neither (so
+              clean cards keep their tidy chrome). */}
+          <ComplianceFooter note={card.compliance_note} flags={card._complianceFlags}/>
           <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.navy,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
               {"🌙 "+card.day+" · "+card.postTime+" · "+card.platform}
@@ -3248,6 +3395,12 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLe
     callAPI("caption", { topic: topic.trim(), platform: platform, tone: tone, length: length }, { token: userToken }).then(function(data) {
       const parsed = extractJSON(data.text);
       if (parsed&&parsed.hook&&parsed.captions) {
+        // [COMPLIANCE 3] Surface scrub flags alongside the model's
+        // compliance_note in the result footer. No-op for clean output /
+        // out-of-scope niches.
+        if (Array.isArray(data.complianceFlags) && data.complianceFlags.length) {
+          parsed._complianceFlags = data.complianceFlags;
+        }
         setResult(parsed);
         setUsedFreshTrends(!!(data && data.usedFreshTrends));
         try {
@@ -3327,6 +3480,10 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLe
             <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
           );})}
           <HashtagRow hashtags={result.hashtags}/>
+          {/* [COMPLIANCE 3] Compliance disclosure + scrub flags for the
+              caption set. Renders above the regenerate button so the
+              creator sees it before they pick a variation. */}
+          <ComplianceFooter note={result.compliance_note} flags={result._complianceFlags}/>
           <button onClick={generate} disabled={loading}
             style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"12px 18px",background:B.bg,color:B.muted,border:"1px solid "+B.border,cursor:"pointer",marginTop:4,borderRadius:14}}>
             Regenerate captions
@@ -3676,6 +3833,12 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
                   if (data && data.usedFreshTrends) batchUsedFresh = true;
                   var parsed = extractJSON(data.text);
                   if (parsed && parsed.score) {
+                    // [COMPLIANCE 3] Attach scrub flags so the scan card's
+                    // ComplianceFooter can render alongside the model's
+                    // compliance_note. Empty / missing on out-of-scope niches.
+                    if (Array.isArray(data.complianceFlags) && data.complianceFlags.length) {
+                      parsed._complianceFlags = data.complianceFlags;
+                    }
                     out.push(Object.assign({name:file.name,isVideo:true,duration:fd.dur}, parsed));
                   } else {
                     out.push({name:file.name,isVideo:true,error:"Analysis returned an unexpected format. Try again or use a screenshot."});
@@ -3710,6 +3873,12 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
               if (data && data.usedFreshTrends) batchUsedFresh = true;
               var parsed = extractJSON(data.text);
               if (parsed && parsed.score) {
+                // [COMPLIANCE 3] Same flag attachment as the video-frame
+                // path above. Renders via ComplianceFooter at the bottom
+                // of each scan card.
+                if (Array.isArray(data.complianceFlags) && data.complianceFlags.length) {
+                  parsed._complianceFlags = data.complianceFlags;
+                }
                 out.push(Object.assign({name:file.name,url:imageUrl}, parsed));
               } else {
                 out.push({name:file.name,url:imageUrl,error:"Analysis returned an unexpected format. Try again."});
@@ -3837,6 +4006,12 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
               <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
               <HashtagRow hashtags={r.hashtags}/>
               {r.tip&&<div style={{background:B.blueSoft,borderRadius:10,padding:"10px 14px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.blue,lineHeight:1.6,marginTop:8}}>{"✦ "+r.tip}</div>}
+              {/* [COMPLIANCE 3] Per-scan compliance disclosure + flags.
+                  Renders above the share-score card so the creator sees
+                  the disclosure before exporting / sharing. */}
+              <div style={{marginTop:12}}>
+                <ComplianceFooter note={r.compliance_note} flags={r._complianceFlags}/>
+              </div>
               <ShareScoreCard score={r.score} platform={r.platform} hook={r.hook||""}/>
             </div>
           )}
@@ -3892,6 +4067,11 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   // Default OFF — this is a data/privacy decision and shouldn't be
   // surprise-enabled. Persists to profiles.learn_from_edits (boolean).
   const [learnFromEdits,setLearnFromEdits] = useState(!!profile.learnFromEdits);
+  // [COMPLIANCE 2] ISO-3166 alpha-2 country code. Drives the per-niche
+  // compliance loader's locale gate (api/_lib/compliance.js#SUPPORTED_LOCALES).
+  // Existing rows hydrate as 'US' from the migration 004 default; the
+  // fallback here covers any older payload that pre-dates the migration.
+  const [country,setCountry] = useState((profile.country || "US").toUpperCase());
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -3946,7 +4126,9 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits});
+    // [COMPLIANCE 2] country joins the payload so the locale gate in
+    // api/_lib/compliance.js can fire/skip the compliance block per user.
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,country});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -3954,7 +4136,10 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   // [CHANGE 1] Phase 1 save persists its success UI (no auto-clear) so the user
   // can choose between "Generate my first plan" and "Make VIRL even sharper".
   function handleSavePhase1() {
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell});
+    // [COMPLIANCE 2] country is collected in Phase 1 (the country selector
+    // sits alongside platforms / name / voice) so it persists on first save
+    // even for users who never expand Phase 2.
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,country});
     setPhase1Saved(true);
     setPhase1JustSaved(true);
   }
@@ -4069,9 +4254,24 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
             style={Object.assign({},textareaStyle,{minHeight:72})}/>
         </div>
 
-        <div style={{marginBottom:phase1Saved?16:4}}>
+        <div style={{marginBottom:18}}>
           <Label>Where do you post?</Label>
           <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={myPlatforms.includes(p)} onClick={function(){setMyPlatforms(tog(myPlatforms,p));}}>{p}</Chip>;})}</div>
+        </div>
+
+        {/* [COMPLIANCE 2] Country selector. Gates the niche-compliance
+            block — only "United States" activates the US-anchored Fair
+            Housing / FDA / FTC guardrails today. Non-US users skip the
+            block entirely until per-market coverage ships. Defaults to
+            US so existing users see no behavior change. */}
+        <div style={{marginBottom:phase1Saved?16:4}}>
+          <Label>Where are you based?</Label>
+          <Sel value={country} onChange={function(e){setCountry(e.target.value);}}>
+            {COUNTRIES.map(function(c){return <option key={c.code} value={c.code}>{c.label}</option>;})}
+          </Sel>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
+            VIRL uses this to apply the right compliance language for your niche. US Real Estate and Wellness creators get Fair Housing and FDA guardrails baked in.
+          </div>
         </div>
 
         {!phase1Saved && (
@@ -6547,13 +6747,29 @@ function App() {
     }).then(function (result) {
       var finalized = parser.finalize();
       var parsed = finalized.parsed;
+      // [COMPLIANCE 3] Same scrubbed-JSON swap as the full-plan path —
+      // when the server rewrote any string in the partial regen, that
+      // scrubbed JSON is the canonical output. Flag buckets are keyed
+      // by the LOCAL partial index (cards[0..N-1] in the regen payload),
+      // not the original plan's card index, so we re-map onto the
+      // sorted[] target slots when attaching to the final working array.
+      var compliance = (result && result.compliance) || null;
+      if (compliance && typeof compliance.scrubbed === "string") {
+        try { parsed = JSON.parse(compliance.scrubbed); } catch (e) { /* fall through */ }
+      }
+      var flagBuckets = bucketComplianceFlags(compliance && compliance.flags);
       var parsedCards = (parsed && Array.isArray(parsed.cards)) ? parsed.cards : null;
       // Final reconciliation: if the streaming pass missed cards (or got
       // them in a different order), trust the finalized parse over the
       // progressive splice.
       if (parsedCards && parsedCards.length === sorted.length) {
         var finalWorking = cards.slice();
-        for (var k = 0; k < sorted.length; k++) finalWorking[sorted[k]] = parsedCards[k];
+        for (var k = 0; k < sorted.length; k++) {
+          var card = parsedCards[k];
+          var own = flagBuckets.byIndex[k];
+          if (own && own.length) card = Object.assign({}, card, { _complianceFlags: own });
+          finalWorking[sorted[k]] = card;
+        }
         setCards(finalWorking);
         working = finalWorking;
       } else if (!parsedCards || parsedCards.length === 0) {
@@ -6757,8 +6973,23 @@ function App() {
       // the model actually produced.
       const finalized = parser.finalize();
       const data = { text: finalized.fullText, cost: meta.cost, usage: meta.usage };
-      const parsed = finalized.parsed;
-      const parsedCards    = parsed && Array.isArray(parsed.cards) ? parsed.cards : null;
+      // [COMPLIANCE 3] When the server's post-stream scrub rewrote one or
+      // more strings, the scrubbed JSON is the canonical output — replaces
+      // what the progressive parser rendered. Falls through to the parser's
+      // own JSON otherwise (clean generations skip the compliance event
+      // entirely). Compliance flags get bucketed by card index so PlanCard
+      // can read its own card's flags from card._complianceFlags.
+      const compliance = (result && result.compliance) || null;
+      let parsed = finalized.parsed;
+      if (compliance && typeof compliance.scrubbed === "string") {
+        try { parsed = JSON.parse(compliance.scrubbed); } catch (e) { /* fall back to progressive parse */ }
+      }
+      const flagBuckets = bucketComplianceFlags(compliance && compliance.flags);
+      const parsedCards    = parsed && Array.isArray(parsed.cards) ? parsed.cards.map(function(c, idx){
+        const own = flagBuckets.byIndex[idx];
+        if (own && own.length) return Object.assign({}, c, { _complianceFlags: own });
+        return c;
+      }) : null;
       const parsedStrategy = parsed && parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
       const parsedStats    = parsed && parsed.stats    && typeof parsed.stats    === "object" ? parsed.stats    : null;
       if (parsedCards && parsedCards.length > 0) {

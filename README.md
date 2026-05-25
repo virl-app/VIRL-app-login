@@ -17,11 +17,12 @@ invisible to generation until a human reviews them.
 (`0 8 * * 1` UTC). For each row in the SOURCES manifest in
 `api/_lib/compliance-research.js`, it:
 
-1. Fetches the agency page (HTML; PDFs are skipped in v1).
+1. Fetches the agency page (HTML or PDF — PDFs are sent to Claude as
+   native `document` content blocks, no Node-side PDF parser needed).
 2. Compares ETag / content hash to the row's `last_fetch_etag`. Unchanged
    pages are skipped.
 3. Distills changed pages into a `{ rule_text, denylist, compliance_note }`
-   draft via Claude Sonnet.
+   draft via Claude Sonnet (HTML → text, PDF → attached document).
 4. Upserts `compliance_sources` and inserts a new `compliance_rules` row at
    `version = max(version) + 1` with `status='draft'`.
 
@@ -68,12 +69,27 @@ node scripts/check-compliance.mjs
 `scripts/check-index-syntax.mjs` runs the existing index.html JSX parse
 check unchanged.
 
-**Scope (phase 1).**
-- US locale only. Non-US users skip the compliance block entirely.
+**Scope.**
+- Locale gating is per-user from `profiles.country` (migration 004 —
+  defaults to `'US'` for existing rows). Only `'US'` actually activates
+  the compliance block today; every other value skips it cleanly until
+  per-market coverage ships. Captured in the Phase 1 profile flow,
+  editable on the Profile tab any time.
 - Real Estate + Wellness niches only. Food & Recipes maps to the wellness
   bucket via `nicheCategory()`.
-- `compliance_note` field round-trips through the API but no UI rendering
-  is in place yet — a follow-up will surface it on plan cards.
 - Scans (`scan_image`, `scan_video_frame`) get the prompt-level block
   only; post-generation scrub stays wired to plan / script / caption
-  paths in v1.
+  paths.
+
+**UI surfacing.** The `compliance_note` field the model attaches and
+any phrases the post-generation scrub flagged render together as a
+"Review before posting" footer on every creator-facing output:
+
+- Plan cards (expanded view, above the day/time reminder bar)
+- Script modal (above the save / copy / download row)
+- Caption result panel (above the regenerate button)
+- Scan result cards (above the share-score card)
+
+Renders nothing when both `compliance_note` and `complianceFlags` are
+empty, so clean generations and out-of-scope niches see no visual
+change. Implementation: `ComplianceFooter` component in `index.html`.

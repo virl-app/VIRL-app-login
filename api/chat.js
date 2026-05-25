@@ -550,6 +550,12 @@ async function fetchProfile(userId) {
       // allowed to fetch + inject recent edit diffs as voice examples.
       // False on existing rows where the column isn't yet populated.
       learnFromEdits:    !!data.learn_from_edits,
+      // [COMPLIANCE 2] ISO-3166 alpha-2 country code from migration 004.
+      // Defaults to 'US' both in the DB schema and here so existing users
+      // (and any user who hasn't filled out the field yet) keep getting
+      // the US compliance treatment that's been active since phase 1.
+      // Non-US values fall through to no-op in api/_lib/compliance.js.
+      country:           data.country           || "US",
     };
   } catch (e) {
     return {};
@@ -771,11 +777,18 @@ export default async function handler(req, res) {
   // [COMPLIANCE 1] Resolve the effective compliance bundle once per
   // request. Niche comes from params (plan/plan_partial pass it explicitly;
   // for other gen types the client injects it from localStorage — see the
-  // patches to callAPI / consumePlanStream in index.html). Locale defaults
-  // to "US" until a per-user country field ships; non-US locales no-op.
+  // patches to callAPI / consumePlanStream in index.html).
+  // [COMPLIANCE 2] Locale comes from profile.country (migration 004,
+  // defaults to 'US' for existing users so behavior is unchanged until a
+  // user explicitly sets a non-US country in their profile or signup
+  // flow). compliance.js short-circuits on any locale not in
+  // SUPPORTED_LOCALES, so a non-US user with a Real Estate / Wellness
+  // niche just gets no compliance block at all — same effect as today
+  // for the previous v1 "US-only" hardcode, but now actually correct
+  // for non-US users instead of pretending everyone is American.
   const complianceForNiche = demoMode
     ? null
-    : getComplianceForNiche(complianceRules, params && params.niche, "US");
+    : getComplianceForNiche(complianceRules, params && params.niche, profile && profile.country);
 
   // [LEARN-FROM-EDITS] Fetch the user's recent edit diffs as voice
   // examples — but only when they're opted in (profile.learnFromEdits).
