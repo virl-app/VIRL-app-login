@@ -15,10 +15,6 @@
     {
       "path": "/api/cron/trends-refresh",
       "schedule": "0 7 * * 1"
-    },
-    {
-      "path": "/api/cron/compliance-refresh",
-      "schedule": "0 8 * * 1"
     }
   ]
 }
