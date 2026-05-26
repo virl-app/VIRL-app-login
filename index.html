@@ -2542,7 +2542,12 @@ function ComplianceFooter({note, flags}) {
     <div style={{background:B.coralSoft,borderRadius:10,padding:"12px 14px",marginBottom:12,borderLeft:"3px solid "+B.coral}}>
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.1em",color:B.coral,textTransform:"uppercase",marginBottom:hasNote||deduped.length?8:0,display:"flex",alignItems:"center",gap:6}}>
         <span aria-hidden="true">⚠</span>
-        <span>Review before posting</span>
+        {/* [COMPLIANCE 4 — DE-RISK] Header copy intentionally avoids
+            "compliance" / "review" framing. "Heads up before you post"
+            reads as a friendly nudge, not a regulatory claim — the
+            feature flags risky phrases for the creator to evaluate; it
+            does not certify anything as legally clear. */}
+        <span>Heads up before you post</span>
       </div>
       {hasNote && (
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,lineHeight:1.55,marginBottom:deduped.length?10:0}}>
@@ -2554,18 +2559,22 @@ function ComplianceFooter({note, flags}) {
           {deduped.map(function(f, i){
             return (
               <div key={i} style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.5}}>
+                {/* [COMPLIANCE 4 — DE-RISK] Verb softening. "Adjusted /
+                    Worth a second look" describes what the system did
+                    without implying the result is compliant or that the
+                    flagged phrase is illegal — the user makes that call. */}
                 {f.rewritten ? (
                   <span>
-                    Rewrote{" "}
+                    Adjusted{" "}
                     <span style={{textDecoration:"line-through",color:B.muted}}>"{f.original}"</span>
                     {" → "}
                     <span style={{fontWeight:600,color:B.ink}}>"{f.replacement}"</span>
                   </span>
                 ) : (
                   <span>
-                    Flagged{" "}
+                    Worth a second look:{" "}
                     <span style={{fontWeight:600,color:B.ink}}>"{f.original}"</span>
-                    {" — consider rewording before posting."}
+                    {" — consider rewording before you post."}
                   </span>
                 )}
               </div>
@@ -4259,18 +4268,19 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={myPlatforms.includes(p)} onClick={function(){setMyPlatforms(tog(myPlatforms,p));}}>{p}</Chip>;})}</div>
         </div>
 
-        {/* [COMPLIANCE 2] Country selector. Gates the niche-compliance
-            block — only "United States" activates the US-anchored Fair
-            Housing / FDA / FTC guardrails today. Non-US users skip the
-            block entirely until per-market coverage ships. Defaults to
-            US so existing users see no behavior change. */}
+        {/* [COMPLIANCE 4 — DE-RISK] Country selector kept (it still
+            drives the silent floor-rules gate per locale), but the
+            user-facing copy intentionally avoids "compliance",
+            "guardrails", and the agency names. Internal behavior is
+            unchanged — this is purely a positioning fix so the marketing
+            surface doesn't imply VIRL certifies anything. */}
         <div style={{marginBottom:phase1Saved?16:4}}>
           <Label>Where are you based?</Label>
           <Sel value={country} onChange={function(e){setCountry(e.target.value);}}>
             {COUNTRIES.map(function(c){return <option key={c.code} value={c.code}>{c.label}</option>;})}
           </Sel>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
-            VIRL uses this to apply the right compliance language for your niche. US Real Estate and Wellness creators get Fair Housing and FDA guardrails baked in.
+            Helps VIRL tailor wording for your local market.
           </div>
         </div>
 
