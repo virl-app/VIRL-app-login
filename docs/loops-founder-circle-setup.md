@@ -126,16 +126,16 @@ use these to build segments (see bottom of guide).
 - **Trigger:** `subscriptionStarted` event
 - **Filter:** `foundingTier` is `founder_circle`
 - **Content:** invite to the monthly Founder Office Hours.
-  - **When:** last Friday of every month, 8:00 AM CT, 45 minutes, Zoom
+  - **When:** last Friday of every month, 8:00 AM CT, 45 minutes, Google Meet
   - **First call:** Friday, June 26, 2026
   - Recorded for anyone who can't attend live
-- Include the Zoom link once you have it.
+- Include the Google Meet link once you have it.
 
 ### 7. Office Hours monthly reminder
 - **Trigger:** recurring/scheduled in Loops (not event-driven) — e.g. a few days
   before the last Friday each month
 - **Audience:** the "Founder Circle members" segment
-- **Content:** reminder of the date/time + Zoom link.
+- **Content:** reminder of the date/time + Google Meet link.
 
 ### 8. Office Hours post-call summary
 - **Trigger:** sent manually by Lauren after each call
