@@ -532,7 +532,7 @@ Forever. The Office Hours invitation is coming separately.
 A few things included beyond the price:
 - Direct line to me at hello@govirl.ai — that's a real direct line,
   not a support queue
-- Monthly Founder Office Hours, live with me on Zoom
+- Monthly Founder Office Hours, live with me on Google Meet
 - Beta access to new features 14 days before everyone else
 
 I'll be in touch about our first Office Hours call (Friday, June 26 at
@@ -648,11 +648,11 @@ Subject: Your first Founder Office Hours
 {{firstName}}, here's how Founder Office Hours work:
 
 - Last Friday of every month, 8 AM CT
-- 45 minutes on Zoom — brief update from me, then open Q&A
+- 45 minutes on Google Meet — brief update from me, then open Q&A
 - Recorded for anyone who can't make it live
 - First call: Friday, June 26
 
-Zoom link: [paste your stable Zoom link here]
+Google Meet link: [paste your stable Google Meet link here]
 
 Add to your calendar: [calendar link if you have one]
 
@@ -669,7 +669,7 @@ See you there.
 Subject: Founder Office Hours this Friday at 8 AM CT
 
 Quick reminder — Founder Office Hours is this Friday, [Date], at
-8 AM CT. Zoom link: [link]
+8 AM CT. Google Meet link: [link]
 
 Bring whatever's on your mind — content questions, growth stuff,
 product feedback. Open agenda.
