@@ -9084,6 +9084,24 @@ return (
               }}>
                 Live with Lauren on Google Meet – brief update + open Q&amp;A, 45 minutes. You'll receive a calendar invite by email. Can't make it live? Every session is recorded.
               </div>
+              {/* Persistent Google Meet room — same URL every month, so
+                  Founder Circle members can join straight from the app
+                  if they can't find the calendar invite. target=_blank
+                  + rel=noreferrer keeps the app session intact. */}
+              <a
+                href="https://meet.google.com/uga-zumi-onk"
+                target="_blank"
+                rel="noreferrer noopener"
+                aria-label="Join Founder Office Hours on Google Meet"
+                style={{
+                  display:"inline-block",marginTop:14,
+                  fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,
+                  letterSpacing:"0.08em",textTransform:"uppercase",
+                  padding:"10px 20px",background:B.navy,color:B.white,
+                  border:"none",borderRadius:99,textDecoration:"none",cursor:"pointer"
+                }}>
+                Join Office Hours →
+              </a>
             </div>
 
             {/* Direct line card */}
