@@ -517,23 +517,12 @@ export default async function handler(req, res) {
     imageBase64,
     imageType,
     token: bodyToken,
-    demo,
     // Client passes the parent plan's Perplexity snapshot back on regen
     // paths (plan_partial / plan_strategy / regen) so we don't re-bill the
     // user's fresh-trends allowance or fire a duplicate Perplexity call.
     // Untrusted input — validated by isValidTrendsSnapshot before use.
     trendsSnapshot: bodyTrendsSnapshot,
   } = req.body || {};
-
-  // [PREMIUM 2] Demo mode: brand-new users get a single free plan
-  // generation before they fill out their profile, so they can see what
-  // VIRL produces. Only honored on `plan` generation type. Server-side
-  // gates: must be a brand-new user (zero prior `plan` rows in
-  // usage_events) so the flag can't be replayed for free generations
-  // after the first one. Skips credit check + uses canned profile
-  // defaults so a malicious client can't spoof "high-value" plans for
-  // free.
-  const demoMode = demo === true && generationType === "plan";
 
   // Validate the generation type up front so a bad type never reaches Anthropic.
   if (!generationType || !isValidGenerationType(generationType)) {
@@ -586,26 +575,6 @@ export default async function handler(req, res) {
     });
   }
 
-  // [PREMIUM 2] Demo eligibility gate. Server-side check that this user
-  // has never generated a real plan before — prevents a malicious client
-  // from passing demo=true on every call to skip credit deduction.
-  if (demoMode) {
-    try {
-      const r = await fetch(
-        `${SUPABASE_URL}/rest/v1/usage_events?user_id=eq.${userId}&generation_type=eq.plan&select=id&limit=1`,
-        { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
-      );
-      const rows = r.ok ? await r.json() : [];
-      if (Array.isArray(rows) && rows.length > 0) {
-        return res.status(403).json({ error: "Demo plan already used." });
-      }
-    } catch (e) {
-      // Fail closed — better to make the user run their first real plan
-      // than to silently grant a free generation if we can't verify.
-      return res.status(500).json({ error: "Could not verify demo eligibility." });
-    }
-  }
-
   // ── Read credits row early (drives both trends decision + credit gate) ───
   // The fresh-trends allowance lives on the same row as `credits`, so we
   // pull both in one read and run the lazy weekly reset *before* deciding
@@ -616,74 +585,72 @@ export default async function handler(req, res) {
   let isPaid = false;
   let currentCredits = 0;
   let freshTrends = { plan: 0, scan: 0, caption: 0 };
-  if (!demoMode) {
-    try {
-      const credRes = await fetch(
-        `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`
-        + `&select=plan,credits,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining`,
-        { headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_SERVICE_KEY } }
-      );
-      if (!credRes.ok) return res.status(500).json({ error: 'Could not verify credits.' });
-      const [row] = await credRes.json();
-      if (!row) return res.status(402).json({ error: 'Not enough credits this week.' });
+  try {
+    const credRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`
+      + `&select=plan,credits,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining`,
+      { headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_SERVICE_KEY } }
+    );
+    if (!credRes.ok) return res.status(500).json({ error: 'Could not verify credits.' });
+    const [row] = await credRes.json();
+    if (!row) return res.status(402).json({ error: 'Not enough credits this week.' });
 
-      plan           = row.plan;
-      isPaid         = PAID_PLANS.includes(plan);
-      currentCredits = row.credits;
-      // Columns default to 1 in the migration; coalesce here for the
-      // pre-migration window where they may be null on existing rows.
-      freshTrends = {
-        plan:    row.fresh_trends_plan_remaining    == null ? 1 : row.fresh_trends_plan_remaining,
-        scan:    row.fresh_trends_scan_remaining    == null ? 1 : row.fresh_trends_scan_remaining,
-        caption: row.fresh_trends_caption_remaining == null ? 1 : row.fresh_trends_caption_remaining,
-      };
+    plan           = row.plan;
+    isPaid         = PAID_PLANS.includes(plan);
+    currentCredits = row.credits;
+    // Columns default to 1 in the migration; coalesce here for the
+    // pre-migration window where they may be null on existing rows.
+    freshTrends = {
+      plan:    row.fresh_trends_plan_remaining    == null ? 1 : row.fresh_trends_plan_remaining,
+      scan:    row.fresh_trends_scan_remaining    == null ? 1 : row.fresh_trends_scan_remaining,
+      caption: row.fresh_trends_caption_remaining == null ? 1 : row.fresh_trends_caption_remaining,
+    };
 
-      // Lazy weekly reset — day-count-based per user, not calendar Mondays.
-      // Refills credits AND the three fresh-trends counters in one PATCH so
-      // a user who signs up Wednesday gets a full Wednesday-to-Wednesday
-      // refill on every wallet, not a partial half-week before Monday.
-      const resetMs = row.reset_at ? Date.parse(row.reset_at) : NaN;
-      const now     = Date.now();
-      if (!row.reset_at || Number.isNaN(resetMs) || resetMs <= now) {
-        const newCredits = isPaid ? 150 : 20;
-        const newResetAt = new Date(now + 7 * 86400000).toISOString();
-        await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
-          method: 'PATCH',
-          headers: {
-            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-            'apikey':        SUPABASE_SERVICE_KEY,
-            'Content-Type':  'application/json',
-            'Prefer':        'return=minimal',
-          },
-          body: JSON.stringify({
-            credits:                            newCredits,
-            reset_at:                           newResetAt,
-            fresh_trends_plan_remaining:        1,
-            fresh_trends_scan_remaining:        1,
-            fresh_trends_caption_remaining:     1,
-          }),
-        });
-        currentCredits = newCredits;
-        freshTrends = { plan: 1, scan: 1, caption: 1 };
-      }
+    // Lazy weekly reset — day-count-based per user, not calendar Mondays.
+    // Refills credits AND the three fresh-trends counters in one PATCH so
+    // a user who signs up Wednesday gets a full Wednesday-to-Wednesday
+    // refill on every wallet, not a partial half-week before Monday.
+    const resetMs = row.reset_at ? Date.parse(row.reset_at) : NaN;
+    const now     = Date.now();
+    if (!row.reset_at || Number.isNaN(resetMs) || resetMs <= now) {
+      const newCredits = isPaid ? 150 : 20;
+      const newResetAt = new Date(now + 7 * 86400000).toISOString();
+      await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+          'apikey':        SUPABASE_SERVICE_KEY,
+          'Content-Type':  'application/json',
+          'Prefer':        'return=minimal',
+        },
+        body: JSON.stringify({
+          credits:                            newCredits,
+          reset_at:                           newResetAt,
+          fresh_trends_plan_remaining:        1,
+          fresh_trends_scan_remaining:        1,
+          fresh_trends_caption_remaining:     1,
+        }),
+      });
+      currentCredits = newCredits;
+      freshTrends = { plan: 1, scan: 1, caption: 1 };
+    }
 
-      // Trial enforcement: free users get TRIAL_DAYS from signup. The client
-      // already blocks past day 14, but the cap is meaningless if the API
-      // doesn't enforce it too. Fail open when created_at is missing so a
-      // malformed auth row doesn't lock real users out.
-      if (!isPaid && createdAt) {
-        const signupMs = Date.parse(createdAt);
-        if (!Number.isNaN(signupMs)) {
-          const daysSinceSignup = Math.floor((Date.now() - signupMs) / 86400000);
-          if (daysSinceSignup >= TRIAL_DAYS) {
-            return res.status(402).json({ error: 'Your free trial has ended.' });
-          }
+    // Trial enforcement: free users get TRIAL_DAYS from signup. The client
+    // already blocks past day 14, but the cap is meaningless if the API
+    // doesn't enforce it too. Fail open when created_at is missing so a
+    // malformed auth row doesn't lock real users out.
+    if (!isPaid && createdAt) {
+      const signupMs = Date.parse(createdAt);
+      if (!Number.isNaN(signupMs)) {
+        const daysSinceSignup = Math.floor((Date.now() - signupMs) / 86400000);
+        if (daysSinceSignup >= TRIAL_DAYS) {
+          return res.status(402).json({ error: 'Your free trial has ended.' });
         }
       }
-    } catch (e) {
-      console.error('Credit check error:', e.message);
-      return res.status(500).json({ error: 'Could not verify credits.' });
     }
+  } catch (e) {
+    console.error('Credit check error:', e.message);
+    return res.status(500).json({ error: 'Could not verify credits.' });
   }
 
   // ── Build the prompt server-side ──────────────────────────────────────────
@@ -695,22 +662,12 @@ export default async function handler(req, res) {
   // history so the LLM can build narratively week-over-week. Other
   // generation types skip history since they're scoped to a single piece
   // of content.
-  // [PREMIUM 2] In demo mode the user has no profile yet — substitute a
-  // minimal canned profile so the LLM has just enough context to produce
-  // a generic-but-coherent plan. Vault / history fetches are also
-  // bypassed: the user has neither.
   const [profile, vaultPatterns, playbook, cachedTrends, history] = await Promise.all([
-    demoMode
-      ? Promise.resolve({
-          name:     "Sample User",
-          audience: "people interested in self-improvement and small business",
-          voice:    "warm, conversational, occasionally funny",
-        })
-      : fetchProfile(userId),
-    (generationType === "plan" && !demoMode) ? fetchVaultPatterns(userId)         : Promise.resolve(null),
+    fetchProfile(userId),
+    generationType === "plan" ? fetchVaultPatterns(userId)                                                 : Promise.resolve(null),
     loadPlaybook(),
     loadLatestTrends(),
-    (generationType === "plan" && !demoMode) ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart) : Promise.resolve([]),
+    generationType === "plan" ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart)     : Promise.resolve([]),
   ]);
 
   // ── Decide trends source ─────────────────────────────────────────────────
@@ -727,12 +684,12 @@ export default async function handler(req, res) {
   let trends             = cachedTrends;
   let usedFreshTrends    = false;
   let trendsSnapshotEcho = null;
-  const freshKey = demoMode ? null : FRESH_TRENDS_TYPE[generationType];
+  const freshKey = FRESH_TRENDS_TYPE[generationType];
 
   if (bodyTrendsSnapshot != null && isValidTrendsSnapshot(bodyTrendsSnapshot)) {
     trends = bodyTrendsSnapshot;
     // Snapshot is a passthrough — the parent plan already paid for it.
-  } else if (!demoMode && freshKey && (isPaid || freshTrends[freshKey] > 0)) {
+  } else if (freshKey && (isPaid || freshTrends[freshKey] > 0)) {
     const inlinePlatforms = pickInlinePlatforms(generationType, params, profile);
     if (inlinePlatforms.length > 0) {
       const inline = await fetchInlineTrends(inlinePlatforms, cachedTrends);
@@ -753,52 +710,47 @@ export default async function handler(req, res) {
   const creditCost    = built.cost || 1;
 
   // ── Credit cap + deduction (lazy reset already ran above) ────────────────
-  // [PREMIUM 2] Demo plans skip the credit ledger entirely. The eligibility
-  // gate above already verified this is the user's first ever plan, so this
-  // path can only ever be reached once per account.
-  if (!demoMode) {
-    try {
-      if (!isPaid && currentCredits < creditCost) {
-        return res.status(402).json({ error: 'Not enough credits this week.' });
-      }
-      // Founding + Pro skip credit deduction (unlimited within the tier).
-      // Standard + free pay per-generation. Mirrors prior behavior.
-      if (!['founding','pro'].includes(plan)) {
-        await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
-          method: 'PATCH',
-          headers: {
-            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-            'apikey': SUPABASE_SERVICE_KEY,
-            'Content-Type': 'application/json',
-            'Prefer': 'return=minimal',
-          },
-          body: JSON.stringify({ credits: Math.max(0, currentCredits - creditCost) }),
-        });
-      }
-      // Decrement the fresh-trends counter for free users that just
-      // consumed their freebie. Paid users skip — they have no cap.
-      // Fire-and-forget; the upstream call has not run yet but we
-      // accept the small risk of "charged but no result" over the
-      // alternative of "result but no charge" if Anthropic fails after
-      // this PATCH lands. The wallet stays consistent with credits.
-      if (usedFreshTrends && !isPaid && freshKey) {
-        const counterCol = FRESH_TRENDS_COLUMNS[freshKey];
-        const nextVal    = Math.max(0, freshTrends[freshKey] - 1);
-        fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
-          method: 'PATCH',
-          headers: {
-            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-            'apikey': SUPABASE_SERVICE_KEY,
-            'Content-Type': 'application/json',
-            'Prefer': 'return=minimal',
-          },
-          body: JSON.stringify({ [counterCol]: nextVal }),
-        }).catch(() => {});
-      }
-    } catch (e) {
-      console.error('Credit check error:', e.message);
-      return res.status(500).json({ error: 'Could not verify credits.' });
+  try {
+    if (!isPaid && currentCredits < creditCost) {
+      return res.status(402).json({ error: 'Not enough credits this week.' });
     }
+    // Founding + Pro skip credit deduction (unlimited within the tier).
+    // Standard + free pay per-generation. Mirrors prior behavior.
+    if (!['founding','pro'].includes(plan)) {
+      await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+          'apikey': SUPABASE_SERVICE_KEY,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify({ credits: Math.max(0, currentCredits - creditCost) }),
+      });
+    }
+    // Decrement the fresh-trends counter for free users that just
+    // consumed their freebie. Paid users skip — they have no cap.
+    // Fire-and-forget; the upstream call has not run yet but we
+    // accept the small risk of "charged but no result" over the
+    // alternative of "result but no charge" if Anthropic fails after
+    // this PATCH lands. The wallet stays consistent with credits.
+    if (usedFreshTrends && !isPaid && freshKey) {
+      const counterCol = FRESH_TRENDS_COLUMNS[freshKey];
+      const nextVal    = Math.max(0, freshTrends[freshKey] - 1);
+      fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+          'apikey': SUPABASE_SERVICE_KEY,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify({ [counterCol]: nextVal }),
+      }).catch(() => {});
+    }
+  } catch (e) {
+    console.error('Credit check error:', e.message);
+    return res.status(500).json({ error: 'Could not verify credits.' });
   }
 
   // ── Build Anthropic request ───────────────────────────────────────────────
