@@ -11,9 +11,9 @@ const ADMIN_EMAIL          = "laurenannedoty@gmail.com";
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-const FOUNDING_CAP   = 100;
+const FOUNDING_CAP   = 50;
 const STANDARD_PRICE = 25;
-const FOUNDING_PRICE = 25; // founding rate matches standard for now
+const FOUNDING_PRICE = 20; // Founder Circle locked at $20/month for life
 const DAY_MS         = 86400000;
 
 async function verifyAdmin(token) {

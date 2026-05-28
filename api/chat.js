@@ -7,8 +7,10 @@ import {
 } from "./_lib/prompts.js";
 import { loadPlaybook }              from "./_lib/playbook.js";
 import { loadLatestTrends }          from "./_lib/trends.js";
+import { loadComplianceRules, getComplianceForNiche, scrubCompliance } from "./_lib/compliance.js";
 import { fetchInlineTrends, isValidTrendsSnapshot } from "./_lib/fresh-trends-inline.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
+import { fetchRecentEdits }          from "./_lib/edit-examples.js";
 import { sendEmail }                 from "./_lib/email-send.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
@@ -122,7 +124,7 @@ async function recordUsageEvent(userId, usage) {
 // Mirrors the side-effects of the non-streaming branch: writes usage_events,
 // fires the first-plan + milestone emails. Returns the underlying Express
 // response so the caller's `return` semantics still hold.
-async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot }) {
+async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot, complianceForNiche }) {
   res.statusCode = 200;
   res.setHeader('Content-Type',  'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -249,6 +251,11 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
   let outputTokens     = first.outputTokens;
   let stopReason       = first.stopReason;
   let retried          = false;
+  // [COMPLIANCE 1] Track the final, complete model output for the
+  // post-stream scrub. On retry the first attempt's text is discarded
+  // (client got the `reset` event); the second attempt's text is the
+  // canonical output. Without retry, first.fullText is canonical.
+  let finalText        = first.fullText;
 
   // One-shot retry when Anthropic truncated on max_tokens. Tell the client
   // to discard the partial plan it streamed so far (event: reset clears the
@@ -266,6 +273,7 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
     cacheWriteTokens += second.cacheWriteTokens;
     outputTokens     += second.outputTokens;
     stopReason        = second.stopReason;
+    finalText         = second.fullText;
   }
 
   const truncated = stopReason === 'max_tokens';
@@ -299,6 +307,44 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
   // Fire-and-forget onboarding hooks, same as the non-streaming branch.
   maybeSendFirstPlanEmail(userId).catch(() => {});
   setTimeout(function () { maybeSendReferralMilestoneEmail(userId).catch(() => {}); }, 800);
+
+  // [COMPLIANCE 1] Post-stream scrub. Parse the accumulated final text,
+  // run the niche's denylist, and emit any flags / scrubbed payload to the
+  // client via a `compliance` event. The progressive text already streamed
+  // to the client stays as-is (rewrites are advisory for streaming paths
+  // in v1 — see api/_lib/compliance.js header for the rationale). Wrapped
+  // in try/catch so a malformed model output (truncated mid-JSON, etc.)
+  // never blocks the `meta` event or the response close.
+  if (complianceForNiche) {
+    try {
+      const parsed = finalText ? JSON.parse(finalText) : null;
+      if (parsed) {
+        const { scrubbed, flags } = scrubCompliance(complianceForNiche, parsed);
+        if (flags.length > 0) {
+          console.log('virl_compliance', JSON.stringify({
+            generationType,
+            niche:        complianceForNiche.nicheKey,
+            locale:       complianceForNiche.locale,
+            flag_count:   flags.length,
+            rewritten:    flags.filter(f => f.rewritten).length,
+          }));
+          sendEvent('compliance', {
+            flags,
+            // Stringify the scrubbed payload so a future client that opts
+            // into "use scrubbed text" can swap it in atomically. v1
+            // clients ignore unknown events, so this is forward-compatible
+            // wire data without any UI work.
+            scrubbed: JSON.stringify(scrubbed),
+          });
+        }
+      }
+    } catch (e) {
+      // JSON.parse failure on a streamed plan is not actionable here —
+      // the client's progressive parser has the same input and produces
+      // user-facing error UI if it can't parse. Log once and continue.
+      console.warn('[compliance] post-stream scrub skipped:', e.message);
+    }
+  }
 
   sendEvent('meta', {
     cost: creditCost,
@@ -500,6 +546,10 @@ async function fetchProfile(userId) {
       // without any selections get an empty object and the prompt builder
       // skips the per-platform formats block entirely.
       platformFormats:   data.platform_formats  || {},
+      // [LEARN-FROM-EDITS] Opt-in flag — when true the plan builder is
+      // allowed to fetch + inject recent edit diffs as voice examples.
+      // False on existing rows where the column isn't yet populated.
+      learnFromEdits:    !!data.learn_from_edits,
     };
   } catch (e) {
     return {};
@@ -662,13 +712,52 @@ export default async function handler(req, res) {
   // history so the LLM can build narratively week-over-week. Other
   // generation types skip history since they're scoped to a single piece
   // of content.
-  const [profile, vaultPatterns, playbook, cachedTrends, history] = await Promise.all([
+  const [profile, vaultPatterns, playbook, cachedTrends, history, complianceRules] = await Promise.all([
     fetchProfile(userId),
     generationType === "plan" ? fetchVaultPatterns(userId)                                                 : Promise.resolve(null),
     loadPlaybook(),
     loadLatestTrends(),
     generationType === "plan" ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart)     : Promise.resolve([]),
+    // [COMPLIANCE 1] Per-niche compliance rules (Real Estate, Wellness in
+    // v1). Loader returns {} on any infra failure so the get-for-niche
+    // call below falls through to the hardcoded safe-defaults floor.
+    loadComplianceRules(),
   ]);
+
+  // [COMPLIANCE 1] Resolve the effective compliance bundle once per
+  // request. Niche comes from params (plan/plan_partial pass it explicitly;
+  // for other gen types the client injects it from localStorage — see the
+  // patches to callAPI / consumePlanStream in index.html). Locale defaults
+  // to "US" until a per-user country field ships; non-US locales no-op.
+  const complianceForNiche = getComplianceForNiche(complianceRules, params && params.niche, "US");
+
+  // [LEARN-FROM-EDITS] Fetch the user's recent edit diffs as voice
+  // examples — but only when they're opted in (profile.learnFromEdits).
+  // Sequential after profile load (rather than parallelized into the
+  // Promise.all above) because we need to read the opt-in flag first;
+  // the alternative would be to over-fetch on every plan generation
+  // for users who haven't enabled the feature. The hit on opted-in
+  // users is one indexed events query (~50-100ms), acceptable.
+  //
+  // Applies to every generation type that produces user-facing copy:
+  //   - plan, plan_partial:           full + partial plan generation
+  //   - caption, caption_remix:       caption tab
+  //   - scan_image, scan_video_frame: scan tab
+  //
+  // Skipped intentionally:
+  //   - plan_strategy: regens the strategic thesis only, not card
+  //     content — voice diffs don't inform "what angle should this
+  //     week take." Including them would add noise.
+  //   - script: long-form video scripts have their own structure
+  //     that doesn't map cleanly to short before/after card diffs.
+  const EDIT_LEARNING_TYPES = new Set([
+    "plan", "plan_partial",
+    "caption", "caption_remix",
+    "scan_image", "scan_video_frame",
+  ]);
+  const recentEdits = (EDIT_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits)
+    ? await fetchRecentEdits(userId)
+    : [];
 
   // ── Decide trends source ─────────────────────────────────────────────────
   // Three paths, in priority order:
@@ -701,7 +790,7 @@ export default async function handler(req, res) {
 
   let built;
   try {
-    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history);
+    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits, complianceForNiche);
   } catch (e) {
     return res.status(400).json({ error: e.message || 'Bad request.' });
   }
@@ -714,9 +803,13 @@ export default async function handler(req, res) {
     if (!isPaid && currentCredits < creditCost) {
       return res.status(402).json({ error: 'Not enough credits this week.' });
     }
-    // Founding + Pro skip credit deduction (unlimited within the tier).
-    // Standard + free pay per-generation. Mirrors prior behavior.
-    if (!['founding','pro'].includes(plan)) {
+    // [PRICING credit-model] Only Pro is unlimited. Founder Circle
+    // ('founding') now meters at 150/week like Standard — credits
+    // decrement per generation and refill on the weekly reset. Free
+    // users pay per-generation too. The 402 gate above still exempts
+    // all paid plans, so a Founder Circle member who reaches 0 is not
+    // hard-blocked — the count just floors at 0 until the weekly reset.
+    if (plan !== 'pro') {
       await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
         method: 'PATCH',
         headers: {
@@ -826,6 +919,7 @@ export default async function handler(req, res) {
         res, payload, useCache, selectedModel, generationType,
         userId, creditCost,
         usedFreshTrends, trendsSnapshot: trendsSnapshotEcho,
+        complianceForNiche,
       });
     }
 
@@ -887,7 +981,38 @@ export default async function handler(req, res) {
       };
     }
 
-    const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    let text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+
+    // [COMPLIANCE 1] Post-generation scrub for non-streaming gen types
+    // (script, caption, caption_remix, scan_image, scan_video_frame). The
+    // model output here is the full JSON in one shot, so we can safely
+    // re-stringify the scrubbed payload back into the `text` field. Plan +
+    // plan_partial go through handleStreamingPlan and scrub there instead.
+    // Failures here are non-fatal: if the model returned non-JSON or the
+    // walker throws, we surface the original text — the client's
+    // extractJSON handles weird responses with its own error UI.
+    let complianceFlags = [];
+    if (complianceForNiche) {
+      try {
+        const parsedOutput = JSON.parse(text);
+        const { scrubbed, flags } = scrubCompliance(complianceForNiche, parsedOutput);
+        complianceFlags = flags;
+        if (flags.length > 0) {
+          console.log('virl_compliance', JSON.stringify({
+            generationType,
+            niche:      complianceForNiche.nicheKey,
+            locale:     complianceForNiche.locale,
+            flag_count: flags.length,
+            rewritten:  flags.filter(f => f.rewritten).length,
+          }));
+          text = JSON.stringify(scrubbed);
+        }
+      } catch (e) {
+        // Malformed JSON from the model — let the original text pass
+        // through so the existing extractJSON fallback in index.html can
+        // try to recover. Scrub does not run in that case.
+      }
+    }
 
     // Fire-and-forget first-plan onboarding email. The send wrapper's
     // dedupe table makes this idempotent — only the very first plan a
@@ -913,6 +1038,11 @@ export default async function handler(req, res) {
       usage: clientUsage,
       usedFreshTrends,
       trendsSnapshot: trendsSnapshotEcho,
+      // [COMPLIANCE 1] Forwarded to the client so future UI work can
+      // surface flags as a "review before posting" badge. Empty array
+      // for any out-of-scope niche / non-US locale / no-violations
+      // response. v1 client ignores the field — wire-only for now.
+      complianceFlags,
     });
 
   } catch (e) {

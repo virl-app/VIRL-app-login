@@ -9,6 +9,8 @@
 // prompt as a soft mitigation. The point is to raise the cost from
 // "view-source" to "non-trivial attack", not to be unjailbreakable.
 
+import { buildComplianceBlock } from "./compliance.js";
+
 // ── Models ─────────────────────────────────────────────────────────────────
 export const MODEL_SONNET    = "claude-sonnet-4-6";
 export const MODEL_HAIKU     = "claude-haiku-4-5-20251001";
@@ -151,6 +153,79 @@ function captionTrendsContext(trends, platform) {
   return "\n\n" + block + "\n\nIf any of these naturally apply to the topic, lean into them. Otherwise ignore.";
 }
 
+// Strategy `success_metric` can be either a string (legacy plans + the
+// pre-bundle prompt shape) or an array of { value, label } objects (the
+// new structured shape that powers the stat-tile UI). This helper renders
+// both back to a single readable string so the formatters below — plan
+// history, plan_partial locked-strategy block, plan_strategy
+// previous-strategy block — show the model the same text regardless of
+// which shape was stored.
+function renderSuccessMetric(sm) {
+  if (Array.isArray(sm)) {
+    return sm
+      .filter(function (m) { return m && (m.value || m.label); })
+      .map(function (m) {
+        const v = (m.value || "").toString().trim();
+        const l = (m.label || "").toString().trim();
+        if (v && l) return v + " " + l;
+        return v || l;
+      })
+      .filter(Boolean)
+      .join(", ");
+  }
+  if (typeof sm === "string") return sm;
+  return "";
+}
+
+// [LEARN-FROM-EDITS] Format recent { field, before, after } diffs into
+// a prompt-ready voice-example block. The diffs themselves come from
+// edit-examples.js#fetchRecentEdits — that file owns the database
+// query; this function owns how the data is rendered for the model.
+// Returns "" when no diffs (toggle off, no qualifying events, fetch
+// failed) so the caller can append unconditionally.
+//
+// FIELD_LABELS gives the model a clean field name ("photo direction"
+// instead of "photoDirection") so the examples read like English, not
+// like JSON. Unknown future fields fall back to their raw key so a
+// schema addition still surfaces in the examples block without
+// touching this code.
+const EDIT_FIELD_LABELS = {
+  title:               "title",
+  description:         "description",
+  insight:             "insight",
+  hook:                "hook",
+  caption:             "caption",
+  body:                "body",
+  closing:             "closing",
+  quote:               "quote",
+  attribution:         "attribution",
+  photoDirection:      "photo direction",
+  compositionTip:      "composition tip",
+  audioRecommendation: "audio direction",
+  designDirection:     "design direction",
+  hashtags:            "hashtags",
+  onScreenText:        "on-screen text",
+  slides:              "carousel slides",
+  frames:              "story frames",
+};
+function formatEditsForPrompt(diffs) {
+  if (!Array.isArray(diffs) || diffs.length === 0) return "";
+  const lines = diffs.map(function(d){
+    const label = EDIT_FIELD_LABELS[d.field] || d.field;
+    // ↦ (mapsto) gives the model a distinctive visual cue versus the
+    // common → arrow used elsewhere in the prompt. before/after stay
+    // quoted so the model sees them as discrete strings.
+    return "  " + label + ": \"" + d.before + "\" ↦ \"" + d.after + "\"";
+  });
+  return "\n\nHOW THIS CREATOR REVISES VIRL DRAFTS (recent edits, newest first):\n"
+    + lines.join("\n")
+    + "\n\nUse these revisions as VOICE GROUND TRUTH. Match the rewriting patterns:"
+    + " if the creator shortened a hook, write shorter hooks; if the creator swapped"
+    + " a punchy word for a softer one, mirror that softness; if they tightened a"
+    + " caption from 3 sentences to 1, default to 1. The before/after diffs are the"
+    + " strongest available signal of how this creator actually sounds.";
+}
+
 // Plan history → prompt context. Surfaces last 1-3 weeks' strategy + each
 // week's top performer (by views+likes×2+saves×4) + how many cards never
 // got logged. The LLM uses this to build narratively, double down on what
@@ -164,9 +239,10 @@ function planHistoryContext(history) {
     if (w.week_start) lines.push("  Week of " + w.week_start + ":");
     if (w.strategy) {
       const s = w.strategy;
-      if (s.thesis)         lines.push("    Strategy thesis: " + s.thesis);
-      if (s.the_bet)        lines.push("    The bet: " + s.the_bet);
-      if (s.success_metric) lines.push("    Success metric: " + s.success_metric);
+      if (s.thesis)  lines.push("    Strategy thesis: " + s.thesis);
+      if (s.the_bet) lines.push("    The bet: " + s.the_bet);
+      const sm = renderSuccessMetric(s.success_metric);
+      if (sm)        lines.push("    Success metric: " + sm);
     }
     if (w.top_performer) {
       const tp = w.top_performer;
@@ -385,7 +461,10 @@ function buildSystemPrompt(profile, role) {
 // helper so the buckets can be tuned without touching the guidance strings,
 // and so a future "industry" field can swap in cleanly if the niche taxonomy
 // is ever decoupled from format-mix categories.
-function nicheCategory(niche) {
+// Exported so api/_lib/compliance.js can map the user-facing niche label
+// onto the same internal key the prompt builder uses, without the two
+// modules disagreeing on which niche bucket a creator lands in.
+export function nicheCategory(niche) {
   switch (niche) {
     case "Real Estate":    return "real_estate";
     case "Small Business": return "service_business";
@@ -441,7 +520,7 @@ const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mi
 
 // ── Builders, one per generation type ──────────────────────────────────────
 
-function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
+function buildPlan(params, profile, vaultPatterns, playbook, trends, history, recentEdits, compliance) {
   const platformsArr = params.platforms || [];
   const platforms = platformsArr.join(",");
   const formats   = (params.formats   || []).join(",");
@@ -458,6 +537,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
   const historyCtx  = planHistoryContext(history);
+  // [LEARN-FROM-EDITS] Recent before/after diffs from the user's
+  // own card edits, formatted as voice ground-truth examples. Empty
+  // string when no diffs (toggle off, no edits yet, or fetch failed)
+  // so concatenating below is a no-op.
+  const editsCtx    = formatEditsForPrompt(recentEdits);
   const weekNumber  = (history && history.length) ? (history.length + 1) : 1;
 
   // Vault patterns: server-derived from the user's user_data row, so the
@@ -480,6 +564,13 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
   // Always returns a non-empty string (creator default for unmapped niches),
   // so it gets unconditionally appended below.
   const industryFormatGuidance = getFormatGuidance(niche);
+  // [COMPLIANCE 1] Per-niche guardrail block. Empty string for niches /
+  // locales without coverage so the concatenation is a no-op there. Lives
+  // in the cached system-prompt prefix because it's a per-niche constant,
+  // not per-request data — Anthropic's prompt cache treats the whole
+  // system block as the cache key, so this block invalidates the cache
+  // when the user's niche changes (rare) and stays warm otherwise.
+  const complianceBlock = buildComplianceBlock(compliance);
   const systemPrompt = "You are VIRL, an AI content strategist and creative director. "
     + "Your job is to create highly personalized 7-day social media content plans that build on each other week over week. "
     + "Always return valid JSON only — no markdown, no preamble, no explanation outside the JSON. "
@@ -498,12 +589,17 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     // stable across generation dates; the actual day labels still arrive
     // per-request in userPrompt.
     + " Return ONLY one JSON object with this exact shape: {"
-    + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"},"
-    + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"2 short punchy sentences.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"specific trend angle\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"]}],"
-    + " (Optional `insight` field on roughly 1 in 3 cards.)"
+    + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":[{\"value\":\"...\",\"label\":\"...\"}],\"the_bet\":\"...\"},"
+    + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"ONE-sentence pitch, ≤20 words.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"<exact phrase from a listed trend below, or omit field entirely>\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"insight\":\"1-2 sentences — the strategic call behind this card.\"}],"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
     + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
+    // [COMPLIANCE 1] Optional per-card disclosure field. Empty / omitted by
+    // default; only populated when the user's niche has compliance coverage
+    // (Real Estate, Wellness) AND the specific card triggers one of the
+    // situations in the COMPLIANCE GUARDRAILS block below (e.g. listing
+    // post → EHO line; specific supplement → FDA disclaimer).
+    + " OPTIONAL FIELD on every card: `compliance_note` (string). Populate ONLY when one of the COMPLIANCE GUARDRAILS situations below applies to that specific card. Omit the field entirely otherwise — never use a placeholder. Do not invent compliance language that is not grounded in the rules below."
     // [INTEL 4] Format-specific output structure. Universal fields above
     // (day, priority, title, description, postTime, platform, format,
     // hashtags) MUST appear on every card so existing UI (vault save,
@@ -519,7 +615,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     + " format=quote_graphic → include `quote` (5-15 words), `attribution` (creator name or source), `caption` (caption for the post), `designDirection` (background style, font emphasis suggestions)."
     + " format=story → include `frames` (array of 3-5 Story frames; each frame is an object with: `frameNumber` (1-indexed), `content` (what the frame shows), `textOverlay` (suggested overlay text), `interactiveElement` (poll question, slider, question sticker, tap-through link, countdown, etc.))."
     + " format=long_form_text → include `hook` (the opening line), `body` (the full post body, formatted with line breaks for LinkedIn readability — use \\n for line breaks inside the JSON string), `closing` (the final line / CTA)."
-    + " Always include `format`, `platform`, and `day` on every card. If you cannot produce a meaningful format-specific field for a card, omit just that field (do not invent placeholder content).";
+    + " Always include `format`, `platform`, and `day` on every card. If you cannot produce a meaningful format-specific field for a card, omit just that field (do not invent placeholder content)."
+    // [COMPLIANCE 1] Per-niche guardrails for in-scope niches (Real Estate,
+    // Wellness). Empty string when the user's niche / locale isn't covered,
+    // so the concat is a no-op for everyone else.
+    + complianceBlock;
 
   // Day labels are relative to the generation date — Day 1 = today's
   // weekday, Day 2 = tomorrow, etc. This lets a Wednesday-generated plan
@@ -572,20 +672,31 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
     // this user's specific industry.
     + " FORMAT MIX FOR THIS USER'S INDUSTRY: " + industryFormatGuidance
     + " Create 10-14 total posts for THIS week. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
-    + " Open the plan with a STRATEGY object that frames the week. The strategy must:"
-    + "  - State a one-sentence thesis for the week (specific to this creator, not generic)."
-    + "  - Name the dominant signal you're optimizing for (e.g. 'watch time + saves')."
-    + "  - Read the audience in one sentence so the user can verify."
-    + "  - Define a concrete success metric (e.g. '3 posts past 1K views or 50 saves')."
-    + "  - Articulate the bet — what you're leaning into this week and why, citing prior weeks if relevant."
-    + " For each post: description is 2 punchy sentences max."
-    // [PREMIUM 4] Strategic micro-insights replace the always-on "why"
-    // field. Sparseness is intentional: one in three feels like a
-    // strategist sharing earned wisdom; on every card it reads like
-    // marketing filler.
-    + " Add an `insight` field to roughly 1 in 3 cards (NEVER every card). On the other ~2/3, OMIT the field entirely — do not return it as null or empty. Insights are short, specific, and earned. Examples of good insights: 'This hook leads with curiosity — strongest format for educational content.' / 'Tuesday at 7pm — when your audience is most active based on your platforms.' / 'The rule of three makes this caption more memorable.' Never say things like 'engagement-boosting', 'go viral', or generic platitudes. Voice is honest, not hypey."
+    + " Open the plan with a STRATEGY object that frames the week. Every field has a strict length cap — the UI breaks on overruns, and the value to the creator comes from sharpness, not volume. The strategy must:"
+    + "  - thesis: ONE sentence, MAX 15 words. A specific claim about THIS week for THIS creator. No preamble, no throat-clearing, no semicolons stacking two ideas. Example: \"Launch week — every post narrows the gap between you-the-person and you-the-founder.\""
+    + "  - optimizing_for: MAX 8 words naming the dominant signals. No sentence. Example: \"Saves + profile visits + launch-day follow-through.\""
+    + "  - audience_read: ONE sentence, MAX 25 words. Who this week lands for, written so the creator can verify it sounds like them. Example: \"Women 25-45 building something who follow you because you make doing-both feel possible.\""
+    + "  - success_metric: an ARRAY of 3-4 objects, each {\"value\": \"<number or threshold>\", \"label\": \"<3-6 word descriptor>\"}. Concrete only — no prose, no compound clauses, no commas inside a single label. Example: [{\"value\":\"5\",\"label\":\"posts past 1K views\"},{\"value\":\"60+\",\"label\":\"saves on carousels\"},{\"value\":\"+100\",\"label\":\"net followers\"},{\"value\":\"10\",\"label\":\"beta-tester DMs\"}]."
+    + "  - the_bet: ONE sentence, MAX 25 words. The specific lean for this week and why. Must add NEW information vs the thesis — not a paraphrase. Cite prior weeks if relevant. Example: \"Lean into launch proximity — urgency makes behind-the-scenes posts feel like insider access.\""
+    + " For each post: description is ONE sentence pitch, MAX 20 words — the angle / why this post exists. NOT a recap of the format-specific fields below it (hook / caption / slides / etc handle the how). Acts as the kicker, not the brief."
+    // [P6] Insight on EVERY card. The earlier "1 in 3" version was meant
+    // to avoid filler, but it backfired — the 2/3 of cards without an
+    // insight read as weaker by comparison. The new bar is honesty over
+    // wisdom: if a card is a sensible default (e.g. a regular Tuesday
+    // Reel on the creator's strongest format), the insight names it as
+    // such instead of pretending there's a hidden lever. Never reach for
+    // hype to fill the slot.
+    + " Add an `insight` field to EVERY card. 1-2 short specific sentences explaining the strategic call — hook structure, timing choice, format pick, audience read, anything the creator can learn from. Examples: 'This hook leads with curiosity — strongest format for educational content.' / 'Tuesday at 7pm — when your audience is most active.' / 'Quote-on-image plays well on Instagram saves in this niche.' If a card is a sensible default with no specific strategic angle, say so honestly: 'A solid default — your audience already shows up for this format on Tuesdays.' / 'Standard cadence pick — this slot exists to keep your week consistent, not to break new ground.' NEVER use 'engagement-boosting', 'go viral', 'algorithm hack', or generic platitudes. Voice is honest strategist, not hypey marketer."
+    // [P10] Trend honesty. The `trend` field used to be a free-text
+    // string and the model filled it with vague riffs ('morning routine
+    // content', 'self-care vibes') even when no real trend was on the
+    // table. Now: tie it to the actual trends snapshot the model is
+    // given, or omit. The creator should be able to verify any cited
+    // trend against the trends list they see in-app.
+    + " For the `trend` field: include it ONLY if a card genuinely builds on a current trend listed in the TRENDS block below. Use the trend item's exact phrasing (or a close paraphrase). If no listed trend authentically fits the card, OMIT the field entirely — do not invent generic riffs ('morning routine content', 'self-care vibes', 'aesthetic content'). It's better to have 3 cards with real trends and 7 without, than 10 cards with made-up trends."
     + playbookCtx
-    + trendsCtx;
+    + trendsCtx
+    + editsCtx;
 
   return {
     systemPrompt,
@@ -608,7 +719,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history) {
 // declares the strategy locked, lists kept cards as do-not-duplicate
 // context, and demands exactly N replacements for the supplied day
 // labels — no strategy/stats in the output.
-function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _history) {
+function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance) {
   const keptCards        = Array.isArray(params.keptCards)        ? params.keptCards        : [];
   const replaceDayLabels = Array.isArray(params.replaceDayLabels) ? params.replaceDayLabels : [];
   const strategy         = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
@@ -620,8 +731,10 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   // Reuse buildPlan's systemPrompt so the prompt-cache prefix is shared
   // between full plan generations and partial regens. The history arg is
   // [] because partial regen doesn't care about week-over-week context —
-  // it's anchored to the current week's strategy, not last week's.
-  const fullBuilt = buildPlan(params, profile, vaultPatterns, playbook, trends, []);
+  // it's anchored to the current week's strategy, not last week's. The
+  // compliance arg threads through so the per-niche guardrail block ends
+  // up in the shared cached prefix for both gen paths.
+  const fullBuilt = buildPlan(params, profile, vaultPatterns, playbook, trends, [], undefined, compliance);
 
   const keptLines = keptCards.map(function (c) {
     const day      = c && c.day      ? c.day      : "?";
@@ -635,7 +748,8 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   if (strategy.thesis)         strategyLines.push("Thesis: "         + strategy.thesis);
   if (strategy.optimizing_for) strategyLines.push("Optimizing for: " + strategy.optimizing_for);
   if (strategy.audience_read)  strategyLines.push("Audience read: "  + strategy.audience_read);
-  if (strategy.success_metric) strategyLines.push("Success metric: " + strategy.success_metric);
+  const partialSm = renderSuccessMetric(strategy.success_metric);
+  if (partialSm)               strategyLines.push("Success metric: " + partialSm);
   if (strategy.the_bet)        strategyLines.push("The bet: "        + strategy.the_bet);
   const strategyBlock = strategyLines.length ? strategyLines.join("\n") : "(no strategy provided — improvise from the kept cards)";
 
@@ -653,7 +767,13 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
     + "\n  - Follow ALL the same per-card field rules from the system prompt (universal fields + format-specific fields based on the card's `format`)."
     + "\n  - Hashtag arrays still follow the platform's playbook hashtag_count. Strings still omit the '#' prefix."
     + "\n\nOutput ONLY this JSON shape — NO strategy field, NO stats field, NO preamble:"
-    + "\n{\"cards\":[{...}, {...}]}";
+    + "\n{\"cards\":[{...}, {...}]}"
+    // [LEARN-FROM-EDITS] Voice signal from the user's recent diffs.
+    // Even though this is a partial regen anchored to a locked
+    // strategy, the new cards should still sound like the user —
+    // they're going to sit alongside (and be edited the same way as)
+    // the kept ones. Empty string when no edits / opt-out.
+    + formatEditsForPrompt(recentEdits);
 
   return {
     systemPrompt: fullBuilt.systemPrompt,
@@ -673,7 +793,7 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
 // object for the same cards. The new framing must fit what's actually
 // on screen, not propose a different week — otherwise the banner
 // would lie about the user's plan.
-function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, _history) {
+function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, _history, _recentEdits, compliance) {
   const cards    = Array.isArray(params.cards) ? params.cards : [];
   const previous = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
 
@@ -681,7 +801,10 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
     throw new Error("plan_strategy needs the existing plan's cards as context.");
   }
 
-  const systemPrompt = buildSystemPrompt(profile, "content strategist and creative director");
+  // [COMPLIANCE 1] Per-niche guardrails ride the cached system prefix
+  // alongside the base role prompt. Empty string for out-of-scope niches.
+  const systemPrompt = buildSystemPrompt(profile, "content strategist and creative director")
+    + buildComplianceBlock(compliance);
 
   // Condensed per-card line — enough signal for the model to find a
   // through-line, no card bodies/hashtags that would inflate tokens.
@@ -698,7 +821,8 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
   if (previous.thesis)         previousLines.push("Thesis: "         + previous.thesis);
   if (previous.optimizing_for) previousLines.push("Optimizing for: " + previous.optimizing_for);
   if (previous.audience_read)  previousLines.push("Audience read: "  + previous.audience_read);
-  if (previous.success_metric) previousLines.push("Success metric: " + previous.success_metric);
+  const previousSm = renderSuccessMetric(previous.success_metric);
+  if (previousSm)              previousLines.push("Success metric: " + previousSm);
   if (previous.the_bet)        previousLines.push("The bet: "        + previous.the_bet);
   const previousBlock = previousLines.length ? previousLines.join("\n") : "(no previous strategy on file)";
 
@@ -706,14 +830,16 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
     + "Re-frame this week's plan with a DIFFERENT strategic angle."
     + "\n\nTHIS WEEK'S CARDS (already finalized — do NOT propose changes to them):\n" + cardLines
     + "\n\nPREVIOUS STRATEGY (the user disagreed with this — find a different lens that still genuinely describes the same cards):\n" + previousBlock
-    + "\n\nRules:"
+    + "\n\nRules — every field has a strict length cap; the UI breaks on overruns:"
     + "\n  - The new framing must honestly describe what is ON THE PLAN. Do not invent posts that aren't there."
     + "\n  - The new thesis and bet must be MEANINGFULLY DIFFERENT from the previous ones — not a paraphrase."
-    + "\n  - One sentence each for thesis / optimizing_for / audience_read / success_metric / the_bet."
-    + "\n  - success_metric should be concrete (e.g. \"3 posts past 1K views or 50 saves\"), not vague."
-    + "\n  - the_bet should be the specific thing this plan is leaning into and why, in plain language."
+    + "\n  - thesis: ONE sentence, MAX 15 words. Sharp, specific, no preamble."
+    + "\n  - optimizing_for: MAX 8 words naming the dominant signals."
+    + "\n  - audience_read: ONE sentence, MAX 25 words."
+    + "\n  - success_metric: ARRAY of 3-4 objects, each {\"value\":\"<number or threshold>\",\"label\":\"<3-6 word descriptor>\"}. Concrete numbers only — no prose, no commas inside a single label. Example: [{\"value\":\"5\",\"label\":\"posts past 1K views\"},{\"value\":\"60+\",\"label\":\"saves on carousels\"},{\"value\":\"+100\",\"label\":\"net followers\"}]."
+    + "\n  - the_bet: ONE sentence, MAX 25 words. The specific lean and why — new information vs the thesis, not a paraphrase."
     + "\n\nReturn ONLY this JSON shape — no markdown, no preamble:"
-    + "\n{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":\"...\",\"the_bet\":\"...\"}";
+    + "\n{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":[{\"value\":\"...\",\"label\":\"...\"}],\"the_bet\":\"...\"}";
 
   return {
     systemPrompt,
@@ -727,15 +853,17 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
   };
 }
 
-function buildScript(params, profile, _vaultPatterns, playbook) {
+function buildScript(params, profile, _vaultPatterns, playbook, _trends, _history, _recentEdits, compliance) {
   const card = params.card || {};
   const platform = card.platform || "TikTok";
   const guide = SCRIPT_PLATFORM_GUIDE[platform] || "short-form social video 60 seconds.";
-  const systemPrompt = buildSystemPrompt(profile, "content scriptwriter");
+  // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
+  const systemPrompt = buildSystemPrompt(profile, "content scriptwriter")
+    + buildComplianceBlock(compliance);
   const userPrompt = "Write a complete ready-to-film script for this post: " + (card.title || "") + ". "
     + "Platform: " + platform + " — format guide: " + guide
     + scriptPlaybookContext(playbook, platform) + " "
-    + "Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences in creator voice\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script in creator voice\",\"tip\":\"one filming tip\"}],\"cta\":\"closing call to action in creator voice\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe that matches creator aesthetic\"}";
+    + "Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences in creator voice\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script in creator voice\",\"tip\":\"one filming tip\"}],\"cta\":\"closing call to action in creator voice\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe that matches creator aesthetic\",\"compliance_note\":\"OPTIONAL — short disclosure / disclaimer the creator should add to the post, only when one of the COMPLIANCE GUARDRAILS situations applies; omit the field otherwise\"}";
   return {
     systemPrompt,
     userPrompt,
@@ -762,7 +890,7 @@ function captionMaxTokens(platform, length) {
   return Math.min(4000, Math.round(base * mult));
 }
 
-function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
+function buildCaption(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance) {
   const platform = params.platform || "TikTok";
   const tone     = params.tone     || "Warm & relatable";
   const length   = params.length   || "Medium";
@@ -771,14 +899,21 @@ function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
   const platformCtx = PLATFORM_TONE[platform] || "";
   const slots = hashtagSlots(playbook, platform, 7);
 
-  const systemPrompt = buildSystemPrompt(profile, "caption writer and content strategist");
+  // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
+  const systemPrompt = buildSystemPrompt(profile, "caption writer and content strategist")
+    + buildComplianceBlock(compliance);
   const userPrompt = "Generate 3 caption options for a " + platform + " post about: " + topic + ". "
     + "Tone: " + tone + ". Length: " + length + " — " + lengthRule + " "
     + "Platform style: " + platformCtx
     + captionPlaybookContext(playbook, platform)
     + captionTrendsContext(trends, platform) + " "
-    + "Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":" + hashtagSchema(slots) + "}"
-    + " Hashtag strings MUST NOT include the '#' prefix — plain words only.";
+    + "Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":" + hashtagSchema(slots) + ",\"compliance_note\":\"OPTIONAL — short disclosure the creator should add to the post when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}"
+    + " Hashtag strings MUST NOT include the '#' prefix — plain words only."
+    // [LEARN-FROM-EDITS] Voice diffs from recent plan-card edits.
+    // Caption generation benefits as much as plan generation: the
+    // hook + each caption variant should match the rewriting
+    // patterns the user applies. Empty string when no edits.
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -788,13 +923,19 @@ function buildCaption(params, profile, _vaultPatterns, playbook, trends) {
   };
 }
 
-function buildCaptionRemix(params, profile) {
+function buildCaptionRemix(params, profile, _vaultPatterns, _playbook, _trends, _history, recentEdits, compliance) {
   const text = params.text || "";
-  const systemPrompt = buildSystemPrompt(profile, "caption writer and remixer");
+  // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
+  const systemPrompt = buildSystemPrompt(profile, "caption writer and remixer")
+    + buildComplianceBlock(compliance);
   const userPrompt = "Rewrite this caption 3 ways. Keep the core message but vary the angle. "
     + "Each version must sound like the creator — same voice, different approach. "
-    + "Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"}} "
-    + "Caption to remix: " + text;
+    + "Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"},\"compliance_note\":\"OPTIONAL — short disclosure when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"} "
+    + "Caption to remix: " + text
+    // [LEARN-FROM-EDITS] Voice diffs as ground truth. Caption remix
+    // is specifically about voice ("different angle, same voice") —
+    // edits are the strongest signal we have for "same voice".
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -804,8 +945,14 @@ function buildCaptionRemix(params, profile) {
   };
 }
 
-function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
-  const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
+function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance) {
+  // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
+  // Scan outputs a single ready-to-post caption, so the same Fair Housing /
+  // FDA rules apply — but per the v1 scope decision (Recommended), only the
+  // prompt-level block fires on scans; the post-generation scrub stays
+  // wired to plan / script / caption paths.
+  const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst")
+    + buildComplianceBlock(compliance);
   const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
@@ -816,7 +963,12 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
     + "\"caption\":\"full ready-to-post caption sized to the platform's caption_limit\","
     + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
     + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
-    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\"}";
+    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\","
+    + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}"
+    // [LEARN-FROM-EDITS] Voice signal — the hook + caption fields
+    // this scan emits are the same field types the user routinely
+    // edits on plan cards, so the diffs apply directly.
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -826,8 +978,11 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends) {
   };
 }
 
-function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends) {
-  const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst");
+function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance) {
+  // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
+  // Same v1 scope as buildScanImage — prompt-level block only, no scrub.
+  const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst")
+    + buildComplianceBlock(compliance);
   const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
@@ -839,7 +994,12 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends) 
     + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
     + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
     + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\","
-    + "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"}";
+    + "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\","
+    + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}"
+    // [LEARN-FROM-EDITS] Same rationale as buildScanImage — the
+    // hook/caption fields emitted here are exactly the ones the
+    // user edits on plan cards.
+    + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
@@ -870,13 +1030,18 @@ export function requiresImage(t) {
 
 // Top-level entry. Returns { systemPrompt, userPrompt, model, maxTokens, cost }
 // or throws on unknown type.
-//   - `playbook` — algorithm rules per platform (loadPlaybook())
-//   - `trends`   — this week's trending items per platform (loadLatestTrends())
-//   - `history`  — last N weeks' plan history for week-over-week continuity
-//                  (loadPlanHistoryForPrompt(), plan generation only)
-// All default to empty / [] on missing infra; builders skip injection gracefully.
-export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history) {
+//   - `playbook`   — algorithm rules per platform (loadPlaybook())
+//   - `trends`     — this week's trending items per platform (loadLatestTrends())
+//   - `history`    — last N weeks' plan history for week-over-week continuity
+//                    (loadPlanHistoryForPrompt(), plan generation only)
+//   - `compliance` — per-niche guardrail bundle from
+//                    getComplianceForNiche(loadComplianceRules(), niche, locale)
+//                    or null when out of scope. Builders concat the rendered
+//                    block into the cached system-prompt prefix; null is a
+//                    no-op.
+// All default to empty / [] / null on missing infra; builders skip injection gracefully.
+export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits, compliance) {
   const builder = BUILDERS[generationType];
   if (!builder) throw new Error("Unknown generationType: " + generationType);
-  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {}, history || []);
+  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {}, history || [], recentEdits || [], compliance || null);
 }

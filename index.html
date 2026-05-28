@@ -103,7 +103,14 @@ async function saveProfileToSupabase(profile, userId) {
       // [INTEL 2] Per-platform format preferences. Empty object on missing
       // matches the column's JSONB default of '{}' so old rows and new rows
       // always upsert as the same shape.
-      platform_formats: profile.platformFormats||{}
+      platform_formats: profile.platformFormats||{},
+      // [LEARN-FROM-EDITS] Opt-in flag controlling whether plan-card edit
+      // diffs get captured + fed into future plan prompts. Boolean column,
+      // defaults to FALSE on the server side. NOT a privacy nightmare — it
+      // only takes effect once the user explicitly turns it on in the
+      // Profile tab; off-by-default means existing users see no behavior
+      // change until they opt in.
+      learn_from_edits: !!profile.learnFromEdits
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -151,14 +158,19 @@ async function loadProfileFromSupabase(userId) {
       loveToReference: data.love_to_reference||"",
       // [INTEL 2] Per-platform format preferences. Defaults to {} so old
       // rows hydrate the chip selectors as fully unselected.
-      platformFormats: data.platform_formats||{}
+      platformFormats: data.platform_formats||{},
+      // [LEARN-FROM-EDITS] Opt-in flag. Falls back to false on existing
+      // rows that don't yet have the column populated.
+      learnFromEdits: !!data.learn_from_edits
     };
   } catch(e) { return {}; }
 }
 
 async function loadCreditsFromSupabase(userId, accessToken) {
+  // Primary: direct PostgREST fetch with the user's JWT. Works for almost
+  // everyone — the RLS policy on credits permits a user to read their
+  // own row.
   try {
-    // Use REST API with the user's own token to bypass RLS issues
     const headers = {
       "apikey": SUPABASE_ANON_KEY,
       "Authorization": "Bearer " + (accessToken || SUPABASE_ANON_KEY),
@@ -171,13 +183,46 @@ async function loadCreditsFromSupabase(userId, accessToken) {
       "Pragma": "no-cache",
     };
     const res = await fetch(
-      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining&user_id=eq." + userId + "&limit=1&_=" + Date.now(),
+      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,founding_tier,founding_position&user_id=eq." + userId + "&limit=1&_=" + Date.now(),
       { headers, cache: "no-store" }
     );
-    if (!res.ok) return null;
-    const rows = await res.json();
-    return (Array.isArray(rows) && rows.length > 0) ? rows[0] : null;
-  } catch(e) { return null; }
+    if (res.ok) {
+      const rows = await res.json();
+      if (Array.isArray(rows) && rows.length > 0) return rows[0];
+      // 200 OK but no rows — diagnostic so a legitimately-missing row
+      // doesn't get conflated with an RLS / token failure further down.
+      console.warn("[credits] primary fetch returned 0 rows for user", userId);
+    } else {
+      const bodyText = await res.text().catch(function(){ return ""; });
+      console.warn("[credits] primary fetch failed:", res.status, bodyText);
+    }
+  } catch(e) {
+    console.warn("[credits] primary fetch threw:", e && e.message);
+  }
+  // [CX-FIX 6] Fallback: server-side fetch via service key. Bypasses
+  // whatever's wrong on the RLS / token path so a user whose row exists
+  // (verified server-side) sees their HUD load instead of "—" forever.
+  // Lauren's admin account had this exact failure mode for months before
+  // this fallback existed.
+  try {
+    const r = await fetch("/api/me-credits", {
+      headers: { Authorization: "Bearer " + (accessToken || "") },
+      cache: "no-store",
+    });
+    if (!r.ok) {
+      console.warn("[credits] fallback /api/me-credits failed:", r.status);
+      return null;
+    }
+    const data = await r.json();
+    if (data && data.credits) {
+      console.info("[credits] loaded via server fallback (primary path failed for this user)");
+      return data.credits;
+    }
+    return null;
+  } catch(e) {
+    console.warn("[credits] fallback threw:", e && e.message);
+    return null;
+  }
 }
 
 // Per-user cache so a refresh in the same browser paints the last-known
@@ -306,13 +351,112 @@ const B = {
   amber:"#F59E0B"
 };
 
+// Landing-aligned brand surface tokens. The marketing landing at
+// govirl.ai is built on a two-tone system: a clean WHITE header with
+// the navy VIRL wordmark + navy pill CTA, sitting above a NAVY hero
+// with a subtle dotted texture, white Italiana headlines, sky-blue
+// italic accents, and white-pill CTAs. These tokens let the auth
+// flow, loading/error screens, and (post-login) mobile
+// top nav share that visual language instead of each surface
+// reinventing it. Desktop sidebar already uses B.navy so it stays
+// untouched.
+const brandHeroSurface = {
+  background: B.navy,
+  // Whisper-quiet dot pattern from the landing — adds texture without
+  // competing with content. Tuned to ~22px grid + 6% alpha so it
+  // reads as material, not decoration.
+  backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px)",
+  backgroundSize: "22px 22px",
+  color: B.white,
+};
+const brandLogoOnDark = {
+  fontFamily: "'Italiana',serif",
+  fontSize: 52,
+  color: B.white,
+  letterSpacing: "0.1em",
+  lineHeight: 1,
+  marginBottom: 6,
+};
+const brandTaglineOnDark = {
+  fontFamily: "'Jost',sans-serif",
+  fontSize: 13,
+  fontWeight: 300,
+  fontStyle: "italic",
+  color: "rgba(147,197,253,0.85)",
+  letterSpacing: "0.01em",
+  marginBottom: 48,
+};
+
+// Warm-bone chrome surface used by the mobile top nav. Pure white reads
+// as institutional B2B; this warmer off-white tone (a touch of ivory)
+// reads as paper/editorial. The inverted dot texture mirrors the navy
+// hero's pattern at the same 22px grid — same visual language, opposite
+// values — which threads brand continuity through the chrome instead
+// of leaving it visually disconnected from the hero.
+const brandWarmSurface = {
+  background: "#F8F5EE",
+  backgroundImage: "radial-gradient(circle, rgba(31,58,138,0.04) 1px, transparent 1px)",
+  backgroundSize: "22px 22px",
+};
+// Hairline borders in a navy-tinted alpha read warmer than the gray
+// B.divider/B.border tokens against the bone surface. Two strengths:
+// the section divider (under the wordmark row) and the bottom edge of
+// the tab strip.
+const brandWarmHairline = "1px solid rgba(31,58,138,0.08)";
+// White-tinted hairline used inside the navy hero chrome (matches the
+// brandHeroSurface). 10% alpha sits a hair above invisible so the
+// structure reads without becoming a hard line.
+const brandHeroHairline = "1px solid rgba(255,255,255,0.1)";
+
+// Expand "Day N - Abbr" day labels into editorial-friendly full day
+// names ("Day 1 - Mon" → "Monday"). Day 1 is always today (the plan
+// generator builds labels relative to the generation date). Returns
+// the original string if it can't parse, so legacy/malformed labels
+// degrade gracefully.
+function parseDayName(dayLabel) {
+  if (!dayLabel || typeof dayLabel !== "string") return "";
+  const parts = dayLabel.split(" - ");
+  const abbr  = (parts[1] || parts[0] || "").trim();
+  const map   = { Sun:"Sunday", Mon:"Monday", Tue:"Tuesday", Wed:"Wednesday", Thu:"Thursday", Fri:"Friday", Sat:"Saturday" };
+  return map[abbr] || abbr || dayLabel;
+}
+function isTodayDayLabel(dayLabel) {
+  return typeof dayLabel === "string" && dayLabel.indexOf("Day 1") === 0;
+}
+
 // [TASK 2] Pre-launch gate constants + access check.
 const LAUNCH_TIMESTAMP = new Date("2026-06-01T09:00:00-05:00").getTime();
 const BETA_CODE = "LETSGOVIRL";
-// [TASK 7] Founding-member cap. Once this many users are on the "founding" plan,
-// the app swaps all pricing copy to standard pricing. Server-side Stripe price
-// selection should mirror this flag.
-const FOUNDING_CAP = 100;
+// [PRICING 3] Founder Circle cap — first 50 paying customers get $20/mo for
+// life. After 50 are filled, all new signups land on Standard pricing.
+// Server-side enforcement is in api/create-checkout.js + api/stripe-webhook.js
+// (atomic position claim). Kept as FOUNDING_CAP for back-compat with existing
+// references throughout this file.
+const FOUNDING_CAP = 50;
+
+// [PRICING 3] Founder Circle Office Hours — last Friday of every month at
+// 8:00 AM CT. First call: Friday, June 26, 2026. Returns a label like
+// "Friday, June 26 at 8:00 AM CT" for the Founder Circle tab.
+function getNextFounderOfficeHoursLabel() {
+  function lastFridayOf(year, m) {
+    var d = new Date(year, m + 1, 0); // last day of month m
+    var back = (d.getDay() + 2) % 7;  // Fri=5: (5+2)%7=0; Thu=4: 6 days back; etc.
+    d.setDate(d.getDate() - back);
+    return d;
+  }
+  var now = new Date();
+  var candidate = lastFridayOf(now.getFullYear(), now.getMonth());
+  // 1-day cushion so the day-of indicator stays visible until midnight
+  // local. Past that, advance to next month's last Friday.
+  if (now.getTime() > candidate.getTime() + 86400000) {
+    candidate = lastFridayOf(now.getFullYear(), now.getMonth() + 1);
+  }
+  return candidate.toLocaleDateString("en-US", {
+    weekday: "long",
+    month:   "long",
+    day:     "numeric",
+  }) + " at 8:00 AM CT";
+}
 function checkAccess() {
   if (Date.now() >= LAUNCH_TIMESTAMP) return true;
   try {
@@ -1350,6 +1494,26 @@ function buildClientNow() {
   return { iso: iso, weekday: d.getDay(), year: d.getFullYear() };
 }
 
+// [COMPLIANCE 1] Read the user's last-selected niche from localStorage so
+// every /api/chat call can carry it server-side. Plan / plan_partial
+// already include `niche` in their params; caption / script / caption_remix
+// / scan_image / scan_video_frame do not, but the server's compliance
+// loader needs the niche to pick the right per-niche guardrail block.
+// Doing this in the wire layer (vs. wiring `niche` through every component
+// as a prop) keeps the gen-type call sites untouched. Returns null when
+// nothing is stored — the server treats that as out-of-scope and skips
+// the compliance block entirely.
+function storedNiche() {
+  try {
+    var raw = localStorage.getItem(KEY);
+    if (!raw) return null;
+    var parsed = JSON.parse(raw);
+    return (parsed && parsed.niche) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // [PERF 3] SSE-stream consumer for the plan endpoint. Reads the chunked
 // response, parses out our wire events ("text", "meta", "error", "reset"),
 // and fires callbacks. Wire format (see api/chat.js handleStreamingPlan):
@@ -1363,7 +1527,15 @@ async function consumePlanStream(generationType, params, opts, callbacks) {
   opts = opts || {};
   // [DATE-FIX] Merge browser-local date into params so buildPlan can label
   // days against the user's local weekday instead of UTC.
-  var body = { generationType: generationType, params: Object.assign({}, params || {}, { clientNow: buildClientNow() }) };
+  // [COMPLIANCE 1] Also fall back to the stored niche when callers don't
+  // pass one explicitly — keeps the server's compliance loader from
+  // missing real-estate / wellness creators on regen flows.
+  var mergedParams = Object.assign({}, params || {}, { clientNow: buildClientNow() });
+  if (!mergedParams.niche) {
+    var n = storedNiche();
+    if (n) mergedParams.niche = n;
+  }
+  var body = { generationType: generationType, params: mergedParams };
   // plan_partial reuses the parent plan's Perplexity snapshot so the
   // single-card regen sees the same trend signal as the cards it's joining.
   if (opts.trendsSnapshot) body.trendsSnapshot = opts.trendsSnapshot;
@@ -1446,7 +1618,17 @@ async function callAPI(generationType, params, opts) {
   opts = opts || {};
   // [DATE-FIX] See buildClientNow — used by every generation type so the
   // model gets the user's actual current year + weekday.
-  const body = { generationType, params: Object.assign({}, params || {}, { clientNow: buildClientNow() }) };
+  // [COMPLIANCE 1] Inject the user's last-selected niche from localStorage
+  // so non-plan gen types (caption / script / caption_remix / scan_image /
+  // scan_video_frame) reach the server with the niche signal the
+  // compliance loader keys off. Explicit params.niche still wins so
+  // callers can override per request.
+  const mergedParams = Object.assign({}, params || {}, { clientNow: buildClientNow() });
+  if (!mergedParams.niche) {
+    const n = storedNiche();
+    if (n) mergedParams.niche = n;
+  }
+  const body = { generationType, params: mergedParams };
   if (opts.imageBase64) { body.imageBase64 = opts.imageBase64; body.imageType = opts.imageType; }
   // Caller may pass the parent plan's Perplexity snapshot on regen flows
   // (plan_strategy / future regen types) so the server reuses it instead
@@ -2050,6 +2232,49 @@ function normalizeFormat(raw) {
   return "video";
 }
 
+// Human-readable label for a card's format. The raw snake_case values
+// (single_image, long_form_text, quote_graphic) are the contract with the
+// model and the renderer; they should never leak into user-facing chips.
+function humanizeFormat(raw) {
+  var map = {
+    video:          "Video",
+    single_image:   "Image",
+    carousel:       "Carousel",
+    quote_graphic:  "Quote graphic",
+    story:          "Story",
+    long_form_text: "Long-form post",
+  };
+  var key = normalizeFormat(raw);
+  return map[key] || (raw && typeof raw === "string" ? raw : "");
+}
+
+// One-line preview shown UNDER the headline on collapsed plan cards so
+// the user can scan 10-14 cards without expanding each one. Picks the
+// most representative opening line per format (video/long-form → hook,
+// carousel → first slide headline, image → photo direction, quote →
+// the quote, story → first frame). Falls back to description for legacy
+// cards that have no format-specific fields populated.
+function cardPreview(card) {
+  if (!card) return "";
+  var fmt = normalizeFormat(card.format);
+  var preview = "";
+  if (fmt === "video" || fmt === "long_form_text") {
+    preview = card.hook && card.hook !== card.title ? card.hook : "";
+  } else if (fmt === "carousel") {
+    var slides = Array.isArray(card.slides) ? card.slides : [];
+    preview = slides[0] && slides[0].headline ? slides[0].headline : "";
+  } else if (fmt === "single_image") {
+    preview = card.photoDirection || "";
+  } else if (fmt === "quote_graphic") {
+    preview = card.quote ? "“" + card.quote + "”" : "";
+  } else if (fmt === "story") {
+    var frames = Array.isArray(card.frames) ? card.frames : [];
+    preview = frames[0] && frames[0].content ? frames[0].content : "";
+  }
+  if (!preview && card.description) preview = card.description;
+  return preview || "";
+}
+
 // [INTEL 4] Format-specific body components rendered inside the PlanCard
 // expanded section, ABOVE the existing description paragraph. Each body
 // only renders fields it actually has — missing fields are skipped silently
@@ -2210,7 +2435,141 @@ function FormatSpecificBody({card}) {
   }
 }
 
-function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends}) {
+// In-card edit form. VIRL writes the cards but users often need to revise
+// a hook, swap a caption, tighten a description before posting. This
+// renders editable inputs for every text field the model emits at the
+// top level (universal + format-specific). Nested arrays (carousel
+// slides, story frames) are intentionally NOT exposed for editing yet
+// — each requires its own per-item UI that's a separate pass.
+// onScreenText (video) is supported as a newline-separated textarea.
+// Hashtags collapse to a comma-separated input and re-split on save.
+function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
+  var fmt = normalizeFormat(format);
+  // Per-format text fields. Multiline = textarea, otherwise = input.
+  // Order matches how the read view presents the same fields, so the
+  // user's eye doesn't have to remap during the edit-save round trip.
+  var perFormat = {
+    video: [
+      {key:"hook",                label:"Hook",                multiline:true},
+      {key:"caption",             label:"Caption",             multiline:true},
+      {key:"onScreenText",        label:"On-screen text — one per line",  multiline:true, isList:true},
+      {key:"audioRecommendation", label:"Audio",               multiline:false},
+    ],
+    single_image: [
+      {key:"caption",        label:"Caption",         multiline:true},
+      {key:"photoDirection", label:"Photo direction", multiline:true},
+      {key:"compositionTip", label:"Composition tip", multiline:true},
+    ],
+    carousel: [
+      {key:"caption",        label:"Caption",         multiline:true},
+    ],
+    quote_graphic: [
+      {key:"quote",           label:"Quote",            multiline:true},
+      {key:"attribution",     label:"Attribution",      multiline:false},
+      {key:"caption",         label:"Caption",          multiline:true},
+      {key:"designDirection", label:"Design direction", multiline:true},
+    ],
+    story: [],
+    long_form_text: [
+      {key:"hook",    label:"Hook",    multiline:false},
+      {key:"body",    label:"Body",    multiline:true},
+      {key:"closing", label:"Closing", multiline:false},
+    ],
+  };
+  var fields = [
+    {key:"description", label:"Description", multiline:true},
+    {key:"insight",     label:"Why this works", multiline:true},
+  ]
+    .concat(perFormat[fmt] || [])
+    .concat([{key:"hashtags", label:"Hashtags — comma-separated, no #", multiline:false}]);
+  var inputBase = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:8,padding:"10px 12px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,lineHeight:1.6,outline:"none",boxSizing:"border-box"};
+  var textareaStyle = Object.assign({}, inputBase, {resize:"vertical",minHeight:60});
+  var compactInput    = Object.assign({}, inputBase, {padding:"8px 10px",fontSize:13});
+  var compactTextarea = Object.assign({}, compactInput, {resize:"vertical",minHeight:48});
+  return (
+    <div style={{marginBottom:14}}>
+      {fields.map(function(f){
+        return (
+          <div key={f.key} style={{marginBottom:10}}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{f.label}</div>
+            {f.multiline ? (
+              <textarea value={draftCard[f.key]||""}
+                onChange={function(e){ updateDraft(f.key, e.target.value); }}
+                style={textareaStyle}/>
+            ) : (
+              <input value={draftCard[f.key]||""}
+                onChange={function(e){ updateDraft(f.key, e.target.value); }}
+                style={inputBase}/>
+            )}
+          </div>
+        );
+      })}
+      {/* Carousel slide editor — mirrors the read view's left-accent
+           slide blocks, with each text field swapped for an input. The
+           slide number + slide count are immutable in this pass; only
+           headline / body / design direction can be edited. */}
+      {fmt === "carousel" && Array.isArray(draftCard.slides) && draftCard.slides.length > 0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Slides ("+draftCard.slides.length+")"}</div>
+          {draftCard.slides.map(function(slide, sIdx){
+            var num = slide.slideNumber || (sIdx + 1);
+            return (
+              <div key={sIdx} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.blue,marginBottom:8}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.blue,letterSpacing:"0.05em",flexShrink:0,minWidth:18,paddingTop:8}}>{num}</div>
+                <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+                  <input value={slide.headline||""}
+                    placeholder="Headline"
+                    onChange={function(e){ updateDraftItem("slides", sIdx, "headline", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontWeight:600,color:B.ink})}/>
+                  <textarea value={slide.body||""}
+                    placeholder="Body (1-2 sentences)"
+                    onChange={function(e){ updateDraftItem("slides", sIdx, "body", e.target.value); }}
+                    style={compactTextarea}/>
+                  <input value={slide.designDirection||""}
+                    placeholder="Design direction"
+                    onChange={function(e){ updateDraftItem("slides", sIdx, "designDirection", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontStyle:"italic",color:B.sub})}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {/* Story frame editor — same shape as the carousel slide editor,
+           coral accent instead of blue, and the field set matches the
+           Story schema (content / textOverlay / interactiveElement). */}
+      {fmt === "story" && Array.isArray(draftCard.frames) && draftCard.frames.length > 0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Story frames ("+draftCard.frames.length+")"}</div>
+          {draftCard.frames.map(function(frame, fIdx){
+            var num = frame.frameNumber || (fIdx + 1);
+            return (
+              <div key={fIdx} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.coral,marginBottom:8}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.coral,letterSpacing:"0.05em",flexShrink:0,minWidth:18,paddingTop:8}}>{num}</div>
+                <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+                  <textarea value={frame.content||""}
+                    placeholder="What the frame shows"
+                    onChange={function(e){ updateDraftItem("frames", fIdx, "content", e.target.value); }}
+                    style={compactTextarea}/>
+                  <input value={frame.textOverlay||""}
+                    placeholder="Text overlay"
+                    onChange={function(e){ updateDraftItem("frames", fIdx, "textOverlay", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontWeight:600,color:B.ink})}/>
+                  <input value={frame.interactiveElement||""}
+                    placeholder="Interactive element (poll, slider, sticker, etc.)"
+                    onChange={function(e){ updateDraftItem("frames", fIdx, "interactiveElement", e.target.value); }}
+                    style={Object.assign({}, compactInput, {fontStyle:"italic",color:B.coral})}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends}) {
   // When `replacing` is true, this card slot is awaiting a streaming
   // replacement from /api/chat?generationType=plan_partial. Render a
   // skeleton instead of the real card so the user sees their kept cards
@@ -2230,6 +2589,147 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
   const [expanded,setExpanded] = useState(false);
   const [showLog,setShowLog]   = useState(false);
   const [showScript,setShowScript] = useState(false);
+  // [EDIT] Inline card editing. Tapping Edit opens an in-place form
+  // showing every top-level text field the model emitted for this
+  // card's format. Save commits via onEdit prop (parent updates the
+  // cards array + persists to localStorage + Supabase + migrates
+  // saved/posted/results keys if the title changed). Cancel discards.
+  // Edit forces the card open (so the user can see what they're
+  // editing) but doesn't change the underlying expanded state on cancel.
+  const [editing,setEditing]     = useState(false);
+  const [draftCard,setDraftCard] = useState(null);
+  function enterEdit() {
+    // Deep-clone slides and frames so the form can mutate items
+    // without touching the underlying card. Both are intentionally
+    // kept structured (not flattened to text) so the per-item UI
+    // can render fields the same way the read view does.
+    var draftSlides = Array.isArray(card.slides)
+      ? card.slides.map(function(s){ return Object.assign({}, s); })
+      : null;
+    var draftFrames = Array.isArray(card.frames)
+      ? card.frames.map(function(f){ return Object.assign({}, f); })
+      : null;
+    setDraftCard({
+      title:               card.title || "",
+      description:         card.description || "",
+      insight:             card.insight || card.why || "",
+      hashtags:            Array.isArray(card.hashtags) ? card.hashtags.join(", ") : (card.hashtags || ""),
+      hook:                card.hook || "",
+      caption:             card.caption || "",
+      body:                card.body || "",
+      closing:             card.closing || "",
+      quote:               card.quote || "",
+      attribution:         card.attribution || "",
+      photoDirection:      card.photoDirection || "",
+      compositionTip:      card.compositionTip || "",
+      audioRecommendation: card.audioRecommendation || "",
+      designDirection:     card.designDirection || "",
+      onScreenText:        Array.isArray(card.onScreenText) ? card.onScreenText.join("\n") : "",
+      slides:              draftSlides,
+      frames:              draftFrames,
+    });
+    setEditing(true);
+    setExpanded(true);
+  }
+  function updateDraft(field, value) {
+    setDraftCard(function(d){ return Object.assign({}, d || {}, { [field]: value }); });
+  }
+  // Nested-array updater for slides + frames. Replaces one item's
+  // field at a time so React state stays immutable all the way down.
+  function updateDraftItem(arrKey, itemIdx, field, value) {
+    setDraftCard(function(d){
+      if (!d) return d;
+      var arr = Array.isArray(d[arrKey]) ? d[arrKey].slice() : [];
+      if (itemIdx < 0 || itemIdx >= arr.length) return d;
+      arr[itemIdx] = Object.assign({}, arr[itemIdx], { [field]: value });
+      return Object.assign({}, d, { [arrKey]: arr });
+    });
+  }
+  function saveEdit() {
+    if (!draftCard || !onEdit) { setEditing(false); return; }
+    // Only save fields that EditCardBody actually renders for this
+    // card's format — that way a user editing a video card can't
+    // accidentally write a `body` field (the long-form-only field
+    // they never see) onto a video card, and unchanged hidden fields
+    // can't be inadvertently wiped to "".
+    var fmt = normalizeFormat(card.format);
+    var formatTextKeys = {
+      video:          ["hook","caption","audioRecommendation"],
+      single_image:   ["caption","photoDirection","compositionTip"],
+      carousel:       ["caption"],
+      quote_graphic:  ["quote","attribution","caption","designDirection"],
+      story:          [],
+      long_form_text: ["hook","body","closing"],
+    };
+    var textKeys = ["title","description","insight"].concat(formatTextKeys[fmt] || []);
+    var updates = {};
+    textKeys.forEach(function(k){
+      var draftVal = (draftCard[k] || "").trim();
+      // Title can't be empty — buildCardId depends on it and an empty
+      // title would orphan vault/posted/saved/results keys. Skip the
+      // update silently rather than overwriting with "".
+      if (k === "title" && draftVal === "") return;
+      var currVal  = (card[k] || (k === "insight" ? card.why : "") || "").toString().trim();
+      if (draftVal !== currVal) updates[k] = draftVal;
+    });
+    // Hashtags: comma/newline-separated string → array of plain words, "#" stripped.
+    var draftTags = (draftCard.hashtags || "")
+      .split(/[,\n]/)
+      .map(function(t){ return t.trim().replace(/^#+/, ""); })
+      .filter(Boolean);
+    var currTags  = Array.isArray(card.hashtags) ? card.hashtags : [];
+    if (draftTags.join("|") !== currTags.join("|")) updates.hashtags = draftTags;
+    // onScreenText (video only): newline-separated → array.
+    if (fmt === "video") {
+      var draftOst = (draftCard.onScreenText || "")
+        .split(/\n+/)
+        .map(function(t){ return t.trim(); })
+        .filter(Boolean);
+      var currOst  = Array.isArray(card.onScreenText) ? card.onScreenText : [];
+      if (draftOst.join("|") !== currOst.join("|")) updates.onScreenText = draftOst;
+    }
+    // Carousel slides: diff each item's editable text fields. The
+    // slideNumber + count are preserved from the original; only
+    // headline/body/designDirection can be edited in this pass.
+    if (fmt === "carousel" && Array.isArray(draftCard.slides)) {
+      var currSlides = Array.isArray(card.slides) ? card.slides : [];
+      var nextSlides = draftCard.slides.map(function(s, i){
+        return Object.assign({}, currSlides[i] || s, {
+          slideNumber:     (currSlides[i] && currSlides[i].slideNumber) || s.slideNumber || (i + 1),
+          headline:        (s.headline || "").trim(),
+          body:            (s.body || "").trim(),
+          designDirection: (s.designDirection || "").trim(),
+        });
+      });
+      // Cheap deep equality — serialize to canonical JSON.
+      if (JSON.stringify(nextSlides) !== JSON.stringify(currSlides)) {
+        updates.slides = nextSlides;
+      }
+    }
+    // Story frames: same shape — edit content/textOverlay/interactiveElement,
+    // preserve frameNumber + count.
+    if (fmt === "story" && Array.isArray(draftCard.frames)) {
+      var currFrames = Array.isArray(card.frames) ? card.frames : [];
+      var nextFrames = draftCard.frames.map(function(f, i){
+        return Object.assign({}, currFrames[i] || f, {
+          frameNumber:        (currFrames[i] && currFrames[i].frameNumber) || f.frameNumber || (i + 1),
+          content:            (f.content || "").trim(),
+          textOverlay:        (f.textOverlay || "").trim(),
+          interactiveElement: (f.interactiveElement || "").trim(),
+        });
+      });
+      if (JSON.stringify(nextFrames) !== JSON.stringify(currFrames)) {
+        updates.frames = nextFrames;
+      }
+    }
+    if (Object.keys(updates).length > 0) onEdit(idx, updates);
+    setEditing(false);
+    setDraftCard(null);
+  }
+  function cancelEdit() {
+    setEditing(false);
+    setDraftCard(null);
+  }
   const [views,setViews]       = useState((result&&result.views)||"");
   const [likes,setLikes]       = useState((result&&result.likes)||"");
   const [saves2,setSaves2]     = useState((result&&result.saves)||"");
@@ -2239,7 +2739,11 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
   const [posted,setPosted]     = useState(function(){ return isCardPosted(cardId); });
   var reminder = "VIRL "+card.day+": "+card.title+" - Post at "+card.postTime+" on "+card.platform;
   var hasSavedScript = !!card.savedScript;
-  var dayPlatformLabel = card.day + " | " + card.platform + " | " + card.postTime;
+  // [P1] One-line preview shown beneath the title on collapsed cards so
+  // the user can differentiate 10-14 stacked cards without expanding each.
+  // Computed only when collapsed so the expanded view (which renders the
+  // full hook/slides/etc inline) doesn't duplicate it.
+  var preview = !expanded ? cardPreview(card) : "";
 
   function saveResults() { onLog(card,{views:views,likes:likes,saves:saves2}); setShowLog(false); }
   // [UX-01] Save handler — also writes the localStorage status flag so
@@ -2277,17 +2781,46 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
   // left border to a dashed coral to make the state obvious at a glance.
   var cardBorderLeft = (editMode && markedReplace) ? ("3px dashed " + B.coral) : ("3px solid " + bl);
   var cardOpacity    = (editMode && markedReplace) ? 0.65 : 1;
+  // [Move #3] Variable card weight by state. The week was reading as a
+  // uniform stack because every card had identical visual weight regardless
+  // of whether it needed action or was already done. Three light-touch
+  // variants:
+  //   - HIGH priority + unposted → faint sky-tinted background + slightly
+  //     deeper navy-tinted shadow. Pulls the eye to what needs action now.
+  //   - posted OR logged → very faint warm-gray background + shadow nearly
+  //     gone. The "done" state visually recedes without becoming
+  //     unreadable (titles + body keep full contrast so the user can still
+  //     revisit and log results).
+  //   - everything else → current treatment.
+  // Skipped when editMode/markedReplace is active — the dashed-coral
+  // replacement state owns the visual loudly enough.
+  var isDone          = !!(posted || result);
+  var isHighUnposted  = card.priority === "HIGH" && !isDone;
+  var inReplaceState  = editMode && markedReplace;
+  var cardBackground  = inReplaceState ? B.card
+                        : isDone          ? "#FAFAF7"
+                        : isHighUnposted  ? "#F4F7FF"
+                        : B.card;
+  var cardShadow      = inReplaceState ? "0 1px 3px rgba(0,0,0,0.06)"
+                        : isDone          ? "0 0 0 1px rgba(15,23,42,0.03)"
+                        : isHighUnposted  ? "0 4px 14px rgba(31,58,138,0.09)"
+                        : "0 1px 3px rgba(0,0,0,0.06)";
   return (
-    <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity}}>
+    <div className="su" style={{background:cardBackground,borderRadius:12,boxShadow:cardShadow,borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity,transition:"background .15s, box-shadow .15s"}}>
       {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
 
-      {/* [UX-01] Header row: day | platform | postTime metadata plus
-           status indicators (navy dot for saved, coral checkmark for
-           posted), priority badge, and any "logged / script saved"
-           tags from existing flows. */}
+      {/* [UX-01 / P3] Header row. postTime leads at high contrast — it's
+           the most actionable atom on the card and previously sat at 9px
+           muted gray equal-weight with day/platform. Day + platform
+           remain as the supporting eyebrow next to it. Status indicators
+           (saved dot, posted check), priority badge, and "logged /
+           script saved" tags keep their slots. */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
-        <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,flex:1}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.22em",textTransform:"uppercase",color:B.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{dayPlatformLabel}</div>
+        <div style={{display:"flex",alignItems:"baseline",gap:10,minWidth:0,flex:1,flexWrap:"wrap"}}>
+          {card.postTime && (
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.ink,letterSpacing:"0.01em",lineHeight:1.1,flexShrink:0}}>{card.postTime}</div>
+          )}
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{card.day + " · " + card.platform}</div>
           {saved && (
             <span aria-label="Saved to vault" title="Saved"
               style={{display:"inline-block",width:8,height:8,borderRadius:99,background:B.navy,flexShrink:0}}/>
@@ -2320,13 +2853,40 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
         </div>
       </div>
 
-      {/* [UX-01] Hook in Italiana 18px. Always visible, both states. */}
-      <div style={{fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,marginBottom:expanded?10:14}}>{card.title}</div>
+      {/* [UX-01] Hook in Italiana 18px. Always visible, both states.
+           Margin tightens when a preview line follows so the title +
+           preview read as one block. In edit mode the title becomes a
+           text input keeping the same Italiana treatment so the edit
+           visually feels like overwriting the same line rather than
+           moving to a form-field. */}
+      {editing ? (
+        <input value={draftCard ? (draftCard.title || "") : ""}
+          onChange={function(e){ updateDraft("title", e.target.value); }}
+          placeholder="Title"
+          style={{width:"100%",fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,background:B.bg,border:"1px solid "+B.border,borderRadius:8,padding:"8px 12px",marginBottom:12,outline:"none",boxSizing:"border-box"}}/>
+      ) : (
+        <div style={{fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
+      )}
+      {/* [P1] Collapsed-only preview line — the format-specific opening
+           (hook / first slide / photo direction / quote / first frame /
+           description fallback). Clamped to 2 lines so the card stays
+           short; the full versions live in the expanded body. Hidden in
+           edit mode (the user is editing the source fields themselves). */}
+      {preview && !editing && (
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.5,marginBottom:14,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{preview}</div>
+      )}
+      {/* Edit form body — replaces the read-view expanded body when in
+           edit mode. Renders inputs/textareas for every top-level text
+           field the model emits for this card's format. */}
+      {editing && draftCard && (
+        <EditCardBody draftCard={draftCard} format={card.format} updateDraft={updateDraft} updateDraftItem={updateDraftItem}/>
+      )}
 
       {/* [UX-01] Expanded section: full description, why-this-works,
            tag chips, hashtags, copy-reminder strip. Mounted only when
-           expanded so collapsed cards stay scannable. */}
-      {expanded && (
+           expanded so collapsed cards stay scannable. Hidden in edit
+           mode — EditCardBody above replaces it with form fields. */}
+      {expanded && !editing && (
         <div>
           {/* [PREMIUM 4] Insight callout — only on cards that earned
                one (LLM emits the field on roughly 1 in 3 posts). The
@@ -2346,12 +2906,16 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>{card.insight || card.why}</div>
             </div>
           )}
-          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:14}}>
-            <MTag type="time">{"🕐 "+card.postTime}</MTag>
-            <MTag>{"📱 "+card.platform}</MTag>
-            {card.trend && <MTag>{"✦ "+card.trend}</MTag>}
-            {card.format && <MTag>{card.format}</MTag>}
-          </div>
+          {/* [P5] Time + platform live in the header eyebrow now — no
+               need to repeat them. Only render chips for what's NOT in
+               the eyebrow: the trend angle and the humanized format
+               label (P9 — raw snake_case shouldn't reach the user). */}
+          {(card.trend || card.format) && (
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:14}}>
+              {card.trend && <MTag>{"✦ "+card.trend}</MTag>}
+              {card.format && <MTag>{humanizeFormat(card.format)}</MTag>}
+            </div>
+          )}
           <HashtagRow hashtags={card.hashtags}/>
           <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.navy,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
@@ -2366,7 +2930,21 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
            fresh card → "Mark as posted"; posted but unlogged →
            "Log results" (expands + opens form); logged → passive
            "Logged ✓" badge. Always 3 visible slots in collapsed mode,
-           never 4. */}
+           never 4. In edit mode the entire row is swapped for a
+           Save / Cancel pair — every other action would be misleading
+           or destructive against an in-flight draft. */}
+      {editing ? (
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginTop:6}}>
+          <button onClick={saveEdit}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 20px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"}}>
+            Save changes
+          </button>
+          <button onClick={cancelEdit}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 16px",background:"transparent",color:B.muted,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
+            Cancel
+          </button>
+        </div>
+      ) : (
       <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
         <button onClick={toggleExpanded}
           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:expanded?B.bg:B.navySoft,color:expanded?B.sub:B.navy,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
@@ -2395,6 +2973,15 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
             {"Mark as posted"}
           </button>
         )}
+        {/* [EDIT] Edit lives in the expanded-only action set so the
+             collapsed card stays simple. Disabled when no onEdit prop
+             is passed — read-only contexts pass null. */}
+        {expanded && onEdit && (
+          <button onClick={enterEdit}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
+            {"Edit"}
+          </button>
+        )}
         {/* Expanded-only secondary actions. Log Results moved out — the
              state-dependent third slot above replaces it. */}
         {expanded && (
@@ -2408,6 +2995,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,saved,result,profile,userT
           <RatingButtons sessionToken={userToken} generationType="plan_card" targetRef={(card.title||"")+"|"+(card.day||"")} size="sm"/>
         )}
       </div>
+      )}
 
       {/* [RESULTS-OVERHAUL] Inline log form. Renders in both collapsed
            and expanded modes once showLog is true, so logging is never
@@ -2552,6 +3140,60 @@ function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUs
   );
 }
 
+// Editable hook block on a navy card surface — shared by the Captions
+// result panel and the per-result Scan block. Both surfaces previously
+// rendered the hook as a read-only Italiana headline with a Copy
+// button; in practice users routinely want to tighten the hook before
+// they post. Optional eyebrow + fontSize accommodate the two usage
+// sites (Captions = bigger headline + "Your hook" eyebrow; Scan =
+// smaller headline, no eyebrow, sits inline with other result fields).
+function EditableHook({value, onSave, eyebrow, fontSize}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value || "");
+  const sz = fontSize || 24;
+  function commit() {
+    var trimmed = (draft || "").trim();
+    if (trimmed) onSave(trimmed);
+    setEditing(false);
+  }
+  function cancel() { setDraft(value || ""); setEditing(false); }
+  return (
+    <div style={{background:B.navy,borderRadius:14,padding:"16px 20px",marginBottom:12}}>
+      {eyebrow && !editing && (
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>{eyebrow}</div>
+      )}
+      {editing ? (
+        <div>
+          <textarea value={draft}
+            onChange={function(e){ setDraft(e.target.value); }}
+            style={{width:"100%",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.22)",borderRadius:10,color:B.white,fontFamily:"'Italiana',serif",fontSize:sz,lineHeight:1.3,padding:"10px 14px",resize:"vertical",minHeight:60,outline:"none",boxSizing:"border-box"}}/>
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <button onClick={commit}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer"}}>
+              Save
+            </button>
+            <button onClick={cancel}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:"transparent",color:"rgba(255,255,255,0.7)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:99,cursor:"pointer"}}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div style={{fontFamily:"'Italiana',serif",fontSize:sz,color:B.white,lineHeight:1.3,marginBottom:10}}>{'"'+(value||"")+'"'}</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <CopyBtn text={value||""} label="Copy hook"/>
+            <button onClick={function(){ setDraft(value||""); setEditing(true); }}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:"rgba(255,255,255,0.12)",color:"rgba(255,255,255,0.9)",border:"1px solid rgba(255,255,255,0.25)",borderRadius:99,cursor:"pointer"}}>
+              Edit
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft,isPaid,daysUntilReset,onUpgrade}) {
   // [FRESH-TRENDS] Server returns usedFreshTrends in the caption response
   // when it consumed an inline Perplexity call. Captured here so the
@@ -2676,11 +3318,10 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLe
       )}
       {result&&(
         <div>
-          <div style={{background:B.navy,borderRadius:14,padding:"18px 20px",marginBottom:8}}>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>Your hook - use as on-screen text</div>
-            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,marginBottom:12}}>{'"'+result.hook+'"'}</div>
-            <CopyBtn text={result.hook} label="Copy hook"/>
-          </div>
+          <EditableHook
+            eyebrow="Your hook - use as on-screen text"
+            value={result.hook}
+            onSave={function(next){ setResult(function(prev){ return prev ? Object.assign({}, prev, {hook: next}) : prev; }); }}/>
           {(result.captions||[]).map(function(cap,i){return (
             <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
           );})}
@@ -2912,6 +3553,18 @@ function ShareScoreCard({score,platform,hook}) {
 function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft,isPaid,daysUntilReset,onUpgrade}) {
   var [files,setFiles]       = useState([]);
   var [results,setResults]   = useState([]);
+  // [EDIT] Immutable per-result update — used by EditableHook's onSave
+  // for each scan card so a user-revised hook persists in component
+  // state without re-running the scan. Results are transient (live for
+  // the session) so no Supabase persistence needed.
+  function updateResultAt(idx, updates) {
+    setResults(function(prev){
+      if (!Array.isArray(prev) || idx < 0 || idx >= prev.length) return prev;
+      var next = prev.slice();
+      next[idx] = Object.assign({}, prev[idx], updates);
+      return next;
+    });
+  }
   var [scanning,setScanning] = useState(false);
   var [current,setCurrent]   = useState(0);
   // [FRESH-TRENDS] Banner state — true after a scan that consumed the
@@ -3176,10 +3829,10 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
                 </div>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,padding:"6px 16px",background:B.navySoft,color:B.navy,borderRadius:99}}>{"→ "+r.platform}</div>
               </div>
-              <div style={{background:B.navy,borderRadius:12,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,flex:1,lineHeight:1.3}}>{"\""+r.hook+"\""}</div>
-                <CopyBtn text={r.hook||""} label="Copy hook"/>
-              </div>
+              <EditableHook
+                value={r.hook}
+                fontSize={18}
+                onSave={function(next){ updateResultAt(idx, {hook: next}); }}/>
               <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
               <HashtagRow hashtags={r.hashtags}/>
               {r.tip&&<div style={{background:B.blueSoft,borderRadius:10,padding:"10px 14px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.blue,lineHeight:1.6,marginTop:8}}>{"✦ "+r.tip}</div>}
@@ -3232,6 +3885,12 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   const [personalFacts,setPersonalFacts] = useState(profile.personalFacts||"");
   const [neverAssume,setNeverAssume] = useState(profile.neverAssume||"");
   const [loveToReference,setLoveToReference] = useState(profile.loveToReference||"");
+  // [LEARN-FROM-EDITS] Opt-in flag. When ON, the diff between VIRL's
+  // generated text and the user's saved edit is captured on every
+  // plan-card edit and used as a voice example in future plan prompts.
+  // Default OFF — this is a data/privacy decision and shouldn't be
+  // surprise-enabled. Persists to profiles.learn_from_edits (boolean).
+  const [learnFromEdits,setLearnFromEdits] = useState(!!profile.learnFromEdits);
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -3286,7 +3945,7 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -3589,6 +4248,33 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           <div id="vp-sampleCaption" style={{marginBottom:20}}>
             <Label>Paste a caption you love <TierBadge tier="elite"/></Label>
             <textarea value={sampleCaption} onChange={function(e){setSample(e.target.value);}} placeholder="Paste a caption from one of your posts that felt totally like you..." style={Object.assign({},textareaStyle,{minHeight:88})}/>
+          </div>
+
+          {/* [LEARN-FROM-EDITS] Personalization & privacy. Opt-in toggle
+              that lets VIRL learn from the edits the user makes to plan
+              cards. Off by default — when the user clicks Edit and
+              saves a change, we capture the diff (before + after text
+              per field) and feed the most recent edits into future plan
+              prompts as voice examples. Explicit opt-in because the
+              diffs land in the server-side events table and that's a
+              data decision worth making consciously. Past edits made
+              before opting in are NOT retroactively captured. */}
+          <div style={{marginBottom:20,paddingTop:14,borderTop:"1px solid "+B.divider}}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:12}}>Personalization &amp; privacy</div>
+            <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromEdits?B.navySoft:B.bg,border:"1px solid "+(learnFromEdits?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s"}}
+              onClick={function(){ setLearnFromEdits(function(v){ return !v; }); }}>
+              <div style={{width:18,height:18,border:"2px solid "+(learnFromEdits?B.blue:B.border),borderRadius:4,background:learnFromEdits?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
+                {learnFromEdits&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromEdits?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
+                  Let VIRL learn from my edits
+                </div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
+                  When you tighten a hook or rewrite a caption, save the change as a voice example. VIRL uses your last few edits to make future plans sound more like you. Turn off any time — past edits stop being used going forward, and edits before turning this on are never captured.
+                </div>
+              </div>
+            </div>
           </div>
 
           {saved && (
@@ -3966,6 +4652,14 @@ function GateScreen({onAuth}) {
   function handleEmailAuth() {
     if (!email.trim()||!password.trim()) return;
     if (mode==="signup") {
+      // Single combined message when either or both required boxes are
+      // unchecked — cleaner than firing one error, having the user fix
+      // it, then firing the second on the next submit. Marketing
+      // opt-in stays optional and is not part of this gate.
+      if (!ageConfirmed && !tosAccepted) {
+        setAuthError("Please check the age confirmation and Terms boxes above to create your account.");
+        return;
+      }
       if (!ageConfirmed) { setAuthError("Please confirm you are 18 or older to create an account."); return; }
       if (!tosAccepted)  { setAuthError("Please accept the Terms of Service and Privacy Policy to continue."); return; }
     }
@@ -4010,18 +4704,10 @@ function GateScreen({onAuth}) {
     }).catch(function(e){ setAuthLoading(false); setAuthError(e.message); });
   }
 
-  function handleGoogle() {
-    setAuthLoading(true);
-    supabaseClient.auth.signInWithOAuth({
-      provider:"google",
-      options:{redirectTo:"https://app.govirl.ai"}
-    }).catch(function(){ setAuthLoading(false); setAuthError("Google sign-in failed. Try email instead."); });
-  }
-
   if (emailSent) return (
-    <div style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:48}}>Finally, a strategy that sounds like you.</div>
+    <div style={{minHeight:"100vh",...brandHeroSurface,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
+      <div style={brandLogoOnDark}>VIRL</div>
+      <div style={brandTaglineOnDark}>Finally, a strategy that sounds like you.</div>
       <div style={{width:"100%",maxWidth:380,background:B.white,borderRadius:24,padding:"44px 36px",boxShadow:"0 4px 32px rgba(0,0,0,0.08)"}}>
         <div style={{width:56,height:56,borderRadius:"50%",background:B.navySoft,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px"}}>
           <div style={{fontSize:26}}>{"✉"}</div>
@@ -4049,9 +4735,9 @@ function GateScreen({onAuth}) {
   );
 
   if (resetSent) return (
-    <div style={{minHeight:"100vh",background:B.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:48}}>Finally, a strategy that sounds like you.</div>
+    <div style={{minHeight:"100vh",...brandHeroSurface,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
+      <div style={brandLogoOnDark}>VIRL</div>
+      <div style={brandTaglineOnDark}>Finally, a strategy that sounds like you.</div>
       <div style={{width:"100%",maxWidth:380,background:B.white,borderRadius:24,padding:"44px 36px",boxShadow:"0 4px 32px rgba(0,0,0,0.08)"}}>
         <div style={{width:56,height:56,borderRadius:"50%",background:B.navySoft,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px"}}>
           <div style={{fontSize:26}}>{"🔑"}</div>
@@ -4071,9 +4757,9 @@ function GateScreen({onAuth}) {
   );
 
   if (resetMode) return (
-    <div style={{minHeight:"100vh",background:B.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:40}}>Finally, a strategy that sounds like you.</div>
+    <div style={{minHeight:"100vh",...brandHeroSurface,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
+      <div style={brandLogoOnDark}>VIRL</div>
+      <div style={{...brandTaglineOnDark,marginBottom:40}}>Finally, a strategy that sounds like you.</div>
       <div style={{width:"100%",maxWidth:340,background:B.white,borderRadius:24,padding:"36px 28px",boxShadow:"0 4px 24px rgba(0,0,0,0.08)"}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.3em",textTransform:"uppercase",color:B.muted,marginBottom:16,textAlign:"center"}}>Reset your password</div>
         <input value={email} onChange={function(e){setEmail(e.target.value);setAuthError("");}}
@@ -4095,11 +4781,11 @@ function GateScreen({onAuth}) {
   );
 
   return (
-    <div style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:4}}>VIRL</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:40}}>Finally, a strategy that sounds like you.</div>
+    <div style={{minHeight:"100vh",...brandHeroSurface,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
+      <div style={brandLogoOnDark}>VIRL</div>
+      <div style={{...brandTaglineOnDark,marginBottom:40}}>Finally, a strategy that sounds like you.</div>
 
-      <div style={{width:"100%",maxWidth:340,background:B.card,borderRadius:24,padding:"36px 28px",boxShadow:"0 4px 24px rgba(0,0,0,0.08)"}}>
+      <div style={{width:"100%",maxWidth:340,background:B.card,borderRadius:24,padding:"36px 28px",boxShadow:"0 20px 50px rgba(15,23,42,0.25)"}}>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.3em",textTransform:"uppercase",color:B.muted,marginBottom:16,textAlign:"center"}}>
             {mode==="signup"?"Create your account":"Sign in to VIRL"}
           </div>
@@ -4111,7 +4797,6 @@ function GateScreen({onAuth}) {
             onKeyDown={function(e){if(e.key==="Enter")handleEmailAuth();}}
             placeholder="Password" type="password"
             style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:12,color:B.ink,fontFamily:"'Jost',sans-serif",fontSize:15,padding:"13px 16px",marginBottom:12,outline:"none"}}/>
-          {authError&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:mode==="signup"&&authError.includes("Check")?B.blue:B.coral,textAlign:"center",marginBottom:10,lineHeight:1.5}}>{authError}</div>}
           {mode==="login"&&(
             <div style={{textAlign:"right",marginBottom:10,marginTop:-4}}>
               <button onClick={function(){setResetMode(true);setAuthError("");}}
@@ -4162,18 +4847,24 @@ function GateScreen({onAuth}) {
               </div>
             </div>
           )}
-          <button onClick={handleEmailAuth} disabled={authLoading||!email.trim()||!password.trim()||(mode==="signup"&&(!ageConfirmed||!tosAccepted))}
-            style={{width:"100%",background:authLoading?B.muted:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,marginBottom:12,boxShadow:authLoading?"none":"0 4px 14px rgba(31,58,138,0.3)",transition:"all .2s"}}>
+          {/* Error display sits directly above the submit button so it
+               renders in the user's line of sight at the moment of the
+               tap — instead of flashing into the gap above the
+               checkboxes, far from the action they just took. Covers
+               server errors (bad credentials), inline validation
+               errors (missing required checkboxes), and the
+               "Check your email" confirmation tint in signup. */}
+          {authError&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:mode==="signup"&&authError.includes("Check your email")?B.blue:B.coral,textAlign:"center",marginBottom:12,lineHeight:1.5,padding:"10px 12px",background:mode==="signup"&&authError.includes("Check your email")?B.navySoft:B.coralSoft,borderRadius:10,border:"1px solid "+(mode==="signup"&&authError.includes("Check your email")?"rgba(31,58,138,0.15)":"rgba(244,63,94,0.2)")}}>{authError}</div>}
+          {/* Submit button is only disabled while a request is in flight
+               or before email + password are filled — the age + ToS
+               checkbox gate is enforced inside handleEmailAuth (it sets
+               an inline error above instead of a silent disable). This
+               keeps the form feeling inviting and ensures the optional
+               marketing checkbox stays visible rather than being hidden
+               behind a "your form is broken" disabled state. */}
+          <button onClick={handleEmailAuth} disabled={authLoading||!email.trim()||!password.trim()}
+            style={{width:"100%",background:authLoading?B.muted:B.navy,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:(authLoading||!email.trim()||!password.trim())?"not-allowed":"pointer",borderRadius:14,marginBottom:12,boxShadow:authLoading?"none":"0 4px 14px rgba(31,58,138,0.3)",opacity:(authLoading||!email.trim()||!password.trim())?0.55:1,transition:"all .2s"}}>
             {authLoading?"Signing in...":(mode==="signup"?"Create account":"Sign in")}
-          </button>
-          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
-            <div style={{flex:1,height:1,background:B.divider}}/>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted}}>or</div>
-            <div style={{flex:1,height:1,background:B.divider}}/>
-          </div>
-          <button onClick={handleGoogle} disabled={authLoading}
-            style={{width:"100%",background:B.bg,color:B.ink,border:"1px solid "+B.border,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,padding:"14px 24px",cursor:"pointer",borderRadius:14,marginBottom:20,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-            <span style={{fontSize:16}}>G</span>{"Continue with Google"}
           </button>
           <div style={{borderTop:"1px solid "+B.divider,paddingTop:16,textAlign:"center"}}>
             {mode==="login"?(
@@ -4195,6 +4886,127 @@ function GateScreen({onAuth}) {
 
 // ErrorBoundary removed — static class methods not supported in Babel standalone
 // Error handling done via try/catch inside App
+
+// [CX-FIX 1] Shown when the user is in PASSWORD_RECOVERY mode after clicking
+// the "Forgot password?" email link. Without this screen, Supabase silently
+// signs them in via the recovery session and they have no way to actually
+// change their password — the entire forgot-password flow was a dead end.
+//
+// On submit:
+//   1. supabase.auth.updateUser({ password }) — applies the new password
+//   2. Fires /api/email/password-changed so the email-of-record gets a
+//      "your password was just changed" notification (security best
+//      practice; Supabase doesn't do this on its own)
+//   3. Clears recoveryMode so the next render drops the user into the
+//      normal dashboard
+function SetNewPasswordScreen({ onDone }) {
+  const [password,setPassword]   = useState("");
+  const [confirm,setConfirm]     = useState("");
+  const [busy,setBusy]           = useState(false);
+  const [err,setErr]             = useState("");
+  const [done,setDone]           = useState(false);
+
+  function handleSave() {
+    if (password.length < 8) { setErr("Password must be at least 8 characters."); return; }
+    if (password !== confirm) { setErr("Passwords don't match."); return; }
+    setBusy(true); setErr("");
+    supabaseClient.auth.updateUser({ password: password })
+      .then(function(result) {
+        if (result.error) { setBusy(false); setErr(result.error.message); return; }
+        // Fire-and-forget the confirmation email. Failure to send doesn't
+        // block the password change itself — the password is already saved.
+        try {
+          supabaseClient.auth.getSession().then(function(r) {
+            var token = r && r.data && r.data.session && r.data.session.access_token;
+            if (!token) return;
+            fetch("/api/email/password-changed", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+            }).catch(function(){});
+          });
+        } catch(e) {}
+        setBusy(false);
+        setDone(true);
+        // Small delay so the user reads the "saved" confirmation before
+        // landing on the dashboard.
+        setTimeout(function(){ onDone(); }, 1200);
+      })
+      .catch(function(e){ setBusy(false); setErr(e.message || "Could not update password."); });
+  }
+
+  return (
+    <div style={{
+      minHeight:"100vh",background:B.navy,display:"flex",alignItems:"center",
+      justifyContent:"center",padding:24,fontFamily:"'Jost',sans-serif"
+    }}>
+      <div style={{
+        width:"100%",maxWidth:420,background:B.white,borderRadius:16,
+        padding:"32px 28px",boxShadow:"0 12px 40px rgba(0,0,0,0.25)"
+      }}>
+        <div style={{
+          fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+          letterSpacing:"0.3em",textTransform:"uppercase",
+          color:B.muted,marginBottom:16,textAlign:"center"
+        }}>
+          Set a new password
+        </div>
+        <div style={{
+          fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,
+          lineHeight:1.2,marginBottom:8,textAlign:"center"
+        }}>
+          Pick something you'll remember.
+        </div>
+        <div style={{
+          fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,
+          color:B.sub,lineHeight:1.5,marginBottom:24,textAlign:"center"
+        }}>
+          You're almost in. Set a new password to finish.
+        </div>
+        {done ? (
+          <div style={{
+            fontFamily:"'Jost',sans-serif",fontSize:13,color:B.green,
+            textAlign:"center",padding:"24px 0"
+          }}>
+            Password saved. Taking you in&hellip;
+          </div>
+        ) : (
+          <React.Fragment>
+            <input type="password" value={password} placeholder="New password"
+              onChange={function(e){setPassword(e.target.value);setErr("");}}
+              style={{
+                width:"100%",fontFamily:"'Jost',sans-serif",fontSize:14,
+                padding:"12px 14px",border:"1px solid "+B.border,
+                borderRadius:10,marginBottom:12,boxSizing:"border-box"
+              }}/>
+            <input type="password" value={confirm} placeholder="Confirm new password"
+              onChange={function(e){setConfirm(e.target.value);setErr("");}}
+              style={{
+                width:"100%",fontFamily:"'Jost',sans-serif",fontSize:14,
+                padding:"12px 14px",border:"1px solid "+B.border,
+                borderRadius:10,marginBottom:16,boxSizing:"border-box"
+              }}/>
+            {err && (
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:12,color:B.coral,
+                marginBottom:12,textAlign:"center"
+              }}>{err}</div>
+            )}
+            <button onClick={handleSave} disabled={busy||!password||!confirm}
+              style={{
+                width:"100%",fontFamily:"'Jost',sans-serif",fontSize:12,
+                fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",
+                padding:"12px 20px",background:busy?B.muted:B.navy,
+                color:B.white,border:"none",borderRadius:99,
+                cursor:busy?"default":"pointer"
+              }}>
+              {busy?"Saving...":"Save new password"}
+            </button>
+          </React.Fragment>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // [TASK 2] Pre-launch gate screen — shown when checkAccess() returns false.
 // Aesthetic mirrors the live govirl.ai landing page: navy hero with dotted texture,
@@ -4313,7 +5125,7 @@ function PreLaunchGate() {
 
             {/* Founding member micro-copy */}
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.65)",marginTop:14}}>
-              First 100 founding members get $5 off / month for the first year.
+              First 50 paying members lock in $20/month for life — the Founder Circle.
             </div>
 
             {/* Beta code toggle */}
@@ -4601,6 +5413,12 @@ function App() {
   const [session,setSession]         = useState(null);
   const [authLoading,setAuthLoading] = useState(true);
   const [appError,setAppError]       = useState(null);
+  // [CX-FIX 1] Password recovery: when a user clicks the reset link in
+  // their email, Supabase signs them in via a recovery session AND fires
+  // a PASSWORD_RECOVERY event. Without this flag the app would just drop
+  // them into the dashboard with no way to actually set a new password —
+  // the entire forgot-password flow was a dead end until we noticed.
+  const [passwordRecoveryMode,setPasswordRecoveryMode] = useState(false);
 
   useEffect(function() {
     // Check for existing session on load (handles OAuth redirects too)
@@ -4611,6 +5429,13 @@ function App() {
     // Listen for auth state changes
     var listener = supabaseClient.auth.onAuthStateChange(function(event, s) {
       setSession(s);
+      // [CX-FIX 1] User just clicked their reset email link — flip into
+      // recovery mode so the app renders the SetNewPassword screen
+      // instead of the normal dashboard. Cleared once the password is
+      // saved (see SetNewPasswordScreen).
+      if (event === "PASSWORD_RECOVERY") {
+        setPasswordRecoveryMode(true);
+      }
       // [TASK 1] Clear cached profile on sign-out so the next user on this browser starts clean.
       if (event === "SIGNED_OUT") {
         try {
@@ -4938,33 +5763,30 @@ function App() {
     } catch(e){}
   }, []);
 
-  // Handle post-checkout redirect
+  // Handle post-checkout redirect.
+  // [PRICING 3] Generic message that works for both tiers. The tier-specific
+  // welcome (Founder Circle banner) renders once credits refresh and
+  // isFounderCircle flips true on the next render pass.
   useEffect(function() {
     var params = new URLSearchParams(window.location.search);
     if (params.get('upgraded') === 'true') {
-      alert('Welcome to VIRL Standard! Your credits have been upgraded to 150 per week.');
+      alert("Welcome! Your VIRL subscription is active. Check your inbox for confirmation.");
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
 
-  // [TASK 7] Load the founding-plan count. Fires once on mount and again
+  // [PRICING 3] Load Founder Circle fill state. Fires once on mount and again
   // whenever the upgrade modal opens, so a user who leaves a tab open during
   // the launch window sees an accurate spots-remaining count rather than the
-  // stale value cached at first paint. Uses an RPC that returns only an
-  // integer, so no personal data is exposed. Silent failure keeps the default
-  // "founding available" fallback in place.
+  // stale value cached at first paint. Public endpoint — no auth required.
+  // Silent failure keeps the default "available" fallback in place so a brief
+  // network blip never hides the offer.
   function loadFoundingCount() {
-    fetch(SUPABASE_URL + "/rest/v1/rpc/get_founding_count", {
-      method: "POST",
-      headers: {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
-        "Content-Type": "application/json"
-      },
-      body: "{}",
-      cache: "no-store"
-    }).then(function(r){ return r.ok ? r.json() : null; })
-      .then(function(n){ if (typeof n === "number") setFoundingCount(n); })
+    fetch("/api/founder-count", { cache: "no-store" })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(d){
+        if (d && typeof d.filled === "number") setFoundingCount(d.filled);
+      })
       .catch(function(){});
   }
   useEffect(function() { loadFoundingCount(); }, []);
@@ -5138,13 +5960,22 @@ function App() {
     if (diff <= 0) return 1; // reset is overdue; will fire on next call
     return Math.max(1, Math.ceil(diff / 86400000));
   })();
+  // [PRICING 3] Founder Circle identity, set once at first paid signup and
+  // never changed. Distinct from `plan` (which tracks current subscription
+  // status: founding | standard | cancelled | past_due). Grandfathered
+  // legacy plan='founding' rows were migrated to founding_tier='founder_circle'
+  // with positions assigned by signup order — see migrations/001.
+  var foundingTier     = sbCredits && sbCredits.founding_tier ? sbCredits.founding_tier : "standard";
+  var foundingPosition = sbCredits && sbCredits.founding_position ? sbCredits.founding_position : null;
+  var isFounderCircle  = foundingTier === "founder_circle";
   var isFoundingOrPro = sbPlan==="founding" || sbPlan==="pro";
-  // Paid plans have no per-call wallet — showing a raw credit number (e.g.
-  // "150 credits") on a founding member's HUD reads like a metered allowance
-  // that should decrement, which is the opposite of what founding/pro buys.
-  // Render "Unlimited" so the meaning matches the entitlement.
+  // [PRICING credit-model] Only the Pro tier has truly unlimited credits.
+  // Founder Circle now meters at 150/week like Standard — the HUD shows the
+  // live count ticking down. isUnlimitedCredits gates the "Unlimited" label
+  // and the friendly credit-counter (which Pro doesn't need).
+  var isUnlimitedCredits = sbPlan==="pro";
   var creditsLabel = creditsLoaded
-    ? (isFoundingOrPro ? "Unlimited" : String(credits))
+    ? (isUnlimitedCredits ? "Unlimited" : String(credits))
     : "—";
   // [FRESH-TRENDS] Single source of truth for "this user has a paid
   // subscription" — mirrors PAID_PLANS in api/chat.js. Distinct from
@@ -5182,6 +6013,16 @@ function App() {
   const [planNudgeDismissed,setPlanNudgeDismissed] = useState(function(){
     try { return sessionStorage.getItem("virl_plan_nudge_shown")==="1"; } catch(e) { return false; }
   });
+  // [PRICING 3] First-login Founder Circle welcome banner. Dismissed
+  // permanently (localStorage, not sessionStorage) so members see it once
+  // and only once — first visit after their checkout completes.
+  const [founderWelcomeDismissed,setFounderWelcomeDismissed] = useState(function(){
+    try { return localStorage.getItem("virl_founder_welcome_seen")==="1"; } catch(e) { return false; }
+  });
+  function dismissFounderWelcome() {
+    try { localStorage.setItem("virl_founder_welcome_seen","1"); } catch(e) {}
+    setFounderWelcomeDismissed(true);
+  }
 
 
 
@@ -5190,9 +6031,14 @@ function App() {
   // instead of swallowing it into a generic "Something went wrong".
   // Hides real Stripe / config issues during testing — without this
   // fix, a missing annual price ID looks identical to a network blip.
-  async function handleCheckout(planType) {
+  // [PRICING 3] Tier defaults to "founder_circle" if FC spots remain,
+  // "standard" otherwise. Caller can override (e.g. the Standard CTA
+  // in the upgrade modal explicitly passes "standard").
+  async function handleCheckout(planType, tierOverride) {
     if (!session) return;
     setShowUpgrade(false);
+    var tier = tierOverride
+      || (foundingAvailable ? "founder_circle" : "standard");
     try {
       var res = await fetch("/api/create-checkout", {
         method: "POST",
@@ -5201,6 +6047,7 @@ function App() {
           userId: session.user.id,
           email: session.user.email,
           planType: planType||"monthly",
+          tier: tier,
         }),
       });
       var data = {};
@@ -5208,6 +6055,16 @@ function App() {
       if (data.url) {
         window.location.href = data.url;
         return;
+      }
+      // [PRICING 3] founder_circle_full is a deliberate signal from the
+      // server, not a generic failure — refresh the count + transparently
+      // retry on Standard so the user lands on a working checkout instead
+      // of staring at an error.
+      if (data.error === "founder_circle_full") {
+        setFoundingCount(FOUNDING_CAP);
+        if (tier === "founder_circle") {
+          return handleCheckout(planType, "standard");
+        }
       }
       var msg = data.message || data.error || ("Checkout failed (" + res.status + "). Please try again.");
       alert(msg);
@@ -5353,6 +6210,91 @@ function App() {
     setAdminLoading(false);
   }
 
+  // [CX-FIX 2] Open Stripe's hosted Customer Portal so the user can manage
+  // their own subscription — update card, view invoices, cancel — without
+  // emailing support. The endpoint validates the bearer token and looks up
+  // the user's stripe_customer_id; we just kick off a navigation.
+  const [portalLoading,setPortalLoading] = useState(false);
+  async function handleManageSubscription() {
+    if (!session) return;
+    setPortalLoading(true);
+    try {
+      var res = await fetch("/api/create-portal-session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:  "Bearer " + session.access_token,
+        },
+      });
+      var data = {};
+      try { data = await res.json(); } catch(e) {}
+      if (data.url) {
+        window.location.href = data.url;
+        return;
+      }
+      var msg = data.message || data.error || ("Couldn't open billing (" + res.status + ").");
+      alert(msg);
+    } catch (e) {
+      alert("Could not reach the billing service. Try again shortly.");
+    }
+    setPortalLoading(false);
+  }
+
+  // [CX-FIX 3] Change password while signed in. Separate from CX-FIX 1's
+  // recovery flow (that one runs after a "forgot password" email link
+  // click). Supabase's updateUser({password}) doesn't require the
+  // current password to succeed — the security backstop is the
+  // passwordChanged email that fires on every change (added in
+  // CX-FIX 1). If an attacker ever changes the password through a
+  // hijacked session, the real owner sees the email and can act.
+  const [changePwOpen,setChangePwOpen]   = useState(false);
+  const [changePwNew,setChangePwNew]     = useState("");
+  const [changePwConfirm,setChangePwConfirm] = useState("");
+  const [changePwBusy,setChangePwBusy]   = useState(false);
+  const [changePwErr,setChangePwErr]     = useState("");
+  const [changePwDone,setChangePwDone]   = useState(false);
+  function resetChangePwForm() {
+    setChangePwNew("");
+    setChangePwConfirm("");
+    setChangePwErr("");
+    setChangePwBusy(false);
+    setChangePwDone(false);
+  }
+  async function handleChangePassword() {
+    if (changePwNew.length < 8) { setChangePwErr("Password must be at least 8 characters."); return; }
+    if (changePwNew !== changePwConfirm) { setChangePwErr("Passwords don't match."); return; }
+    setChangePwBusy(true); setChangePwErr("");
+    try {
+      var result = await supabaseClient.auth.updateUser({ password: changePwNew });
+      if (result.error) {
+        setChangePwBusy(false);
+        setChangePwErr(result.error.message || "Could not update password.");
+        return;
+      }
+      // Fire the confirmation email — non-blocking; if it fails, the
+      // password change has already succeeded.
+      if (session) {
+        try {
+          await fetch("/api/email/password-changed", {
+            method: "POST",
+            headers: {
+              "Content-Type":  "application/json",
+              Authorization:   "Bearer " + session.access_token,
+            },
+          });
+        } catch(e) {}
+      }
+      setChangePwBusy(false);
+      setChangePwDone(true);
+      // Auto-collapse after a beat so the user reads the confirmation
+      // before the form vanishes.
+      setTimeout(function(){ resetChangePwForm(); setChangePwOpen(false); }, 1800);
+    } catch (e) {
+      setChangePwBusy(false);
+      setChangePwErr(e.message || "Could not update password.");
+    }
+  }
+
   async function handleDeleteAccount() {
     if (!session) return;
     setDeleteLoading(true);
@@ -5397,7 +6339,7 @@ function App() {
     ? "Upgrade anytime — 150 credits/week"
     : daysIntoTrial <= 11
       ? (TRIAL_DAYS - daysIntoTrial) + " days left — don't lose your plans"
-      : "Last chance — lock in founding rate";
+      : "Last chance — claim your Founder Circle spot";
 
   // [RESULTS-OVERHAUL] Cycle-end nudge. Was Sunday-only ("isSunday"); now
   // fires when each user's personal credit cycle is one day from
@@ -5461,6 +6403,10 @@ function App() {
     // {key:"algo",    label:"Algorithm"},
     {key:"vault",   label:"Vault ("+vault.length+")"},
     {key:"results", label:"Results"},
+    // [PRICING 3] Founder Circle tab — only visible to members. Includes
+    // Office Hours date, direct email to founder@govirl.ai, and the user's
+    // Founder Position number.
+    ...(isFounderCircle?[{key:"circle", label:"Founder Circle"}]:[]),
     ...(isAdmin?[{key:"admin", label:"Dashboard"}]:[]),
   ];
 
@@ -6064,6 +7010,101 @@ function App() {
       return next;
     });
   }
+  // [EDIT] Apply an in-place edit to one plan card. Mirrors the
+  // save/persist pattern from saveScriptForCard (immutable cards update +
+  // localStorage + Supabase under the same plan expiry). Extra job: when
+  // the title changes the buildCardId result changes too, which would
+  // orphan the localStorage saved/posted flags, the vault entry's id,
+  // and the results row's id. Migrating all three keeps "Saved" /
+  // "Posted" / "Logged" state stuck to the card after an edit.
+  function updateCardAt(cardIdx, updates) {
+    setCards(function(prev){
+      if (!prev || !Array.isArray(prev) || cardIdx < 0 || cardIdx >= prev.length) return prev;
+      var oldCard = prev[cardIdx];
+      var newCard = Object.assign({}, oldCard, updates);
+      var oldId = buildCardId(oldCard);
+      var newId = buildCardId(newCard);
+      var idChanged = oldId !== newId;
+      if (idChanged) {
+        try {
+          var savedAt  = localStorage.getItem("virl_saved_"  + oldId);
+          var postedAt = localStorage.getItem("virl_posted_" + oldId);
+          if (savedAt)  { localStorage.setItem("virl_saved_"  + newId, savedAt);  localStorage.removeItem("virl_saved_"  + oldId); }
+          if (postedAt) { localStorage.setItem("virl_posted_" + newId, postedAt); localStorage.removeItem("virl_posted_" + oldId); }
+        } catch(e){}
+        setVault(function(v){
+          return v.map(function(x){
+            return x.id === oldId
+              ? Object.assign({}, x, {
+                  id:          newId,
+                  title:       newCard.title,
+                  description: newCard.description || null,
+                  insight:     newCard.insight || newCard.why || null,
+                  why:         newCard.why || newCard.insight || null,
+                  hashtags:    Array.isArray(newCard.hashtags) ? newCard.hashtags.slice() : [],
+                })
+              : x;
+          });
+        });
+        setResults(function(r){
+          return r.map(function(x){
+            return x.id === oldId ? Object.assign({}, x, { id: newId, title: newCard.title }) : x;
+          });
+        });
+      }
+      var next = prev.slice();
+      next[cardIdx] = newCard;
+      var expiresAt;
+      try {
+        var current = JSON.parse(localStorage.getItem(KEY)||"{}");
+        expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
+          ? current.planExpiresAt : computePlanExpiry(sbCredits);
+        current.plan = next;
+        current.planExpiresAt = expiresAt;
+        localStorage.setItem(KEY, JSON.stringify(current));
+      } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
+      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot);
+      try {
+        // [LEARN-FROM-EDITS] When the profile opt-in is ON, capture
+        // per-field before/after text so the plan prompt can use the
+        // recent diffs as voice examples in future generations. Each
+        // value is truncated to 500 chars to keep the events payload
+        // small even if the user is editing long-form bodies. Arrays
+        // (hashtags, slides, frames, onScreenText) are serialized as
+        // compact JSON — the prompt-side formatter unpacks them. When
+        // the toggle is OFF we only log {fields touched} (no text),
+        // preserving the prior behavior so the events table doesn't
+        // backfill diffs the user didn't consent to.
+        var properties = {
+          cardIdx:   cardIdx,
+          fields:    Object.keys(updates),
+          idChanged: idChanged,
+        };
+        if (profile && profile.learnFromEdits) {
+          var TRUNC = 500;
+          function compact(v) {
+            if (v == null) return "";
+            if (Array.isArray(v) || typeof v === "object") {
+              try { v = JSON.stringify(v); } catch(e) { return ""; }
+            } else {
+              v = String(v);
+            }
+            return v.length > TRUNC ? v.slice(0, TRUNC) : v;
+          }
+          var changes = Object.keys(updates).map(function(field){
+            return {
+              field:  field,
+              before: compact(oldCard[field]),
+              after:  compact(updates[field]),
+            };
+          });
+          properties.changes = changes;
+        }
+        logEvent(session && session.user && session.user.id, "plan_card_edited", properties);
+      } catch(e){}
+      return next;
+    });
+  }
   function dismissExplainer() {
     setHasSeenExplainer(true);
     try { localStorage.setItem("virl_seen_explainer","1"); } catch(e) {}
@@ -6125,27 +7166,27 @@ function App() {
 
   // ── Auth gate - show loading, then auth screen, then app ────────────────
   if (appError) return (
-    <div style={{minHeight:"100vh",background:B.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px",fontFamily:"'Jost',sans-serif"}}>
+    <div style={{minHeight:"100vh",...brandHeroSurface,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px",fontFamily:"'Jost',sans-serif"}}>
       <div style={{textAlign:"center",maxWidth:360}}>
-        <div style={{fontFamily:"'Italiana',serif",fontSize:48,color:B.navy,marginBottom:8}}>VIRL</div>
-        <div style={{fontSize:15,fontWeight:600,color:B.ink,marginBottom:8}}>Something went wrong.</div>
-        <div style={{fontSize:13,fontWeight:300,color:B.muted,marginBottom:8,lineHeight:1.6}}>{"Error: "+String(appError)}</div>
-        <div style={{fontSize:13,fontWeight:300,color:B.muted,marginBottom:24,lineHeight:1.6}}>Try clearing your browser data for this site, then reload.</div>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:48,color:B.white,letterSpacing:"0.1em",marginBottom:8,lineHeight:1}}>VIRL</div>
+        <div style={{fontSize:15,fontWeight:600,color:B.white,marginBottom:8}}>Something went wrong.</div>
+        <div style={{fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.7)",marginBottom:8,lineHeight:1.6}}>{"Error: "+String(appError)}</div>
+        <div style={{fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.7)",marginBottom:24,lineHeight:1.6}}>Try clearing your browser data for this site, then reload.</div>
         <button onClick={function(){
           try{localStorage.clear();}catch(e){}
           window.location.reload();
         }}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 28px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",marginRight:8}}>
+          style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"14px 28px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",marginRight:8,boxShadow:"0 12px 28px rgba(15,23,42,0.18)"}}>
           Clear cache &amp; reload
         </button>
       </div>
     </div>
   );
   if (authLoading) return (
-    <div style={{minHeight:"100vh",background:B.bg,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{minHeight:"100vh",...brandHeroSurface,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{textAlign:"center"}}>
-        <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.navy,letterSpacing:"0.08em",marginBottom:12}}>VIRL</div>
-        <svg style={{animation:"spin .75s linear infinite"}} width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={B.sky} strokeWidth={2}>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:52,color:B.white,letterSpacing:"0.1em",marginBottom:12,lineHeight:1}}>VIRL</div>
+        <svg style={{animation:"spin .75s linear infinite"}} width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="rgba(147,197,253,0.9)" strokeWidth={2}>
           <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
         </svg>
       </div>
@@ -6154,6 +7195,14 @@ function App() {
 
   if (!session) return (
     <GateScreen onAuth={function(s){setSession(s);}}/>
+  );
+
+  // [CX-FIX 1] User clicked their password-reset email link. Show the
+  // set-new-password screen instead of the dashboard until they save a
+  // new password. SetNewPasswordScreen calls onDone() which flips this
+  // off and drops them into the normal dashboard.
+  if (passwordRecoveryMode) return (
+    <SetNewPasswordScreen onDone={function(){ setPasswordRecoveryMode(false); }}/>
   );
 
 return (
@@ -6301,59 +7350,153 @@ return (
                   boxShadow:selectedPlan==="annual"?"0 1px 3px rgba(0,0,0,0.08)":"none",
                   transition:"all .15s"
                 }}>
-                {foundingAvailable?"Annual — 3 months free":"Annual — save $51"}
+                {foundingAvailable?"Annual — save $25":"Annual — save $51"}
               </button>
             </div>
 
-            {foundingAvailable&&(
-              <div style={{background:B.navySoft,borderRadius:12,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founding</div>
-                <div style={{flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,lineHeight:1.4}}>
+            {/* [PRICING 3] Spots-remaining banner above the cards. When FC is
+                full, this becomes the celebration / sold-out copy. */}
+            {foundingAvailable ? (
+              <div style={{
+                background:B.navySoft,borderRadius:12,padding:"10px 14px",marginBottom:14,
+                display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"
+              }}>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                  letterSpacing:"0.18em",textTransform:"uppercase",
+                  padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99
+                }}>Founder Circle</div>
+                <div style={{
+                  flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",
+                  fontSize:12,fontWeight:600,color:B.navy,lineHeight:1.4
+                }}>
                   {foundingCount!==null
-                    ? "Founding member rate — only " + (FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " spots left"
-                    : "Founding member rate — limited to the first " + FOUNDING_CAP}
+                    ? (FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " spots left"
+                    : "First " + FOUNDING_CAP + " paying members — $20/mo for life"}
                 </div>
+              </div>
+            ) : (
+              <div style={{
+                background:B.navySoft,borderRadius:12,padding:"12px 14px",marginBottom:14,
+                fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,
+                color:B.navy,lineHeight:1.5,textAlign:"center"
+              }}>
+                The Founder Circle is full – thank you to the 50 believers.
               </div>
             )}
 
+            {/* [PRICING 3] Two-tier card stack. Founder Circle on top
+                (primary, navy) when available, Standard always shown as the
+                fallback. When FC is full, only Standard renders. */}
             <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
-              {/* [CHANGE 2a] Single price card driven by selectedPlan.
-                  Founding pricing is shown alongside struck-through standard
-                  pricing whenever a founding spot is still open, so users see
-                  the same number on Stripe's checkout page (the founding
-                  coupon is applied server-side in api/create-checkout.js). */}
-              <div style={{background:B.navy,borderRadius:16,padding:"18px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"}}
-                onClick={function(){handleCheckout(selectedPlan);}}>
+              {foundingAvailable && (
+                <div style={{
+                  background:B.navy,borderRadius:16,padding:"18px 20px",
+                  display:"flex",alignItems:"center",justifyContent:"space-between",
+                  gap:12,cursor:"pointer",boxShadow:"0 4px 14px rgba(31,58,138,0.25)"
+                }}
+                  onClick={function(){handleCheckout(selectedPlan,"founder_circle");}}>
+                  <div style={{flex:1}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
+                      <div style={{
+                        fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                        letterSpacing:"0.2em",textTransform:"uppercase",
+                        color:"rgba(255,255,255,0.6)"
+                      }}>Founder Circle &middot; {selectedPlan==="annual"?"Annual":"Monthly"}</div>
+                      {selectedPlan==="annual"&&(
+                        <div style={{
+                          fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                          padding:"2px 8px",background:B.green,color:"white",
+                          borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"
+                        }}>Save $25</div>
+                      )}
+                    </div>
+                    <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:"white",lineHeight:1}}>
+                        {selectedPlan==="annual"?"$215/yr":"$20/mo"}
+                      </div>
+                      <div style={{
+                        fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,
+                        color:"rgba(255,255,255,0.55)"
+                      }}>
+                        {selectedPlan==="annual"
+                          ? "locked for life"
+                          : "locked for life"}
+                      </div>
+                    </div>
+                    <div style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,
+                      color:"rgba(255,255,255,0.7)",lineHeight:1.5,marginTop:8
+                    }}>
+                      Direct line to Lauren &middot; Monthly Office Hours &middot; Beta access first
+                    </div>
+                  </div>
+                  <div style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                    letterSpacing:"0.06em",textTransform:"uppercase",color:"white",
+                    background:"rgba(255,255,255,0.12)",padding:"8px 14px",
+                    borderRadius:99,flexShrink:0
+                  }}>
+                    Claim
+                  </div>
+                </div>
+              )}
+
+              {/* [PRICING 3] Standard card — primary when FC is full, secondary
+                  when FC is available. Visual de-emphasis through a softer
+                  background + smaller price type so the Founder Circle option
+                  reads as the lead choice without hiding the alternative. */}
+              <div style={{
+                background:foundingAvailable?B.white:B.navy,
+                border:foundingAvailable?"1px solid "+B.border:"none",
+                borderRadius:16,padding:"16px 20px",
+                display:"flex",alignItems:"center",justifyContent:"space-between",
+                gap:12,cursor:"pointer",
+                boxShadow:foundingAvailable?"none":"0 4px 14px rgba(31,58,138,0.25)"
+              }}
+                onClick={function(){handleCheckout(selectedPlan,"standard");}}>
                 <div style={{flex:1}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.6)"}}>{selectedPlan==="annual"?"Annual":"Monthly"}</div>
-                    {foundingAvailable&&(
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:"rgba(255,255,255,0.18)",color:B.white,borderRadius:99,letterSpacing:"0.15em",textTransform:"uppercase"}}>Founding</div>
-                    )}
+                    <div style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                      letterSpacing:"0.2em",textTransform:"uppercase",
+                      color:foundingAvailable?B.muted:"rgba(255,255,255,0.6)"
+                    }}>Standard &middot; {selectedPlan==="annual"?"Annual":"Monthly"}</div>
                     {selectedPlan==="annual"&&(
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,padding:"2px 8px",background:B.green,color:"white",borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"}}>{foundingAvailable?"3 months free":"2 months free"}</div>
+                      <div style={{
+                        fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                        padding:"2px 8px",
+                        background:foundingAvailable?B.navySoft:"rgba(255,255,255,0.18)",
+                        color:foundingAvailable?B.navy:B.white,
+                        borderRadius:99,letterSpacing:"0.1em",textTransform:"uppercase"
+                      }}>Save $51</div>
                     )}
                   </div>
                   <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
-                    <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:"white",lineHeight:1}}>
-                      {selectedPlan==="annual"
-                        ? (foundingAvailable?"$225/yr":"$249/yr")
-                        : (foundingAvailable?"$20/mo":"$25/mo")}
+                    <div style={{
+                      fontFamily:"'Italiana',serif",
+                      fontSize:foundingAvailable?22:30,
+                      color:foundingAvailable?B.ink:"white",
+                      lineHeight:1
+                    }}>
+                      {selectedPlan==="annual"?"$249/yr":"$25/mo"}
                     </div>
-                    {foundingAvailable&&(
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.45)",textDecoration:"line-through"}}>
-                        {selectedPlan==="annual"?"$249/yr":"$25/mo"}
-                      </div>
-                    )}
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.55)"}}>
-                      {selectedPlan==="annual"
-                        ? (foundingAvailable?"saves $75 vs monthly":"saves $51")
-                        : "cancel anytime"}
+                    <div style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,
+                      color:foundingAvailable?B.muted:"rgba(255,255,255,0.55)"
+                    }}>
+                      cancel anytime
                     </div>
                   </div>
                 </div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:"white",background:"rgba(255,255,255,0.12)",padding:"8px 14px",borderRadius:99,flexShrink:0}}>
-                  Get started
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                  letterSpacing:"0.06em",textTransform:"uppercase",
+                  color:foundingAvailable?B.navy:"white",
+                  background:foundingAvailable?B.bg:"rgba(255,255,255,0.12)",
+                  padding:"8px 14px",borderRadius:99,flexShrink:0
+                }}>
+                  {foundingAvailable ? "Choose" : "Get started"}
                 </div>
               </div>
             </div>
@@ -6408,15 +7551,24 @@ return (
                 <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?"#F43F5E":"#3B82F6"}}/>
                 <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.5)"}}>{creditsLabel+" credit"+(credits===1?"":"s")}</span>
               </div>
-              {isFoundingOrPro&&<span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:"#10B981"}}>Pro</span>}
+              {/* [PRICING 3] Founder Circle members get a distinct badge with
+                  their position number. Standard paid users keep the existing
+                  "Pro" green badge. */}
+              {isFounderCircle ? (
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",color:B.sky}}>
+                  {foundingPosition ? "Founder #"+foundingPosition : "Founder Circle"}
+                </span>
+              ) : (isFoundingOrPro && (
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:"#10B981"}}>Pro</span>
+              ))}
             </div>
             {/* [TASK 8] Friendly credit counter — translates raw credits into
                 concrete actions so users see value instead of tokens. Only
                 renders in the useful middle range (3-150 inclusive); below 3
-                the low-credit banner takes over and above 150 the user is on
-                a paid tier and doesn't need reassurance. Founding/Pro skip
-                entirely — they have no metered allowance to translate. */}
-            {!isFoundingOrPro&&credits>=3&&credits<=150&&(
+                the low-credit banner takes over. [PRICING credit-model] Only
+                Pro skips it now — Founder Circle is metered like Standard and
+                benefits from the same translation. */}
+            {!isUnlimitedCredits&&credits>=3&&credits<=150&&(
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.35)",marginTop:4,marginLeft:11,lineHeight:1.35}}>
                 {"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans, "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions, "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
               </div>
@@ -6439,27 +7591,74 @@ return (
         </div>
       </div>
 
-      <nav id="virl-topnav" style={{background:B.black,position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 8px rgba(0,0,0,0.2)"}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 16px",height:52,borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
-          <a href="/" style={{textDecoration:"none"}}>
-            <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.white,letterSpacing:"0.06em"}}>VIRL</div>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:8,fontWeight:400,fontStyle:"italic",color:"#93C5FD"}}>Finally, a strategy that sounds like you.</div>
+      {/* Mobile top nav — landing-aligned WHITE header treatment.
+           Previously a pure-black bar with translucent-white elements;
+           that read as harsh and unrelated to the marketing site. The
+           landing uses a clean white header with navy logo + navy pill
+           CTA on the right, so the authenticated app now mirrors that
+           pattern exactly. Desktop sidebar (CSS hidden ≥900px) stays
+           navy — the two-tone effect of white header + navy sidebar is
+           the landing's hero structure transplanted into the app shell. */}
+      {/* Mobile top nav — warm-bone editorial masthead. Pure white was
+           correct but cold ("B2B SaaS chrome"); this revision swaps the
+           background to a warm bone tone, mirrors the navy hero's dot
+           pattern (inverted to dark dots on light), softens the divider
+           to a navy hairline at 8% alpha, and demotes the credits pill
+           + sign-out from filled chrome to outline-only data. The
+           wordmark is bumped to 26px / 0.16em letterspacing to match
+           the landing's nav exactly. Goal: feel like a magazine
+           masthead, not a SaaS toolbar. */}
+      {/* Mobile top nav — navy hero treatment matching the govirl.ai
+           hero (and the auth flow already using brandHeroSurface). The
+           bone variant felt more "considered" but read closer to the
+           rest of the light-gray app than to the brand's navy hero;
+           moving the chrome to navy gives the app a strong brand
+           anchor at the top and lets the content area below feel
+           lighter by contrast. Wordmark white, refined letterspacing
+           kept. Active tab underline switches to sky for legibility
+           against navy. */}
+      <nav id="virl-topnav" style={{...brandHeroSurface,position:"sticky",top:0,zIndex:100}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 18px",height:60,borderBottom:brandHeroHairline}}>
+          <a href="/" style={{textDecoration:"none",display:"flex",alignItems:"center"}}>
+            <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,letterSpacing:"0.16em",lineHeight:1}}>VIRL</div>
           </a>
-          <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{display:"flex",alignItems:"center",gap:5,background:creditsLoaded&&credits<=5?"rgba(244,63,94,0.15)":"rgba(59,130,246,0.12)",borderRadius:99,padding:"4px 10px"}}>
-              <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.sky}}/>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:creditsLoaded&&credits<=5?B.coral:B.white}}>{creditsLabel+" credits"}</div>
+          <div style={{display:"flex",alignItems:"center",gap:14}}>
+            {/* Credits as outline-only data on the navy field. Coral
+                outline + text when low so the urgency still registers. */}
+            <div style={{display:"flex",alignItems:"center",gap:7,background:"transparent",borderRadius:99,padding:"5px 12px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.55)":"rgba(255,255,255,0.32)")}}>
+              <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.white}}/>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.04em",color:creditsLoaded&&credits<=5?B.coral:B.white}}>{creditsLabel+" credits"}</div>
             </div>
+            {/* [PRICING 3] Founder Circle pill in the mobile topnav. Position
+                number reads as a quiet point of pride next to the credits
+                widget without competing for visual weight. */}
+            {isFounderCircle && (
+              <div style={{
+                display:"flex",alignItems:"center",
+                background:"rgba(125,211,252,0.14)",
+                border:"1px solid rgba(125,211,252,0.35)",
+                borderRadius:99,padding:"5px 12px"
+              }}>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                  letterSpacing:"0.06em",color:B.sky
+                }}>
+                  {foundingPosition ? "Founder #"+foundingPosition : "Founder"}
+                </div>
+              </div>
+            )}
+            {/* Sign out as a text link, not a button. Translucent
+                white reads as a quiet utility against the navy. */}
             <button onClick={function(){clearLocalUserData();supabaseClient.auth.signOut();}}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"5px 10px",background:"rgba(255,255,255,0.07)",color:"rgba(255,255,255,0.45)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:6,cursor:"pointer"}}>
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:500,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 2px",background:"transparent",color:"rgba(255,255,255,0.55)",border:"none",cursor:"pointer",lineHeight:1}}>
               Sign out
             </button>
           </div>
         </div>
-        <div style={{display:"flex",gap:0,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",padding:"0 8px"}}>
+        <div style={{display:"flex",gap:0,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",padding:"0 10px",borderBottom:brandHeroHairline}}>
           {TABS.map(function(t){return (
             <button key={t.key} onClick={function(){setTab(t.key);}}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 12px",background:"transparent",color:tab===t.key?B.white:"rgba(255,255,255,0.45)",border:"none",borderBottom:tab===t.key?"2px solid "+B.sky:"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s",position:"relative"}}>
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:tab===t.key?700:500,letterSpacing:"0.1em",textTransform:"uppercase",padding:"13px 12px",background:"transparent",color:tab===t.key?B.white:"rgba(255,255,255,0.5)",border:"none",borderBottom:tab===t.key?"2px solid "+B.sky:"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s",position:"relative"}}>
               {t.label}
               {t.key==="profile"&&!profileComplete&&<span style={{position:"absolute",top:6,right:6,width:5,height:5,borderRadius:"50%",background:B.sky}}/>}
             </button>
@@ -6476,9 +7675,9 @@ return (
           <div style={{background:B.coralSoft,borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:12}}>
             <div style={{flex:1,minWidth:0,fontFamily:"'Jost',sans-serif",fontSize:13,color:B.coral,lineHeight:1.5}}>
               {daysIntoTrial===11&&(<span><span style={{fontWeight:700}}>3 days left</span> in your free trial</span>)}
-              {daysIntoTrial===12&&foundingAvailable&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – lock in 20% off your first year"}</span>)}
+              {daysIntoTrial===12&&foundingAvailable&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – lock in $20/mo for life (Founder Circle)"}</span>)}
               {daysIntoTrial===12&&!foundingAvailable&&(<span><span style={{fontWeight:700}}>2 days left</span>{" – pick a plan to keep your momentum"}</span>)}
-              {daysIntoTrial===13&&foundingAvailable&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – continue for $20/mo (save $60 year one)"}</span>)}
+              {daysIntoTrial===13&&foundingAvailable&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – lock in $20/mo for life (Founder Circle)"}</span>)}
               {daysIntoTrial===13&&!foundingAvailable&&(<span><span style={{fontWeight:700}}>Last day of trial</span>{" – continue for $25/mo or $249/yr (2 months free)"}</span>)}
             </div>
             <button onClick={function(){ setUpgradeReason("trial"); setShowUpgrade(true); }}
@@ -6508,6 +7707,66 @@ return (
               style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 12px",background:B.coral,color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
               Upgrade
             </button>
+          </div>
+        )}
+
+        {/* [PRICING 3] First-login Founder Circle welcome. Renders on every
+            tab until the member dismisses it once (localStorage persisted).
+            The "Office Hours" detail nods at the brief without committing
+            to a specific date string — that lives on the Founder Circle tab. */}
+        {isFounderCircle && !founderWelcomeDismissed && (
+          <div style={{
+            background:B.navy,borderRadius:16,padding:"18px 22px",marginBottom:18,
+            color:B.white,boxShadow:"0 4px 14px rgba(31,58,138,0.18)"
+          }}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                  letterSpacing:"0.18em",textTransform:"uppercase",
+                  color:B.sky,marginBottom:6
+                }}>
+                  Welcome to the Founder Circle
+                </div>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:"white",lineHeight:1.2,marginBottom:8}}>
+                  Your $20/month pricing is locked for life.
+                </div>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,
+                  color:"rgba(255,255,255,0.75)",lineHeight:1.55
+                }}>
+                  Lauren will be in touch about our first Office Hours call. In the meantime, you can find everything – Office Hours date, direct email to Lauren, your position number – on the Founder Circle tab.
+                </div>
+              </div>
+              <button onClick={dismissFounderWelcome} aria-label="Dismiss"
+                style={{
+                  background:"none",border:"none",color:"rgba(255,255,255,0.55)",
+                  fontSize:20,cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0
+                }}>
+                {"×"}
+              </button>
+            </div>
+            <div style={{display:"flex",gap:12,marginTop:14,flexWrap:"wrap"}}>
+              <button onClick={function(){setTab("circle");dismissFounderWelcome();}}
+                style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                  letterSpacing:"0.08em",textTransform:"uppercase",
+                  padding:"8px 16px",background:B.white,color:B.navy,
+                  border:"none",borderRadius:99,cursor:"pointer"
+                }}>
+                See Founder Circle
+              </button>
+              <button onClick={dismissFounderWelcome}
+                style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,
+                  letterSpacing:"0.08em",textTransform:"uppercase",
+                  padding:"8px 16px",background:"transparent",
+                  color:"rgba(255,255,255,0.7)",
+                  border:"1px solid rgba(255,255,255,0.25)",borderRadius:99,cursor:"pointer"
+                }}>
+                Got it
+              </button>
+            </div>
           </div>
         )}
 
@@ -6577,8 +7836,128 @@ return (
               }
             }}/>
 
+            {/* [CX-FIX 3] Change password — visible to every signed-in
+                user. Collapsed by default to keep the profile page tidy;
+                expands into a two-field form on click. The passwordChanged
+                email (CX-FIX 1) is the security backstop so we don't have
+                to gate this on current-password reauth. */}
+            <div style={{marginTop:48,paddingTop:20,borderTop:"1px solid "+B.divider}}>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                letterSpacing:"0.18em",textTransform:"uppercase",
+                color:B.muted,marginBottom:14,textAlign:"center"
+              }}>Account security</div>
+              {!changePwOpen ? (
+                <div style={{textAlign:"center"}}>
+                  <button onClick={function(){setChangePwOpen(true);}}
+                    style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,
+                      letterSpacing:"0.04em",padding:"8px 18px",
+                      background:"transparent",color:B.navy,
+                      border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"
+                    }}>
+                    Change password
+                  </button>
+                </div>
+              ) : (
+                <div style={{
+                  background:B.bg,border:"1px solid "+B.border,
+                  borderRadius:14,padding:"20px",maxWidth:380,margin:"0 auto"
+                }}>
+                  {changePwDone ? (
+                    <div style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:13,
+                      color:B.green,textAlign:"center",padding:"4px 0"
+                    }}>
+                      Password updated. Check your inbox for confirmation.
+                    </div>
+                  ) : (
+                    <React.Fragment>
+                      <div style={{
+                        fontFamily:"'Jost',sans-serif",fontSize:12,
+                        fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:14
+                      }}>
+                        Choose something at least 8 characters. We'll email you a confirmation once it's saved.
+                      </div>
+                      <input type="password" value={changePwNew} placeholder="New password"
+                        onChange={function(e){setChangePwNew(e.target.value);setChangePwErr("");}}
+                        style={{
+                          width:"100%",fontFamily:"'Jost',sans-serif",fontSize:13,
+                          padding:"11px 13px",border:"1px solid "+B.border,
+                          borderRadius:10,marginBottom:10,boxSizing:"border-box",
+                          background:B.white
+                        }}/>
+                      <input type="password" value={changePwConfirm} placeholder="Confirm new password"
+                        onChange={function(e){setChangePwConfirm(e.target.value);setChangePwErr("");}}
+                        style={{
+                          width:"100%",fontFamily:"'Jost',sans-serif",fontSize:13,
+                          padding:"11px 13px",border:"1px solid "+B.border,
+                          borderRadius:10,marginBottom:12,boxSizing:"border-box",
+                          background:B.white
+                        }}/>
+                      {changePwErr && (
+                        <div style={{
+                          fontFamily:"'Jost',sans-serif",fontSize:12,
+                          color:B.coral,marginBottom:12,textAlign:"center"
+                        }}>{changePwErr}</div>
+                      )}
+                      <div style={{display:"flex",gap:10}}>
+                        <button onClick={function(){resetChangePwForm();setChangePwOpen(false);}}
+                          style={{
+                            flex:1,fontFamily:"'Jost',sans-serif",fontSize:12,
+                            fontWeight:600,color:B.muted,background:B.bg,
+                            border:"1px solid "+B.border,borderRadius:10,
+                            padding:"11px",cursor:"pointer"
+                          }}>
+                          Cancel
+                        </button>
+                        <button onClick={handleChangePassword}
+                          disabled={changePwBusy||!changePwNew||!changePwConfirm}
+                          style={{
+                            flex:1,fontFamily:"'Jost',sans-serif",fontSize:12,
+                            fontWeight:700,color:B.white,
+                            background:changePwBusy?B.muted:B.navy,
+                            border:"none",borderRadius:10,
+                            padding:"11px",cursor:changePwBusy?"default":"pointer"
+                          }}>
+                          {changePwBusy?"Saving...":"Save password"}
+                        </button>
+                      </div>
+                    </React.Fragment>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* [CX-FIX 2] Self-serve billing for paid members — opens the
+                Stripe Customer Portal to update card, view invoices, or
+                cancel. Hidden for free / trial users since there's no
+                subscription to manage. Sits above the Danger zone so the
+                most common action ("update my card") is the more prominent
+                of the two account-management buttons. */}
+            {isPaid && (
+              <div style={{marginTop:32,paddingTop:20,borderTop:"1px solid "+B.divider,textAlign:"center"}}>
+                <button onClick={handleManageSubscription} disabled={portalLoading}
+                  style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,
+                    letterSpacing:"0.06em",textTransform:"uppercase",
+                    padding:"10px 22px",background:portalLoading?B.muted:B.navy,
+                    color:B.white,border:"none",borderRadius:99,
+                    cursor:portalLoading?"default":"pointer"
+                  }}>
+                  {portalLoading?"Opening...":"Manage subscription"}
+                </button>
+                <div style={{
+                  fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,
+                  color:B.muted,marginTop:10,lineHeight:1.5
+                }}>
+                  Update payment, view invoices, or cancel.
+                </div>
+              </div>
+            )}
+
             {/* ── Danger zone — subtle, at the very bottom ────────────── */}
-            <div style={{marginTop:48,paddingTop:20,borderTop:"1px solid "+B.divider,textAlign:"center"}}>
+            <div style={{marginTop:isPaid?32:48,paddingTop:20,borderTop:"1px solid "+B.divider,textAlign:"center"}}>
               {!showDeleteConfirm?(
                 <button onClick={function(){setShowDeleteConfirm(true);}}
                   style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,color:B.muted,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",textDecorationColor:"rgba(100,116,139,0.4)",textUnderlineOffset:"3px"}}>
@@ -6783,7 +8162,7 @@ return (
                       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                         <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy,lineHeight:1.2}}>{"✦ Loving this plan?"}</div>
                         {foundingAvailable&&(
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founding</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founder Circle</div>
                         )}
                       </div>
                       <button onClick={function(){ setPlanNudgeDismissed(true); }} aria-label="Dismiss"
@@ -6793,12 +8172,12 @@ return (
                     </div>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,marginTop:6,lineHeight:1.55}}>
                       {foundingAvailable
-                        ? "Lock in founding pricing — 150 credits every week. Plans, captions, scans, and scripts, every single week."
+                        ? "Lock in $20/month for life as a Founder Circle member — 150 credits every week. Plans, captions, scans, and scripts."
                         : "Upgrade to Standard — 150 credits every week. Plans, captions, scans, and scripts, every single week."}
                     </div>
                     {foundingAvailable&&foundingCount!==null&&(
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",color:B.blue,marginTop:6}}>
-                        {(FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " founding spots left"}
+                        {(FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " Founder Circle spots left"}
                       </div>
                     )}
                     <div style={{display:"flex",alignItems:"center",gap:14,marginTop:12,flexWrap:"wrap"}}>
@@ -6807,7 +8186,7 @@ return (
                           setShowUpgrade(true);
                         }}
                         style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-                        {foundingAvailable?"Upgrade for $225/yr →":"Upgrade for $249/yr →"}
+                        {foundingAvailable?"Upgrade for $215/yr →":"Upgrade for $249/yr →"}
                       </button>
                       <button onClick={function(){ setPlanNudgeDismissed(true); }}
                         style={{background:"none",border:"none",color:B.muted,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,cursor:"pointer",padding:0}}>
@@ -6914,84 +8293,167 @@ return (
                     </div>
                   );
                 })()}
-                {/* Strategy hero card — written by VIRL alongside the cards.
-                    Frames the week so the user sees the thesis + audience
-                    read + success metric + what VIRL is betting on, instead
-                    of a flat list of tasks. */}
-                {strategy && (strategy.thesis || strategy.the_bet) && (
-                  <div style={{background:B.navy,borderRadius:16,padding:"22px 24px",marginBottom:16,boxShadow:"0 4px 20px rgba(31,58,138,0.18)"}}>
-                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.sky}}>This week's strategy</div>
-                      <button onClick={regenerateStrategy} disabled={strategyRegenLoading}
-                        title="Re-frame this same plan with a different angle"
-                        style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",padding:"5px 10px",background:"rgba(255,255,255,0.08)",color:"rgba(255,255,255,0.85)",border:"1px solid rgba(255,255,255,0.18)",cursor:strategyRegenLoading?"default":"pointer",borderRadius:99,opacity:strategyRegenLoading?0.55:1}}>
-                        {strategyRegenLoading ? "Reframing…" : "Try a different angle"}
-                      </button>
-                    </div>
-                    {strategy.thesis && (
-                      <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.25,marginBottom:18,opacity:strategyRegenLoading?0.55:1}}>{strategy.thesis}</div>
-                    )}
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))",gap:14}}>
-                      {strategy.the_bet && (
-                        <div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>The bet</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.9)",lineHeight:1.55}}>{strategy.the_bet}</div>
-                        </div>
-                      )}
-                      {strategy.optimizing_for && (
-                        <div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Optimizing for</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.9)",lineHeight:1.55}}>{strategy.optimizing_for}</div>
-                        </div>
-                      )}
-                      {strategy.audience_read && (
-                        <div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Audience read</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.9)",lineHeight:1.55}}>{strategy.audience_read}</div>
-                        </div>
-                      )}
-                      {strategy.success_metric && (
-                        <div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>Success looks like</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.white,lineHeight:1.55}}>{strategy.success_metric}</div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                {/* [S2] Strategy hero card — editorial hierarchy, not a
+                    flat grid. The previous version gave thesis / the_bet /
+                    optimizing_for / audience_read / success_metric equal
+                    weight as four boxes in a grid, which read as a wall of
+                    text. The new layout ranks them: thesis as the headline,
+                    success_metric as a row of stat tiles (the scoreboard),
+                    optimizing_for + audience_read side-by-side as the
+                    supporting reads, the_bet as the closing strategist note
+                    with a sky-blue accent rule.
 
-                <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:8}}>
+                    success_metric arrives as an ARRAY of {value, label}
+                    from the new prompt shape. Legacy plans stored the
+                    field as a free-form string; those render as a single
+                    full-width tile so old plans still look intentional
+                    until the user regenerates. */}
+                {strategy && (strategy.thesis || strategy.the_bet) && (function(){
+                  var smRaw = strategy.success_metric;
+                  var smTiles = [];
+                  var smLegacy = false;
+                  if (Array.isArray(smRaw)) {
+                    smTiles = smRaw.filter(function(m){ return m && (m.value || m.label); }).slice(0, 4);
+                  } else if (typeof smRaw === "string" && smRaw.trim()) {
+                    smTiles = [{ value: "", label: smRaw.trim() }];
+                    smLegacy = true;
+                  }
+                  var hasSidePair = !!(strategy.optimizing_for || strategy.audience_read);
+                  var hasTiles    = smTiles.length > 0;
+                  var hasBet      = !!strategy.the_bet;
+                  return (
+                    <div style={{background:B.navy,borderRadius:16,padding:"24px 26px",marginBottom:16,boxShadow:"0 4px 20px rgba(31,58,138,0.18)"}}>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.sky}}>This week's strategy</div>
+                        <button onClick={regenerateStrategy} disabled={strategyRegenLoading}
+                          title="Re-frame this same plan with a different angle"
+                          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"7px 14px",background:strategyRegenLoading?"rgba(255,255,255,0.06)":"rgba(255,255,255,0.14)",color:B.white,border:"1px solid rgba(255,255,255,0.32)",cursor:strategyRegenLoading?"default":"pointer",borderRadius:99,opacity:strategyRegenLoading?0.55:1,transition:"all .15s"}}>
+                          {strategyRegenLoading ? "Reframing…" : "Try a different angle"}
+                        </button>
+                      </div>
+                      {strategy.thesis && (
+                        <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.25,marginBottom:(hasTiles || hasSidePair || hasBet) ? 20 : 0,opacity:strategyRegenLoading?0.55:1}}>{strategy.thesis}</div>
+                      )}
+                      {hasTiles && (
+                        <div style={{display:"grid",gridTemplateColumns:smLegacy ? "1fr" : "repeat(auto-fit, minmax(120px, 1fr))",gap:10,marginBottom:(hasSidePair || hasBet) ? 18 : 0}}>
+                          {smTiles.map(function(tile, i){
+                            return (
+                              <div key={i} style={{background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,padding:"12px 14px"}}>
+                                {tile.value && (
+                                  <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,lineHeight:1.05,marginBottom:4}}>{tile.value}</div>
+                                )}
+                                {!tile.value && smLegacy && (
+                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>Success looks like</div>
+                                )}
+                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:smLegacy?13:10,fontWeight:smLegacy?400:600,letterSpacing:smLegacy?"0":"0.06em",textTransform:smLegacy?"none":"uppercase",color:smLegacy?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.6)",lineHeight:smLegacy?1.55:1.4}}>{tile.label}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {hasSidePair && (
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))",gap:18,marginBottom:hasBet ? 18 : 0}}>
+                          {strategy.optimizing_for && (
+                            <div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Optimizing for</div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.optimizing_for}</div>
+                            </div>
+                          )}
+                          {strategy.audience_read && (
+                            <div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Audience read</div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.audience_read}</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {hasBet && (
+                        <div style={{borderLeft:"2px solid "+B.sky,paddingLeft:14}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>The bet</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontStyle:"italic",fontWeight:300,color:B.white,lineHeight:1.55}}>{strategy.the_bet}</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink}}>Your <span style={{color:B.navy}}>week</span></div>
                   <div style={{flex:1,height:1,background:B.border}}/>
                 </div>
-                {cards.reduce(function(acc,card,i){
-                  if (!card||typeof card!=="object"||!card.title) return acc;
-                  const prevDay = i>0?cards[i-1].day:"";
-                  if (card.day!==prevDay) {
-                    acc.push(
-                      <div key={"day-"+i} style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",color:B.navy,padding:"4px 0",marginTop:i>0?16:0,marginBottom:4,borderBottom:"2px solid "+B.navySoft}}>
-                        {card.day}
+                {/* Group cards into day-buckets so each day can be
+                    rendered as a discrete editorial "chapter" — today
+                    gets a sky-tinted hero wash + "Today, Friday" Italiana
+                    header, other days get Italiana day-name headers
+                    without the wash. The previous flat reduce treated
+                    every day identically, which made a 14-card week
+                    read as one uniform stack with no visual rhythm. */}
+                {(function(){
+                  // Build a [{ day, items: [{card, idx}] }] structure
+                  // out of the flat cards array. Cards already arrive
+                  // chronologically from the generator, so a simple
+                  // sequential scan + day-change detection groups
+                  // them correctly.
+                  var groups = [];
+                  cards.forEach(function(card, i){
+                    if (!card || typeof card !== "object" || !card.title) return;
+                    var last = groups[groups.length - 1];
+                    if (!last || last.day !== card.day) {
+                      groups.push({ day: card.day, items: [{ card: card, idx: i }] });
+                    } else {
+                      last.items.push({ card: card, idx: i });
+                    }
+                  });
+                  return groups.map(function(group, gi){
+                    var isToday   = isTodayDayLabel(group.day);
+                    var dayName   = parseDayName(group.day);
+                    // Section wrapper. Today gets a sky-soft wash with
+                    // hairline border so the chapter reads as elevated
+                    // without becoming loud. Other days are transparent
+                    // — they share the page background.
+                    var sectionStyle = isToday
+                      ? {background:B.skySoft,borderRadius:18,border:"1px solid rgba(59,130,246,0.18)",padding:"18px 16px 14px",marginTop:gi>0?20:0,marginBottom:8}
+                      : {marginTop:gi>0?28:0,marginBottom:8};
+                    return (
+                      <div key={"daygroup-"+gi} style={sectionStyle}>
+                        {isToday ? (
+                          <div style={{marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(59,130,246,0.22)"}}>
+                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.24em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Up next</div>
+                            <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.05,letterSpacing:"-0.005em"}}>
+                              {"Today, "}<span style={{color:B.sky,fontStyle:"italic"}}>{dayName}</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{display:"flex",alignItems:"baseline",gap:14,marginBottom:10}}>
+                            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.navy,lineHeight:1,letterSpacing:"0.01em"}}>{dayName}</div>
+                            <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
+                          </div>
+                        )}
+                        {group.items.map(function(item){
+                          var card = item.card;
+                          var i    = item.idx;
+                          return (
+                            <PlanCard key={i} card={card} idx={i}
+                              onSave={saveToVault} onLog={logResult}
+                              onSaveScript={saveScriptForCard}
+                              onEdit={updateCardAt}
+                              saved={vault.some(function(v){return v.id===card.title+card.day;})}
+                              result={results.find(function(r){return r.id===card.title+card.day;})}
+                              profile={profile}
+                              userToken={userToken}
+                              onCreditsUsed={refreshCredits}
+                              editMode={editMode}
+                              markedReplace={replaceSet.has(i)}
+                              onToggleReplace={toggleReplaceAt}
+                              replacing={partialReplacing.has(i)}
+                              usedFreshTrends={planUsedFreshTrends}
+                            />
+                          );
+                        })}
                       </div>
                     );
-                  }
-                  acc.push(
-                    <PlanCard key={i} card={card} idx={i}
-                      onSave={saveToVault} onLog={logResult}
-                      onSaveScript={saveScriptForCard}
-                      saved={vault.some(function(v){return v.id===card.title+card.day;})}
-                      result={results.find(function(r){return r.id===card.title+card.day;})}
-                      profile={profile}
-                      userToken={userToken}
-                      onCreditsUsed={refreshCredits}
-                      editMode={editMode}
-                      markedReplace={replaceSet.has(i)}
-                      onToggleReplace={toggleReplaceAt}
-                      replacing={partialReplacing.has(i)}
-                      usedFreshTrends={planUsedFreshTrends}
-                    />
-                  );
-                  return acc;
-                },[])}
+                  });
+                })()}
                 <div style={{background:B.navy,borderRadius:16,padding:"20px 24px",marginTop:8,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
                   <div>
                     <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,marginBottom:4}}>
@@ -7062,29 +8524,30 @@ return (
                     <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:"rgba(255,255,255,0.5)"}}>{"✦ While you have this plan in front of you"}</div>
                       {foundingAvailable&&(
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:"rgba(255,255,255,0.18)",color:B.white,borderRadius:99}}>Founding</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:"rgba(255,255,255,0.18)",color:B.white,borderRadius:99}}>Founder Circle</div>
                       )}
                     </div>
                     <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.white,marginBottom:6,lineHeight:1.1}}>Like what you see?</div>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.6,marginBottom:16}}>
                       {foundingAvailable
-                        ? "Lock in founding pricing — 150 credits per week, every week. Plans, captions, scripts, and scans."
+                        ? "Join the Founder Circle and lock in $20/month for life — 150 credits per week. Plans, captions, scripts, and scans."
                         : "Upgrade for 150 credits per week - enough for a full plan, captions, scripts, and scans every single week."}
                     </div>
                     {foundingAvailable?(
                       <div>
                         <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap",marginBottom:4}}>
-                          <span style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.white,lineHeight:1}}>$225/yr</span>
+                          <span style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.white,lineHeight:1}}>$215/yr</span>
                           <span style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.45)",textDecoration:"line-through"}}>$249/yr</span>
-                          <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"2px 8px",background:B.green,color:B.white,borderRadius:99}}>3 months free</span>
+                          <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"2px 8px",background:B.green,color:B.white,borderRadius:99}}>Save $25</span>
                         </div>
                         <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:"rgba(255,255,255,0.55)",marginBottom:14}}>
                           {"or $20/mo "}<span style={{textDecoration:"line-through",opacity:0.7}}>$25/mo</span>
+                          {" — locked for life"}
                         </div>
                         <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
                           <button onClick={function(){setUpgradeReason("plan");setShowUpgrade(true);}}
                             style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 22px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
-                            Claim founding rate
+                            Claim my spot
                           </button>
                           {foundingCount!==null&&(
                             <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",color:"rgba(255,255,255,0.7)"}}>
@@ -7105,7 +8568,7 @@ return (
                   </div>
                 )}
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.65,textAlign:"center",padding:"12px 4px"}}>
-                  {"Content generated by VIRL is a suggestion only. You are solely responsible for reviewing, editing, and ensuring anything you post complies with each platform's community guidelines and terms of service. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest."}
+                  {"Content generated by VIRL is offered as a suggestion only. You are responsible for reviewing every piece of content before publishing and for ensuring it complies with platform terms, applicable law, and any professional license or employer obligations. Nothing VIRL produces is legal, medical, financial, or real-estate advice. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest."}
                 </div>
                 {/* [PREMIUM 6] Quiet philosophical sign-off at the very
                      bottom of the Plan tab. Reinforces the brand's
@@ -7345,6 +8808,128 @@ return (
               </div>
             )}
             <Results results={results} onPlanWithInsights={handlePlanWithInsights}/>
+          </div>
+        )}
+
+        {/* [PRICING 3] Founder Circle tab — members-only. Surfaces the
+            commitments from the brief: monthly Office Hours, the direct
+            line to Lauren, and the user's permanent position number. */}
+        {tab==="circle"&&isFounderCircle&&(
+          <div>
+            <div style={{marginBottom:24,paddingBottom:24,borderBottom:"1px solid "+B.divider}}>
+              <Eyebrow>Founder Circle</Eyebrow>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+                Welcome to<br/><span style={{color:B.navy}}>the Founder Circle.</span>
+              </div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.65,maxWidth:560}}>
+                You said yes before the proof existed. Your $20/month pricing is locked for as long as you stay with VIRL — forever.
+              </div>
+            </div>
+
+            {/* Position number card */}
+            {foundingPosition && (
+              <div style={{
+                background:B.navy,borderRadius:16,padding:"22px 24px",marginBottom:16,
+                display:"flex",alignItems:"center",justifyContent:"space-between",
+                gap:16,flexWrap:"wrap",boxShadow:"0 4px 14px rgba(31,58,138,0.18)"
+              }}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                    letterSpacing:"0.2em",textTransform:"uppercase",
+                    color:"rgba(255,255,255,0.55)",marginBottom:6
+                  }}>Your position</div>
+                  <div style={{fontFamily:"'Italiana',serif",fontSize:34,color:"white",lineHeight:1}}>
+                    Founder #{foundingPosition}
+                  </div>
+                  <div style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,
+                    color:"rgba(255,255,255,0.65)",marginTop:8,lineHeight:1.5
+                  }}>
+                    One of the first 50. Yours for as long as you stay subscribed.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Office Hours card */}
+            <div style={{
+              background:B.white,border:"1px solid "+B.border,borderRadius:16,
+              padding:"20px 22px",marginBottom:16
+            }}>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                letterSpacing:"0.2em",textTransform:"uppercase",
+                color:B.muted,marginBottom:6
+              }}>Next Office Hours</div>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,lineHeight:1.15,marginBottom:8}}>
+                {getNextFounderOfficeHoursLabel()}
+              </div>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,
+                color:B.sub,lineHeight:1.6
+              }}>
+                Live with Lauren on Google Meet – brief update + open Q&amp;A, 45 minutes. You'll receive a calendar invite by email. Can't make it live? Every session is recorded.
+              </div>
+              {/* Persistent Google Meet room — same URL every month, so
+                  Founder Circle members can join straight from the app
+                  if they can't find the calendar invite. target=_blank
+                  + rel=noreferrer keeps the app session intact. */}
+              <a
+                href="https://meet.google.com/uga-zumi-onk"
+                target="_blank"
+                rel="noreferrer noopener"
+                aria-label="Join Founder Office Hours on Google Meet"
+                style={{
+                  display:"inline-block",marginTop:14,
+                  fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,
+                  letterSpacing:"0.08em",textTransform:"uppercase",
+                  padding:"10px 20px",background:B.navy,color:B.white,
+                  border:"none",borderRadius:99,textDecoration:"none",cursor:"pointer"
+                }}>
+                Join Office Hours →
+              </a>
+            </div>
+
+            {/* Direct line card */}
+            <div style={{
+              background:B.white,border:"1px solid "+B.border,borderRadius:16,
+              padding:"20px 22px",marginBottom:16
+            }}>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                letterSpacing:"0.2em",textTransform:"uppercase",
+                color:B.muted,marginBottom:6
+              }}>Direct line to Lauren</div>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.2,marginBottom:8}}>
+                <a href="mailto:founder@govirl.ai" style={{color:B.navy,textDecoration:"none"}}>
+                  founder@govirl.ai
+                </a>
+              </div>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,
+                color:B.sub,lineHeight:1.6
+              }}>
+                For feedback, questions, ideas, conversation. Reply within 24 hours on weekdays. For technical support, please use the Feedback button instead so the team can route it.
+              </div>
+            </div>
+
+            {/* What you have access to */}
+            <div style={{
+              background:B.bg,borderRadius:16,padding:"20px 22px",marginBottom:16
+            }}>
+              <div style={{
+                fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                letterSpacing:"0.2em",textTransform:"uppercase",
+                color:B.muted,marginBottom:12
+              }}>What's included beyond the price</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.ink,lineHeight:1.9}}>
+                <div>&middot; $20/month locked for life as long as you stay subscribed</div>
+                <div>&middot; Monthly Founder Office Hours – live with Lauren</div>
+                <div>&middot; Direct line to Lauren at founder@govirl.ai</div>
+                <div>&middot; Beta access to new features 14 days before broader release</div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -7701,6 +9286,279 @@ return (
                   </div>
                 </div>
 
+                {/* [PRICING 7] Founder Circle roster — who holds each
+                    position, when they signed up, current status. Sorted
+                    by position so #1, #2... read top-down. Includes
+                    cancelled members (their position stays filled per
+                    the no-take-backs rule), greyed out so it reads as
+                    "this seat is taken but the person isn't active." */}
+                {(function(){
+                  var fcMembers = (adminData.credits || [])
+                    .filter(function(c){ return c.founding_tier === "founder_circle"; })
+                    .sort(function(a,b){ return (a.founding_position||999) - (b.founding_position||999); });
+                  var filledCount    = fcMembers.length;
+                  var activeCount    = fcMembers.filter(function(c){ return c.plan !== "cancelled"; }).length;
+                  var cancelledCount = filledCount - activeCount;
+                  return (
+                    <div style={{marginBottom:20}}>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted}}>
+                          Founder Circle
+                        </div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy}}>
+                          {filledCount} of 50 filled
+                          {cancelledCount > 0 ? " (" + cancelledCount + " cancelled)" : ""}
+                        </div>
+                      </div>
+                      {filledCount === 0 ? (
+                        <div style={{
+                          background:B.bg,borderRadius:14,padding:"32px 24px",
+                          textAlign:"center",fontFamily:"'Jost',sans-serif",
+                          fontSize:12,fontWeight:300,color:B.muted,fontStyle:"italic"
+                        }}>
+                          No Founder Circle members yet.
+                        </div>
+                      ) : (
+                        <div style={{background:B.card,borderRadius:14,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",overflow:"hidden"}}>
+                          <div style={{
+                            display:"grid",gridTemplateColumns:"50px 1fr 130px 90px",
+                            gap:8,padding:"10px 16px",background:B.bg,
+                            fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                            letterSpacing:"0.12em",textTransform:"uppercase",color:B.muted
+                          }}>
+                            <div>#</div>
+                            <div>Member</div>
+                            <div>Joined</div>
+                            <div style={{textAlign:"right"}}>Status</div>
+                          </div>
+                          {fcMembers.map(function(m){
+                            var isCancelled = m.plan === "cancelled";
+                            var joined = m.subscription_started_at
+                              ? new Date(m.subscription_started_at).toLocaleDateString("en-US", {
+                                  month: "short", day: "numeric", year: "numeric"
+                                })
+                              : "—";
+                            return (
+                              <div key={m.user_id} style={{
+                                display:"grid",gridTemplateColumns:"50px 1fr 130px 90px",
+                                gap:8,padding:"12px 16px",borderTop:"1px solid "+B.divider,
+                                alignItems:"center",opacity:isCancelled?0.55:1
+                              }}>
+                                <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy}}>
+                                  #{m.founding_position || "?"}
+                                </div>
+                                <div style={{minWidth:0}}>
+                                  <div style={{
+                                    fontFamily:"'Jost',sans-serif",fontSize:12,
+                                    fontWeight:600,color:B.ink,
+                                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"
+                                  }}>
+                                    {m.name || "—"}
+                                  </div>
+                                  <div style={{
+                                    fontFamily:"'Jost',sans-serif",fontSize:11,
+                                    fontWeight:300,color:B.muted,marginTop:2,
+                                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"
+                                  }}>
+                                    {m.email || "—"}
+                                  </div>
+                                </div>
+                                <div style={{
+                                  fontFamily:"'Jost',sans-serif",fontSize:11,
+                                  fontWeight:400,color:B.sub
+                                }}>
+                                  {joined}
+                                </div>
+                                <div style={{
+                                  textAlign:"right",fontFamily:"'Jost',sans-serif",
+                                  fontSize:10,fontWeight:700,letterSpacing:"0.06em",
+                                  textTransform:"uppercase",
+                                  color:isCancelled?B.coral:B.green
+                                }}>
+                                  {isCancelled?"Cancelled":"Active"}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* [PRICING 8] Launch monitoring — what to watch in the
+                    first 30 days. Three panels: projected fill rate for
+                    the Founder Circle, recent signups by tier, and a
+                    quick link to Stripe's webhook delivery log (which is
+                    canonical for webhook health — building a tracker
+                    here would just duplicate it). All computed from the
+                    same adminData.credits array we already load. */}
+                {(function(){
+                  var allMembers = (adminData.credits || []);
+                  var now        = Date.now();
+                  var WEEK_MS    = 7 * 86400000;
+                  var weekAgoMs  = now - WEEK_MS;
+
+                  // Filter to credits rows with a subscription_started_at
+                  // in the last 7 days. founding_tier discriminates.
+                  var recentSignups = allMembers
+                    .filter(function(c){
+                      if (!c.subscription_started_at) return false;
+                      var t = Date.parse(c.subscription_started_at);
+                      return !isNaN(t) && t >= weekAgoMs;
+                    })
+                    .sort(function(a,b){
+                      return Date.parse(b.subscription_started_at) - Date.parse(a.subscription_started_at);
+                    });
+
+                  var fcSignupsThisWeek = recentSignups.filter(function(c){
+                    return c.founding_tier === "founder_circle";
+                  }).length;
+
+                  var fcFilledCount = allMembers.filter(function(c){
+                    return c.founding_tier === "founder_circle";
+                  }).length;
+                  var fcSlotsLeft = Math.max(0, 50 - fcFilledCount);
+
+                  // Projection: at the trailing-7-day FC signup rate,
+                  // how many days until fill? Cap displayed days at
+                  // "180+" so a quiet week doesn't render "1,247 days."
+                  var projectionLabel;
+                  if (fcSlotsLeft === 0) {
+                    projectionLabel = "Founder Circle is full";
+                  } else if (fcSignupsThisWeek === 0) {
+                    projectionLabel = "No Founder Circle signups in last 7 days";
+                  } else {
+                    var daysPerSlot = 7 / fcSignupsThisWeek;
+                    var projectedDays = Math.ceil(fcSlotsLeft * daysPerSlot);
+                    projectionLabel = projectedDays > 180
+                      ? "180+ days at current rate"
+                      : "~" + projectedDays + " day" + (projectedDays === 1 ? "" : "s") + " at current rate";
+                  }
+
+                  return (
+                    <div style={{marginBottom:20}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>
+                        Launch monitoring
+                      </div>
+
+                      {/* Projection + this-week counts */}
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
+                        <div style={{background:B.card,borderRadius:14,padding:"14px 14px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>FC fill rate</div>
+                          <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.navy,lineHeight:1.1,marginBottom:4}}>
+                            {fcSlotsLeft}/50
+                          </div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.4}}>
+                            slots left
+                          </div>
+                        </div>
+                        <div style={{background:B.card,borderRadius:14,padding:"14px 14px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>FC signups (7d)</div>
+                          <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.navy,lineHeight:1.1,marginBottom:4}}>
+                            {fcSignupsThisWeek}
+                          </div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.4}}>
+                            this week
+                          </div>
+                        </div>
+                        <div style={{background:B.card,borderRadius:14,padding:"14px 14px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>Projection</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,lineHeight:1.4,marginTop:8}}>
+                            {projectionLabel}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Recent signups list */}
+                      <div style={{background:B.card,borderRadius:14,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",overflow:"hidden",marginBottom:12}}>
+                        <div style={{
+                          padding:"10px 16px",background:B.bg,
+                          fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                          letterSpacing:"0.12em",textTransform:"uppercase",color:B.muted,
+                          display:"flex",justifyContent:"space-between",alignItems:"center"
+                        }}>
+                          <div>Recent signups (7d)</div>
+                          <div style={{color:B.navy,fontWeight:600}}>{recentSignups.length} total</div>
+                        </div>
+                        {recentSignups.length === 0 ? (
+                          <div style={{
+                            padding:"24px 16px",textAlign:"center",
+                            fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,
+                            color:B.muted,fontStyle:"italic"
+                          }}>
+                            No new subscribers in the last 7 days.
+                          </div>
+                        ) : (
+                          recentSignups.slice(0, 10).map(function(s){
+                            var when = (function(){
+                              try {
+                                return new Date(s.subscription_started_at).toLocaleDateString("en-US", {
+                                  month: "short", day: "numeric"
+                                });
+                              } catch(e){ return ""; }
+                            })();
+                            var isFC = s.founding_tier === "founder_circle";
+                            return (
+                              <div key={s.user_id} style={{
+                                display:"grid",gridTemplateColumns:"1fr 110px 90px",
+                                gap:8,padding:"10px 16px",borderTop:"1px solid "+B.divider,
+                                alignItems:"center"
+                              }}>
+                                <div style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.ink}}>
+                                    {s.email || s.name || "—"}
+                                  </div>
+                                </div>
+                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.sub}}>
+                                  {when}
+                                </div>
+                                <div style={{textAlign:"right"}}>
+                                  <span style={{
+                                    fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,
+                                    letterSpacing:"0.08em",textTransform:"uppercase",
+                                    padding:"3px 8px",borderRadius:99,
+                                    background:isFC?B.navySoft:B.bg,
+                                    color:isFC?B.navy:B.muted
+                                  }}>
+                                    {isFC?"Founder #" + (s.founding_position||"?"):"Standard"}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      {/* Webhook health — link out to Stripe rather than
+                          duplicating their delivery log here. */}
+                      <div style={{
+                        background:B.bg,border:"1px dashed "+B.border,borderRadius:14,
+                        padding:"14px 18px",display:"flex",alignItems:"center",
+                        justifyContent:"space-between",gap:12,flexWrap:"wrap"
+                      }}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy,marginBottom:2}}>
+                            Stripe webhook health
+                          </div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.4}}>
+                            Watch delivery attempts + 4xx/5xx failures in Stripe's webhook log. Investigate any non-200 in the last 24h.
+                          </div>
+                        </div>
+                        <a href="https://dashboard.stripe.com/webhooks" target="_blank" rel="noopener noreferrer"
+                          style={{
+                            fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,
+                            letterSpacing:"0.08em",textTransform:"uppercase",
+                            padding:"8px 14px",background:B.navy,color:B.white,
+                            borderRadius:99,textDecoration:"none",flexShrink:0
+                          }}>
+                          Open in Stripe →
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* ── Feature usage ── */}
                 {adminData.eventStats&&(
                   <div style={{marginBottom:20}}>
@@ -7768,7 +9626,7 @@ return (
                 </div>
 
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:12,textAlign:"center"}}>
-                  {"Est. MRR assumes $25/mo per paid user. Founding members counted at $20 equivalent for first year. Data from Supabase credits table only."}
+                  {"Est. MRR assumes $25/mo per Standard user, $20/mo per Founder Circle member (locked for life). Data from Supabase credits table only."}
                 </div>
               </div>
             )}
@@ -7861,7 +9719,7 @@ return (
             );})}
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.65,maxWidth:480,textAlign:"center",marginTop:4}}>
-            {"Content generated by VIRL is provided as a suggestion only. You are solely responsible for any content you choose to post and for ensuring compliance with each platform's community guidelines and terms of service. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest."}
+            {"Content generated by VIRL is offered as a suggestion only. You are responsible for reviewing every piece of content before publishing and for ensuring it complies with platform terms, applicable law, and any professional license or employer obligations. Nothing VIRL produces is legal, medical, financial, or real-estate advice. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest."}
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.6,maxWidth:400,textAlign:"center",marginTop:4}}>
             {"* Generation time is approximate and varies based on profile completeness, number of platforms selected, and network conditions. Most users experience plan generation in under 90 seconds."}

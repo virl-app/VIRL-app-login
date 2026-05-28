@@ -116,12 +116,12 @@ export function trialDay11({ name, unsubscribeToken }) {
   const headline = "Three days left in your free trial.";
   const body = `
     <p style="margin:0 0 12px">${name ? name + ", you've" : "You've"} had ${"&nbsp;"}11 days with VIRL. Three more before the trial ends.</p>
-    <p style="margin:0 0 12px">If VIRL is helping, the founding rate locks in 20% off year one — that ends with the trial too.</p>
+    <p style="margin:0 0 12px">If VIRL is helping, the Founder Circle locks in $20/month for life as long as you stay subscribed — first 50 paying members only.</p>
     <p style="margin:0">No pressure if it's not the right fit. Either way, your plans and vault stay safe.</p>`;
   return {
     subject: "3 days left in your VIRL trial",
     html:    layout({ eyebrow: "Reminder", headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "See plans" }, unsubscribeToken }),
-    text:    `${headline}\n\nYou've had 11 days with VIRL. Three more before the trial ends.\n\nIf VIRL is helping, the founding rate locks in 20% off year one — that ends with the trial too.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nYou've had 11 days with VIRL. Three more before the trial ends.\n\nIf VIRL is helping, the Founder Circle locks in $20/month for life as long as you stay subscribed — first 50 paying members only.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -130,12 +130,12 @@ export function trialDay13({ name, unsubscribeToken }) {
   const headline = "Last day of your VIRL trial.";
   const body = `
     <p style="margin:0 0 12px">${name ? name + ", today" : "Today"} is day 14 — your trial ends tonight.</p>
-    <p style="margin:0 0 12px">If you've found VIRL useful, lock in the founding rate before midnight: $20/mo or $225/yr (saves $75 vs monthly). Standard pricing kicks in tomorrow.</p>
+    <p style="margin:0 0 12px">If you've found VIRL useful, the Founder Circle is still open: $20/mo or $215/yr, locked for life as long as you stay subscribed. First 50 only — the door closes at 50.</p>
     <p style="margin:0">If it's not the fit, that's totally fine — your account stays open, your vault and saved plans are yours to keep.</p>`;
   return {
     subject: "Last day of your VIRL trial",
-    html:    layout({ eyebrow: "Last day", accent: "coral", headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "Lock in founding rate" }, unsubscribeToken }),
-    text:    `${headline}\n\nToday is day 14 — your trial ends tonight.\n\nIf you've found VIRL useful, lock in the founding rate before midnight: $20/mo or $225/yr.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
+    html:    layout({ eyebrow: "Last day", accent: "coral", headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "Claim my Founder Circle spot" }, unsubscribeToken }),
+    text:    `${headline}\n\nToday is day 14 — your trial ends tonight.\n\nIf you've found VIRL useful, the Founder Circle is still open: $20/mo or $215/yr, locked for life. First 50 only.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -158,7 +158,7 @@ export function trialExpired({ name, unsubscribeToken }) {
 
 // 5. Subscription welcome — fires on Stripe checkout.session.completed.
 export function subscriptionWelcome({ name, plan }) {
-  const planLabel = plan === "founding" ? "VIRL Founding" : "VIRL Standard";
+  const planLabel = plan === "founding" ? "the Founder Circle" : "VIRL Standard";
   const headline = `Welcome to ${planLabel}.`;
   const body = `
     <p style="margin:0 0 12px">${name ? name + ", thank" : "Thank"} you. Your subscription is live and 150 credits a week are now yours.</p>
@@ -338,7 +338,7 @@ export function inactive30Day({ name, unsubscribeToken }) {
 // 16. Renewal upcoming — fired by Stripe's invoice.upcoming webhook.
 // Transparency cuts down "I didn't know I'd be charged" support tickets.
 export function renewalUpcoming({ name, plan, amountUsd, renewalDate }) {
-  const planLabel = plan === "founding" ? "Founding" : plan === "pro" ? "Pro" : "Standard";
+  const planLabel = plan === "founding" ? "Founder Circle" : plan === "pro" ? "Pro" : "Standard";
   const headline = "Heads up — your VIRL renews soon.";
   const dateText = renewalDate ? new Date(renewalDate).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : "shortly";
   const amountText = amountUsd ? `$${amountUsd.toFixed(2)}` : "your usual rate";
@@ -354,6 +354,26 @@ export function renewalUpcoming({ name, plan, amountUsd, renewalDate }) {
 }
 
 // 17. Account deleted — last email the address gets from VIRL. Trust signal.
+// [CX-FIX 1] Sent whenever a user changes their password — both the
+// "forgot password" recovery flow and the (future) signed-in change-
+// password flow trigger this. Security best practice: if an attacker
+// compromised the account and reset the password, the rightful owner
+// sees this email and can react. Supabase doesn't send this on its own.
+export function passwordChanged({ name }) {
+  const headline = "Your VIRL password was just changed.";
+  const greeting = name ? `${name},` : "Hi,";
+  const body = `
+    <p style="margin:0 0 12px">${greeting} the password on your VIRL account was just updated.</p>
+    <p style="margin:0 0 12px">If this was you, no action needed.</p>
+    <p style="margin:0 0 16px"><strong>If it wasn't you</strong>, reply to this email immediately so we can secure your account.</p>
+    <p style="margin:0;color:#6B7280;font-size:12px">For your reference, this notification is sent automatically every time the password changes.</p>`;
+  return {
+    subject: "Your VIRL password was changed",
+    html:    layout({ eyebrow: "Security", headline, body }),
+    text:    `${headline}\n\n${greeting} the password on your VIRL account was just updated.\n\nIf this was you, no action needed.\n\nIf it wasn't you, reply to this email immediately so we can secure your account.`,
+  };
+}
+
 export function accountDeleted({ name }) {
   const headline = "Your VIRL account is closed.";
   const body = `
@@ -381,7 +401,7 @@ export function referralMilestone({ name, milestone, unsubscribeToken }) {
                  :                     `${milestone} plans generated.`;
   const body = `
     <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'ve generated ${milestone} VIRL plans now. The data shows that creators who hit ${milestone} plans are the ones VIRL gets sharpest for — your vault, your logged results, and your week-over-week strategy are starting to compound.</p>
-    <p style="margin:0 0 12px">If a friend of yours is building too, the founding rate is still open and a referral from someone like you carries more weight than any ad.</p>
+    <p style="margin:0 0 12px">If a friend of yours is building too, send them along — a referral from someone like you carries more weight than any ad.</p>
     <p style="margin:0">Forward this email, or send them straight to ${APP_URL}.</p>`;
   return {
     subject: `${milestone} plans in — keep going`,
