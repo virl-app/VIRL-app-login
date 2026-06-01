@@ -4581,6 +4581,10 @@ function GateScreen({onAuth}) {
   const [emailSent,setEmailSent] = useState(false);
   const [resetMode,setResetMode] = useState(false);
   const [resetSent,setResetSent] = useState(false);
+  // [AUTO-SIGNIN] Brief celebratory state shown between a successful
+  // signup and the auto-route into the app. Lives ~1.5s before onAuth
+  // fires. Mutually exclusive with emailSent — only one shows.
+  const [signupSuccess,setSignupSuccess] = useState(false);
 
   // Read UTM / referrer once so we can stamp acquisition source onto
   // user_metadata at signup. sessionStorage so a user who lands via a
@@ -4658,8 +4662,8 @@ function GateScreen({onAuth}) {
       if (result.error) { setAuthError(result.error.message); return; }
       if (mode==="signup") {
         // Mirror the marketing choice into email_preferences so the cron
-        // cron + opt-out endpoint both see the right value. Fire-and-
-        // forget — never blocks the verification email flow.
+        // + opt-out endpoint both see the right value. Fire-and-forget —
+        // never blocks the auto-signin flow below.
         if (result.data && result.data.user && result.data.user.id) {
           supabaseClient.from("email_preferences").upsert({
             user_id:           result.data.user.id,
@@ -4667,12 +4671,63 @@ function GateScreen({onAuth}) {
             updated_at:        new Date().toISOString(),
           }).then(function(){}).catch(function(){});
         }
-        setEmailSent(true);
+        // [AUTO-SIGNIN] When Supabase Auth has email confirmation off,
+        // signUp returns a session directly — show a brief "welcome"
+        // moment then mount the app. When it doesn't, fall back to a
+        // signInWithPassword with the same credentials we just used (the
+        // session may simply not be attached to the signUp response).
+        // Only if BOTH return no session do we surface the legacy "check
+        // your email" screen, so users with email-confirmation enabled
+        // still have a graceful path.
+        function routeIntoApp(session) {
+          setSignupSuccess(true);
+          setTimeout(function(){ onAuth(session); }, 1500);
+        }
+        if (result.data && result.data.session) {
+          routeIntoApp(result.data.session);
+          return;
+        }
+        supabaseClient.auth
+          .signInWithPassword({email: email.trim(), password: password.trim()})
+          .then(function(r){
+            if (r.error || !r.data || !r.data.session) {
+              setEmailSent(true);
+              return;
+            }
+            routeIntoApp(r.data.session);
+          })
+          .catch(function(){ setEmailSent(true); });
       } else {
         onAuth(result.data.session);
       }
     }).catch(function(e){ setAuthLoading(false); setAuthError(e.message); });
   }
+
+  // [AUTO-SIGNIN] Bridge screen between a successful signup and the app
+  // mounting. The timeout in handleEmailAuth flips the session ~1.5s
+  // after this renders, at which point the parent unmounts GateScreen.
+  if (signupSuccess) return (
+    <div style={{minHeight:"100vh",...brandHeroSurface,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
+      <div style={brandLogoOnDark}>VIRL</div>
+      <div style={brandTaglineOnDark}>Finally, a strategy that sounds like you.</div>
+      <div style={{width:"100%",maxWidth:380,background:B.white,borderRadius:24,padding:"44px 36px",boxShadow:"0 4px 32px rgba(0,0,0,0.08)"}}>
+        <div style={{width:56,height:56,borderRadius:"50%",background:B.navySoft,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px"}}>
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={B.navy} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </div>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.navy,marginBottom:10}}>You're in.</div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75,marginBottom:22}}>
+          Welcome to VIRL. Setting up your account...
+        </div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <svg className="spin" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={B.navy} strokeWidth="2" opacity="0.55">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
 
   if (emailSent) return (
     <div style={{minHeight:"100vh",...brandHeroSurface,fontFamily:"'Jost',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 24px",textAlign:"center"}}>
