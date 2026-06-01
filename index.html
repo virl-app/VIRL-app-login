@@ -4570,6 +4570,11 @@ function GateScreen({onAuth}) {
   });
   const [email,setEmail]     = useState("");
   const [password,setPassword] = useState("");
+  // Collected at signup so we know who's joining (especially Founder Circle)
+  // and can personalize email. Stamped onto user_metadata + seeded into
+  // profiles.name so the in-app profile starts pre-filled.
+  const [firstName,setFirstName] = useState("");
+  const [lastName,setLastName]   = useState("");
   const [authLoading,setAuthLoading] = useState(false);
   const [authError,setAuthError] = useState("");
   const [ageConfirmed,setAgeConfirmed] = useState(false);
@@ -4632,6 +4637,10 @@ function GateScreen({onAuth}) {
   function handleEmailAuth() {
     if (!email.trim()||!password.trim()) return;
     if (mode==="signup") {
+      if (!firstName.trim() || !lastName.trim()) {
+        setAuthError("Please enter your first and last name.");
+        return;
+      }
       // Single combined message when either or both required boxes are
       // unchecked — cleaner than firing one error, having the user fix
       // it, then firing the second on the next submit. Marketing
@@ -4650,6 +4659,8 @@ function GateScreen({onAuth}) {
           password: password.trim(),
           options: {
             data: {
+              first_name:      firstName.trim(),
+              last_name:       lastName.trim(),
               tos_accepted_at: new Date().toISOString(),
               tos_version:     TOS_VERSION,
               marketing_opt_in: !!marketingOptIn,
@@ -4675,6 +4686,12 @@ function GateScreen({onAuth}) {
             user_id:           result.data.user.id,
             marketing_opt_out: !marketingOptIn,
             updated_at:        new Date().toISOString(),
+          }).then(function(){}).catch(function(){});
+          // Seed profiles.name from the signup fields so the in-app profile
+          // starts pre-filled. Fire-and-forget — never blocks auto-signin.
+          supabaseClient.from("profiles").upsert({
+            id:   result.data.user.id,
+            name: (firstName.trim() + " " + lastName.trim()).trim(),
           }).then(function(){}).catch(function(){});
         }
         // [AUTO-SIGNIN] When Supabase Auth has email confirmation off,
@@ -4832,6 +4849,18 @@ function GateScreen({onAuth}) {
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.3em",textTransform:"uppercase",color:B.muted,marginBottom:16,textAlign:"center"}}>
             {mode==="signup"?"Create your account":"Sign in to VIRL"}
           </div>
+          {mode==="signup"&&(
+            <div style={{display:"flex",gap:10,marginBottom:10}}>
+              <input value={firstName} onChange={function(e){setFirstName(e.target.value);setAuthError("");}}
+                onKeyDown={function(e){if(e.key==="Enter")handleEmailAuth();}}
+                placeholder="First name" type="text" autoComplete="given-name"
+                style={{flex:1,minWidth:0,background:B.bg,border:"1px solid "+B.border,borderRadius:12,color:B.ink,fontFamily:"'Jost',sans-serif",fontSize:15,padding:"13px 16px",outline:"none"}}/>
+              <input value={lastName} onChange={function(e){setLastName(e.target.value);setAuthError("");}}
+                onKeyDown={function(e){if(e.key==="Enter")handleEmailAuth();}}
+                placeholder="Last name" type="text" autoComplete="family-name"
+                style={{flex:1,minWidth:0,background:B.bg,border:"1px solid "+B.border,borderRadius:12,color:B.ink,fontFamily:"'Jost',sans-serif",fontSize:15,padding:"13px 16px",outline:"none"}}/>
+            </div>
+          )}
           <input value={email} onChange={function(e){setEmail(e.target.value);setAuthError("");}}
             onKeyDown={function(e){if(e.key==="Enter")handleEmailAuth();}}
             placeholder="Email address" type="email"
@@ -5298,7 +5327,8 @@ function App() {
       var createdMs = Date.parse(session.user.created_at);
       var fresh     = !Number.isNaN(createdMs) && (Date.now() - createdMs) < 7 * 86400000;
       if (fresh) {
-        fireLoopsEvent("userSignedUp", { firstName: "" });
+        var meta = session.user.user_metadata || {};
+        fireLoopsEvent("userSignedUp", { firstName: meta.first_name || "" });
       }
       localStorage.setItem("virl_signup_event_fired", "1");
     } catch (e) {}
