@@ -393,23 +393,6 @@ export function accountDeleted({ name }) {
   };
 }
 
-// 19. Founder Circle welcome (payment-first safety net) — fired by the stripe
-// webhook when someone pays via the Payment Link but never lands on /welcome
-// (closed the tab, got distracted). Carries a one-time magic link so they can
-// log straight in — there's no password yet, the random one is throwaway.
-export function founderCircleWelcome({ name, actionLink }) {
-  const headline = name ? `Welcome to the Founder Circle, ${name}.` : "Welcome to the Founder Circle.";
-  const body = `
-    <p style="margin:0 0 12px">Your payment went through and your Founder Circle membership is live — locked in for life as long as you stay subscribed.</p>
-    <p style="margin:0 0 12px">Click below to log in. No password needed this time — once you're in, you can set one so you can come back anytime.</p>
-    <p style="margin:0;color:#64748B;font-size:13px">This link signs you in directly and expires after a short while. If it's expired by the time you click, just use "Forgot password" on the login screen to set a password and get in.</p>`;
-  return {
-    subject: "Welcome to the Founder Circle — log in",
-    html:    layout({ eyebrow: "Founder Circle", accent: "coral", headline, body, primaryCta: { href: actionLink, label: "Log in to VIRL" } }),
-    text:    `${headline}\n\nYour payment went through and your Founder Circle membership is live.\n\nLog in here (no password needed this time):\n${actionLink}\n\nThis link expires after a short while. If it's expired, use "Forgot password" on the login screen.`,
-  };
-}
-
 // 18. Referral milestone — mirrors the in-app modal at 3/7/15 plans.
 export function referralMilestone({ name, milestone, unsubscribeToken }) {
   const headline = milestone === 3   ? "You're three plans in."

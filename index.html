@@ -4686,6 +4686,19 @@ function GateScreen({onAuth}) {
         // your email" screen, so users with email-confirmation enabled
         // still have a graceful path.
         function routeIntoApp(session) {
+          // [FC ACCOUNT-FIRST] Stash the marketing intent so the app can route
+          // this brand-new user once they land: intent=founder → straight into
+          // Stripe Founder Circle checkout; intent=trial → the one-screen FC
+          // offer. App clears the key after acting, so it only fires for this
+          // signup. Organic signups (no intent param) keep today's onboarding.
+          try {
+            var qs = new URLSearchParams(window.location.search || "");
+            var intent = qs.get("intent");
+            if (intent === "founder" || intent === "trial") {
+              var plan = qs.get("plan") === "monthly" ? "monthly" : "annual";
+              sessionStorage.setItem("virl_signup_fc_intent", JSON.stringify({ intent: intent, plan: plan }));
+            }
+          } catch(e) {}
           setSignupSuccess(true);
           setTimeout(function(){ onAuth(session); }, 1500);
         }
@@ -5037,75 +5050,6 @@ function SetNewPasswordScreen({ onDone }) {
     </div>
   );
 }
-
-// [FC PAYMENT-FIRST] Dismissible "set a password" prompt for Founder Circle
-// members who joined via the payment-first flow and logged in with a magic
-// link (no password yet). Distinct from SetNewPasswordScreen, which is a
-// full-screen gate after a "forgot password" recovery link. This one is a
-// soft, dismissible overlay — the user already has access; we just want them
-// to be able to log back in without a magic link next time.
-//
-// On save: updateUser({ password }) sets the password, then
-// updateUser({ data: { password_set: true } }) flips the metadata sentinel so
-// the prompt never reappears. "Maybe later" dismisses for the session.
-function FounderPasswordPrompt({ onDone, onDismiss }) {
-  const [password,setPassword] = useState("");
-  const [confirm,setConfirm]   = useState("");
-  const [busy,setBusy]         = useState(false);
-  const [err,setErr]           = useState("");
-
-  function handleSave() {
-    if (password.length < 8) { setErr("Password must be at least 8 characters."); return; }
-    if (password !== confirm) { setErr("Passwords don't match."); return; }
-    setBusy(true); setErr("");
-    supabaseClient.auth.updateUser({ password: password })
-      .then(function(result) {
-        if (result.error) { setBusy(false); setErr(result.error.message); return null; }
-        // Password is saved; record the sentinel so we stop prompting. Even if
-        // this metadata write fails, the password change already succeeded.
-        return supabaseClient.auth.updateUser({ data: { password_set: true } });
-      })
-      .then(function(out) {
-        if (out === null) return; // first call errored, already surfaced
-        setBusy(false);
-        onDone();
-      })
-      .catch(function(e) { setBusy(false); setErr((e && e.message) || "Could not set password."); });
-  }
-
-  return (
-    <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.7)",zIndex:400,display:"flex",alignItems:"center",justifyContent:"center",padding:"24px",fontFamily:"'Jost',sans-serif"}}>
-      <div style={{width:"100%",maxWidth:440,background:B.white,borderRadius:16,padding:"32px 28px",boxShadow:"0 24px 64px rgba(0,0,0,0.25)"}}>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.3em",textTransform:"uppercase",color:B.coral,marginBottom:16,textAlign:"center"}}>
-          Founder Circle
-        </div>
-        <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink,lineHeight:1.2,marginBottom:10,textAlign:"center"}}>
-          Welcome to the Founder Circle.
-        </div>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6,marginBottom:24,textAlign:"center"}}>
-          Set a password so you can log back in anytime — no magic link needed.
-        </div>
-        <input type="password" value={password} placeholder="New password"
-          onChange={function(e){setPassword(e.target.value);setErr("");}}
-          style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:14,padding:"12px 14px",border:"1px solid "+B.border,borderRadius:10,marginBottom:12,boxSizing:"border-box"}}/>
-        <input type="password" value={confirm} placeholder="Confirm password"
-          onChange={function(e){setConfirm(e.target.value);setErr("");}}
-          style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:14,padding:"12px 14px",border:"1px solid "+B.border,borderRadius:10,marginBottom:16,boxSizing:"border-box"}}/>
-        {err && (
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.coral,marginBottom:12,textAlign:"center"}}>{err}</div>
-        )}
-        <button onClick={handleSave} disabled={busy||!password||!confirm}
-          style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"13px 20px",background:busy?B.muted:B.navy,color:B.white,border:"none",borderRadius:99,cursor:busy?"default":"pointer",marginBottom:12}}>
-          {busy?"Saving...":"Set password"}
-        </button>
-        <button onClick={onDismiss} disabled={busy}
-          style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.muted,background:"none",border:"none",cursor:busy?"default":"pointer",textDecoration:"underline"}}>
-          Maybe later
-        </button>
-      </div>
-    </div>
-  );
-}
 // [TASK 5] In-product referral modal — fires at plan-count milestones (3/7/15)
 // as a moment-of-success virality prompt. Modal is dismissible and each
 // milestone shows at most once (tracked via virl_referral_shown_N flags).
@@ -5292,13 +5236,6 @@ function App() {
   // them into the dashboard with no way to actually set a new password —
   // the entire forgot-password flow was a dead end until we noticed.
   const [passwordRecoveryMode,setPasswordRecoveryMode] = useState(false);
-  // [FC PAYMENT-FIRST] "Maybe later" dismissal for the Founder Circle set-a-
-  // password prompt. sessionStorage-scoped so a mid-session refresh doesn't
-  // re-nag, but it's cleared on sign-out (below) so the prompt reappears at the
-  // user's next login until they actually set a password.
-  const [fcPwPromptDismissed,setFcPwPromptDismissed] = useState(function(){
-    try { return sessionStorage.getItem("virl_fc_pw_prompt_dismissed") === "1"; } catch(e) { return false; }
-  });
 
   useEffect(function() {
     // Check for existing session on load (handles OAuth redirects too)
@@ -5324,10 +5261,6 @@ function App() {
           localStorage.setItem(KEY, JSON.stringify(current));
         } catch(e) {}
         try { sessionStorage.removeItem("virl_active_tab"); } catch(e) {}
-        // [FC PAYMENT-FIRST] Reset the password-prompt dismissal so a Founder
-        // who clicked "Maybe later" sees it again next time they log in.
-        try { sessionStorage.removeItem("virl_fc_pw_prompt_dismissed"); } catch(e) {}
-        setFcPwPromptDismissed(false);
         setProfile({});
         setVault([]);
         setResults([]);
@@ -5851,20 +5784,8 @@ function App() {
   // with positions assigned by signup order — see migrations/001.
   var foundingTier     = sbCredits && sbCredits.founding_tier ? sbCredits.founding_tier : "standard";
   var foundingPosition = sbCredits && sbCredits.founding_position ? sbCredits.founding_position : null;
-  // [FC PAYMENT-FIRST] user_metadata.is_founder_circle is the source of truth
-  // set by the /welcome + webhook payment-first flow. We OR it in alongside the
-  // credits.founding_tier signal so a freshly-provisioned Founder skips the
-  // trial paywall immediately, even on the first paint before their credits row
-  // has propagated to the client.
-  var fcUserMeta           = (session && session.user && session.user.user_metadata) || {};
-  var isFounderViaMetadata = fcUserMeta.is_founder_circle === true;
-  var isFounderCircle  = foundingTier === "founder_circle" || isFounderViaMetadata;
-  var isFoundingOrPro = sbPlan==="founding" || sbPlan==="pro" || isFounderViaMetadata;
-  // Payment-first Founders who logged in via a magic link have never picked a
-  // password (the account was created with a throwaway one). Prompt them to set
-  // one until they do. Grandfathered/account-first Founders have no metadata
-  // flag and already have a password, so they're never prompted.
-  var fcNeedsPasswordSetup = isFounderViaMetadata && fcUserMeta.password_set !== true;
+  var isFounderCircle  = foundingTier === "founder_circle";
+  var isFoundingOrPro = sbPlan==="founding" || sbPlan==="pro";
   // [PRICING credit-model] Only the Pro tier has truly unlimited credits.
   // Founder Circle now meters at 150/week like Standard — the HUD shows the
   // live count ticking down. isUnlimitedCredits gates the "Unlimited" label
@@ -5968,6 +5889,38 @@ function App() {
       alert("Could not reach the checkout service. Check your connection and try again.");
     }
   }
+
+  // [FC ACCOUNT-FIRST] Route a brand-new signup that arrived from a Founder
+  // Circle marketing CTA (intent stashed by GateScreen.routeIntoApp):
+  //   intent=founder → straight into Stripe FC checkout
+  //   intent=trial   → pop the upgrade modal as a one-screen FC offer
+  // Abandoning Stripe (cancel_url) or dismissing the modal lands them in the
+  // app on the free trial — no FC spot is consumed, since the founding_position
+  // is only claimed by the webhook on checkout.session.completed. Runs once:
+  // the sessionStorage key is cleared the moment we act.
+  useEffect(function(){
+    if (!session || !session.user) return;
+    var raw;
+    try { raw = sessionStorage.getItem("virl_signup_fc_intent"); } catch(e) { return; }
+    if (!raw) return;
+    try { sessionStorage.removeItem("virl_signup_fc_intent"); } catch(e) {}
+    // Already on a paid plan somehow — never push another checkout at them.
+    if (isFoundingOrPro) return;
+    var parsed = null;
+    try { parsed = JSON.parse(raw); } catch(e) { return; }
+    if (!parsed || !parsed.intent) return;
+    var plan = parsed.plan === "monthly" ? "monthly" : "annual";
+    setSelectedPlan(plan);
+    if (parsed.intent === "founder" && foundingAvailable !== false) {
+      // create-checkout is the authoritative cap gate; if it comes back full it
+      // already falls back to Standard checkout (which they can still cancel).
+      handleCheckout(plan, "founder_circle");
+    } else {
+      // intent=trial, or the circle just filled → show the offer. Dismissing
+      // ("Maybe later") drops them straight into their free trial.
+      setShowUpgrade(true);
+    }
+  }, [session]);
 
   function handleSignOut() { clearLocalUserData(); supabaseClient.auth.signOut(); }
 
@@ -7130,19 +7083,6 @@ return (
             </button>
           </div>
         </div>
-      )}
-
-      {/* [FC PAYMENT-FIRST] Set-a-password prompt for magic-link Founders.
-          Renders over the dashboard until they set a password or dismiss for
-          the session. Gated on the is_founder_circle / password_set metadata
-          set by the /welcome + webhook flow. */}
-      {fcNeedsPasswordSetup && !fcPwPromptDismissed && (
-        <FounderPasswordPrompt
-          onDone={function(){ setFcPwPromptDismissed(true); }}
-          onDismiss={function(){
-            try { sessionStorage.setItem("virl_fc_pw_prompt_dismissed","1"); } catch(e) {}
-            setFcPwPromptDismissed(true);
-          }}/>
       )}
 
       {/* [TASK 5] Referral modal — only renders when a milestone fires and the
