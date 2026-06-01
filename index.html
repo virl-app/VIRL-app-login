@@ -4570,6 +4570,11 @@ function GateScreen({onAuth}) {
   });
   const [email,setEmail]     = useState("");
   const [password,setPassword] = useState("");
+  // Collected at signup so we know who's joining (especially Founder Circle)
+  // and can personalize email. Stamped onto user_metadata + seeded into
+  // profiles.name so the in-app profile starts pre-filled.
+  const [firstName,setFirstName] = useState("");
+  const [lastName,setLastName]   = useState("");
   const [authLoading,setAuthLoading] = useState(false);
   const [authError,setAuthError] = useState("");
   const [ageConfirmed,setAgeConfirmed] = useState(false);
@@ -4632,6 +4637,10 @@ function GateScreen({onAuth}) {
   function handleEmailAuth() {
     if (!email.trim()||!password.trim()) return;
     if (mode==="signup") {
+      if (!firstName.trim() || !lastName.trim()) {
+        setAuthError("Please enter your first and last name.");
+        return;
+      }
       // Single combined message when either or both required boxes are
       // unchecked — cleaner than firing one error, having the user fix
       // it, then firing the second on the next submit. Marketing
@@ -4650,6 +4659,8 @@ function GateScreen({onAuth}) {
           password: password.trim(),
           options: {
             data: {
+              first_name:      firstName.trim(),
+              last_name:       lastName.trim(),
               tos_accepted_at: new Date().toISOString(),
               tos_version:     TOS_VERSION,
               marketing_opt_in: !!marketingOptIn,
@@ -4676,6 +4687,12 @@ function GateScreen({onAuth}) {
             marketing_opt_out: !marketingOptIn,
             updated_at:        new Date().toISOString(),
           }).then(function(){}).catch(function(){});
+          // Seed profiles.name from the signup fields so the in-app profile
+          // starts pre-filled. Fire-and-forget — never blocks auto-signin.
+          supabaseClient.from("profiles").upsert({
+            id:   result.data.user.id,
+            name: (firstName.trim() + " " + lastName.trim()).trim(),
+          }).then(function(){}).catch(function(){});
         }
         // [AUTO-SIGNIN] When Supabase Auth has email confirmation off,
         // signUp returns a session directly — show a brief "welcome"
@@ -4686,6 +4703,19 @@ function GateScreen({onAuth}) {
         // your email" screen, so users with email-confirmation enabled
         // still have a graceful path.
         function routeIntoApp(session) {
+          // [FC ACCOUNT-FIRST] Stash the marketing intent so the app can route
+          // this brand-new user once they land: intent=founder → straight into
+          // Stripe Founder Circle checkout; intent=trial → the one-screen FC
+          // offer. App clears the key after acting, so it only fires for this
+          // signup. Organic signups (no intent param) keep today's onboarding.
+          try {
+            var qs = new URLSearchParams(window.location.search || "");
+            var intent = qs.get("intent");
+            if (intent === "founder" || intent === "trial") {
+              var plan = qs.get("plan") === "monthly" ? "monthly" : "annual";
+              sessionStorage.setItem("virl_signup_fc_intent", JSON.stringify({ intent: intent, plan: plan }));
+            }
+          } catch(e) {}
           setSignupSuccess(true);
           setTimeout(function(){ onAuth(session); }, 1500);
         }
@@ -4819,6 +4849,18 @@ function GateScreen({onAuth}) {
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.3em",textTransform:"uppercase",color:B.muted,marginBottom:16,textAlign:"center"}}>
             {mode==="signup"?"Create your account":"Sign in to VIRL"}
           </div>
+          {mode==="signup"&&(
+            <div style={{display:"flex",gap:10,marginBottom:10}}>
+              <input value={firstName} onChange={function(e){setFirstName(e.target.value);setAuthError("");}}
+                onKeyDown={function(e){if(e.key==="Enter")handleEmailAuth();}}
+                placeholder="First name" type="text" autoComplete="given-name"
+                style={{flex:1,minWidth:0,background:B.bg,border:"1px solid "+B.border,borderRadius:12,color:B.ink,fontFamily:"'Jost',sans-serif",fontSize:15,padding:"13px 16px",outline:"none"}}/>
+              <input value={lastName} onChange={function(e){setLastName(e.target.value);setAuthError("");}}
+                onKeyDown={function(e){if(e.key==="Enter")handleEmailAuth();}}
+                placeholder="Last name" type="text" autoComplete="family-name"
+                style={{flex:1,minWidth:0,background:B.bg,border:"1px solid "+B.border,borderRadius:12,color:B.ink,fontFamily:"'Jost',sans-serif",fontSize:15,padding:"13px 16px",outline:"none"}}/>
+            </div>
+          )}
           <input value={email} onChange={function(e){setEmail(e.target.value);setAuthError("");}}
             onKeyDown={function(e){if(e.key==="Enter")handleEmailAuth();}}
             placeholder="Email address" type="email"
@@ -5285,7 +5327,8 @@ function App() {
       var createdMs = Date.parse(session.user.created_at);
       var fresh     = !Number.isNaN(createdMs) && (Date.now() - createdMs) < 7 * 86400000;
       if (fresh) {
-        fireLoopsEvent("userSignedUp", { firstName: "" });
+        var meta = session.user.user_metadata || {};
+        fireLoopsEvent("userSignedUp", { firstName: meta.first_name || "" });
       }
       localStorage.setItem("virl_signup_event_fired", "1");
     } catch (e) {}
@@ -5876,6 +5919,38 @@ function App() {
       alert("Could not reach the checkout service. Check your connection and try again.");
     }
   }
+
+  // [FC ACCOUNT-FIRST] Route a brand-new signup that arrived from a Founder
+  // Circle marketing CTA (intent stashed by GateScreen.routeIntoApp):
+  //   intent=founder → straight into Stripe FC checkout
+  //   intent=trial   → pop the upgrade modal as a one-screen FC offer
+  // Abandoning Stripe (cancel_url) or dismissing the modal lands them in the
+  // app on the free trial — no FC spot is consumed, since the founding_position
+  // is only claimed by the webhook on checkout.session.completed. Runs once:
+  // the sessionStorage key is cleared the moment we act.
+  useEffect(function(){
+    if (!session || !session.user) return;
+    var raw;
+    try { raw = sessionStorage.getItem("virl_signup_fc_intent"); } catch(e) { return; }
+    if (!raw) return;
+    try { sessionStorage.removeItem("virl_signup_fc_intent"); } catch(e) {}
+    // Already on a paid plan somehow — never push another checkout at them.
+    if (isFoundingOrPro) return;
+    var parsed = null;
+    try { parsed = JSON.parse(raw); } catch(e) { return; }
+    if (!parsed || !parsed.intent) return;
+    var plan = parsed.plan === "monthly" ? "monthly" : "annual";
+    setSelectedPlan(plan);
+    if (parsed.intent === "founder" && foundingAvailable !== false) {
+      // create-checkout is the authoritative cap gate; if it comes back full it
+      // already falls back to Standard checkout (which they can still cancel).
+      handleCheckout(plan, "founder_circle");
+    } else {
+      // intent=trial, or the circle just filled → show the offer. Dismissing
+      // ("Maybe later") drops them straight into their free trial.
+      setShowUpgrade(true);
+    }
+  }, [session]);
 
   function handleSignOut() { clearLocalUserData(); supabaseClient.auth.signOut(); }
 
