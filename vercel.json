@@ -1,4 +1,8 @@
 {
+  "rewrites": [
+    { "source": "/welcome", "destination": "/api/welcome" },
+    { "source": "/dashboard", "destination": "/index.html" }
+  ],
   "crons": [
     {
       "path": "/api/cron/email-triggers",
