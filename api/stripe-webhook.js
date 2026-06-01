@@ -23,6 +23,11 @@ import {
 // subscriptionCancelled) + contact-property sync so Loops can drive
 // plan-state-aware emails inside its own dashboard.
 import { sendLoopsEvent, updateLoopsContact } from "./_lib/loops.js";
+// [FC PAYMENT-FIRST] Safety-net backfill for the Stripe Payment Link flow,
+// where checkout completes with no userId in metadata (the user has no account
+// yet). Shared with the /welcome endpoint so both paths provision identically.
+import { provisionFounderMember, isFounderPriceId } from "./_lib/founder-provision.js";
+import { founderCircleWelcome } from "./_lib/email-templates.js";
 
 // [CHANGE 3b] Disable Vercel's body parser so Stripe gets the exact raw bytes
 // it signed — any reformatting would invalidate the signature.
@@ -205,6 +210,85 @@ async function writeUserPlan(userId, fields, rowExists) {
   }
 }
 
+// [FC PAYMENT-FIRST] Backfill path for checkout.session.completed events that
+// carry NO userId in metadata — i.e. a Stripe Payment Link purchase where the
+// buyer has no account yet. If /welcome already ran (the happy path), this
+// detects the existing Founder via the is_founder_circle sentinel and stays
+// silent. If the buyer closed the tab before /welcome, this creates their
+// account and emails a magic link so they can still get in.
+//
+// Idempotent on two levels: provisionFounderMember.alreadyFounder gates the
+// email here, and sendEmail's email_sends dedupe table guards against Stripe
+// webhook retries re-sending.
+async function handleFounderPaymentFirst(stripe, session) {
+  // Only act on paid sessions whose line item is a Founder Circle price.
+  if (session.payment_status !== "paid") {
+    console.warn("[webhook] payment-first session not paid:", session.id, session.payment_status);
+    return;
+  }
+
+  let isFounder = false;
+  try {
+    const items = await stripe.checkout.sessions.listLineItems(session.id, { limit: 5 });
+    isFounder = (items.data || []).some(function (li) {
+      return li && li.price && isFounderPriceId(li.price.id);
+    });
+  } catch (e) {
+    console.error("[webhook] listLineItems failed:", e && e.message);
+    return;
+  }
+  if (!isFounder) {
+    // Not a Founder Circle Payment Link purchase and no userId — nothing for
+    // us to do (a stray Standard Payment Link, etc). Ignore defensively.
+    console.warn("[webhook] payment-first session has no Founder Circle price:", session.id);
+    return;
+  }
+
+  const email = session.customer_details && session.customer_details.email;
+  if (!email) {
+    console.error("[webhook] payment-first session missing customer email:", session.id);
+    return;
+  }
+
+  const customerId     = typeof session.customer === "string" ? session.customer : (session.customer && session.customer.id) || null;
+  const subscriptionId = typeof session.subscription === "string" ? session.subscription : (session.subscription && session.subscription.id) || null;
+
+  const appUrl = process.env.APP_URL || "https://app.govirl.ai";
+  const result = await provisionFounderMember({
+    email: email,
+    stripeCustomerId: customerId,
+    stripeSubscriptionId: subscriptionId,
+    redirectTo: appUrl + "/dashboard?fc=welcome",
+  });
+
+  if (!result.ok) {
+    console.error("[webhook] payment-first provisioning failed for", email, result.error);
+    return;
+  }
+
+  // /welcome (or an earlier webhook) already turned this email into a Founder
+  // and logged them in — don't send a "click to log in" email on top of that.
+  if (result.alreadyFounder) {
+    console.log("[webhook] payment-first: " + email + " already a Founder — skipping welcome email");
+    return;
+  }
+
+  if (result.actionLink) {
+    const tpl = founderCircleWelcome({ name: "", actionLink: result.actionLink });
+    await sendEmail({
+      userId: result.userId,
+      to: email,
+      template: "founder_circle_welcome",
+      dedupeKey: "fc_welcome_" + (subscriptionId || session.id),
+      subject: tpl.subject,
+      html: tpl.html,
+      text: tpl.text,
+      marketing: false,
+    });
+    console.log("[webhook] payment-first: provisioned + emailed magic link to", email);
+  }
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -356,7 +440,10 @@ export default async function handler(req, res) {
             }
           }
         } else {
-          console.warn("[webhook] checkout.session.completed missing userId in metadata");
+          // [FC PAYMENT-FIRST] No userId → Stripe Payment Link purchase with no
+          // pre-existing account. Backfill the Founder Circle account + email a
+          // magic link (no-op if /welcome already handled it).
+          await handleFounderPaymentFirst(stripe, obj);
         }
         break;
       }
