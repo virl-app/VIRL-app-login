@@ -10,17 +10,107 @@ This is a living doc — when you change the email system, update this.
 
 ## Table of contents
 
-1. [Strategy: Resend vs Loops](#1-strategy-resend-vs-loops)
-2. [Resend — setup, sending, managing](#2-resend--setup-sending-managing)
-3. [Loops — setup, automations, campaigns](#3-loops--setup-automations-campaigns)
-4. [Supabase Auth emails (separate system)](#4-supabase-auth-emails-separate-system)
-5. [Email content library](#5-email-content-library)
-6. [Migration plan: Resend → Loops over time](#6-migration-plan-resend--loops-over-time)
-7. [Quick reference](#7-quick-reference)
+1. [Strategic stance & brand voice for email](#1-strategic-stance--brand-voice-for-email)
+2. [Strategy: Resend vs Loops](#2-strategy-resend-vs-loops)
+3. [Resend — setup, sending, managing](#3-resend--setup-sending-managing)
+4. [Loops — setup, automations, campaigns](#4-loops--setup-automations-campaigns)
+5. [Supabase Auth emails (separate system)](#5-supabase-auth-emails-separate-system)
+6. [Email content library](#6-email-content-library)
+7. [Migration plan: Resend → Loops over time](#7-migration-plan-resend--loops-over-time)
+8. [Measurement framework](#8-measurement-framework)
+9. [Compliance, deliverability, and the opt-in sync gap](#9-compliance-deliverability-and-the-opt-in-sync-gap)
+10. [Cadence & operations](#10-cadence--operations)
+11. [Quick reference](#11-quick-reference)
 
 ---
 
-## 1. Strategy: Resend vs Loops
+## 1. Strategic stance & brand voice for email
+
+### The thesis
+
+Email is the only channel VIRL controls that lives in the user's daily
+attention. The brand promise is **"VIRL doesn't waste your time."** Every
+email must honor that promise or it doesn't get sent.
+
+The bar is single-sentence: *would a creator screenshot this email and
+send it to a friend?* If no, don't send it.
+
+That stance has three consequences:
+
+1. **Volume is your enemy.** Marketing cadence is once per month, period.
+   Lifecycle email is trigger-based only — never "we miss you" nags, never
+   broadcast for its own sake.
+2. **Editorial beats promotional.** Even product changelogs read like a
+   brief, not a sale. Even billing receipts read like notes from a person.
+3. **Restraint compounds trust.** Brands that send less get opened more.
+   Every send earns the next one. Lose that earned attention and you
+   never get it back.
+
+### Voice principles (lifted from the app's brand)
+
+These are not suggestions. Every email VIRL sends — transactional,
+lifecycle, or marketing — passes the following discipline:
+
+- **One thought per email.** If you need two CTAs, you have two emails.
+  If you need three sections, you have a newsletter — and you don't
+  have a newsletter (except the monthly editorial; see §6).
+- **Italiana headline, Jost body, one coral CTA.** The HTML mirrors the
+  in-app brand surface. Anything else dilutes the brand association at
+  the moment of the inbox glance.
+- **Plain-text version every time.** Improves deliverability AND respects
+  readers in screen-reader / terminal / minimal-mail-client contexts.
+  Resend and Loops both auto-generate plain-text from HTML — verify it
+  reads cleanly before sending.
+- **Subject lines are sentences, not headlines.** Lowercase first word
+  (after the brand prefix if any), no clickbait, no ALL CAPS, no
+  exclamation marks unless they're genuinely earned, no emojis in
+  subjects. Preheader does the work of "selling" the open.
+- **No urgency tropes.** No "ACT NOW," no countdown timers, no "⚡ FAST."
+  If something is genuinely time-bound (trial ending), state it once,
+  factually, and move on.
+- **Sign-offs are humans.** Founder's name on welcome + monthly editorial.
+  Just `VIRL` on transactional. **Never** "The VIRL Team."
+- **Footer copy reads like a postcard.** Physical address (CAN-SPAM
+  requirement), one-click unsubscribe, why-you-got-this line. No
+  social-icon row. No "follow us." No "share this email."
+
+### The five-stage lifecycle map
+
+This is the conceptual frame the rest of the guide implements. Every
+email VIRL sends belongs to exactly one of these stages.
+
+| Stage | Window | Goal | Suppression rules |
+|---|---|---|---|
+| **Consideration** | Pre-signup | Get the email back into the inbox at launch | Marketing — opt-in required (Loops campaigns) |
+| **Activation** | Day 0–7 | First plan generated, profile complete | Transactional (sends regardless of marketing opt-out) |
+| **Habit** | Day 7–30 | Weekly rhythm, second/third plan | Lifecycle — respects marketing opt-out |
+| **Conversion** | Day 11–14 (trial) | Trial → paid | Transactional (billing-adjacent, always sends) |
+| **Retention / Win-back** | Day 30+ / lapsed | Stay or come back | Marketing — opt-in required, with hard frequency cap |
+
+The "marketing vs transactional" distinction also drives the technical
+opt-out enforcement at `api/_lib/email-send.js` (see §2 and §9). Get
+the classification right at write-time and the rest follows.
+
+### What this stance rules out
+
+For clarity, here are practices that look standard in SaaS email but
+that VIRL explicitly does not do:
+
+- **"We miss you" emails.** If the user went quiet, they had a reason.
+  One re-engagement attempt at 14 days inactive, then VIRL goes quiet.
+- **Discount-led win-back.** No "20% off if you come back this week."
+  The product is the offer; the price is the price.
+- **Feature-of-the-week newsletters.** Product changelog is quarterly
+  at most, and only when something materially changes the product.
+- **Black Friday / seasonal urgency campaigns.** Not VIRL.
+- **Cross-promotion of partners or affiliate offers** in any VIRL
+  email surface.
+- **Re-confirmation campaigns** for users who unsubscribed. Once they
+  opt out, they're out. Period.
+
+---
+
+## 2. Strategy: Resend vs Loops
 
 ### The principle
 
@@ -86,7 +176,7 @@ timing), dependent on Loops uptime, more setup overhead.
 
 ---
 
-## 2. Resend — setup, sending, managing
+## 3. Resend — setup, sending, managing
 
 ### What Resend does for VIRL
 
@@ -262,7 +352,7 @@ launch — VIRL won't hit limits until significant scale.
 
 ---
 
-## 3. Loops — setup, automations, campaigns
+## 4. Loops — setup, automations, campaigns
 
 ### What Loops does for VIRL
 
@@ -405,7 +495,7 @@ upgrade in month 2-3 as the user base grows.
 
 ---
 
-## 4. Supabase Auth emails (separate system)
+## 5. Supabase Auth emails (separate system)
 
 Supabase Auth sends a few emails on its own, completely separate from
 Resend and Loops. You configure them in Supabase Dashboard, not in code.
@@ -441,7 +531,7 @@ customize the copy.
 
 ---
 
-## 5. Email content library
+## 6. Email content library
 
 Recommended subject lines and body copy for every email VIRL should
 send. Use these as starting points; iterate based on open rates.
@@ -930,9 +1020,158 @@ Subject: VIRL playbook drafts ready for review ({{count}})
 Review and approve in the Admin dashboard.
 ```
 
+### Lifecycle marketing — opt-in required (Loops campaigns)
+
+These are the only emails that fire `marketing: true` and respect the
+suppression list at `api/_lib/email-send.js` (or the equivalent
+contact-subscribed check in Loops once the sync gap from §9 is closed).
+
+#### Re-engagement — single-shot, day 14 inactive (NEW)
+
+**System:** Loops automation
+**Fires:** 14 calendar days with zero `plan_generated`, `caption_generated`,
+or `scan_*` events
+**Suppression:** marketing (respects opt-out); fires AT MOST ONCE per user
+ever via a `reengagement_sent_at` contact property
+**Replaces:** the existing chained `inactive_7d` + `inactive_30d` cadence —
+see §10 for the cadence rationale
+
+```
+Subject: did the strategy go quiet, or just the inbox?
+Preheader: A 60-second check-in from VIRL.
+
+{{firstName}}, it's been two weeks since you generated a plan.
+
+If something fell off — life, the algorithm, the week from hell — no
+judgment. The account is still here, your voice is still saved, and a
+new week is one tap away:
+
+[Open VIRL →]
+
+If VIRL just isn't the right fit, that's useful information for me. I
+read every reply.
+
+— Lauren
+
+PS: This is the only nudge you'll get from me. After this, the inbox
+is yours.
+```
+
+**Setup steps (Loops):**
+1. Build the email in Loops's visual editor under **Transactional**
+   templates → name it `reengagement_14d`.
+2. Create an **Audience filter** in Loops: `lastActiveAt >= 14 days ago`
+   AND `lastActiveAt < 21 days ago` AND `reengagement_sent_at is empty`
+   AND `marketingSubscribed = true`.
+3. Create an **Automation** triggered on a daily cron event (use the
+   existing `api/cron/email-triggers.js` to fire a Loops event named
+   `cron_daily_check`). The Loop sends the email to any contact
+   matching the audience filter, then sets `reengagement_sent_at` on
+   the contact so it can't fire again.
+4. Set Loops's **Audience filter** to also exclude `unsubscribed = true`
+   contacts (this is a Loops-managed flag; one-click unsub sets it).
+5. Test by manually setting `lastActiveAt` to 15 days ago on a test
+   contact and running the cron via `vercel dev` → `curl localhost:3000/api/cron/email-triggers`.
+
+#### Monthly editorial from VIRL (NEW)
+
+**System:** Loops campaign (broadcast to opted-in segment)
+**Fires:** First Tuesday of each month, 9:00 AM CT
+**Suppression:** marketing (opt-in only); never sends to free-trial-expired
+users who never paid
+
+```
+Subject: VIRL monthly — what's working in {{month}}
+Preheader: Three observations from a quiet month watching the feed.
+
+Hi {{firstName}},
+
+Three things I noticed across the creator economy this month:
+
+1. {{observation_1_headline}}
+   {{observation_1_one_line}}
+
+2. {{observation_2_headline}}
+   {{observation_2_one_line}}
+
+3. {{observation_3_headline}}
+   {{observation_3_one_line}}
+
+One thing worth trying this month:
+
+{{practical_takeaway_2_to_3_sentences_max}}
+
+That's it. See you in {{next_month}}.
+
+— Lauren
+
 ---
 
-## 6. Migration plan: Resend → Loops over time
+Got VIRL in {{signup_month}}. {{user_plan_count}} plans generated since.
+You can [unsubscribe from the monthly]({{unsub_url}}) any time —
+transactional emails will keep coming.
+
+VIRL, [physical address]
+```
+
+**Setup steps (Loops):**
+1. Create a **Campaign** in Loops named `monthly_editorial_{{YYYY_MM}}`.
+2. Audience: `marketingSubscribed = true` AND `unsubscribed = false`
+   AND (`plan = founding` OR `plan = standard` OR `plan = pro` OR
+   `(plan = free AND trialDaysRemaining > 0)`).
+3. Write the issue 5 business days before send. **Write ahead** — last-
+   minute monthly editorials destroy the quality bar.
+4. Send a test to yourself + one peer reviewer. Walk away. Re-read in
+   the morning before scheduling.
+5. Schedule for first Tuesday at 9:00 AM CT.
+6. After send, log open rate, click rate, unsubscribe rate, and one
+   qualitative note in the monthly retro doc.
+
+**Three-issue runway rule:** Always have the next three issues drafted
+or outlined. If the runway drops to zero, skip the month entirely —
+don't ship a weak issue to hit a cadence.
+
+#### Meaningful changelog (NEW)
+
+**System:** Loops campaign (broadcast)
+**Fires:** When something materially changes the product. Target cadence
+is once per quarter, never more than once per month.
+**Suppression:** marketing (opt-in only)
+
+```
+Subject: VIRL changed in three ways this quarter
+Preheader: New: {{shortest_marquee_change}}.
+
+{{firstName}}, three changes worth knowing about:
+
+**{{change_1_title}}**
+{{change_1_two_sentences_max}}
+
+**{{change_2_title}}**
+{{change_2_two_sentences_max}}
+
+**{{change_3_title}}**
+{{change_3_two_sentences_max}}
+
+If you want to try them, just open VIRL — nothing to enable.
+
+— Lauren
+```
+
+**Setup steps (Loops):**
+1. Create a **Campaign** in Loops named `changelog_{{YYYY_QN}}`.
+2. Audience: same as the monthly editorial — opted-in, on a valid plan.
+3. Cap the email at exactly three changes. If you have more, save them
+   for the next quarter. The discipline keeps the email scannable and
+   keeps the changelog from devolving into release-note spam.
+4. Each change is **two sentences maximum**. What it is, and what it
+   unlocks for the user. Skip the engineering details.
+5. Send Tuesday-Thursday, 10:00 AM CT. Avoid Monday morning (inbox
+   overload) and Friday afternoon (low open rates).
+
+---
+
+## 7. Migration plan: Resend → Loops over time
 
 Move emails in phases. Each phase has a clear win and is independently
 reversible.
@@ -983,9 +1222,331 @@ Same migration pattern as Phase 1.
 Plus Supabase Auth's signup confirmation + password reset link emails
 stay in Supabase.
 
+### Post-launch 4-week ship plan
+
+Practical sequencing for the first month after launch. Each week has
+one theme so context-switching cost stays low. Items in **bold** are
+release-blocking — don't move on to the next week until those land.
+
+**Week 1 — Compliance + tooling foundation**
+
+1. **Add the `email_preferences` schema to `/migrations`** as the
+   canonical, version-controlled source of truth (see §9).
+2. **Fix the Loops ↔ Supabase opt-in sync gap** by extending
+   `updateLoopsContact` to include `marketingSubscribed`. Sync on
+   signup, on unsubscribe, and via a one-time backfill of existing
+   contacts (see §9).
+3. **Change the `email_preferences.marketing_opt_out` column default
+   to `true`** so missing rows are GDPR-safe (opted out by default,
+   not opted in). Backfill existing rows from signup
+   `user_metadata.marketing_opt_in` where present.
+4. Verify DMARC, DKIM, and SPF on both Resend and Loops sending domains
+   (see §9 checklist).
+5. Set up Google Postmaster Tools + Microsoft SNDS for the sending
+   domain. Add weekly check to the ops calendar.
+
+**Week 2 — Transactional series**
+
+6. Build **trial-ending T-3 / T-1 / day-of** in Loops (uses existing
+   `trial_day_7 / day_11 / day_13` triggers — see §6 for the existing
+   drafts; rename/restructure into a 3-stage sequence with consistent
+   voice).
+7. Build the **payment-failed** flow in Resend (template + Stripe Smart
+   Retries hook). Draft already in §6.
+8. Audit existing welcome + first-plan-generated emails against the
+   voice principles in §1. Tune subject lines + sign-offs.
+
+**Week 3 — Lifecycle activation series**
+
+9. Build the **profile-incomplete nudge** (24h after signup, one-shot)
+   in Loops. Existing draft in §6 as `phase1_no_plan_24h`.
+10. Build the **first-week recap** (day 7 trigger, dynamic content
+    pulling plan count + best-performing post from saved Vault data).
+    Net-new email, not in §6 yet — start from the day-30 milestone
+    template structure and shorten.
+11. Migrate the **day-30 milestone** from Resend to Loops if not already
+    done (existing draft in §6).
+12. Build the **single-shot 14-day re-engagement** from §6, and **retire
+    the chained `inactive_7d` + `inactive_30d` flow.** Document the
+    retirement in the next admin changelog.
+
+**Week 4 — Marketing infrastructure**
+
+13. Establish the **monthly editorial** cadence (see §6 + §10). Write
+    the first three issues in advance — the three-issue runway rule
+    is what keeps this from devolving into a content treadmill.
+14. Set up the **changelog template** in Loops (see §6). Plan the first
+    issue around what shipped in the first month post-launch.
+15. **Suppression audit:** export the `email_preferences.marketing_opt_out
+    = true` list from Supabase, import to Loops as a suppression list,
+    and verify both systems are in sync. Re-run on the 1st of every
+    month.
+16. **Pre-send checklist** (see §10) gets added to the team's send
+    process for every marketing campaign.
+
+### If you can only do one thing this week
+
+**Fix the Loops ↔ Supabase opt-in sync gap (Week 1, items 1-3).** Both
+are compliance liabilities the moment you send your first marketing
+email. Everything else can wait a week; those cannot.
+
+### What drives the most revenue per send
+
+**Trial-ending T-3 (Week 2, item 6).** Of every email on the list, this
+one moves the most revenue. It catches users in the natural decision
+window with the lightest possible nudge — a preview of next week's plan
+plus a single upgrade button. Pair with the day-of "your trial ends in
+4 hours" send and you'll see measurable trial → paid lift.
+
 ---
 
-## 7. Quick reference
+## 8. Measurement framework
+
+### What to measure
+
+Every send is logged and aggregated weekly. The minimum signal set:
+
+- **Open rate** — opens / delivered. Best leading indicator of subject-
+  line + sender-reputation health.
+- **Click rate** — clicks / delivered. Trues up open-rate gaming (Apple
+  Mail Privacy Protection inflates opens) and measures actual interest.
+- **Unsubscribe rate** — unsubs / delivered, per send. Best lagging
+  indicator of content quality.
+- **Spam complaint rate** — complaints / delivered, per send. Direct
+  signal that the inbox is in trouble.
+- **Delivery rate** — delivered / sent. SMTP-level health.
+- **Domain reputation** — Google Postmaster Tools (Gmail) + Microsoft
+  SNDS (Outlook/Hotmail). Reviewed weekly.
+- **Revenue per email** (paid-conversion sends only) — Stripe revenue
+  attributed back to the trial-ending sequence within a 7-day window.
+
+### Targets and action thresholds
+
+| Metric | Target | Action threshold |
+|---|---|---|
+| Open rate (transactional) | 50%+ | <35% → review subject, sender reputation, From-name |
+| Open rate (lifecycle) | 30%+ | <20% → review triggers + audience targeting |
+| Open rate (marketing) | 22%+ | <15% → cut frequency or improve content |
+| Click rate (lifecycle) | 8%+ | <4% → CTA clarity issue, body too long |
+| Click rate (marketing) | 3%+ | <1.5% → content not driving action |
+| Unsubscribe rate | <0.2% per send | >0.5% → emergency content review |
+| Spam complaint rate | <0.05% per send | **>0.1% = immediately pause sending** (Gmail throttle threshold) |
+| Delivery rate | 98%+ | <95% → DMARC / IP reputation audit |
+| Domain reputation (Google Postmaster) | "High" | Anything below "Medium" = stop marketing sends until restored |
+
+### Where to read each metric
+
+- **Resend dashboard** — opens, clicks, bounces, complaints per
+  template. Logs retained 30 days.
+- **Loops dashboard** — opens, clicks, unsubs, complaints per campaign +
+  per Loop. Logs retained on plan basis (90 days on Pro).
+- **Google Postmaster Tools** (postmaster.google.com) — domain reputation,
+  spam rate from Gmail, authentication pass rate. Free, requires
+  DNS verification of the sending domain.
+- **Microsoft SNDS** (sendersupport.olc.protection.outlook.com) — same
+  for Outlook/Hotmail. Free, IP-based.
+- **Stripe** — revenue attribution for conversion sends.
+
+### Weekly review cadence
+
+Every Monday 10:00 AM CT, 15-minute review:
+
+1. Pull the past week's send metrics from Resend + Loops.
+2. Flag any send that breached an action threshold.
+3. Check Google Postmaster reputation. If "Medium" or worse, pause
+   marketing sends and investigate.
+4. Log results in the email retro doc (one row per send).
+5. If any pattern is emerging (e.g. open rates dropping across the
+   board for three weeks straight), escalate to a deeper review.
+
+### When to A/B test
+
+A/B test these, in order of impact:
+
+1. **Subject line + preheader pair** — fastest signal, highest impact.
+2. **Send time** — ±2 hours from baseline.
+3. **CTA copy** — button text matters more than button color.
+4. **Body length** — short version vs current version.
+5. **From-name** — "Lauren from VIRL" vs "VIRL" vs first name only.
+
+Don't test body content, layout, and colors all at once. One variable
+per test, 50/50 split on the first 20% of the audience, send the winner
+to the remainder after 4 hours.
+
+---
+
+## 9. Compliance, deliverability, and the opt-in sync gap
+
+### The audit findings (as of launch)
+
+The June 2026 audit of the opt-in data flow surfaced four gaps. Three
+are compliance liabilities the moment you send a marketing email. All
+four are addressed by the Week 1 ship plan in §7.
+
+| # | Gap | Impact | Fix |
+|---|---|---|---|
+| 1 | `email_preferences` schema not in `/migrations` | Schema drift, hard to reproduce env | Add a migration file with the canonical schema; document column meanings |
+| 2 | `user_metadata.marketing_opt_in` duplicated but unread | Stale signal that can go out of sync with `email_preferences` | Either consume it (and drop the table) OR drop the metadata write and keep `email_preferences` as source of truth |
+| 3 | Missing `email_preferences` row defaults to NOT opted-out (i.e. opted IN) | GDPR-questionable for EU users; CAN-SPAM honest-intent concern | Change column default to `true` (opted-out by default); explicit opt-in flips it `false`; backfill existing rows |
+| 4 | Loops contact sync omits opt-in/out | Marketing emails from Loops bypass the Supabase suppression list | Add `marketingSubscribed` to the `updateLoopsContact` properties call; sync on signup + unsubscribe; one-time backfill |
+
+### The opt-in sync gap, in detail
+
+Today the data flow is:
+
+1. **Signup** → `marketing_opt_in` checkbox state is written to:
+   - Supabase `auth.users.user_metadata.marketing_opt_in` (never read)
+   - `email_preferences.marketing_opt_out` (inverted) — the source of truth
+2. **Unsubscribe** → `api/email/unsubscribe.js` upserts
+   `email_preferences.marketing_opt_out = true`
+3. **Send** → `api/_lib/email-send.js` calls `isMarketingOptedOut(userId)`
+   before any `marketing: true` send and skips if opted out
+4. **Loops** → completely unaware of any of the above. Loops's own
+   `subscribed` / `unsubscribed` flag is the only filter Loops can use
+   to suppress sends.
+
+The fix is to make Loops aware. Concrete steps:
+
+```js
+// api/_lib/loops.js — extend updateLoopsContact to thread opt-in through:
+// (caller passes properties: { marketingSubscribed: <bool>, ... })
+//
+// And add new callers:
+//
+// 1. On signup (index.html handleEmailAuth → after email_preferences upsert):
+//    fetch("/api/loops-event", { ...,
+//      body: JSON.stringify({
+//        eventName: "contact_sync",
+//        properties: { marketingSubscribed: !!marketingOptIn }
+//      })
+//    });
+//
+// 2. On unsubscribe (api/email/unsubscribe.js → after setOptOut):
+//    await updateLoopsContact({
+//      userId, properties: { marketingSubscribed: false }
+//    });
+//
+// 3. One-time backfill script that reads every email_preferences row
+//    and PUTs marketingSubscribed to Loops in batches of 100.
+```
+
+Then every Loops campaign and automation MUST filter audience by
+`marketingSubscribed = true` before sending. Make this a hard
+checklist item in the pre-send process (§10).
+
+### Deliverability checklist — non-negotiables
+
+- [ ] **DMARC** at `p=quarantine` minimum, ideally `p=reject`, on the
+      sending domain. Free check at `dmarcian.com/dmarc-inspector/`.
+- [ ] **SPF + DKIM aligned** for both Resend and Loops sending domains.
+      Both providers publish setup instructions; verify with
+      `mxtoolbox.com`.
+- [ ] **Google Postmaster Tools** configured, weekly check on the ops
+      calendar.
+- [ ] **Microsoft SNDS** configured for the sending IP range.
+- [ ] **List-Unsubscribe + List-Unsubscribe-Post headers** on every
+      marketing email. Endpoint exists at `api/email/unsubscribe.js` —
+      wire it into Loops's sending too (Loops setting → custom
+      unsubscribe URL).
+- [ ] **Suppression list sync** between Loops and Supabase, run on
+      the 1st of every month (see §7 Week 4).
+- [ ] **Physical mailing address** in every marketing footer (CAN-SPAM).
+- [ ] **Hard-bounce auto-suppression** in both Resend and Loops. Verify
+      it's on (it is by default in both, but worth confirming once a
+      quarter).
+- [ ] **Sender reputation pre-check** before any campaign over 1,000
+      recipients. If Google Postmaster reputation is below "High,"
+      delay the send.
+- [ ] **No purchased lists. Ever.** This is the single fastest way to
+      destroy a sending domain.
+
+---
+
+## 10. Cadence & operations
+
+### Frequency caps
+
+The system enforces these even if individual sends look fine in
+isolation. Total inbox impact is what users react to.
+
+- **Marketing email frequency cap:** 1 per user per 7 days, max 4 per
+  month, regardless of campaign count. Loops audience filter:
+  `lastMarketingEmailSentAt > 7 days ago` AND
+  `marketingEmailsThisMonth < 4`.
+- **Lifecycle email throttle:** Each lifecycle email type fires at most
+  once per type per user per week. Enforced via Loops's contact
+  properties (e.g. `firstWeekRecapSentAt`).
+- **Transactional has no cap.** But if the *same* transactional
+  template fires more than 3x in 24h to the same user, log a warning —
+  that's a sign of a stuck trigger.
+
+### Quiet hours
+
+No marketing or non-critical lifecycle sends between **Saturday 6:00 PM**
+and **Monday 8:00 AM** in the user's local timezone. Use the `clientNow`
+field that the app now sends with every `/api/chat` call as the
+source-of-truth timezone for lifecycle sends; for marketing campaigns,
+schedule per-region (Loops supports timezone-aware send time).
+
+Exceptions to quiet hours:
+- Trial-ending day-of (transactional, billing-adjacent)
+- Payment-failed (transactional, action required)
+- Security alerts (password-changed, new-device-login)
+
+### Pre-send checklist (every marketing campaign)
+
+Run before scheduling. No exceptions, no skipping a step "this once."
+
+- [ ] Subject + preheader pair has been reviewed for sentence-case +
+      no urgency tropes (see §1 voice principles)
+- [ ] Body is one thought, one CTA
+- [ ] Mobile preview rendered cleanly in Loops + a real device
+- [ ] Plain-text version reads cleanly
+- [ ] Unsubscribe link present and tested in a test send
+- [ ] CAN-SPAM physical address present in footer
+- [ ] Audience filter includes `marketingSubscribed = true` AND
+      `unsubscribed = false`
+- [ ] Suppression list synced from Supabase within the last 7 days
+- [ ] Send time respects quiet hours for the target audience
+- [ ] Frequency cap check: no campaign sent to overlapping audience
+      in last 7 days
+- [ ] Google Postmaster reputation is "High"
+- [ ] Test send received and read on at least one mobile + one
+      desktop client
+- [ ] A/B test set up (if applicable — see §8)
+- [ ] Send time scheduled, not "send now"
+
+### Naming conventions
+
+For sane retros and analytics later:
+
+- **Loops campaigns:** `<category>_<YYYY_MM>` for one-shots
+  (e.g. `monthly_editorial_2026_07`), `<category>_<descriptor>` for
+  ongoing (e.g. `changelog_q3_2026`).
+- **Loops automations:** `<trigger>_<destination_email>` (e.g.
+  `signup_welcome`, `inactive_14d_reengagement`).
+- **Resend templates:** snake_case, matching the function name in
+  `api/_lib/email-templates.js` (e.g. `password_changed`).
+- **Contact properties in Loops:** camelCase
+  (e.g. `marketingSubscribed`, `reengagementSentAt`).
+
+### When to pause the entire program
+
+If any of these fire, pause **all marketing and lifecycle sends** until
+the issue is understood and resolved:
+
+- Spam complaint rate above 0.1% on any single send
+- Google Postmaster reputation drops to "Low" or "Bad"
+- Microsoft SNDS shows red status on the sending IP
+- Hard bounce rate above 5% on any send
+- A user-facing data incident (signup data leak, wrong-user email send)
+
+The pause is the safer default. A 48-hour pause is rarely visible to
+the customer; a damaged domain reputation takes weeks to recover.
+
+---
+
+## 11. Quick reference
 
 ### Decision tree: which system for a new email?
 
