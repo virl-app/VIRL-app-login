@@ -4,7 +4,8 @@
 // (RFC 8058 List-Unsubscribe-Post). Transactional emails — billing, trial
 // reminders, welcome — keep sending regardless.
 
-import { verifyUnsubToken } from "../_lib/unsub-token.js";
+import { verifyUnsubToken }   from "../_lib/unsub-token.js";
+import { updateLoopsContact } from "../_lib/loops.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -24,6 +25,24 @@ async function setOptOut(userId) {
       updated_at:        new Date().toISOString(),
     }),
   });
+}
+
+// [EMAIL-CUTOVER] §9 audit fix #4 — mirror the opt-out to Loops so Loops
+// campaign audience filters with `marketingSubscribed = true` correctly
+// exclude this contact. Without this sync, Loops only sees its own
+// internal subscribed flag, which a Supabase opt-out doesn't update.
+// Fire-and-forget; a Loops outage never blocks the unsubscribe path —
+// the Supabase opt-out is what gates `api/_lib/email-send.js` suppression,
+// so the user stays suppressed for any send going through that path.
+// Loops sync drift gets reconciled by the monthly suppression audit
+// described in docs/email-strategy-guide.md §7 (Week 4).
+async function syncOptOutToLoops(userId) {
+  try {
+    await updateLoopsContact({
+      userId,
+      properties: { marketingSubscribed: false },
+    });
+  } catch (e) { /* logged inside updateLoopsContact */ }
 }
 
 function confirmationPage() {
@@ -51,6 +70,10 @@ export default async function handler(req, res) {
   }
 
   try { await setOptOut(userId); } catch (e) { /* fail open — we'll show success anyway */ }
+  // [EMAIL-CUTOVER] Mirror the opt-out to Loops. Fire-and-forget — runs
+  // after setOptOut so even if Loops is down, the user is already
+  // suppressed in Supabase (which gates api/_lib/email-send.js sends).
+  syncOptOutToLoops(userId);
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   return res.status(200).send(confirmationPage());

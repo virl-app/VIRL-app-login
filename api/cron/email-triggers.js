@@ -22,6 +22,16 @@ const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const CRON_SECRET          = process.env.CRON_SECRET;
 
+// [EMAIL-CUTOVER] When true, this cron skips the welcome safety-net AND the
+// trial day 7/11/13/expired Resend sends. Both are now handled by Loops
+// (welcome via the `signup_welcome` event from /api/email/welcome; the
+// trial sequence via Loops audience filters keyed on the contact's
+// signupAt property — see migrations/003-email-preferences-schema.sql and
+// Claude Cowork's Loops setup). Other cron sends (weekly_reset,
+// phase1_no_plan_24h, inactive_7d, etc.) are NOT yet migrated and continue
+// to fire via Resend regardless of this flag.
+const EMAIL_VIA_LOOPS      = process.env.EMAIL_VIA_LOOPS === "true";
+
 const PAID_PLANS = ["founding", "pro", "standard"];
 const DAY_MS     = 86400000;
 
@@ -140,7 +150,10 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
   // Welcome safety-net: catches anyone the inline /api/email/welcome call
   // missed (network errors, function cold-start timeouts, etc).
   // The email_sends unique constraint makes the inline + cron pair safe.
-  if (days <= 7) {
+  // [EMAIL-CUTOVER] Skipped when EMAIL_VIA_LOOPS=true. The inline
+  // /api/email/welcome already fires the Loops event; the Loops automation's
+  // per-contact dedupe is the new safety-net.
+  if (!EMAIL_VIA_LOOPS && days <= 7) {
     const tpl = T.welcome({ name });
     await sendEmail({
       userId, to: email, template: "welcome", dedupeKey: "welcome",
@@ -149,7 +162,11 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
   }
 
   // Trial reminders apply to free-plan users only.
-  if (!isPaid) {
+  // [EMAIL-CUTOVER] When EMAIL_VIA_LOOPS=true, the entire trial sequence is
+  // skipped here. Loops handles trial day 7/11/13/expired via audience
+  // filters keyed on `signupAt` (set during /api/email/welcome's
+  // updateLoopsContact call) — no backend cron event needed.
+  if (!EMAIL_VIA_LOOPS && !isPaid) {
     if (days === 7) {
       const tpl = T.trialDay7({ name, unsubscribeToken: unsubToken });
       await sendEmail({

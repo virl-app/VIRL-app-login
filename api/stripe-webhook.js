@@ -29,8 +29,11 @@ import { sendLoopsEvent, updateLoopsContact } from "./_lib/loops.js";
 export const config = { api: { bodyParser: false } };
 
 // Best-effort lookup for personalized greetings — never blocks the webhook.
+// [EMAIL-CUTOVER] Now also surfaces signupAt + marketingSubscribed so the
+// downstream updateLoopsContact calls can include the §9 fields without
+// requiring a second auth.users fetch per webhook.
 async function fetchUserContext(userId) {
-  const out = { email: null, name: "" };
+  const out = { email: null, name: "", signupAt: null, marketingSubscribed: false };
   if (!userId) return out;
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
@@ -41,7 +44,10 @@ async function fetchUserContext(userId) {
     });
     if (userRes.ok) {
       const u = await userRes.json();
-      out.email = u.email || null;
+      out.email    = u.email || null;
+      out.signupAt = u.created_at || null;
+      const meta   = (u.user_metadata) || {};
+      out.marketingSubscribed = !!meta.marketing_opt_in;
     }
     const profRes = await fetch(
       `${supabaseUrl}/rest/v1/profiles?id=eq.${userId}&select=name`,
@@ -338,6 +344,14 @@ export default async function handler(req, res) {
                 foundingTier:     foundingTier,
                 foundingPosition: foundingPosition || 0,
                 isFoundingMember: plan === "founding",
+                // [EMAIL-CUTOVER] §9 fields — surfaced here so Loops audience
+                // filters keyed on signupAt (trial-day-N) and
+                // marketingSubscribed (suppression) stay in sync even if
+                // a contact was created in Loops via this webhook before
+                // /api/email/welcome fired (rare but possible for users
+                // who pay before completing the inline auth flow).
+                signupAt:            ctx.signupAt || undefined,
+                marketingSubscribed: ctx.marketingSubscribed,
               },
             });
             // [PRICING 6] When the 50th Founder Circle position is claimed,
@@ -488,7 +502,16 @@ export default async function handler(req, res) {
           });
           await updateLoopsContact({
             userId, email: ctx.email,
-            properties: { plan: "cancelled", foundingTier: cancelledTier },
+            properties: {
+              plan:                "cancelled",
+              foundingTier:        cancelledTier,
+              // [EMAIL-CUTOVER] §9 — keep marketingSubscribed mirrored so a
+              // cancelled customer who didn't unsubscribe stays opted in
+              // for the monthly editorial (per the strategic stance: a
+              // cancellation isn't an unsubscribe).
+              signupAt:            ctx.signupAt || undefined,
+              marketingSubscribed: ctx.marketingSubscribed,
+            },
           });
         }
         break;
