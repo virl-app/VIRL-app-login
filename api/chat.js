@@ -417,15 +417,20 @@ async function maybeSendFirstPlanEmail(userId) {
   const ctx = await fetchUserContactForEmail(userId);
   if (!ctx.email) return;
 
-  // [EMAIL-CUTOVER] When EMAIL_VIA_LOOPS=true, fire a `first_plan_generated`
+  // [EMAIL-CUTOVER] When EMAIL_VIA_LOOPS=true, fire a `firstPlanGenerated`
   // Loops event and let Cowork's Loops automation handle the send. Loops
   // dedupes the event per contact so retries are safe. When the flag is
   // off, fall back to the original Resend path.
+  //
+  // [LOOPS-EVENT-NAME] Event name is camelCase to match Loops's convention
+  // and the existing precedent in api/cron/email-triggers.js (which fires
+  // `thirtyDayMilestone`). Cowork's `first_plan_celebrated` Loop in the
+  // Loops dashboard is wired to listen for this exact name.
   if (EMAIL_VIA_LOOPS) {
     await sendLoopsEvent({
       userId,
       email:     ctx.email,
-      eventName: "first_plan_generated",
+      eventName: "firstPlanGenerated",
       properties: { firstName: ctx.name || "" },
     });
     return;
