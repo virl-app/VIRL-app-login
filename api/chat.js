@@ -15,6 +15,12 @@ import { sendEmail }                 from "./_lib/email-send.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
+import { sendLoopsEvent }            from "./_lib/loops.js";
+
+// [EMAIL-CUTOVER] Feature flag controlling whether milestone sends route
+// through Loops (new) or Resend (legacy). Flip to "true" in Vercel env
+// once Cowork's Loops automations are enabled and verified.
+const EMAIL_VIA_LOOPS = process.env.EMAIL_VIA_LOOPS === "true";
 
 // Free trial length in days. Mirrored in index.html — keep in sync.
 const TRIAL_DAYS = 14;
@@ -405,10 +411,26 @@ async function maybeSendReferralMilestoneEmail(userId) {
 }
 
 // Inline "first plan generated" send. Idempotent via the email_sends
-// dedupe table — only the very first plan triggers the mail.
+// dedupe table (legacy Resend path) or Loops's per-contact event dedupe
+// (Loops path) — only the very first plan triggers the mail.
 async function maybeSendFirstPlanEmail(userId) {
   const ctx = await fetchUserContactForEmail(userId);
   if (!ctx.email) return;
+
+  // [EMAIL-CUTOVER] When EMAIL_VIA_LOOPS=true, fire a `first_plan_generated`
+  // Loops event and let Cowork's Loops automation handle the send. Loops
+  // dedupes the event per contact so retries are safe. When the flag is
+  // off, fall back to the original Resend path.
+  if (EMAIL_VIA_LOOPS) {
+    await sendLoopsEvent({
+      userId,
+      email:     ctx.email,
+      eventName: "first_plan_generated",
+      properties: { firstName: ctx.name || "" },
+    });
+    return;
+  }
+
   const tpl = firstPlanGenerated({ name: ctx.name });
   await sendEmail({
     userId,
