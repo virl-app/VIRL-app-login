@@ -16,6 +16,7 @@ import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
 import { sendLoopsEvent }            from "./_lib/loops.js";
+import { fetchHandleResearch }       from "./_lib/handle-research.js";
 
 // [EMAIL-CUTOVER] Feature flag controlling whether milestone sends route
 // through Loops (new) or Resend (legacy). Flip to "true" in Vercel env
@@ -785,6 +786,20 @@ export default async function handler(req, res) {
   const recentEdits = (EDIT_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits)
     ? await fetchRecentEdits(userId)
     : [];
+
+  // [HANDLE-RESEARCH] Pull a Perplexity-sourced summary of the creator's
+  // actual posting patterns across their connected social handles. Cached
+  // 30 days in creator_handle_research; refreshes on handle change. Attached
+  // to the profile object so prompts.js buildProfileCtx can inject it as
+  // additional creator context without changing dispatch's signature.
+  // Fail-open: returns null on any infrastructure / Perplexity error and
+  // the rest of the generation still works exactly as before.
+  if (profile && profile.handles) {
+    try {
+      const research = await fetchHandleResearch(userId, profile.handles);
+      if (research) profile.handleResearch = research;
+    } catch (e) { /* non-fatal — generation continues without research */ }
+  }
 
   // ── Decide trends source ─────────────────────────────────────────────────
   // Three paths, in priority order:
