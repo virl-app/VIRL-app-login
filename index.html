@@ -4196,11 +4196,12 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           {myPlatforms.length>0 && (
             <div>
               <div style={subhead}>Your platforms in detail</div>
-              {/* [HANDLE-RESEARCH] Plain-language disclosure of what VIRL
-                  does with the handles below. Brand voice: confident,
-                  specific, no apologetic hedging. */}
+              {/* [HANDLE-RESEARCH] Plain-language opt-in disclosure. Framing
+                  consent explicitly through the act of providing a handle,
+                  so users understand the trade and can opt out by leaving
+                  the field blank. */}
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.65,marginBottom:14,padding:"10px 14px",background:B.navySoft,borderRadius:10,borderLeft:"3px solid "+B.navy}}>
-                When you add a handle, VIRL takes a quick pass through your public posts on that account — voice, topics, recurring phrases — so generated content sounds like you, not a stranger. Only your public content on accounts you provide. Refreshed when you update a handle.
+                By providing a handle, you're opting in to let VIRL take a quick pass through your public posts on that account to learn your voice, topics, and recurring phrases, so generated content sounds like you. Only your public content. Leave a handle blank to skip.
               </div>
               {myPlatforms.map(function(p){
                 // [INTEL 2] Per-platform format options drive content shape:
