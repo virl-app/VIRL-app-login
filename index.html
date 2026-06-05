@@ -117,6 +117,26 @@ async function saveProfileToSupabase(profile, userId) {
       console.error("[VIRL] Profile save failed:", error);
       return { ok: false, error: error.message || String(error) };
     }
+    // [HANDLE-RESEARCH-PREWARM] Kick off Perplexity research now so the
+    // first plan generation doesn't pay the ~3s round-trip. Fire-and-
+    // forget — the server uses fetchHandleResearch's cache so a
+    // duplicate fire is a zero-cost no-op, and any failure on this side
+    // is invisible to the user (the next plan gen just runs without
+    // the research block). Only fires when handles are present.
+    var hasHandles = profile.handles && typeof profile.handles === "object"
+      && Object.keys(profile.handles).some(function(k){ return profile.handles[k]; });
+    if (hasHandles && typeof window !== "undefined") {
+      var token = window.__virlUserToken || null;
+      if (token) {
+        fetch("/api/profile-research-prewarm", {
+          method:  "POST",
+          headers: {
+            "Content-Type":  "application/json",
+            "Authorization": "Bearer " + token,
+          },
+        }).catch(function(){ /* never block the save flow on prewarm */ });
+      }
+    }
     return { ok: true };
   } catch(e) {
     console.error("[VIRL] Profile save threw:", e);
@@ -4176,6 +4196,13 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           {myPlatforms.length>0 && (
             <div>
               <div style={subhead}>Your platforms in detail</div>
+              {/* [HANDLE-RESEARCH] Plain-language opt-in disclosure. Framing
+                  consent explicitly through the act of providing a handle,
+                  so users understand the trade and can opt out by leaving
+                  the field blank. */}
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.65,marginBottom:14,padding:"10px 14px",background:B.navySoft,borderRadius:10,borderLeft:"3px solid "+B.navy}}>
+                By providing a handle, you're opting in to let VIRL take a quick pass through your public posts on that account to learn your voice, topics, and recurring phrases, so generated content sounds like you. Only your public content. Leave a handle blank to skip.
+              </div>
               {myPlatforms.map(function(p){
                 // [INTEL 2] Per-platform format options drive content shape:
                 // selecting "Stories" on Instagram tells the prompt builder to
