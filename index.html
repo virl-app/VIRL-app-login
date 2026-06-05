@@ -117,6 +117,26 @@ async function saveProfileToSupabase(profile, userId) {
       console.error("[VIRL] Profile save failed:", error);
       return { ok: false, error: error.message || String(error) };
     }
+    // [HANDLE-RESEARCH-PREWARM] Kick off Perplexity research now so the
+    // first plan generation doesn't pay the ~3s round-trip. Fire-and-
+    // forget — the server uses fetchHandleResearch's cache so a
+    // duplicate fire is a zero-cost no-op, and any failure on this side
+    // is invisible to the user (the next plan gen just runs without
+    // the research block). Only fires when handles are present.
+    var hasHandles = profile.handles && typeof profile.handles === "object"
+      && Object.keys(profile.handles).some(function(k){ return profile.handles[k]; });
+    if (hasHandles && typeof window !== "undefined") {
+      var token = window.__virlUserToken || null;
+      if (token) {
+        fetch("/api/profile-research-prewarm", {
+          method:  "POST",
+          headers: {
+            "Content-Type":  "application/json",
+            "Authorization": "Bearer " + token,
+          },
+        }).catch(function(){ /* never block the save flow on prewarm */ });
+      }
+    }
     return { ok: true };
   } catch(e) {
     console.error("[VIRL] Profile save threw:", e);
