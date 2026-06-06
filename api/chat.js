@@ -298,7 +298,15 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
     stop_reason:        stopReason,
   };
   console.log('virl_usage', JSON.stringify(usage));
-  recordUsageEvent(userId, usage).catch(() => {});
+  // [STABILITY] Await recordUsageEvent so the milestone email's
+  // plan-count query (in maybeSendReferralMilestoneEmail below) sees
+  // THIS generation. Previously fire-and-forget — the count race had
+  // been "mitigated" by a setTimeout(800ms) before the milestone send,
+  // but Vercel's serverless function terminates after the response
+  // returns and the setTimeout's callback reliably never fires. Net
+  // effect: the 3 / 7 / 15-plan referral milestone email has been
+  // functionally dead in production.
+  try { await recordUsageEvent(userId, usage); } catch (e) { /* logged inside helper */ }
 
   const clientUsage = {
     outputTokens,
@@ -311,9 +319,12 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
     retried,
   };
 
-  // Fire-and-forget onboarding hooks, same as the non-streaming branch.
+  // Onboarding hooks. First-plan email is independent of plan count so
+  // stays fire-and-forget. Milestone email is awaited (not setTimeout)
+  // so the function container stays alive for the actual Resend send;
+  // the prior setTimeout approach silently dropped sends in production.
   maybeSendFirstPlanEmail(userId).catch(() => {});
-  setTimeout(function () { maybeSendReferralMilestoneEmail(userId).catch(() => {}); }, 800);
+  try { await maybeSendReferralMilestoneEmail(userId); } catch (e) { /* non-fatal — logged inside */ }
 
   // [COMPLIANCE 1] Post-stream scrub. Parse the accumulated final text,
   // run the niche's denylist, and emit any flags / scrubbed payload to the
@@ -1005,9 +1016,10 @@ export default async function handler(req, res) {
         stop_reason:         stopReason,
       };
       console.log('virl_usage', JSON.stringify(usage));
-      // Fire-and-forget insert so admin Dashboard can trend cost/usage.
-      // Failure is logged inside the helper; we never wait on it.
-      recordUsageEvent(userId, usage).catch(() => {});
+      // [STABILITY] Awaited (was fire-and-forget) so the milestone email
+      // path below sees the just-inserted row when it counts plans. See
+      // identical comment in the streaming branch.
+      try { await recordUsageEvent(userId, usage); } catch (e) { /* logged inside helper */ }
       // [COST 1] Surfaced to the client so existing logEvent payloads can
       // forward per-generation cost/cache/truncation signal into events.
       // Cache-read tokens are billed at ~10% of normal input; uncached is the
@@ -1061,9 +1073,12 @@ export default async function handler(req, res) {
     // user generates triggers the mail; every subsequent plan is a no-op.
     if (generationType === "plan") {
       maybeSendFirstPlanEmail(userId).catch(() => {});
-      // Milestone email fires after the usage_event row has had a moment
-      // to land — small setTimeout so the count read sees this generation.
-      setTimeout(function(){ maybeSendReferralMilestoneEmail(userId).catch(() => {}); }, 800);
+      // [STABILITY] Awaited milestone send. The previous setTimeout(800ms)
+      // approach was scheduled then immediately ended the response; Vercel
+      // terminates the function container before the timer fires, so the
+      // milestone email never actually sent in production. recordUsageEvent
+      // above is now awaited too, so the count query sees this generation.
+      try { await maybeSendReferralMilestoneEmail(userId); } catch (e) { /* non-fatal */ }
     }
 
     // `cost` flows back so the client can do an optimistic credit-counter

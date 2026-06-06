@@ -150,10 +150,12 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
   // Welcome safety-net: catches anyone the inline /api/email/welcome call
   // missed (network errors, function cold-start timeouts, etc).
   // The email_sends unique constraint makes the inline + cron pair safe.
-  // [EMAIL-CUTOVER] Skipped when EMAIL_VIA_LOOPS=true. The inline
-  // /api/email/welcome already fires the Loops event; the Loops automation's
-  // per-contact dedupe is the new safety-net.
-  if (!EMAIL_VIA_LOOPS && days <= 7) {
+  // [STABILITY] Was gated on !EMAIL_VIA_LOOPS — removed. Even after the
+  // Loops cutover the cron safety-net stays useful: if Cowork's Loops
+  // automation breaks (mis-configured, rate-limited, dashboard glitch),
+  // the cron's Resend send still arrives. email_sends dedupe prevents
+  // double-send in the happy path where Loops did send.
+  if (days <= 7) {
     const tpl = T.welcome({ name });
     await sendEmail({
       userId, to: email, template: "welcome", dedupeKey: "welcome",
@@ -166,22 +168,26 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
   // skipped here. Loops handles trial day 7/11/13/expired via audience
   // filters keyed on `signupAt` (set during /api/email/welcome's
   // updateLoopsContact call) — no backend cron event needed.
+  // [STABILITY] days bounds changed from === to >= so a missed cron day
+  // self-heals on the next run. email_sends dedupe (per template+key)
+  // prevents resends for users who already got the email at the right
+  // moment; users who would have missed the email entirely now catch up.
   if (!EMAIL_VIA_LOOPS && !isPaid) {
-    if (days === 7) {
+    if (days >= 7) {
       const tpl = T.trialDay7({ name, unsubscribeToken: unsubToken });
       await sendEmail({
         userId, to: email, template: "trial_day_7", dedupeKey: "trial_day_7",
         subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
       });
     }
-    if (days === 11) {
+    if (days >= 11) {
       const tpl = T.trialDay11({ name, unsubscribeToken: unsubToken });
       await sendEmail({
         userId, to: email, template: "trial_day_11", dedupeKey: "trial_day_11",
         subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
       });
     }
-    if (days === 13) {
+    if (days >= 13) {
       const tpl = T.trialDay13({ name, unsubscribeToken: unsubToken });
       await sendEmail({
         userId, to: email, template: "trial_day_13", dedupeKey: "trial_day_13",
