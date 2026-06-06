@@ -1207,6 +1207,14 @@ function extractJSON(text) {
 }
 
 const KEY = "virl_v5";
+// [STABILITY] Module-level Set tracking which userIds this tab has already
+// POSTed /api/email/welcome for. Welcome useEffect (keyed on [session])
+// fires on every session change including silent token refreshes ~hourly;
+// without this guard, every refresh re-hits the welcome endpoint and
+// re-runs updateLoopsContact, burning Loops rate limit and logs. Server
+// dedupes the actual email but the cost is the per-call work, not the mail.
+// Lifetime: until page reload — exactly the right scope.
+const _welcomeFired = new Set();
 const WEEKLY_CREDITS = 20;
 // Free trial length in days. Mirrored in api/chat.js — keep in sync.
 const TRIAL_DAYS = 14;
@@ -5731,16 +5739,24 @@ function App() {
   useEffect(function() {
     if (!session) return;
     var userId = session.user.id;
-    // Fire-and-forget welcome email. The endpoint dedupes server-side via
-    // email_sends, so a token refresh / repeated SIGNED_IN / multi-tab
-    // open all resolve to "already sent, skip" instead of duplicate mail.
-    // We don't await — sign-in stays snappy regardless of Resend latency.
-    try {
-      fetch("/api/email/welcome", {
-        method:  "POST",
-        headers: { "Authorization": "Bearer " + session.access_token },
-      }).catch(function(){});
-    } catch(e) {}
+    // [STABILITY] Fire the welcome endpoint at most once per (userId, app
+    // load). The useEffect's [session] dep makes it run on every session
+    // change including silent token refreshes (every ~hour), which hits
+    // /api/email/welcome + updateLoopsContact repeatedly. The server
+    // dedupes the actual welcome via email_sends, but the Loops contact
+    // sync still re-runs, burning Loops's API rate limit and generating
+    // noise in logs. The module-level _welcomeFired Set survives until
+    // page reload — exactly the right lifetime for "did this tab already
+    // POST welcome for this user."
+    if (!_welcomeFired.has(userId)) {
+      _welcomeFired.add(userId);
+      try {
+        fetch("/api/email/welcome", {
+          method:  "POST",
+          headers: { "Authorization": "Bearer " + session.access_token },
+        }).catch(function(){});
+      } catch(e) {}
+    }
     // [TASK 1] Hydrate profile from Supabase; if none exists, migrate any local-only
     // profile up so legacy users don't lose their voice/audience/off-limits on sign-in.
     // Mirror the Supabase profile back to localStorage so the cache stays consistent
