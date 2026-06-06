@@ -22,7 +22,7 @@ import {
 // [PREMIUM 7] Loops lifecycle event triggers (subscriptionStarted /
 // subscriptionCancelled) + contact-property sync so Loops can drive
 // plan-state-aware emails inside its own dashboard.
-import { sendLoopsEvent, updateLoopsContact } from "./_lib/loops.js";
+import { sendLoopsEvent, sendLoopsEventOnce, updateLoopsContact } from "./_lib/loops.js";
 
 // [CHANGE 3b] Disable Vercel's body parser so Stripe gets the exact raw bytes
 // it signed — any reformatting would invalidate the signature.
@@ -368,7 +368,12 @@ export default async function handler(req, res) {
             // [PRICING 6] foundingTier + foundingPosition let Loops branch
             // the welcome (Email 01) and payment confirmation (Email 04)
             // into tier-aware variants and personalize "You're Founder #N".
-            await sendLoopsEvent({
+            // [LOOPS-DEDUPE] Dedupe by stripe subscription id so a
+            // resubscribe fires fresh, but a Stripe webhook replay
+            // (despite the event-level idempotency guard at the top of
+            // the handler) doesn't re-trigger Cowork's Loop. Belt and
+            // braces — both protections active.
+            await sendLoopsEventOnce({
               userId, email: ctx.email, eventName: "subscriptionStarted",
               properties: {
                 firstName:        ctx.name || "",
@@ -377,6 +382,7 @@ export default async function handler(req, res) {
                 foundingPosition: foundingPosition || 0,
                 isFoundingMember: plan === "founding",
               },
+              dedupeKey: "sub_" + (obj.subscription || obj.id || "session"),
             });
             await updateLoopsContact({
               userId, email: ctx.email,
@@ -404,9 +410,14 @@ export default async function handler(req, res) {
             // email to the wider waitlist is a Loops campaign triggered
             // separately (the event is the signal that the moment arrived).
             if (foundingTier === "founder_circle" && foundingPosition === 50) {
-              await sendLoopsEvent({
+              // [LOOPS-DEDUPE] Per-user singleton — this user only ever
+              // claims position 50 once. Webhook idempotency already
+              // guards the outer flow, but the email_sends claim makes
+              // the one-shot semantics explicit at the call site.
+              await sendLoopsEventOnce({
                 userId, email: ctx.email, eventName: "foundingCircleFull",
                 properties: { filledCount: 50 },
+                dedupeKey: "foundingCircleFull",
               });
               console.log("[webhook] Founder Circle filled — foundingCircleFull fired");
             }
@@ -538,9 +549,13 @@ export default async function handler(req, res) {
           // [PREMIUM 7] Fire subscriptionCancelled + flip the contact's
           // plan property so the day-60 reactivation segment in Loops
           // can target this user.
-          await sendLoopsEvent({
+          // [LOOPS-DEDUPE] Dedupe by subscription id — a cancel event
+          // for a specific subscription should fire the Loop once.
+          // Resubscribe + re-cancel creates a new subId → new fire.
+          await sendLoopsEventOnce({
             userId, email: ctx.email, eventName: "subscriptionCancelled",
             properties: { firstName: ctx.name || "", foundingTier: cancelledTier },
+            dedupeKey: "cancel_" + (obj.id || "sub"),
           });
           await updateLoopsContact({
             userId, email: ctx.email,

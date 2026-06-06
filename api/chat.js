@@ -15,7 +15,7 @@ import { sendEmail }                 from "./_lib/email-send.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
-import { sendLoopsEvent }            from "./_lib/loops.js";
+import { sendLoopsEvent, sendLoopsEventOnce } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
 
 // [EMAIL-CUTOVER] Feature flag controlling whether milestone sends route
@@ -439,11 +439,17 @@ async function maybeSendFirstPlanEmail(userId) {
   // `thirtyDayMilestone`). Cowork's `first_plan_celebrated` Loop in the
   // Loops dashboard is wired to listen for this exact name.
   if (EMAIL_VIA_LOOPS) {
-    await sendLoopsEvent({
+    // [LOOPS-DEDUPE] One-shot per user. Without dedupe, a user generating
+    // their 2nd plan (or any subsequent plan if the client-side flag was
+    // wiped) would re-fire firstPlanGenerated and Cowork's Loop would
+    // send the welcome again unless Loops dashboard dedupe is on. The
+    // email_sends claim makes this resilient to that config gap.
+    await sendLoopsEventOnce({
       userId,
       email:     ctx.email,
       eventName: "firstPlanGenerated",
       properties: { firstName: ctx.name || "" },
+      dedupeKey: "firstPlanGenerated",
     });
     return;
   }

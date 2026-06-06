@@ -5,6 +5,8 @@
 // degradation. If LOOPS_API_KEY is unset, every helper logs and
 // resolves with { ok: false, note: "not configured" } — never throws.
 
+import { claimSend } from "./email-send.js";
+
 const LOOPS_API_BASE = "https://app.loops.so/api/v1";
 
 function loopsApiKey() {
@@ -81,4 +83,42 @@ export async function updateLoopsContact({ userId, email, properties }) {
     console.error("[loops] contact update threw:", e.message);
     return { ok: false, error: e.message };
   }
+}
+
+// [LOOPS-DEDUPE] Audit finding #12. Fires a Loops event but only once per
+// (userId, eventName, dedupeKey) tuple — protects against Cowork's Loops
+// automations being configured WITHOUT per-contact event dedupe, which
+// would otherwise let a duplicate fire (e.g. firstPlanGenerated on the
+// 2nd plan if some flag got reset, subscriptionStarted on a Stripe-event
+// re-process before idempotency landed, etc.) deliver a second copy of a
+// one-shot email.
+//
+// Reuses the email_sends table with `template = "loops:<eventName>"` and
+// the caller-supplied dedupeKey. PostgREST returns 409 on unique-conflict;
+// claimSend returns false → we skip the actual Loops fire.
+//
+// When to use sendLoopsEventOnce vs plain sendLoopsEvent:
+//   - sendLoopsEventOnce: events that must arrive AT MOST ONCE per user
+//     (welcome, first-plan, founder-circle-full, subscriptionStarted,
+//     thirtyDayMilestone, etc.)
+//   - sendLoopsEvent: events that can fire multiple times by design
+//     (per-plan-generated, per-caption-generated, repeated milestones)
+//
+// Fail-open: if claimSend errors (Supabase down), the event still fires
+// — duplicate-risk is preferable to missed-event-on-infra-blip.
+export async function sendLoopsEventOnce({ userId, email, eventName, properties, dedupeKey }) {
+  if (!eventName) return { ok: false, note: "eventName required" };
+  if (!userId)    return { ok: false, note: "userId required for dedupe" };
+  if (!dedupeKey) return { ok: false, note: "dedupeKey required" };
+  let claimed = true; // fail-open if claimSend throws
+  try {
+    claimed = await claimSend(userId, "loops:" + eventName, dedupeKey);
+  } catch (e) {
+    console.warn("[loops] claimSend threw, firing anyway:", e.message);
+  }
+  if (!claimed) {
+    console.log("[loops] event " + eventName + " skipped — already fired for", dedupeKey);
+    return { ok: true, deduped: true };
+  }
+  return sendLoopsEvent({ userId, email, eventName, properties });
 }
