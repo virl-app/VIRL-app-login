@@ -61,12 +61,31 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'Missing userId' });
-
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
     return res.status(500).json({ error: 'Server misconfigured' });
   }
+
+  // [SECURITY] Verify the caller via Supabase Bearer token and derive the
+  // userId from the verified token — NEVER trust a userId from the request
+  // body. Without this gate any anonymous caller could POST another user's
+  // UUID and delete that account (the endpoint uses SUPABASE_SERVICE_KEY,
+  // which bypasses RLS). Same auth pattern as /api/chat, /api/email/welcome,
+  // /api/loops-event.
+  const authHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!authHeader) return res.status(401).json({ error: 'Sign in required.' });
+
+  let userId;
+  try {
+    const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${authHeader}`, apikey: SUPABASE_SERVICE_KEY },
+    });
+    if (!userRes.ok) return res.status(401).json({ error: 'Sign in required.' });
+    const u = await userRes.json();
+    userId = u.id;
+  } catch (e) {
+    return res.status(401).json({ error: 'Sign in required.' });
+  }
+  if (!userId) return res.status(401).json({ error: 'Sign in required.' });
 
   const headers = {
     'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
