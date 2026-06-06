@@ -5342,6 +5342,57 @@ function App() {
     }
   }, [session]);
 
+  // [SEED-COUNTERS] On session mount, fetch the user's lifetime plan /
+  // caption / scan counts from the server and seed the localStorage
+  // milestone flags. Without this, returning users who lost their
+  // localStorage (sign-out wipes all virl_* keys, fresh browser, incognito,
+  // cleared data) re-trigger the first-plan celebration overlay, the
+  // generic-AI-vs-VIRL comparison card, and various Loops events that
+  // should only fire once per user ever.
+  //
+  // Idempotent: runs once per session.user.id flip. If the server returns
+  // zero counts (genuinely new user) we don't touch the flags — letting
+  // the existing localStorage logic do its thing for first-ever generations.
+  useEffect(function(){
+    if (!session || !session.user || !session.user.id) return;
+    var token = session.access_token;
+    if (!token) return;
+    fetch("/api/lifetime-stats", {
+      headers: { Authorization: "Bearer " + token },
+    })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(stats){
+        if (!stats) return;
+        try {
+          var planCount    = parseInt(stats.planCount    || 0, 10) || 0;
+          var captionCount = parseInt(stats.captionCount || 0, 10) || 0;
+          var scanCount    = parseInt(stats.scanCount    || 0, 10) || 0;
+          // Plan-side flags. Overwrite the counter unconditionally so the
+          // running total never drifts below the server's truth; if the
+          // local value happened to be larger (e.g. mid-session pre-seed
+          // increment), Math.max protects against regressing it.
+          if (planCount > 0) {
+            var localPlanCount = parseInt(localStorage.getItem("virl_plans_completed") || "0", 10) || 0;
+            localStorage.setItem("virl_plans_completed", String(Math.max(planCount, localPlanCount)));
+            localStorage.setItem("virl_first_plan_celebrated", "1");
+            localStorage.setItem("virl_first_plan_event_fired", "1");
+            localStorage.setItem("virl_first_plan_shown", "1");
+            if (planCount >= 3)  localStorage.setItem("virl_referral_shown_3",  "1");
+            if (planCount >= 5)  localStorage.setItem("virl_milestone_5_seen",  "1");
+            if (planCount >= 7)  localStorage.setItem("virl_referral_shown_7",  "1");
+            if (planCount >= 15) localStorage.setItem("virl_referral_shown_15", "1");
+          }
+          // Caption + scan counters are tracked for future first-of-its-
+          // kind celebrations (none today). Seeding now keeps the counts
+          // accurate so a later feature doesn't have the same retroactive
+          // bug.
+          if (captionCount > 0) localStorage.setItem("virl_captions_generated", String(captionCount));
+          if (scanCount    > 0) localStorage.setItem("virl_scans_completed",    String(scanCount));
+        } catch (e) { /* localStorage disabled / quota — non-fatal */ }
+      })
+      .catch(function(){ /* fail-open: stale celebration once is better than blocking */ });
+  }, [session && session.user && session.user.id]);
+
   // [PREMIUM 7] Fire userSignedUp into Loops on the user's first
   // authenticated session. Gated by virl_signup_event_fired so each
   // user only fires once, and by a 7-day window on auth.users.created_at
