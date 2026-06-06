@@ -244,6 +244,48 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "invalid_signature" });
     }
 
+    // [STRIPE-IDEMPOTENCY] Try to claim this event.id in the dedupe table.
+    // If the INSERT conflicts (409), this is a retry of an event we've
+    // already processed — return 200 immediately so Stripe stops retrying
+    // and we don't double-fire side effects (resubscription_count
+    // increments, Loops events, etc.).
+    //
+    // Insert-at-top trade-off: a handler that crashes mid-flight (after
+    // claiming event_id but before all side effects run) leaves the
+    // event marked processed; a Stripe retry would skip the rest. We
+    // accept that vs the alternative (insert-at-end) which risks
+    // parallel deliveries of the same event running side effects twice.
+    //
+    // Fail-open if the dedupe table itself is unreachable — better to
+    // risk an over-counted increment than to refuse all webhook
+    // deliveries on a Supabase blip.
+    const supabaseUrl     = process.env.SUPABASE_URL;
+    const supabaseService = process.env.SUPABASE_SERVICE_KEY;
+    if (supabaseUrl && supabaseService && event && event.id) {
+      try {
+        const dedupeRes = await fetch(`${supabaseUrl}/rest/v1/processed_stripe_events`, {
+          method: "POST",
+          headers: {
+            apikey:           supabaseService,
+            Authorization:    `Bearer ${supabaseService}`,
+            "Content-Type":   "application/json",
+            Prefer:           "return=minimal",
+          },
+          body: JSON.stringify({ event_id: event.id }),
+        });
+        // 201 Created → first delivery, proceed. 409 Conflict → already
+        // processed. Anything else (5xx, network blip) → fail-open and
+        // let the handler run; worst case a side effect double-fires
+        // once, which is the existing behavior.
+        if (dedupeRes.status === 409) {
+          console.log("[webhook] event already processed, skipping:", event.id, event.type);
+          return res.status(200).json({ received: true, deduped: true });
+        }
+      } catch (e) {
+        console.warn("[webhook] dedupe insert failed (fail-open):", e.message);
+      }
+    }
+
     const obj    = (event && event.data && event.data.object) || {};
     const meta   = obj.metadata || {};
     const userId = meta.userId || null;
