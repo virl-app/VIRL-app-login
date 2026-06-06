@@ -5310,6 +5310,16 @@ function App() {
         setPasswordRecoveryMode(true);
       }
       // [TASK 1] Clear cached profile on sign-out so the next user on this browser starts clean.
+      // [STABILITY] Also call clearLocalUserData() so virl_* milestone /
+      // celebration flags get wiped consistently with the explicit
+      // signOut button. Without this, a Supabase-emitted SIGNED_OUT
+      // (token revocation, server-side session expiry, password change
+      // elsewhere) left stale virl_milestone_*_fired / virl_signup_event_fired
+      // flags around — if a different user signed in on the same browser,
+      // their welcome / milestone events could be silently suppressed
+      // by the previous user's flags. The seed useEffect re-syncs
+      // counter-style flags from the server but doesn't touch boolean
+      // "has X fired" flags, so this cleanup is the protective layer.
       if (event === "SIGNED_OUT") {
         try {
           var current = JSON.parse(localStorage.getItem(KEY) || "{}");
@@ -5317,6 +5327,7 @@ function App() {
           localStorage.setItem(KEY, JSON.stringify(current));
         } catch(e) {}
         try { sessionStorage.removeItem("virl_active_tab"); } catch(e) {}
+        clearLocalUserData();
         setProfile({});
         setVault([]);
         setResults([]);
