@@ -853,26 +853,46 @@ export default async function handler(req, res) {
 
   // ── Credit cap + deduction (lazy reset already ran above) ────────────────
   try {
-    if (!isPaid && currentCredits < creditCost) {
-      return res.status(402).json({ error: 'Not enough credits this week.' });
-    }
+    // [ATOMIC-CREDITS] Atomic check-and-decrement via the consume_credit RPC.
+    // The previous pattern read currentCredits then PATCHed credits separately;
+    // two parallel requests with currentCredits=1 both wrote credits=0 and
+    // both got their generation. The RPC's WHERE clause + Postgres row lock
+    // serializes concurrent callers so only one wins.
+    //
     // [PRICING credit-model] Only Pro is unlimited. Founder Circle
     // ('founding') now meters at 150/week like Standard — credits
     // decrement per generation and refill on the weekly reset. Free
-    // users pay per-generation too. The 402 gate above still exempts
-    // all paid plans, so a Founder Circle member who reaches 0 is not
-    // hard-blocked — the count just floors at 0 until the weekly reset.
+    // users pay per-generation too. The strict path returns NULL when
+    // insufficient → 402; lenient (paid non-Pro) always succeeds and
+    // floors at 0.
     if (plan !== 'pro') {
-      await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
-        method: 'PATCH',
+      const strict = !isPaid; // free + trial = hard balance check; paid non-Pro = floor at 0
+      const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/consume_credit`, {
+        method: 'POST',
         headers: {
           'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
           'apikey': SUPABASE_SERVICE_KEY,
           'Content-Type': 'application/json',
-          'Prefer': 'return=minimal',
         },
-        body: JSON.stringify({ credits: Math.max(0, currentCredits - creditCost) }),
+        body: JSON.stringify({
+          p_user_id: userId,
+          p_cost:    creditCost,
+          p_strict:  strict,
+        }),
       });
+      if (!rpcRes.ok) {
+        const errBody = await rpcRes.text().catch(() => '');
+        console.error('[chat] consume_credit RPC failed:', rpcRes.status, errBody);
+        return res.status(500).json({ error: 'Could not verify credits.' });
+      }
+      // RPC returns the new balance, or null if strict mode rejected
+      // for insufficient credits (or row missing). PostgREST wraps a
+      // scalar return in the response body directly — we parse and
+      // check for null.
+      const newBalance = await rpcRes.json().catch(() => null);
+      if (strict && newBalance === null) {
+        return res.status(402).json({ error: 'Not enough credits this week.' });
+      }
     }
     // Decrement the fresh-trends counter for free users that just
     // consumed their freebie. Paid users skip — they have no cap.
