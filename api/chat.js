@@ -15,7 +15,7 @@ import { sendEmail }                 from "./_lib/email-send.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
-import { sendLoopsEvent }            from "./_lib/loops.js";
+import { sendLoopsEvent, sendLoopsEventOnce } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
 
 // [EMAIL-CUTOVER] Feature flag controlling whether milestone sends route
@@ -439,11 +439,17 @@ async function maybeSendFirstPlanEmail(userId) {
   // `thirtyDayMilestone`). Cowork's `first_plan_celebrated` Loop in the
   // Loops dashboard is wired to listen for this exact name.
   if (EMAIL_VIA_LOOPS) {
-    await sendLoopsEvent({
+    // [LOOPS-DEDUPE] One-shot per user. Without dedupe, a user generating
+    // their 2nd plan (or any subsequent plan if the client-side flag was
+    // wiped) would re-fire firstPlanGenerated and Cowork's Loop would
+    // send the welcome again unless Loops dashboard dedupe is on. The
+    // email_sends claim makes this resilient to that config gap.
+    await sendLoopsEventOnce({
       userId,
       email:     ctx.email,
       eventName: "firstPlanGenerated",
       properties: { firstName: ctx.name || "" },
+      dedupeKey: "firstPlanGenerated",
     });
     return;
   }
@@ -807,7 +813,18 @@ export default async function handler(req, res) {
   // the rest of the generation still works exactly as before.
   if (profile && profile.handles) {
     try {
-      const research = await fetchHandleResearch(userId, profile.handles);
+      // [STABILITY] Race the research call against a 2s timeout so a
+      // cold-cache Perplexity round-trip can't extend the chat.js
+      // critical path past Vercel's function limit. The losing promise
+      // (the Perplexity call) isn't cancelled — Vercel typically keeps
+      // the function alive until res.end(), so the background fetch
+      // often completes and writes to cache anyway, warming subsequent
+      // calls. The prewarm endpoint on profile save is the steady-state
+      // path; this timeout protects the rare cold-cache chat call.
+      const research = await Promise.race([
+        fetchHandleResearch(userId, profile.handles),
+        new Promise(function(resolve){ setTimeout(function(){ resolve(null); }, 2000); }),
+      ]);
       if (research) profile.handleResearch = research;
     } catch (e) { /* non-fatal — generation continues without research */ }
   }

@@ -16,7 +16,7 @@ import * as T from "../_lib/email-templates.js";
 // [PREMIUM 7] thirtyDayMilestone is fired here (not the app) because
 // it's a calendar-day check that has to run whether or not the user
 // is currently online.
-import { sendLoopsEvent } from "../_lib/loops.js";
+import { sendLoopsEvent, sendLoopsEventOnce } from "../_lib/loops.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -216,13 +216,18 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
   // [PREMIUM 7] Day-30 milestone for paid users. Fires once per user.
   // Email content + property merging happen in Loops; we just trip the
   // event with the firstName so the template can address them.
-  // Idempotency comes from Loops itself (an event fired once for a
-  // contact won't replay), but the days === 30 gate also makes the
-  // window single-day in practice.
-  if (isPaid && days === 30) {
-    await sendLoopsEvent({
+  // [LOOPS-DEDUPE] Audit finding #12. Previously relied on the comment
+  // "Loops dedupes a contact's events" — that's only true if Cowork
+  // configured per-contact dedupe in the dashboard, which we can't
+  // verify from here. Adding email_sends-side claim is belt-and-braces;
+  // also lets the gate change from days === 30 to days >= 30 self-heal
+  // (a missed cron day no longer skips the milestone — claim prevents
+  // a second fire).
+  if (isPaid && days >= 30) {
+    await sendLoopsEventOnce({
       userId, email, eventName: "thirtyDayMilestone",
       properties: { firstName: name || "" },
+      dedupeKey: "thirtyDayMilestone",
     });
   }
 

@@ -20,7 +20,12 @@ function emailEnabled() {
 
 // Insert a row into email_sends. Returns true if inserted (we should send),
 // false if the unique constraint fired (already sent — skip).
-async function claimSend(userId, template, dedupeKey) {
+//
+// Exported so the Loops helpers can reuse the same per-user-per-template-
+// per-dedupe-key dedup table for one-shot Loops events (audit finding #12).
+// Reusing the existing table beats spinning up a sibling loops_events_sends
+// table for the same data shape.
+export async function claimSend(userId, template, dedupeKey) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/email_sends`, {
     method: "POST",
     headers: {
