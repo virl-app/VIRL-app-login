@@ -807,7 +807,18 @@ export default async function handler(req, res) {
   // the rest of the generation still works exactly as before.
   if (profile && profile.handles) {
     try {
-      const research = await fetchHandleResearch(userId, profile.handles);
+      // [STABILITY] Race the research call against a 2s timeout so a
+      // cold-cache Perplexity round-trip can't extend the chat.js
+      // critical path past Vercel's function limit. The losing promise
+      // (the Perplexity call) isn't cancelled — Vercel typically keeps
+      // the function alive until res.end(), so the background fetch
+      // often completes and writes to cache anyway, warming subsequent
+      // calls. The prewarm endpoint on profile save is the steady-state
+      // path; this timeout protects the rare cold-cache chat call.
+      const research = await Promise.race([
+        fetchHandleResearch(userId, profile.handles),
+        new Promise(function(resolve){ setTimeout(function(){ resolve(null); }, 2000); }),
+      ]);
       if (research) profile.handleResearch = research;
     } catch (e) { /* non-fatal — generation continues without research */ }
   }
