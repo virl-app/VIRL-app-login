@@ -5965,12 +5965,17 @@ function App() {
     var tier = tierOverride
       || (foundingAvailable ? "founder_circle" : "standard");
     try {
+      // [SECURITY] Send the Supabase session token so the server can
+      // derive userId + email from the verified user record. The body
+      // no longer carries userId/email — the server ignores them and
+      // trusts only the token.
       var res = await fetch("/api/create-checkout", {
         method: "POST",
-        headers: {"Content-Type":"application/json"},
+        headers: {
+          "Content-Type":  "application/json",
+          "Authorization": "Bearer " + session.access_token,
+        },
         body: JSON.stringify({
-          userId: session.user.id,
-          email: session.user.email,
           planType: planType||"monthly",
           tier: tier,
         }),
@@ -6256,11 +6261,16 @@ function App() {
     if (!session) return;
     setDeleteLoading(true);
     try {
-      // Delete Supabase data via service-side API
+      // [SECURITY] Send the Supabase session token so the server can
+      // derive userId from the verified user record. The body no longer
+      // carries userId — the server ignores it and trusts only the token,
+      // preventing anyone from POSTing another user's UUID to delete them.
       await fetch("/api/delete-account", {
         method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({userId: session.user.id}),
+        headers: {
+          "Content-Type":  "application/json",
+          "Authorization": "Bearer " + session.access_token,
+        },
       });
     } catch(e) { console.error("Delete error:", e); }
     // Sign out regardless — Supabase auth deletion requires service key on server

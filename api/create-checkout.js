@@ -3,14 +3,20 @@
 // [PRICING 1] Creates a Stripe Checkout session with tier-aware pricing and
 // Founder Circle cap enforcement.
 //
+// Auth: Supabase Bearer token required. userId + email are derived from the
+// verified token — NEVER trusted from the request body. The body's userId
+// gets stamped into Stripe session metadata, which the webhook then uses to
+// upgrade the matching Supabase account; without token-derived identity an
+// attacker could pay through their own card and credit the subscription to
+// a victim's account, or upgrade a victim's plan by spoofing their UUID.
+//
 // POST body:
-//   userId   — Supabase user UUID
-//   email    — Pre-fills Stripe's email field
 //   planType — "monthly" | "annual"  (defaults to "monthly")
 //   tier     — "founder_circle" | "standard"  (defaults to "standard")
 //
 // Returns:
 //   200 { url }                              — Stripe Checkout URL
+//   401 { error: "Sign in required." }       — missing/invalid Bearer token
 //   400 { error: "founder_circle_full" }     — when the cap is hit
 //   400 { error: "tier_not_eligible" }       — user re-subscribing to a tier
 //                                              they previously held (the
@@ -110,11 +116,39 @@ export default async function handler(req, res) {
     });
   }
 
-  const { userId, email, planType: rawPlanType, tier: rawTier } = req.body || {};
+  const { planType: rawPlanType, tier: rawTier } = req.body || {};
 
-  if (!userId || !email) {
-    return res.status(400).json({ error: "userId and email are required" });
+  // [SECURITY] Verify caller via Supabase Bearer token and derive userId +
+  // email from the verified user record. NEVER trust userId / email from
+  // the request body — a body-supplied userId gets stamped into the Stripe
+  // session metadata, which the webhook then uses to upgrade THAT account.
+  // Without this gate, anyone could pay through their own card but credit
+  // the subscription to another user's account, OR upgrade a victim's plan
+  // by spoofing the userId in the body. Service key (used elsewhere in
+  // this handler) bypasses RLS, so the only thing standing between an
+  // attacker and cross-account writes is this auth check.
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(503).json({
+      error: "billing_not_configured",
+      message: "Billing setup is in progress. Try again shortly.",
+    });
   }
+  const authHeader = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  if (!authHeader) return res.status(401).json({ error: "Sign in required." });
+
+  let userId, email;
+  try {
+    const userRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${authHeader}`, apikey: supabaseKey },
+    });
+    if (!userRes.ok) return res.status(401).json({ error: "Sign in required." });
+    const u = await userRes.json();
+    userId = u.id;
+    email  = u.email;
+  } catch (e) {
+    return res.status(401).json({ error: "Sign in required." });
+  }
+  if (!userId || !email) return res.status(401).json({ error: "Sign in required." });
 
   // [PRICING 1] Default to "standard" for back-compat with the existing
   // index.html, which doesn't send `tier` yet (lands in Step 3).
