@@ -483,23 +483,63 @@ function buildCriticalFactsBlock(profile) {
   return sections.join(" ");
 }
 
+// [CACHE-TIER] Returns { shared, perUser } instead of a single string so
+// chat.js can place TWO cache breakpoints — one for content shared across
+// ALL users (role intro + GUARD + LOCALE + STYLE_GUARD) and one for
+// per-user content (critical facts + profile context). With a single
+// breakpoint, each user's prompt is uniquely cached and the hit rate
+// caps at the rare same-user-within-5min case. With two breakpoints, the
+// shared block stays hot across every request from every user → cache
+// read ratio jumps from ~4% to 60-80%+.
+//
+// Order matters for caching: the shared block must come FIRST in the
+// system array so its prefix is consistent across users. Per-user content
+// follows and is its own cache key.
+//
+// Critical facts moved from the top of the prompt to the per-user block
+// because they're per-user. They're still clearly labeled
+// ("CRITICAL PERSONAL FACTS — NEVER CONTRADICT") so the model attends to
+// them with the same priority — they just no longer sit at literal
+// position 0 of the system prompt.
 function buildSystemPrompt(profile, role) {
   const critical = buildCriticalFactsBlock(profile);
-  const ctx = buildProfileCtx(profile);
-  // [INTEL 1] Critical facts are prepended *before* the role intro so they
-  // hit the top of the system prompt where the model anchors hardest.
-  let base = "";
-  if (critical) base += critical + " ";
-  base += "You are VIRL, an expert " + role + " for social media creators. "
+  const ctx      = buildProfileCtx(profile);
+
+  const shared = "You are VIRL, an expert " + role + " for social media creators. "
     + "You always produce content that sounds authentically like the creator — never generic AI. "
     + "Return ONLY valid JSON. No markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
     + LOCALE_LINE
-    // [STYLE-GUARD] Anti-AI-tells block. Lives in the cached system prompt so
-    // the per-request cost is amortized across the cache window.
+    // [STYLE-GUARD] Anti-AI-tells block. Shared across all users + all
+    // generation types — major cache savings now that it's in the
+    // tier-1 (shared) block.
     + " " + STYLE_GUARD;
-  if (ctx) base += " CREATOR PROFILE (follow every rule strictly): " + ctx;
-  return base;
+
+  let perUser = "";
+  if (critical) perUser += critical;
+  if (ctx) {
+    if (perUser) perUser += " ";
+    perUser += "CREATOR PROFILE (follow every rule strictly): " + ctx;
+  }
+
+  return { shared, perUser };
+}
+
+// [CACHE-TIER] Composes the two-tier system prompt — shared block (cached
+// across ALL users + ALL generation types per role) + per-user block
+// (cached per user). buildComplianceBlock output goes in the shared tier
+// because compliance rules are per-niche but each niche has many users
+// — caching it once per niche is a big win.
+//
+// Non-plan builders all use this helper. buildPlan / buildPlanStrategy
+// compose their own shared/perUser pair because they have additional
+// shared content (schema, format diversity, format-specific fields).
+function composeSystemPrompt(profile, role, compliance) {
+  const sp = buildSystemPrompt(profile, role);
+  return {
+    shared:  sp.shared + buildComplianceBlock(compliance),
+    perUser: sp.perUser,
+  };
 }
 
 // [INTEL 3] Map the user-facing NICHE labels (the values stored in
@@ -619,15 +659,25 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // system block as the cache key, so this block invalidates the cache
   // when the user's niche changes (rare) and stays warm otherwise.
   const complianceBlock = buildComplianceBlock(compliance);
-  const systemPrompt = "You are VIRL, an AI content strategist and creative director. "
+
+  // [CACHE-TIER] Split the system prompt into shared + per-user blocks so
+  // chat.js can place two cache breakpoints. The shared block holds the
+  // role intro, output schema, format-specific field rules, and per-niche
+  // compliance — all of which are identical across users of the same
+  // niche, so the cache stays hot across every request from every user.
+  // The per-user block holds profileCtx + vaultCtx, which only that
+  // specific user's repeat requests will hit.
+  //
+  // profileCtx was moved AFTER the schema rules so the shared content can
+  // form a clean cache prefix. The model still sees both — order within
+  // the assembled system prompt is shared-then-per-user.
+  const sharedSystemPrompt = "You are VIRL, an AI content strategist and creative director. "
     + "Your job is to create highly personalized 7-day social media content plans that build on each other week over week. "
     + "Always return valid JSON only — no markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
     + LOCALE_LINE + " "
-    + (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
-    + vaultCtx
-    // [INTEL 3] Format diversity rules + the fixed format vocabulary land in
-    // the systemPrompt because they are constraints on every plan, not
+    // [INTEL 3] Format diversity rules + the fixed format vocabulary land
+    // in the systemPrompt because they are constraints on every plan, not
     // per-request data.
     + FORMAT_DIVERSITY_BLOCK
     // [COST 2] Static output-shape rules moved here from userPrompt so they
@@ -664,10 +714,15 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + " format=story → include `frames` (array of 3-5 Story frames; each frame is an object with: `frameNumber` (1-indexed), `content` (what the frame shows), `textOverlay` (suggested overlay text), `interactiveElement` (poll question, slider, question sticker, tap-through link, countdown, etc.))."
     + " format=long_form_text → include `hook` (the opening line), `body` (the full post body, formatted with line breaks for LinkedIn readability — use \\n for line breaks inside the JSON string), `closing` (the final line / CTA)."
     + " Always include `format`, `platform`, and `day` on every card. If you cannot produce a meaningful format-specific field for a card, omit just that field (do not invent placeholder content)."
-    // [COMPLIANCE 1] Per-niche guardrails for in-scope niches (Real Estate,
-    // Wellness). Empty string when the user's niche / locale isn't covered,
-    // so the concat is a no-op for everyone else.
+    // [COMPLIANCE 1] Per-niche guardrails. Empty string when the user's
+    // niche / locale isn't covered. Per-niche but shared across all users
+    // of that niche → belongs in the shared cache tier.
     + complianceBlock;
+
+  const perUserSystemPrompt = (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
+    + vaultCtx;
+
+  const systemPrompt = { shared: sharedSystemPrompt, perUser: perUserSystemPrompt };
 
   // Day labels are relative to the generation date — Day 1 = today's
   // weekday, Day 2 = tomorrow, etc. This lets a Wednesday-generated plan
@@ -851,8 +906,7 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
 
   // [COMPLIANCE 1] Per-niche guardrails ride the cached system prefix
   // alongside the base role prompt. Empty string for out-of-scope niches.
-  const systemPrompt = buildSystemPrompt(profile, "content strategist and creative director")
-    + buildComplianceBlock(compliance);
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and creative director", compliance);
 
   // Condensed per-card line — enough signal for the model to find a
   // through-line, no card bodies/hashtags that would inflate tokens.
@@ -906,8 +960,7 @@ function buildScript(params, profile, _vaultPatterns, playbook, _trends, _histor
   const platform = card.platform || "TikTok";
   const guide = SCRIPT_PLATFORM_GUIDE[platform] || "short-form social video 60 seconds.";
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
-  const systemPrompt = buildSystemPrompt(profile, "content scriptwriter")
-    + buildComplianceBlock(compliance);
+  const systemPrompt = composeSystemPrompt(profile, "content scriptwriter", compliance);
   const userPrompt = "Write a complete ready-to-film script for this post: " + (card.title || "") + ". "
     + "Platform: " + platform + " — format guide: " + guide
     + scriptPlaybookContext(playbook, platform) + " "
@@ -948,8 +1001,7 @@ function buildCaption(params, profile, _vaultPatterns, playbook, trends, _histor
   const slots = hashtagSlots(playbook, platform, 7);
 
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
-  const systemPrompt = buildSystemPrompt(profile, "caption writer and content strategist")
-    + buildComplianceBlock(compliance);
+  const systemPrompt = composeSystemPrompt(profile, "caption writer and content strategist", compliance);
   const userPrompt = "Generate 3 caption options for a " + platform + " post about: " + topic + ". "
     + "Tone: " + tone + ". Length: " + length + " — " + lengthRule + " "
     + "Platform style: " + platformCtx
@@ -974,8 +1026,7 @@ function buildCaption(params, profile, _vaultPatterns, playbook, trends, _histor
 function buildCaptionRemix(params, profile, _vaultPatterns, _playbook, _trends, _history, recentEdits, compliance) {
   const text = params.text || "";
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
-  const systemPrompt = buildSystemPrompt(profile, "caption writer and remixer")
-    + buildComplianceBlock(compliance);
+  const systemPrompt = composeSystemPrompt(profile, "caption writer and remixer", compliance);
   const userPrompt = "Rewrite this caption 3 ways. Keep the core message but vary the angle. "
     + "Each version must sound like the creator — same voice, different approach. "
     + "Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"},\"compliance_note\":\"OPTIONAL — short disclosure when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"} "
@@ -999,8 +1050,7 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
   // FDA rules apply — but per the v1 scope decision (Recommended), only the
   // prompt-level block fires on scans; the post-generation scrub stays
   // wired to plan / script / caption paths.
-  const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst")
-    + buildComplianceBlock(compliance);
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance);
   const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
@@ -1029,8 +1079,7 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
 function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance) {
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // Same v1 scope as buildScanImage — prompt-level block only, no scrub.
-  const systemPrompt = buildSystemPrompt(profile, "content strategist and viral potential analyst")
-    + buildComplianceBlock(compliance);
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance);
   const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
