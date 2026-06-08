@@ -46,18 +46,22 @@ export default async function handler(req, res) {
   }
   if (!userId) return res.status(401).json({ error: "Sign in required." });
 
-  // Read handles from the profiles table — NEVER trust the request body,
-  // since that would let a caller pre-warm research against fabricated
-  // handles and force the cache to misrepresent the authenticated user.
+  // Read handles + inspiration from the profiles table — NEVER trust the
+  // request body, since that would let a caller pre-warm research against
+  // fabricated handles / aspirations and force the cache to misrepresent
+  // the authenticated user. Inspiration is included in the cache key
+  // (handles_hash), so it has to come from the same trusted source.
   let handles = {};
+  let inspiration = "";
   try {
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=handles`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=handles,inspiration`,
       { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
     );
     if (r.ok) {
       const rows = await r.json();
-      handles = (rows[0] && rows[0].handles && typeof rows[0].handles === "object") ? rows[0].handles : {};
+      handles     = (rows[0] && rows[0].handles && typeof rows[0].handles === "object") ? rows[0].handles : {};
+      inspiration = (rows[0] && typeof rows[0].inspiration === "string") ? rows[0].inspiration : "";
     }
   } catch (e) { /* fail-open below */ }
 
@@ -72,7 +76,7 @@ export default async function handler(req, res) {
   // is satisfied.
   let research = null;
   try {
-    research = await fetchHandleResearch(userId, handles);
+    research = await fetchHandleResearch(userId, handles, inspiration);
   } catch (e) { /* fail-open */ }
 
   return res.status(200).json({

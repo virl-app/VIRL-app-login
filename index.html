@@ -108,7 +108,14 @@ async function saveProfileToSupabase(profile, userId) {
       // only takes effect once the user explicitly turns it on in the
       // Profile tab; off-by-default means existing users see no behavior
       // change until they opt in.
-      learn_from_edits: !!profile.learnFromEdits
+      learn_from_edits: !!profile.learnFromEdits,
+      // [VOICE-REFERENCE] Optional additional caption samples. Stored as a
+      // text[] so PostgREST round-trips it without JSON parsing on the
+      // client. Filter out empty entries before write — UI rows can be
+      // mid-edit with whitespace-only values that shouldn't persist.
+      voice_samples: Array.isArray(profile.voiceSamples)
+        ? profile.voiceSamples.map(function(s){ return String(s||"").trim(); }).filter(Boolean)
+        : []
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -179,7 +186,10 @@ async function loadProfileFromSupabase(userId) {
       platformFormats: data.platform_formats||{},
       // [LEARN-FROM-EDITS] Opt-in flag. Falls back to false on existing
       // rows that don't yet have the column populated.
-      learnFromEdits: !!data.learn_from_edits
+      learnFromEdits: !!data.learn_from_edits,
+      // [VOICE-REFERENCE] Optional additional voice samples. Empty array on
+      // pre-migration rows so the UI editor renders no extra slots.
+      voiceSamples: Array.isArray(data.voice_samples) ? data.voice_samples : []
     };
   } catch(e) { return {}; }
 }
@@ -4046,6 +4056,12 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   // Default OFF — this is a data/privacy decision and shouldn't be
   // surprise-enabled. Persists to profiles.learn_from_edits (boolean).
   const [learnFromEdits,setLearnFromEdits] = useState(!!profile.learnFromEdits);
+  // [VOICE-REFERENCE] Optional additional caption samples — appended to
+  // sampleCaption as the voice reference corpus for drift telemetry (and
+  // future few-shot exemplars). Capped in the UI at 4 entries to keep the
+  // profile form scannable; revisit the cap, not the schema, if it needs
+  // to grow.
+  const [voiceSamples,setVoiceSamples] = useState(Array.isArray(profile.voiceSamples)?profile.voiceSamples:[]);
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -4100,7 +4116,7 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,voiceSamples});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -4407,9 +4423,60 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
             <Label>A creator whose style you admire <TierBadge tier="elite"/></Label>
             <input value={inspiration} onChange={function(e){setInspiration(e.target.value);}} placeholder="e.g. @aliabdaal - explains complex ideas in plain language" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
-          <div id="vp-sampleCaption" style={{marginBottom:20}}>
+          <div id="vp-sampleCaption" style={{marginBottom:14}}>
             <Label>Paste a caption you love <TierBadge tier="elite"/></Label>
             <textarea value={sampleCaption} onChange={function(e){setSample(e.target.value);}} placeholder="Paste a caption from one of your posts that felt totally like you..." style={Object.assign({},textareaStyle,{minHeight:88})}/>
+          </div>
+
+          {/* [VOICE-REFERENCE] Additional caption samples — optional. Each
+              row is a textarea bound to one slot of the voiceSamples array.
+              Cap at 4 additional entries; remove-button collapses the
+              array. Empty/whitespace rows are stripped at save time, so a
+              user can leave a half-typed row in place without persisting
+              junk. Helper copy frames this as voice-quality enrichment,
+              not a required field. */}
+          <div id="vp-voiceSamples" style={{marginBottom:20}}>
+            <Label>More voice samples (optional)</Label>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:10}}>
+              Each one gives VIRL another reference for how you sound. The more captions you add, the closer your generations land.
+            </div>
+            {voiceSamples.map(function(sample, idx){
+              return (
+                <div key={"vs-"+idx} style={{position:"relative",marginBottom:10}}>
+                  <textarea
+                    value={sample}
+                    onChange={function(e){
+                      var v = e.target.value;
+                      setVoiceSamples(function(prev){
+                        var next = prev.slice();
+                        next[idx] = v;
+                        return next;
+                      });
+                    }}
+                    placeholder={"Paste another caption that sounds like you (#"+(idx+2)+")"}
+                    style={Object.assign({},textareaStyle,{minHeight:72,paddingRight:42})}/>
+                  <button
+                    type="button"
+                    onClick={function(){
+                      setVoiceSamples(function(prev){
+                        return prev.filter(function(_,i){ return i!==idx; });
+                      });
+                    }}
+                    aria-label={"Remove sample "+(idx+2)}
+                    style={{position:"absolute",top:8,right:8,width:26,height:26,border:"none",background:"transparent",color:B.muted,fontSize:18,lineHeight:1,cursor:"pointer",padding:0}}>
+                    {"×"}
+                  </button>
+                </div>
+              );
+            })}
+            {voiceSamples.length < 4 && (
+              <button
+                type="button"
+                onClick={function(){ setVoiceSamples(function(prev){ return prev.concat([""]); }); }}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:B.navySoft,color:B.navy,border:"none",borderRadius:10,cursor:"pointer"}}>
+                {"+ Add another sample"}
+              </button>
+            )}
           </div>
 
           {/* [LEARN-FROM-EDITS] Personalization & privacy. Opt-in toggle
