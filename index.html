@@ -5271,7 +5271,7 @@ function SetNewPasswordScreen({ onDone }) {
 function ReferralModal({milestone, userId, onDismiss}) {
   var referralCode = (userId || "").slice(0, 8);
   var referralUrl  = "https://app.govirl.ai?ref=" + referralCode;
-  var shareText    = "I'm using VIRL to plan my social content – it actually sounds like me. Try it free with my link:";
+  var shareText    = "I'm using VIRL to plan my social content – it actually sounds like me. Worth a look:";
 
   function shareX() {
     var url = "https://twitter.com/intent/tweet?text=" + encodeURIComponent(shareText) + "&url=" + encodeURIComponent(referralUrl);
@@ -5312,7 +5312,7 @@ function ReferralModal({milestone, userId, onDismiss}) {
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.coral,marginBottom:8}}>{h.eyebrow}</div>
           <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.navy,lineHeight:1.1,marginBottom:12}}>{h.title}</div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.65}}>
-            Share VIRL with a creator friend and you both get 2 weeks free.
+            Loving VIRL? Share it with a creator friend who'd get it.
           </div>
         </div>
 
@@ -5327,10 +5327,6 @@ function ReferralModal({milestone, userId, onDismiss}) {
           <button onClick={shareX} style={shareBtnStyle}>Share on X</button>
           <button onClick={shareInstagram} style={shareBtnStyle}>Instagram Stories</button>
         </div>
-
-        {/* TODO: backend referral credit on signup — wire /api/referral-credit
-            to grant 2 weeks of credits to both users when a new signup carries
-            ?ref=XXXXXXXX and resolves to an existing userId. */}
 
         <button onClick={dismiss}
           style={{width:"100%",background:"none",border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,cursor:"pointer",padding:"10px 8px 2px",textDecoration:"underline",textDecorationColor:"rgba(100,116,139,0.3)",textUnderlineOffset:"3px"}}>
