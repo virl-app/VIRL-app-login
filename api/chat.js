@@ -17,6 +17,7 @@ import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
 import { sendLoopsEvent, sendLoopsEventOnce } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
+import { computeVoiceDrift, extractVoiceText } from "./_lib/voice-drift.js";
 
 // [EMAIL-CUTOVER] Feature flag controlling whether milestone sends route
 // through Loops (new) or Resend (legacy). Flip to "true" in Vercel env
@@ -131,7 +132,7 @@ async function recordUsageEvent(userId, usage) {
 // Mirrors the side-effects of the non-streaming branch: writes usage_events,
 // fires the first-plan + milestone emails. Returns the underlying Express
 // response so the caller's `return` semantics still hold.
-async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot, complianceForNiche }) {
+async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot, complianceForNiche, sampleCaption }) {
   res.statusCode = 200;
   res.setHeader('Content-Type',  'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -361,6 +362,32 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
       // the client's progressive parser has the same input and produces
       // user-facing error UI if it can't parse. Log once and continue.
       console.warn('[compliance] post-stream scrub skipped:', e.message);
+    }
+  }
+
+  // [VOICE-DRIFT] Stylometric distance between this generation and the user's
+  // sampleCaption reference. Skipped when there's no reference, the JSON
+  // didn't parse, or either side is too thin to featurize. Logged-only — no
+  // client-visible signal — so a failure here must never block the meta
+  // event or response close.
+  if (sampleCaption && finalText) {
+    try {
+      const parsedForDrift = JSON.parse(finalText);
+      const voiceText = extractVoiceText(parsedForDrift);
+      const drift = computeVoiceDrift(voiceText, sampleCaption);
+      if (drift) {
+        console.log('virl_voice_drift', JSON.stringify({
+          generationType,
+          model:     selectedModel,
+          score:     drift.score,
+          ref_words: drift.ref.wordCount,
+          gen_words: drift.gen.wordCount,
+          deltas:    drift.deltas,
+        }));
+      }
+    } catch (e) {
+      // Same swallow rationale as compliance above — JSON parse failure here
+      // surfaces as the existing client-side error UI; telemetry stays quiet.
     }
   }
 
@@ -1049,6 +1076,7 @@ export default async function handler(req, res) {
         userId, creditCost,
         usedFreshTrends, trendsSnapshot: trendsSnapshotEcho,
         complianceForNiche,
+        sampleCaption: profile && profile.sampleCaption,
       });
     }
 
@@ -1142,6 +1170,28 @@ export default async function handler(req, res) {
         // through so the existing extractJSON fallback in index.html can
         // try to recover. Scrub does not run in that case.
       }
+    }
+
+    // [VOICE-DRIFT] Mirrors the streaming-path block. Independent parse so a
+    // compliance-disabled niche still gets telemetry, and a malformed JSON
+    // payload here stays silent (the original `text` is returned untouched
+    // and the client's extractJSON deals with recovery).
+    if (profile && profile.sampleCaption && text) {
+      try {
+        const parsedForDrift = JSON.parse(text);
+        const voiceText = extractVoiceText(parsedForDrift);
+        const drift = computeVoiceDrift(voiceText, profile.sampleCaption);
+        if (drift) {
+          console.log('virl_voice_drift', JSON.stringify({
+            generationType,
+            model:     selectedModel,
+            score:     drift.score,
+            ref_words: drift.ref.wordCount,
+            gen_words: drift.gen.wordCount,
+            deltas:    drift.deltas,
+          }));
+        }
+      } catch (e) { /* telemetry-only; silent failure by design */ }
     }
 
     // Fire-and-forget first-plan onboarding email. The send wrapper's
