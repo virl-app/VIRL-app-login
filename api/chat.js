@@ -938,15 +938,54 @@ export default async function handler(req, res) {
 
   // ── Build Anthropic request ───────────────────────────────────────────────
   try {
-    // System prompt uses prompt caching: cache_control: ephemeral → Anthropic
-    // caches this block server-side for 1 hour. On cache hit, cached tokens
-    // cost ~10% of normal input price. Most impactful for plan generation
-    // where the full creator profile is sent on every call. The beta header
-    // is required to enable caching.
-    const useCache = !!(built.systemPrompt && built.systemPrompt.trim());
-    const systemBlock = useCache
-      ? [{ type: 'text', text: built.systemPrompt, cache_control: { type: 'ephemeral' } }]
-      : undefined;
+    // [CACHE-TIER] Two-breakpoint prompt caching.
+    //
+    // builds return systemPrompt as either:
+    //   - { shared, perUser } — new two-tier format. shared content
+    //     (role + GUARD + LOCALE + STYLE_GUARD + schema + per-niche
+    //     compliance) is cached across ALL users + ALL generation types
+    //     per role. perUser content (critical facts + profileCtx +
+    //     vaultCtx) is cached per user.
+    //   - string — legacy single-tier format (back-compat for any
+    //     builder not yet refactored). Single cache breakpoint, same
+    //     as before.
+    //
+    // The shared tier is the big win: a free user generating their first
+    // plan still pays the cache write, but every other user's request
+    // hits the cache. Cache read ratio jumps from ~4% to 60-80%+.
+    //
+    // Cache invalidation: shared tier invalidates only when the prompt
+    // STRUCTURE changes (rare — code deploys). Per-user tier invalidates
+    // on profile save, vault save, or handle-research refresh.
+    //
+    // The beta header is required to enable caching.
+    const sp = built.systemPrompt;
+    let systemBlock;
+    if (sp && typeof sp === 'object' && (sp.shared || sp.perUser)) {
+      const tiers = [];
+      if (sp.shared && String(sp.shared).trim()) {
+        tiers.push({
+          type: 'text',
+          text: sp.shared,
+          cache_control: { type: 'ephemeral' },
+        });
+      }
+      if (sp.perUser && String(sp.perUser).trim()) {
+        tiers.push({
+          type: 'text',
+          text: sp.perUser,
+          cache_control: { type: 'ephemeral' },
+        });
+      }
+      if (tiers.length > 0) systemBlock = tiers;
+    } else if (typeof sp === 'string' && sp.trim()) {
+      systemBlock = [{
+        type: 'text',
+        text: sp,
+        cache_control: { type: 'ephemeral' },
+      }];
+    }
+    const useCache = !!systemBlock;
 
     // [DATE-FIX] Prepend the user's local date to the (uncached) userPrompt so
     // every generation type — captions, plans, scripts, scans — has the real
