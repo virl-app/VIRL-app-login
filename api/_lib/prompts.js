@@ -444,6 +444,22 @@ const STYLE_GUARD = ""
   + "\n"
   + "If you catch yourself reaching for any of the above, find the plainer word the creator would actually say in a voice memo or text. The bar: would a human writer, paid by the word, ever choose this phrase? If no, find another one.";
 
+// [VOICE-ANCHOR] Single sentence appended to the END of the per-user
+// system prompt block — right before the user prompt arrives. Sits at
+// the point of highest model attention (recency in the system context
+// window) so the creator's voice is the LAST instruction the model
+// reads before generating.
+//
+// Belt-and-suspenders against any subtle voice-fidelity loss from the
+// [CACHE-TIER] content reordering — that refactor moved creator context
+// from position 0 of the system prompt to the end. Position-based
+// attention bias is mostly resolved in modern Claude, and recency bias
+// actually FAVORS the new layout, but the cost of being wrong here is
+// the entire VIRL value prop ("sounds like the creator"), so this line
+// makes voice the explicit final priority. Cached with the rest of the
+// per-user tier so steady-state cost is zero.
+const VOICE_ANCHOR = "Above all: every word should sound like THIS creator. Use the voice, vocabulary, and rhythm in the Creator Context above. When schema constraints leave room for choice, that choice is always \"how would THIS creator say this?\"";
+
 // [INTEL 1] Prepend canonical personal-fact blocks at the very top of the
 // system prompt. Models pay disproportionate attention to instructions placed
 // first — using this slot for non-negotiable facts dramatically reduces
@@ -520,6 +536,13 @@ function buildSystemPrompt(profile, role) {
   if (ctx) {
     if (perUser) perUser += " ";
     perUser += "CREATOR PROFILE (follow every rule strictly): " + ctx;
+  }
+  // [VOICE-ANCHOR] Append only when there's actual creator context to
+  // anchor to — anchoring to "THIS creator" with no profile would be
+  // confusing for the model. Sits at the end of the block so it's the
+  // final instruction the model sees before the user prompt arrives.
+  if (perUser) {
+    perUser += "\n\n" + VOICE_ANCHOR;
   }
   // [CACHE-TIER] Leading paragraph break for clean separation when this
   // block is concatenated after the shared block by the model. Without
@@ -728,9 +751,16 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // [CACHE-TIER] Leading paragraph break so the perUser block doesn't
   // jam against the shared block's trailing punctuation when the model
   // concatenates the two cached tiers. Same rationale as buildSystemPrompt.
-  const perUserSystemPrompt = "\n\n"
+  // [VOICE-ANCHOR] Voice anchor appended only when there's an actual
+  // profileCtx — without a profile the model has nothing creator-specific
+  // to anchor to, so the line would land as noise. Anchors apply to the
+  // ~12 active users today and every paid user post-launch.
+  let perUserSystemPrompt = "\n\n"
     + (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
     + vaultCtx;
+  if (profileCtx) {
+    perUserSystemPrompt += "\n\n" + VOICE_ANCHOR;
+  }
 
   const systemPrompt = { shared: sharedSystemPrompt, perUser: perUserSystemPrompt };
 
