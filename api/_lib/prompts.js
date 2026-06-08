@@ -521,6 +521,12 @@ function buildSystemPrompt(profile, role) {
     if (perUser) perUser += " ";
     perUser += "CREATOR PROFILE (follow every rule strictly): " + ctx;
   }
+  // [CACHE-TIER] Leading paragraph break for clean separation when this
+  // block is concatenated after the shared block by the model. Without
+  // this, the shared block's trailing period jams up against the per-
+  // user block's first character (".CRITICAL" or ".CREATOR") which can
+  // affect tokenization at the boundary.
+  if (perUser) perUser = "\n\n" + perUser;
 
   return { shared, perUser };
 }
@@ -719,7 +725,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // of that niche → belongs in the shared cache tier.
     + complianceBlock;
 
-  const perUserSystemPrompt = (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
+  // [CACHE-TIER] Leading paragraph break so the perUser block doesn't
+  // jam against the shared block's trailing punctuation when the model
+  // concatenates the two cached tiers. Same rationale as buildSystemPrompt.
+  const perUserSystemPrompt = "\n\n"
+    + (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
     + vaultCtx;
 
   const systemPrompt = { shared: sharedSystemPrompt, perUser: perUserSystemPrompt };
