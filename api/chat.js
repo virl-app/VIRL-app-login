@@ -17,6 +17,7 @@ import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
 import { sendLoopsEvent, sendLoopsEventOnce } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
+import { computeVoiceDrift, extractVoiceText } from "./_lib/voice-drift.js";
 
 // [EMAIL-CUTOVER] Feature flag controlling whether milestone sends route
 // through Loops (new) or Resend (legacy). Flip to "true" in Vercel env
@@ -125,13 +126,41 @@ async function recordUsageEvent(userId, usage) {
   }
 }
 
+// [VOICE-DRIFT] Build the reference corpus the drift telemetry compares
+// generated output against. Combines (in order of voice-fidelity weight):
+//   1. sample_caption — the canonical "this is how I sound" caption
+//   2. voice_samples — optional additional captions the user added
+//   3. handlePostExcerpts — verbatim excerpts Perplexity pulled from their
+//      actual indexed posts (may be empty for small / unindexed creators)
+// Returns "" when no source is available; the caller skips telemetry in
+// that case. Each source is separated by blank lines so featurize() sees
+// distinct sentences rather than concatenated runs.
+function buildVoiceReference(profile) {
+  if (!profile) return "";
+  const parts = [];
+  if (profile.sampleCaption && typeof profile.sampleCaption === "string") {
+    parts.push(profile.sampleCaption.trim());
+  }
+  if (Array.isArray(profile.voiceSamples)) {
+    for (const s of profile.voiceSamples) {
+      if (typeof s === "string" && s.trim()) parts.push(s.trim());
+    }
+  }
+  if (Array.isArray(profile.handlePostExcerpts)) {
+    for (const s of profile.handlePostExcerpts) {
+      if (typeof s === "string" && s.trim()) parts.push(s.trim());
+    }
+  }
+  return parts.join("\n\n");
+}
+
 // [PERF 3] SSE handler for streaming plan generation. Forwards Anthropic's
 // SSE response chunks to the client as text deltas, then emits a trailing
 // `meta` event carrying { cost, usage } once the upstream stream completes.
 // Mirrors the side-effects of the non-streaming branch: writes usage_events,
 // fires the first-plan + milestone emails. Returns the underlying Express
 // response so the caller's `return` semantics still hold.
-async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot, complianceForNiche }) {
+async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot, complianceForNiche, voiceReference }) {
   res.statusCode = 200;
   res.setHeader('Content-Type',  'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -361,6 +390,33 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
       // the client's progressive parser has the same input and produces
       // user-facing error UI if it can't parse. Log once and continue.
       console.warn('[compliance] post-stream scrub skipped:', e.message);
+    }
+  }
+
+  // [VOICE-DRIFT] Stylometric distance between this generation and the
+  // user's combined voice reference (sample_caption + voice_samples +
+  // handlePostExcerpts). Skipped when there's no reference, the JSON didn't
+  // parse, or either side is too thin to featurize. Logged-only — no
+  // client-visible signal — so a failure here must never block the meta
+  // event or response close.
+  if (voiceReference && finalText) {
+    try {
+      const parsedForDrift = JSON.parse(finalText);
+      const voiceText = extractVoiceText(parsedForDrift);
+      const drift = computeVoiceDrift(voiceText, voiceReference);
+      if (drift) {
+        console.log('virl_voice_drift', JSON.stringify({
+          generationType,
+          model:     selectedModel,
+          score:     drift.score,
+          ref_words: drift.ref.wordCount,
+          gen_words: drift.gen.wordCount,
+          deltas:    drift.deltas,
+        }));
+      }
+    } catch (e) {
+      // Same swallow rationale as compliance above — JSON parse failure here
+      // surfaces as the existing client-side error UI; telemetry stays quiet.
     }
   }
 
@@ -595,6 +651,11 @@ async function fetchProfile(userId) {
       // allowed to fetch + inject recent edit diffs as voice examples.
       // False on existing rows where the column isn't yet populated.
       learnFromEdits:    !!data.learn_from_edits,
+      // [VOICE-REFERENCE] Optional additional caption samples beyond the
+      // primary sample_caption field. Empty array on pre-migration rows.
+      // Used by voice-drift.js to enrich the reference corpus when the
+      // single sample_caption would otherwise be too thin.
+      voiceSamples:      Array.isArray(data.voice_samples) ? data.voice_samples : [],
     };
   } catch (e) {
     return {};
@@ -822,10 +883,17 @@ export default async function handler(req, res) {
       // calls. The prewarm endpoint on profile save is the steady-state
       // path; this timeout protects the rare cold-cache chat call.
       const research = await Promise.race([
-        fetchHandleResearch(userId, profile.handles),
+        fetchHandleResearch(userId, profile.handles, profile.inspiration),
         new Promise(function(resolve){ setTimeout(function(){ resolve(null); }, 2000); }),
       ]);
-      if (research) profile.handleResearch = research;
+      if (research) {
+        // researchText is the descriptive paragraph that prompts.js injects
+        // as "Observed posting pattern: ..." — same shape it's always been.
+        // postExcerpts is verbatim caption text from the user's actual
+        // indexed posts, used as additional voice-drift reference.
+        profile.handleResearch     = research.researchText;
+        profile.handlePostExcerpts = research.postExcerpts || [];
+      }
     } catch (e) { /* non-fatal — generation continues without research */ }
   }
 
@@ -1049,6 +1117,7 @@ export default async function handler(req, res) {
         userId, creditCost,
         usedFreshTrends, trendsSnapshot: trendsSnapshotEcho,
         complianceForNiche,
+        voiceReference: buildVoiceReference(profile),
       });
     }
 
@@ -1142,6 +1211,29 @@ export default async function handler(req, res) {
         // through so the existing extractJSON fallback in index.html can
         // try to recover. Scrub does not run in that case.
       }
+    }
+
+    // [VOICE-DRIFT] Mirrors the streaming-path block. Independent parse so a
+    // compliance-disabled niche still gets telemetry, and a malformed JSON
+    // payload here stays silent (the original `text` is returned untouched
+    // and the client's extractJSON deals with recovery).
+    const voiceReference = buildVoiceReference(profile);
+    if (voiceReference && text) {
+      try {
+        const parsedForDrift = JSON.parse(text);
+        const voiceText = extractVoiceText(parsedForDrift);
+        const drift = computeVoiceDrift(voiceText, voiceReference);
+        if (drift) {
+          console.log('virl_voice_drift', JSON.stringify({
+            generationType,
+            model:     selectedModel,
+            score:     drift.score,
+            ref_words: drift.ref.wordCount,
+            gen_words: drift.gen.wordCount,
+            deltas:    drift.deltas,
+          }));
+        }
+      } catch (e) { /* telemetry-only; silent failure by design */ }
     }
 
     // Fire-and-forget first-plan onboarding email. The send wrapper's
