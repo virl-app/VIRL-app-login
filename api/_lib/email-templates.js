@@ -401,12 +401,12 @@ export function referralMilestone({ name, milestone, unsubscribeToken }) {
                  :                     `${milestone} plans generated.`;
   const body = `
     <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'ve generated ${milestone} VIRL plans now. The data shows that creators who hit ${milestone} plans are the ones VIRL gets sharpest for — your vault, your logged results, and your week-over-week strategy are starting to compound.</p>
-    <p style="margin:0 0 12px">If a friend of yours is building too, send them along — a referral from someone like you carries more weight than any ad.</p>
-    <p style="margin:0">Forward this email, or send them straight to ${APP_URL}.</p>`;
+    <p style="margin:0 0 12px">If a friend of yours is building too, send them your referral link. When they subscribe, your next month is half off — up to two months total.</p>
+    <p style="margin:0">Open VIRL to copy your link, or send them straight to ${APP_URL}.</p>`;
   return {
     subject: `${milestone} plans in — keep going`,
     html:    layout({ eyebrow: "Milestone", accent: "coral", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
-    text:    `${headline}\n\nYou've generated ${milestone} VIRL plans. Your vault + logged results are starting to compound.\n\nIf a friend's building too: ${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nYou've generated ${milestone} VIRL plans. Your vault + logged results are starting to compound.\n\nIf a friend's building too, send them your referral link. When they subscribe, your next month is half off — up to two months total. Open VIRL to grab your link, or send them: ${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 

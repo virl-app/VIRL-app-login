@@ -61,6 +61,148 @@ async function fetchUserContext(userId) {
   return out;
 }
 
+// [REFERRAL-REWARDS] Grant the referrer a Stripe coupon when their referred
+// friend completes checkout. Fire-and-forget from the webhook handler so a
+// Stripe API blip doesn't break the friend's signup flow. The friend's
+// subscription completes either way; the referral reward is opportunistic.
+//
+// Flow:
+//   1. Skip if STRIPE_REFERRAL_COUPON_ID env var isn't set (graceful
+//      degradation pre-coupon-setup)
+//   2. Resolve the 8-char refCode to a full user_id via the
+//      lookup_user_by_referral_code RPC
+//   3. Skip if referrer == referred (self-referral) or referrer not found
+//   4. Cap check: count existing referral_rewards rows for this referrer.
+//      If >= 2, skip silently — the cap is enforced at grant time, not
+//      at apply time, so a 3rd successful referral doesn't even create
+//      a row.
+//   5. Look up referrer's stripe_customer_id from credits, find their
+//      active subscription, apply the coupon via stripe.subscriptions.update
+//   6. Insert into referral_rewards with applied_to_stripe = true/false
+//      based on whether step 5 succeeded. The row is the source of truth
+//      for the cap; a Stripe API failure means the user gets the cap
+//      ticked but no actual discount — caller (founder) can re-apply
+//      manually via Stripe dashboard.
+async function grantReferralReward(stripe, supabaseUrl, serviceKey, refCode, referredUserId) {
+  const couponId = process.env.STRIPE_REFERRAL_COUPON_ID;
+  if (!couponId) {
+    console.log("[referral] STRIPE_REFERRAL_COUPON_ID not configured — skipping");
+    return;
+  }
+  if (!refCode || !referredUserId || !supabaseUrl || !serviceKey) return;
+
+  // Resolve refCode → referrer's user_id via RPC.
+  let referrerUserId = null;
+  try {
+    const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/lookup_user_by_referral_code`, {
+      method: "POST",
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ p_code: refCode }),
+    });
+    if (rpcRes.ok) referrerUserId = await rpcRes.json();
+  } catch (e) {
+    console.warn("[referral] RPC lookup failed:", e.message);
+    return;
+  }
+  if (!referrerUserId) {
+    console.log("[referral] no referrer found for code:", refCode);
+    return;
+  }
+  if (referrerUserId === referredUserId) {
+    console.log("[referral] self-referral blocked:", referrerUserId);
+    return;
+  }
+
+  // Cap check: count existing rewards for this referrer.
+  try {
+    const countRes = await fetch(
+      `${supabaseUrl}/rest/v1/referral_rewards?referrer_user_id=eq.${referrerUserId}&select=id`,
+      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, Prefer: "count=exact", Range: "0-0" } }
+    );
+    if (countRes.ok) {
+      const range = countRes.headers.get("content-range") || "";
+      const total = parseInt(range.split("/")[1] || "0", 10);
+      if (total >= 2) {
+        console.log("[referral] cap reached for referrer:", referrerUserId, "count:", total);
+        return;
+      }
+    }
+  } catch (e) {
+    console.warn("[referral] cap-check failed:", e.message);
+    // Fail closed — don't grant if we couldn't verify the cap.
+    return;
+  }
+
+  // Look up referrer's stripe_customer_id from credits.
+  let customerId = null;
+  try {
+    const credRes = await fetch(
+      `${supabaseUrl}/rest/v1/credits?user_id=eq.${referrerUserId}&select=stripe_customer_id`,
+      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+    );
+    if (credRes.ok) {
+      const rows = await credRes.json();
+      customerId = rows[0] && rows[0].stripe_customer_id;
+    }
+  } catch (e) { /* non-fatal */ }
+
+  let applied = false;
+  let applyError = null;
+
+  if (customerId) {
+    try {
+      const subs = await stripe.subscriptions.list({ customer: customerId, status: "active", limit: 5 });
+      if (subs.data && subs.data.length > 0) {
+        // Apply coupon to the first active subscription. Stripe applies
+        // the coupon's discount to the NEXT invoice. With duration:once,
+        // it consumes after that one invoice and naturally expires.
+        await stripe.subscriptions.update(subs.data[0].id, { coupon: couponId });
+        applied = true;
+        console.log("[referral] applied coupon", couponId, "to sub", subs.data[0].id, "for referrer", referrerUserId);
+      } else {
+        applyError = "no_active_subscription";
+        console.log("[referral] referrer", referrerUserId, "has no active subscription — recording reward unapplied");
+      }
+    } catch (e) {
+      applyError = String(e.message || e).slice(0, 200);
+      console.warn("[referral] Stripe coupon apply failed:", applyError);
+    }
+  } else {
+    applyError = "no_stripe_customer";
+  }
+
+  // Record the reward either way. The row is the source of truth for the
+  // 2-per-referrer cap; an apply failure means the founder can re-apply
+  // manually via Stripe dashboard without inflating the count.
+  try {
+    await fetch(`${supabaseUrl}/rest/v1/referral_rewards`, {
+      method: "POST",
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+        // Idempotency: if (rare) webhook replay slips past the
+        // processed_stripe_events guard, the UNIQUE constraint on
+        // referred_user_id blocks the duplicate.
+        Prefer: "resolution=ignore-duplicates,return=minimal",
+      },
+      body: JSON.stringify({
+        referrer_user_id:  referrerUserId,
+        referred_user_id:  referredUserId,
+        stripe_coupon_id:  couponId,
+        applied_to_stripe: applied,
+        apply_error:       applyError,
+      }),
+    });
+  } catch (e) {
+    console.warn("[referral] reward insert failed:", e.message);
+  }
+}
+
 async function readRawBody(req) {
   return await new Promise(function (resolve, reject) {
     const chunks = [];
@@ -421,6 +563,17 @@ export default async function handler(req, res) {
               });
               console.log("[webhook] Founder Circle filled — foundingCircleFull fired");
             }
+          }
+          // [REFERRAL-REWARDS] If this checkout came from a referral link,
+          // grant the referrer their reward. Fire-and-forget — a Stripe
+          // coupon-apply failure shouldn't block the friend's signup or
+          // the rest of the webhook's side effects (welcome email, Loops
+          // events, etc.). Logged at info level inside the helper.
+          if (meta.ref) {
+            grantReferralReward(stripe, process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, meta.ref, userId)
+              .catch(function (e) {
+                console.warn("[webhook] referral reward grant threw:", e.message);
+              });
           }
         } else {
           console.warn("[webhook] checkout.session.completed missing userId in metadata");

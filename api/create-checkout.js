@@ -136,15 +136,21 @@ export default async function handler(req, res) {
   const authHeader = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
   if (!authHeader) return res.status(401).json({ error: "Sign in required." });
 
-  let userId, email;
+  let userId, email, refCode;
   try {
     const userRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
       headers: { Authorization: `Bearer ${authHeader}`, apikey: supabaseKey },
     });
     if (!userRes.ok) return res.status(401).json({ error: "Sign in required." });
     const u = await userRes.json();
-    userId = u.id;
-    email  = u.email;
+    userId  = u.id;
+    email   = u.email;
+    // [REFERRAL-REWARDS] The referral code captured at this user's signup
+    // (their friend's ID prefix from the ?ref= URL param). Threaded into
+    // Stripe session metadata below so the webhook can grant the referrer
+    // a reward when this user's checkout completes. Empty string if the
+    // user signed up without a referral.
+    refCode = (u.user_metadata && u.user_metadata.ref) || "";
   } catch (e) {
     return res.status(401).json({ error: "Sign in required." });
   }
@@ -208,6 +214,11 @@ export default async function handler(req, res) {
       planType:         planType,
       foundingTier:     tier,
       isFoundingMember: tier === "founder_circle" ? "true" : "false",
+      // [REFERRAL-REWARDS] Pass through the referrer code so the webhook
+      // can grant the referrer their reward when this checkout completes.
+      // Empty string when the user wasn't referred. Stripe metadata values
+      // must be strings; empty string is the safest "no value" sentinel.
+      ref:              refCode || "",
     };
 
     const session = await stripe.checkout.sessions.create({
