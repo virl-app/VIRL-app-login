@@ -109,7 +109,7 @@ async function getCreditRow(userId) {
     const res = await fetch(
       supabaseUrl + "/rest/v1/credits?user_id=eq."
         + encodeURIComponent(userId)
-        + "&select=subscription_started_at,resubscription_count,founding_tier,founding_position",
+        + "&select=plan,subscription_started_at,resubscription_count,founding_tier,founding_position",
       {
         headers: { apikey: serviceKey, Authorization: "Bearer " + serviceKey },
       }
@@ -209,6 +209,29 @@ async function writeUserPlan(userId, fields, rowExists) {
   } catch (e) {
     console.error("[webhook] credits write error:", e.message);
   }
+}
+
+// [CREDITS-FIX] Fields that grant a fresh paid weekly allowance: 150 credits,
+// a 7-day reset window, and refilled fresh-trends wallets — mirroring the lazy
+// weekly reset in chat.js (isPaid ? 150 : 20). Returns {} when the user is
+// ALREADY on a paid plan, so the grant only fires on the non-paid → paid
+// transition. This matters because a single new subscription makes Stripe fire
+// BOTH `checkout.session.completed` and `customer.subscription.created`, with
+// no guaranteed ordering and DISTINCT event ids (so the event-dedupe guard
+// above doesn't collapse them): gating on the existing plan means whichever
+// event lands on the row first grants the credits and the other — plus any
+// renewal or mid-cycle subscription.updated — is a safe no-op that preserves a
+// balance the user may have already spent down this week.
+const PAID_PLANS = ["founding", "pro", "standard"];
+function paidCreditGrant(existing) {
+  if (existing && PAID_PLANS.includes(existing.plan)) return {};
+  return {
+    credits:                        150,
+    reset_at:                       new Date(Date.now() + 7 * 86400000).toISOString(),
+    fresh_trends_plan_remaining:    1,
+    fresh_trends_scan_remaining:    1,
+    fresh_trends_caption_remaining: 1,
+  };
 }
 
 export default async function handler(req, res) {
@@ -345,6 +368,14 @@ export default async function handler(req, res) {
               : 0) + 1;
           }
 
+          // [CREDITS-FIX] Grant the paid weekly allowance on the non-paid →
+          // paid transition (see paidCreditGrant). Without this a trial user
+          // whose credits row already existed (seeded at the 20/week trial
+          // allowance) would keep that 20 after paying — the PATCH only touched
+          // plan/tier, never `credits`. No-op once the user is already paid, so
+          // it's safe against the concurrent customer.subscription.created event.
+          Object.assign(patchFields, paidCreditGrant(existing));
+
           // [PRICING 3b] writeUserPlan creates the credits row if it's
           // missing (lazy-provisioned users who upgrade before generating).
           await writeUserPlan(userId, patchFields, existing != null);
@@ -462,7 +493,19 @@ export default async function handler(req, res) {
           const foundingTier = meta.foundingTier
             || (meta.isFoundingMember === "true" ? "founder_circle" : "standard");
           const plan = foundingTier === "founder_circle" ? "founding" : "standard";
-          await patchUserPlan(userId, { plan: plan, stripe_customer_id: obj.customer || null });
+          // [CREDITS-FIX] Grant the paid allowance here too. This event races
+          // checkout.session.completed onto the same row and can win, so it
+          // must move the user off the 20/week trial balance — otherwise a
+          // paying customer is stuck at 20 until their trial week expires.
+          // writeUserPlan (not patchUserPlan) so a missing row is still
+          // created; paidCreditGrant is a no-op once either event has already
+          // moved them onto a paid plan, so the two can't double-grant.
+          const subExisting = await getCreditRow(userId);
+          const subFields = Object.assign(
+            { plan: plan, stripe_customer_id: obj.customer || null },
+            paidCreditGrant(subExisting)
+          );
+          await writeUserPlan(userId, subFields, subExisting != null);
           console.log("[webhook] User " + userId + " set to " + plan + " via " + event.type + " (" + status + ")");
         }
         break;
