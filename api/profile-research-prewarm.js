@@ -46,28 +46,38 @@ export default async function handler(req, res) {
   }
   if (!userId) return res.status(401).json({ error: "Sign in required." });
 
-  // Read handles + inspiration from the profiles table — NEVER trust the
-  // request body, since that would let a caller pre-warm research against
-  // fabricated handles / aspirations and force the cache to misrepresent
-  // the authenticated user. Inspiration is included in the cache key
-  // (handles_hash), so it has to come from the same trusted source.
+  // Read handles + inspiration + learn_from_public_posts from the profiles
+  // table — NEVER trust the request body, since that would let a caller
+  // pre-warm research against fabricated handles / aspirations and force
+  // the cache to misrepresent the authenticated user. Inspiration is
+  // included in the cache key (handles_hash), so it has to come from the
+  // same trusted source.
   let handles = {};
   let inspiration = "";
+  let learnFromPublicPosts = false;
   try {
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=handles,inspiration`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=handles,inspiration,learn_from_public_posts`,
       { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
     );
     if (r.ok) {
       const rows = await r.json();
-      handles     = (rows[0] && rows[0].handles && typeof rows[0].handles === "object") ? rows[0].handles : {};
-      inspiration = (rows[0] && typeof rows[0].inspiration === "string") ? rows[0].inspiration : "";
+      handles              = (rows[0] && rows[0].handles && typeof rows[0].handles === "object") ? rows[0].handles : {};
+      inspiration          = (rows[0] && typeof rows[0].inspiration === "string") ? rows[0].inspiration : "";
+      learnFromPublicPosts = !!(rows[0] && rows[0].learn_from_public_posts);
     }
   } catch (e) { /* fail-open below */ }
 
   const hasAny = handles && Object.keys(handles).some(k => handles[k]);
   if (!hasAny) {
     return res.status(200).json({ refreshed: false, reason: "no_handles" });
+  }
+
+  // [LEARNING-CONSENT] Skip the Perplexity research call entirely when the
+  // user has not opted in to learn_from_public_posts. Mirrors the gate in
+  // chat.js — no third-party network request fires without consent.
+  if (!learnFromPublicPosts) {
+    return res.status(200).json({ refreshed: false, reason: "consent_off" });
   }
 
   // fetchHandleResearch is idempotent: returns cached text when fresh,
