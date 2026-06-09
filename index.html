@@ -337,24 +337,61 @@ async function deletePlanFromSupabase(userId) {
 // membership. Helpers fail open: if the table isn't provisioned yet, the
 // app silently falls back to localStorage-only.
 async function loadUserDataFromSupabase(userId) {
-  try {
-    const { data, error } = await supabaseClient
-      .from("user_data").select("vault,results").eq("user_id", userId).maybeSingle();
-    if (error || !data) return null;
-    return data;
-  } catch(e) { return null; }
+  // [VAULT-PERSISTENCE] Distinguish "no row" from "read error" so the
+  // caller can choose: a missing row is an expected state for new users
+  // (caller migrates local data up), but a read failure means we don't
+  // know what's on the server — proceeding to mark "hydrated" and let
+  // auto-save run would risk overwriting unread server data with empty
+  // local state. Three attempts with backoff so a transient network blip
+  // during sign-in doesn't leave the user stuck behind a closed gate.
+  // Return shape:
+  //   { ok: true, row: {vault,results} | null }  — successful read; row null = no row exists
+  //   { ok: false }                              — all retries failed; caller should NOT mark hydrated
+  const delaysMs = [0, 500, 2000];
+  for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+    if (delaysMs[attempt] > 0) {
+      await new Promise(function(r){ setTimeout(r, delaysMs[attempt]); });
+    }
+    try {
+      const { data, error } = await supabaseClient
+        .from("user_data").select("vault,results").eq("user_id", userId).maybeSingle();
+      if (!error) return { ok: true, row: data || null };
+      console.warn("User-data load error (attempt " + (attempt+1) + "/" + delaysMs.length + "):", error.message);
+    } catch(e) {
+      console.warn("User-data load threw (attempt " + (attempt+1) + "/" + delaysMs.length + "):", e.message || e);
+    }
+  }
+  return { ok: false };
 }
 async function saveUserDataToSupabase(userId, vault, results) {
-  try {
-    const { error } = await supabaseClient.from("user_data").upsert({
-      user_id:    userId,
-      vault:      vault   || [],
-      results:    results || [],
-      updated_at: new Date().toISOString(),
-    });
-    if (error) { console.error("User-data save error:", error.message); return false; }
-    return true;
-  } catch(e) { return false; }
+  // [VAULT-PERSISTENCE] Retry transient failures so a flaky network or
+  // brief Supabase 5xx can't silently lose the next vault save. Three
+  // attempts with backoff (immediate, +500ms, +2000ms). If the LAST attempt
+  // also fails, return false and console.error — the auto-save effect
+  // re-runs on the next state change so the user's next interaction will
+  // try again with the freshest data. The old single-attempt behavior was
+  // the root of the "vault keeps emptying" bug: a silent save failure left
+  // local state ahead of the server, and the next session re-hydrate
+  // overwrote the unsaved local items with the stale server payload.
+  const delaysMs = [0, 500, 2000];
+  for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+    if (delaysMs[attempt] > 0) {
+      await new Promise(function(r){ setTimeout(r, delaysMs[attempt]); });
+    }
+    try {
+      const { error } = await supabaseClient.from("user_data").upsert({
+        user_id:    userId,
+        vault:      vault   || [],
+        results:    results || [],
+        updated_at: new Date().toISOString(),
+      });
+      if (!error) return true;
+      console.error("User-data save error (attempt " + (attempt+1) + "/" + delaysMs.length + "):", error.message);
+    } catch(e) {
+      console.error("User-data save threw (attempt " + (attempt+1) + "/" + delaysMs.length + "):", e.message || e);
+    }
+  }
+  return false;
 }
 function cachedUserDataKey(userId) { return "virl_user_data_" + userId; }
 function loadCachedUserData(userId) {
@@ -5508,6 +5545,16 @@ function App() {
   const [session,setSession]         = useState(null);
   const [authLoading,setAuthLoading] = useState(true);
   const [appError,setAppError]       = useState(null);
+  // [VAULT-PERSISTENCE] Tracks the userId we have already hydrated
+  // user_data for. Supabase silently refreshes the auth token every ~hour,
+  // which changes the `session` reference and would otherwise re-fire the
+  // [session]-keyed hydration useEffect, racing in-flight saves and
+  // overwriting unsaved local state with server data. The ref makes
+  // hydration once-per-userId; subsequent token refreshes for the same
+  // user skip the fetch entirely. Reset to null on SIGNED_OUT so a
+  // different user signing in on the same browser triggers a fresh
+  // hydration.
+  const hydratedUserIdRef = useRef(null);
   // [CX-FIX 1] Password recovery: when a user clicks the reset link in
   // their email, Supabase signs them in via a recovery session AND fires
   // a PASSWORD_RECOVERY event. Without this flag the app would just drop
@@ -5554,6 +5601,10 @@ function App() {
         setVault([]);
         setResults([]);
         setUserDataHydrated(false);
+        // [VAULT-PERSISTENCE] Drop the hydration marker so the next sign-in
+        // (same user OR different user on this browser) re-pulls server data
+        // instead of treating the previous session's hydration as still valid.
+        hydratedUserIdRef.current = null;
       }
     });
     return function() { listener.data.subscription.unsubscribe(); };
@@ -6048,6 +6099,23 @@ function App() {
       }
     });
 
+    // [VAULT-PERSISTENCE] Skip the entire user_data hydration block when we
+    // have already hydrated for this userId. The useEffect's [session] dep
+    // also fires on every silent token refresh (~hourly); without this gate
+    // each refresh re-pulls from Supabase and the resolved load races
+    // in-flight saves, overwriting unsaved local additions with stale
+    // server state. Local state is the source of truth post-hydration;
+    // auto-save keeps the server in sync.
+    if (hydratedUserIdRef.current === userId) {
+      // Make sure the gated auto-save effect stays unblocked across the
+      // session-ref churn — userDataHydrated was set true on the original
+      // hydration and should already be true here. This is defensive: a
+      // future code path that ever calls setUserDataHydrated(false)
+      // without resetting the ref would otherwise lock saves forever.
+      setUserDataHydrated(true);
+      return;
+    }
+
     // Hydrate vault + results from the user_data table (or migrate any
     // local-only data up if the remote row is missing). Paint the local
     // cache first for instant display, then reconcile with the network.
@@ -6056,14 +6124,53 @@ function App() {
       if (Array.isArray(cachedUserData.vault))   setVault(cachedUserData.vault);
       if (Array.isArray(cachedUserData.results)) setResults(cachedUserData.results);
     }
-    loadUserDataFromSupabase(userId).then(function(row) {
+    loadUserDataFromSupabase(userId).then(function(result) {
+      // [VAULT-PERSISTENCE] Read failure: do NOT mark hydrated and do NOT
+      // set hydratedUserIdRef. The auto-save effect's gate stays closed
+      // (so any local saves can't overwrite unread server data with empty
+      // payloads). Next token refresh / session change re-fires this
+      // useEffect, sees the ref still null, and re-attempts the load.
+      if (!result.ok) {
+        console.warn("[vault] user_data load failed after retries — auto-save gate stays closed until next session change");
+        return;
+      }
+      var row = result.row;
       if (row && (Array.isArray(row.vault) || Array.isArray(row.results))) {
-        // Supabase is authoritative when a row exists.
+        // Server is authoritative for any item present on both sides (so a
+        // newer edit pushed from another device wins over a stale cached
+        // copy). Local-only items — additions made during the load window,
+        // before the cache had been refreshed — get prepended so they
+        // aren't lost. Items without an id can't be reliably matched and
+        // are dropped on the local side to avoid duplicates. setVault /
+        // setResults are functional so the merge uses React's current
+        // state value, not whatever was captured at .then()-creation time.
         var nextVault   = Array.isArray(row.vault)   ? row.vault   : [];
         var nextResults = Array.isArray(row.results) ? row.results : [];
-        setVault(nextVault);
-        setResults(nextResults);
-        saveCachedUserData(userId, nextVault, nextResults);
+        function mergeArrays(localArr, serverArr) {
+          var serverIds = {};
+          for (var i = 0; i < serverArr.length; i++) {
+            var sItem = serverArr[i];
+            if (sItem && sItem.id != null) serverIds["id:" + sItem.id] = true;
+          }
+          var localOnly = [];
+          for (var j = 0; j < localArr.length; j++) {
+            var lItem = localArr[j];
+            if (lItem && lItem.id != null && !serverIds["id:" + lItem.id]) {
+              localOnly.push(lItem);
+            }
+          }
+          return localOnly.concat(serverArr);
+        }
+        setVault(function(currentLocal){
+          return mergeArrays(currentLocal || [], nextVault);
+        });
+        setResults(function(currentLocal){
+          return mergeArrays(currentLocal || [], nextResults);
+        });
+        // The auto-save effect (gated on userDataHydrated) is about to fire
+        // on the vault/results dep change anyway and will persist the merged
+        // state to both Supabase and the local cache. No manual cache write
+        // needed here.
       } else {
         // No remote row yet — migrate any local-only data up so existing
         // users don't lose what's already saved in their browser.
@@ -6075,6 +6182,7 @@ function App() {
           saveCachedUserData(userId, localVault, localResults);
         }
       }
+      hydratedUserIdRef.current = userId;
       setUserDataHydrated(true);
     });
 
