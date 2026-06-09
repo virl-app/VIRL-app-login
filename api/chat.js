@@ -675,7 +675,14 @@ async function fetchProfile(userId) {
       // [LEARN-FROM-EDITS] Opt-in flag — when true the plan builder is
       // allowed to fetch + inject recent edit diffs as voice examples.
       // False on existing rows where the column isn't yet populated.
-      learnFromEdits:    !!data.learn_from_edits,
+      learnFromEdits:        !!data.learn_from_edits,
+      // [LEARNING-CONSENT] Three additional opt-in flags added by migration
+      // 010. All default false on pre-migration rows. Server-side gates
+      // below use these to decide whether to use the corresponding learning
+      // signal in the prompt / API call.
+      learnFromVault:        !!data.learn_from_vault,
+      learnFromResults:      !!data.learn_from_results,
+      learnFromPublicPosts:  !!data.learn_from_public_posts,
       // [VOICE-REFERENCE] Optional additional caption samples beyond the
       // primary sample_caption field. Empty array on pre-migration rows.
       // Used by voice-drift.js to enrich the reference corpus when the
@@ -864,6 +871,37 @@ export default async function handler(req, res) {
     loadComplianceRules(),
   ]);
 
+  // [LEARNING-CONSENT] Apply consent gates AFTER vault data is fetched so
+  // we can post-process without restructuring the parallel fetch. The
+  // data is loaded regardless of consent (small DB read), but signals
+  // derived from it are stripped before they reach the prompt builder.
+  //
+  //   learn_from_vault OFF:    null out gatedVaultPatterns entirely — no
+  //                            count, no platform/format aggregates, no
+  //                            exemplars reach the prompt or drift ref.
+  //   learn_from_results OFF:  keep vault-derived exemplars but strip the
+  //                            results-derived signals (result-only items
+  //                            removed; "both" source demoted to "vault";
+  //                            performanceTag cleared).
+  //
+  // The Perplexity research call upstream is already gated on
+  // learn_from_public_posts; nothing to scrub here for that signal.
+  let gatedVaultPatterns = vaultPatterns;
+  if (profile && !profile.learnFromVault) {
+    gatedVaultPatterns = null;
+  } else if (gatedVaultPatterns && Array.isArray(gatedVaultPatterns.exemplars) && !(profile && profile.learnFromResults)) {
+    gatedVaultPatterns = Object.assign({}, gatedVaultPatterns, {
+      exemplars: gatedVaultPatterns.exemplars
+        .filter(function(e){ return e && e.source !== "result"; })
+        .map(function(e){
+          return Object.assign({}, e, {
+            source:         e.source === "both" ? "vault" : e.source,
+            performanceTag: null,
+          });
+        }),
+    });
+  }
+
   // [COMPLIANCE 1] Resolve the effective compliance bundle once per
   // request. Niche comes from params (plan/plan_partial pass it explicitly;
   // for other gen types the client injects it from localStorage — see the
@@ -906,7 +944,13 @@ export default async function handler(req, res) {
   // additional creator context without changing dispatch's signature.
   // Fail-open: returns null on any infrastructure / Perplexity error and
   // the rest of the generation still works exactly as before.
-  if (profile && profile.handles) {
+  // [LEARNING-CONSENT] Gate the Perplexity handle research on the
+  // learn_from_public_posts opt-in. Without consent we skip the API
+  // call entirely — no third-party request fires and no excerpts are
+  // cached. Existing cached research from before the user revoked
+  // consent stays in the row but is forward-looking ignored (the row
+  // gets refreshed-with-empty on next opt-in cache miss).
+  if (profile && profile.handles && profile.learnFromPublicPosts) {
     try {
       // [STABILITY] Race the research call against a 2s timeout so a
       // cold-cache Perplexity round-trip can't extend the chat.js
@@ -962,7 +1006,7 @@ export default async function handler(req, res) {
 
   let built;
   try {
-    built = dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits, complianceForNiche);
+    built = dispatch(generationType, params, profile, gatedVaultPatterns, playbook, trends, history, recentEdits, complianceForNiche);
   } catch (e) {
     return res.status(400).json({ error: e.message || 'Bad request.' });
   }
@@ -1151,7 +1195,7 @@ export default async function handler(req, res) {
         userId, creditCost,
         usedFreshTrends, trendsSnapshot: trendsSnapshotEcho,
         complianceForNiche,
-        voiceReference: buildVoiceReference(profile, vaultPatterns && vaultPatterns.exemplars),
+        voiceReference: buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars),
       });
     }
 
@@ -1251,7 +1295,7 @@ export default async function handler(req, res) {
     // compliance-disabled niche still gets telemetry, and a malformed JSON
     // payload here stays silent (the original `text` is returned untouched
     // and the client's extractJSON deals with recovery).
-    const voiceReference = buildVoiceReference(profile, vaultPatterns && vaultPatterns.exemplars);
+    const voiceReference = buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars);
     if (voiceReference && text) {
       try {
         const parsedForDrift = JSON.parse(text);

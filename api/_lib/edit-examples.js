@@ -28,10 +28,17 @@ const SUPABASE_HEADERS = {
 // or push the system block past its cache boundary.
 const MAX_DIFFS = 8;
 
-// Fetch up to N most-recent plan_card_edited events for a user that
-// include the `changes` array (i.e., events fired while the user was
-// opted in). Events ordered newest-first so the freshest revisions
-// weigh hardest in the prompt.
+// Fetch up to N most-recent edit events for a user that include the
+// `changes` array (i.e., events fired while learn_from_edits was on).
+// Events ordered newest-first so the freshest revisions weigh hardest
+// in the prompt.
+//
+// Reads BOTH event names:
+//   - plan_card_edited — legacy event from updateCardAt (still firing for
+//     plan-card edits in the Plan tab).
+//   - draft_edited     — unified event from every other edit surface
+//     (caption text, hook, script, scan caption). Carries a `surface`
+//     property the prompt-side formatter can use for richer context.
 //
 // Limit is on EVENTS, not on diffs — a single event can carry multiple
 // per-field diffs from one Save. We over-fetch to make sure we land
@@ -41,9 +48,13 @@ async function fetchRecentEdits(userId, limit) {
   if (!userId) return [];
   const eventLimit = limit || 12;
   try {
+    // PostgREST `in` filter — comma-separated list inside parens. Both
+    // event names are fetched in one round trip; the response is unioned
+    // and re-sorted by created_at desc on our side (since `in` doesn't
+    // preserve a specific ordering across values).
     const url = `${SUPABASE_URL}/rest/v1/events`
       + `?user_id=eq.${userId}`
-      + `&event_name=eq.plan_card_edited`
+      + `&event_name=in.(plan_card_edited,draft_edited)`
       + `&select=properties,created_at`
       + `&order=created_at.desc`
       + `&limit=${eventLimit}`;
@@ -51,15 +62,19 @@ async function fetchRecentEdits(userId, limit) {
     if (!res.ok) return [];
     const rows = await res.json();
     // Flatten { properties: { changes: [...] } } rows into a single
-    // [{field, before, after}, ...] list. Skip rows without a changes
-    // array (those are from before opt-in or pre-feature events). Cap
-    // total diffs at MAX_DIFFS — newest-first ordering means we keep
-    // the freshest signal and drop older revisions.
+    // [{field, before, after, surface}, ...] list. Skip rows without a
+    // changes array (those are from before opt-in or pre-feature
+    // events). Cap total diffs at MAX_DIFFS — newest-first ordering
+    // means we keep the freshest signal and drop older revisions.
     const out = [];
     for (const row of rows) {
       const changes = row && row.properties && Array.isArray(row.properties.changes)
         ? row.properties.changes : null;
       if (!changes) continue;
+      // `surface` is on the event for draft_edited; plan_card_edited
+      // events predate it and get a synthetic "plan_card" label so the
+      // prompt renderer can show consistent context.
+      const surface = (row.properties && row.properties.surface) || "plan_card";
       for (const c of changes) {
         if (!c || typeof c !== "object") continue;
         if (!c.field) continue;
@@ -69,7 +84,7 @@ async function fetchRecentEdits(userId, limit) {
         const before = (c.before || "").toString();
         const after  = (c.after  || "").toString();
         if (!after || before === after) continue;
-        out.push({ field: c.field, before: before, after: after });
+        out.push({ field: c.field, before, after, surface });
         if (out.length >= MAX_DIFFS) return out;
       }
     }
