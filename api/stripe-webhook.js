@@ -103,7 +103,7 @@ async function getCreditRow(userId) {
     const res = await fetch(
       supabaseUrl + "/rest/v1/credits?user_id=eq."
         + encodeURIComponent(userId)
-        + "&select=subscription_started_at,resubscription_count,founding_tier,founding_position",
+        + "&select=plan,subscription_started_at,resubscription_count,founding_tier,founding_position",
       {
         headers: { apikey: serviceKey, Authorization: "Bearer " + serviceKey },
       }
@@ -295,6 +295,26 @@ export default async function handler(req, res) {
             patchFields.resubscription_count = (existing && existing.resubscription_count
               ? existing.resubscription_count
               : 0) + 1;
+          }
+
+          // [CREDITS-FIX] Grant the full paid weekly allowance the moment a
+          // user transitions into a paid plan. Without this, a trial user who
+          // already had a lazily-provisioned credits row (created when they
+          // generated during the trial, seeded at the 20/week trial allowance)
+          // keeps that 20 after paying: the PATCH only touches plan/tier, never
+          // `credits`, and the lazy weekly reset in chat.js wouldn't top them to
+          // 150 until their existing trial week expired (up to 7 days later).
+          // Mirrors chat.js's reset: 150 credits + a fresh 7-day window +
+          // refilled fresh-trends wallets. Gated on the paid *transition* so a
+          // webhook replay (plan already paid) can't clobber a balance the user
+          // has already spent down this week.
+          const wasPaid = existing && ["founding", "pro", "standard"].includes(existing.plan);
+          if (!wasPaid) {
+            patchFields.credits  = 150;
+            patchFields.reset_at = new Date(Date.now() + 7 * 86400000).toISOString();
+            patchFields.fresh_trends_plan_remaining    = 1;
+            patchFields.fresh_trends_scan_remaining    = 1;
+            patchFields.fresh_trends_caption_remaining = 1;
           }
 
           // [PRICING 3b] writeUserPlan creates the credits row if it's
