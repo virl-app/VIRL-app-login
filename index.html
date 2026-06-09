@@ -4312,8 +4312,12 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
 
   // [CHANGE 1] Phase 1 save persists its success UI (no auto-clear) so the user
   // can choose between "Generate my first plan" and "Make VIRL even sharper".
+  // [LEARNING-CONSENT] Learning toggles live in their own standalone card
+  // between Phase 1 and Phase 2 and need to ride the Phase 1 save payload
+  // — otherwise a user who flips a toggle and clicks "Save my profile"
+  // would have their toggle silently wiped to false by the upsert.
   function handleSavePhase1() {
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts});
     setPhase1Saved(true);
     setPhase1JustSaved(true);
   }
@@ -4384,6 +4388,84 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   const phase1Title = "Quick Setup — 90 seconds";
   const phase1CTA = "Generate my first plan →";
 
+  // [LEARNING-CONSENT] Personalization & Privacy card extracted into a
+  // variable so it can be rendered in two positions depending on
+  // showPhase2 state — between Phase 1 and Phase 2 when Phase 2 is
+  // collapsed (so the toggles are visible upfront), or AFTER Phase 2
+  // when Phase 2 is expanded (so privacy reads as the finishing
+  // footer to a fuller profile flow). Same DOM, same state hooks,
+  // just different anchor point.
+  const privacyCard = (
+    <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,padding:"22px 24px"}}>
+      <div style={{marginBottom:6,fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.15}}>Personalization &amp; privacy</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:16}}>
+        Help VIRL learn from how you use it. The more you let it learn, the more your generations will sound like you. All toggles default off — you choose what VIRL learns from.
+      </div>
+      {/* Compact toggle card. Same visual pattern repeats for each of
+          the four toggles — kept inline (not extracted into a helper)
+          so the section stays grep-able as a single block. */}
+      <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromEdits?B.navySoft:B.bg,border:"1px solid "+(learnFromEdits?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
+        onClick={function(){ setLearnFromEdits(function(v){ return !v; }); }}>
+        <div style={{width:18,height:18,border:"2px solid "+(learnFromEdits?B.blue:B.border),borderRadius:4,background:learnFromEdits?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
+          {learnFromEdits&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromEdits?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
+            Learn from my edits
+          </div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
+            Capture the changes you make to drafts (plan cards, captions, hooks, scripts) as voice examples.
+          </div>
+        </div>
+      </div>
+      <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromVault?B.navySoft:B.bg,border:"1px solid "+(learnFromVault?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
+        onClick={function(){ setLearnFromVault(function(v){ return !v; }); }}>
+        <div style={{width:18,height:18,border:"2px solid "+(learnFromVault?B.blue:B.border),borderRadius:4,background:learnFromVault?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
+          {learnFromVault&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromVault?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
+            Learn from my saved posts
+          </div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
+            Use items you save to vault as voice references in future plans, captions, and scripts.
+          </div>
+        </div>
+      </div>
+      <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromResults?B.navySoft:B.bg,border:"1px solid "+(learnFromResults?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
+        onClick={function(){ setLearnFromResults(function(v){ return !v; }); }}>
+        <div style={{width:18,height:18,border:"2px solid "+(learnFromResults?B.blue:B.border),borderRadius:4,background:learnFromResults?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
+          {learnFromResults&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromResults?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
+            Learn from my logged results
+          </div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
+            Lean harder on content patterns that have performed well for you in real engagement data.
+          </div>
+        </div>
+      </div>
+      <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromPublicPosts?B.navySoft:B.bg,border:"1px solid "+(learnFromPublicPosts?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
+        onClick={function(){ setLearnFromPublicPosts(function(v){ return !v; }); }}>
+        <div style={{width:18,height:18,border:"2px solid "+(learnFromPublicPosts?B.blue:B.border),borderRadius:4,background:learnFromPublicPosts?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
+          {learnFromPublicPosts&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromPublicPosts?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
+            Research my public posts
+          </div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
+            Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content.
+          </div>
+        </div>
+      </div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:4}}>
+        All forward-looking — turning a toggle off stops future use, but doesn't delete data already collected. To wipe all data, use <strong style={{color:B.navy}}>Delete account</strong> in Settings.
+      </div>
+    </div>
+  );
+
   return (
     <div>
       {/* [TASK 6] Tier-based completeness meter — replaces the section-count
@@ -4440,10 +4522,14 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           </button>
         )}
 
-        {/* Celebration block + navigation CTAs only fire right after an
+        {/* Celebration block + Generate-plan CTA only fire right after an
             explicit save in this session — returning users with a saved
             profile see neither the green panel nor the redundant
-            "Generate my first plan" / "Make VIRL even sharper" buttons. */}
+            "Generate my first plan" button. The "Make VIRL even sharper"
+            button used to live here too; it now sits OUTSIDE this card,
+            between Phase 1 and the Personalization & Privacy card, so
+            the collapsed-Phase-2 layout reads Phase 1 → sharper button →
+            P&P (per the requested ordering). */}
         {phase1JustSaved && (
           <div>
             <div style={{background:B.green,borderRadius:12,padding:"14px 20px",marginBottom:12,display:"flex",alignItems:"center",gap:12,animation:"slideUp .3s ease"}}>
@@ -4459,13 +4545,30 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
               style={{width:"100%",background:B.white,color:B.navy,border:"1px solid "+B.navy,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,marginBottom:10,transition:"all .15s"}}>
               {phase1CTA}
             </button>
-            <button onClick={function(){ setShowPhase2(true); }}
-              style={{width:"100%",background:B.blue,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,transition:"all .15s",boxShadow:"0 4px 14px rgba(37,99,235,0.3)"}}>
-              Make VIRL even sharper
-            </button>
           </div>
         )}
       </div>
+
+      {/* [CHANGE 1] "Make VIRL even sharper" — Phase 2 expand trigger.
+          Lifted out of the Phase 1 celebration block so the collapsed-
+          Phase-2 layout flows Phase 1 → this button → P&P. Visibility
+          mirrors the prior behavior (only after the user has explicitly
+          saved Phase 1 this session), plus an explicit !showPhase2 gate
+          so the button disappears once Phase 2 is already expanded. */}
+      {phase1JustSaved && !showPhase2 && (
+        <button onClick={function(){ setShowPhase2(true); }}
+          style={{width:"100%",background:B.blue,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,transition:"all .15s",boxShadow:"0 4px 14px rgba(37,99,235,0.3)",marginBottom:12}}>
+          Make VIRL even sharper
+        </button>
+      )}
+
+      {/* [LEARNING-CONSENT] Personalization & Privacy card position #1:
+          rendered above Phase 2 when Phase 2 is COLLAPSED so the
+          consent toggles stay visible upfront. When the user expands
+          Phase 2, this branch goes away and the card re-renders BELOW
+          Phase 2 (see position #2 below) — the toggles drop down to
+          read as a footer to the fuller profile flow. */}
+      {!showPhase2 && privacyCard}
 
       {/* [CHANGE 1] Phase 2 — optional depth, collapsed by default for new users.
           Auto-expanded for returning users with any optional data. */}
@@ -4667,82 +4770,13 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
             )}
           </div>
 
-          {/* [LEARNING-CONSENT] Personalization & Privacy section. Four
-              opt-in toggles for the AI learning surfaces — edits, vault,
-              results, and public-post research. All default OFF and may
-              be flipped either here or via contextual consent prompts
-              that fire at the first relevant action. Forward-looking
-              semantics: turning a toggle OFF stops future use of the
-              signal but does NOT delete data already collected (the
-              account-delete flow is the path to wipe everything). */}
-          <div style={{marginBottom:20,paddingTop:14,borderTop:"1px solid "+B.divider}}>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>Personalization &amp; privacy</div>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:14}}>
-              Help VIRL learn from how you use it. The more you let it learn, the more your generations will sound like you.
-            </div>
-            {/* Compact toggle card. Same visual pattern repeats for each
-                of the four toggles — kept inline (not extracted into a
-                helper) so the section stays grep-able as a single block. */}
-            <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromEdits?B.navySoft:B.bg,border:"1px solid "+(learnFromEdits?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
-              onClick={function(){ setLearnFromEdits(function(v){ return !v; }); }}>
-              <div style={{width:18,height:18,border:"2px solid "+(learnFromEdits?B.blue:B.border),borderRadius:4,background:learnFromEdits?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
-                {learnFromEdits&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
-              </div>
-              <div style={{flex:1}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromEdits?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
-                  Learn from my edits
-                </div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-                  Capture the changes you make to drafts (plan cards, captions, hooks, scripts) as voice examples.
-                </div>
-              </div>
-            </div>
-            <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromVault?B.navySoft:B.bg,border:"1px solid "+(learnFromVault?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
-              onClick={function(){ setLearnFromVault(function(v){ return !v; }); }}>
-              <div style={{width:18,height:18,border:"2px solid "+(learnFromVault?B.blue:B.border),borderRadius:4,background:learnFromVault?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
-                {learnFromVault&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
-              </div>
-              <div style={{flex:1}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromVault?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
-                  Learn from my saved posts
-                </div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-                  Use items you save to vault as voice references in future plans, captions, and scripts.
-                </div>
-              </div>
-            </div>
-            <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromResults?B.navySoft:B.bg,border:"1px solid "+(learnFromResults?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
-              onClick={function(){ setLearnFromResults(function(v){ return !v; }); }}>
-              <div style={{width:18,height:18,border:"2px solid "+(learnFromResults?B.blue:B.border),borderRadius:4,background:learnFromResults?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
-                {learnFromResults&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
-              </div>
-              <div style={{flex:1}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromResults?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
-                  Learn from my logged results
-                </div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-                  Lean harder on content patterns that have performed well for you in real engagement data.
-                </div>
-              </div>
-            </div>
-            <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromPublicPosts?B.navySoft:B.bg,border:"1px solid "+(learnFromPublicPosts?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
-              onClick={function(){ setLearnFromPublicPosts(function(v){ return !v; }); }}>
-              <div style={{width:18,height:18,border:"2px solid "+(learnFromPublicPosts?B.blue:B.border),borderRadius:4,background:learnFromPublicPosts?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
-                {learnFromPublicPosts&&<span style={{color:B.white,fontSize:12,lineHeight:1}}>{"✓"}</span>}
-              </div>
-              <div style={{flex:1}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:learnFromPublicPosts?B.navy:B.ink,marginBottom:4,lineHeight:1.4}}>
-                  Research my public posts
-                </div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-                  Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content.
-                </div>
-              </div>
-            </div>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:4}}>
-              All forward-looking — turning a toggle off stops future use, but doesn't delete data already collected. To wipe all data, use <strong style={{color:B.navy}}>Delete account</strong> in Settings.
-            </div>
-          </div>
+          {/* [LEARNING-CONSENT] The Personalization & Privacy section
+              used to live inline here, nested inside Phase 2 (so users
+              only saw it after expanding "Make VIRL even sharper"). It
+              now sits in its own always-visible card rendered just above
+              the Phase 2 expand — see the standalone block right before
+              the Phase 2 conditional. Toggle state still flows through
+              the same useState hooks at the top of this component. */}
 
           {saved && (
             <div style={{background:B.green,borderRadius:12,padding:"14px 20px",marginBottom:12,display:"flex",alignItems:"center",gap:12,animation:"slideUp .3s ease"}}>
@@ -4783,6 +4817,12 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           )}
         </div>
       )}
+
+      {/* [LEARNING-CONSENT] Personalization & Privacy card position #2:
+          rendered below Phase 2 when Phase 2 is EXPANDED. Same JSX as
+          position #1, just anchored to the post-Phase-2 spot so the
+          card reads as a closing footer to the fuller profile flow. */}
+      {showPhase2 && privacyCard}
 
       {/* [TASK 1] Sync indicator — signals Supabase round-trip so users know their data is safe across devices. */}
       {syncState==="syncing"&&(
