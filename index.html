@@ -4522,10 +4522,14 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           </button>
         )}
 
-        {/* Celebration block + navigation CTAs only fire right after an
+        {/* Celebration block + Generate-plan CTA only fire right after an
             explicit save in this session — returning users with a saved
             profile see neither the green panel nor the redundant
-            "Generate my first plan" / "Make VIRL even sharper" buttons. */}
+            "Generate my first plan" button. The "Make VIRL even sharper"
+            button used to live here too; it now sits OUTSIDE this card,
+            between Phase 1 and the Personalization & Privacy card, so
+            the collapsed-Phase-2 layout reads Phase 1 → sharper button →
+            P&P (per the requested ordering). */}
         {phase1JustSaved && (
           <div>
             <div style={{background:B.green,borderRadius:12,padding:"14px 20px",marginBottom:12,display:"flex",alignItems:"center",gap:12,animation:"slideUp .3s ease"}}>
@@ -4541,13 +4545,22 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
               style={{width:"100%",background:B.white,color:B.navy,border:"1px solid "+B.navy,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"16px 24px",cursor:"pointer",borderRadius:14,marginBottom:10,transition:"all .15s"}}>
               {phase1CTA}
             </button>
-            <button onClick={function(){ setShowPhase2(true); }}
-              style={{width:"100%",background:B.blue,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,transition:"all .15s",boxShadow:"0 4px 14px rgba(37,99,235,0.3)"}}>
-              Make VIRL even sharper
-            </button>
           </div>
         )}
       </div>
+
+      {/* [CHANGE 1] "Make VIRL even sharper" — Phase 2 expand trigger.
+          Lifted out of the Phase 1 celebration block so the collapsed-
+          Phase-2 layout flows Phase 1 → this button → P&P. Visibility
+          mirrors the prior behavior (only after the user has explicitly
+          saved Phase 1 this session), plus an explicit !showPhase2 gate
+          so the button disappears once Phase 2 is already expanded. */}
+      {phase1JustSaved && !showPhase2 && (
+        <button onClick={function(){ setShowPhase2(true); }}
+          style={{width:"100%",background:B.blue,color:B.white,border:"none",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"18px 24px",cursor:"pointer",borderRadius:14,transition:"all .15s",boxShadow:"0 4px 14px rgba(37,99,235,0.3)",marginBottom:12}}>
+          Make VIRL even sharper
+        </button>
+      )}
 
       {/* [LEARNING-CONSENT] Personalization & Privacy card position #1:
           rendered above Phase 2 when Phase 2 is COLLAPSED so the
