@@ -7246,6 +7246,13 @@ function App() {
         day:         card.day||null,
         priority:    card.priority||null,
         description: card.description||null,
+        // [VAULT-EXEMPLARS] Capture the card's hook alongside description
+        // so this vault item can serve as a few-shot voice exemplar in
+        // future plan / caption / script generations. Hook is the most
+        // voice-bearing field for video and long-form formats; older saves
+        // that pre-date this capture simply fall back to null and rely on
+        // description alone as their voice signal.
+        hook:        card.hook||null,
         // [PREMIUM 4] Vault save now stores insight; falls back to the
         // legacy `why` so a card generated under the old prompt still
         // gets its callout captured. Keep `why` mirrored too so older
@@ -7298,7 +7305,25 @@ function App() {
     setVault(function(v){return v.map(function(x){return x.id===id?Object.assign({},x,{result}):x;});});
     setResults(function(r){
       const idx = r.findIndex(function(x){return x.id===id;});
-      const entry = {id,title:card.title,platform:card.platform,postTime:card.postTime,result};
+      // [VAULT-EXEMPLARS] Capture voice-bearing fields on the result entry
+      // (hook, description/caption text, format) so a logged result can
+      // serve as a standalone few-shot exemplar in future generations,
+      // even when the underlying card was never saved to vault. Forward-
+      // only — entries logged before this change stay thin (id + result
+      // metadata only); they still count as a "this id has a logged
+      // result" signal when joined to vault, just can't stand alone.
+      // loggedAt sorts results by recency in the exemplar selector.
+      const entry = {
+        id,
+        title:       card.title,
+        platform:    card.platform,
+        postTime:    card.postTime,
+        format:      card.format||null,
+        hook:        card.hook||null,
+        description: card.description||card.caption||null,
+        result,
+        loggedAt:    fmtDate(),
+      };
       if (idx>=0) { const n=r.slice(); n[idx]=entry; return n; }
       return r.concat([entry]);
     });

@@ -18,6 +18,7 @@ import { estimateCostUSD }           from "./_lib/pricing.js";
 import { sendLoopsEvent, sendLoopsEventOnce } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
 import { computeVoiceDrift, extractVoiceText } from "./_lib/voice-drift.js";
+import { selectVaultExemplars, exemplarsAsVoiceText } from "./_lib/vault-exemplars.js";
 
 // [EMAIL-CUTOVER] Feature flag controlling whether milestone sends route
 // through Loops (new) or Resend (legacy). Flip to "true" in Vercel env
@@ -132,25 +133,29 @@ async function recordUsageEvent(userId, usage) {
 //   2. voice_samples — optional additional captions the user added
 //   3. handlePostExcerpts — verbatim excerpts Perplexity pulled from their
 //      actual indexed posts (may be empty for small / unindexed creators)
+//   4. vaultExemplars — hooks + descriptions of items the user saved
+//      and/or posted (the same few-shot pool fed into the generation
+//      prompt; richest first-party signal we have)
 // Returns "" when no source is available; the caller skips telemetry in
 // that case. Each source is separated by blank lines so featurize() sees
 // distinct sentences rather than concatenated runs.
-function buildVoiceReference(profile) {
-  if (!profile) return "";
+function buildVoiceReference(profile, vaultExemplars) {
   const parts = [];
-  if (profile.sampleCaption && typeof profile.sampleCaption === "string") {
+  if (profile && profile.sampleCaption && typeof profile.sampleCaption === "string") {
     parts.push(profile.sampleCaption.trim());
   }
-  if (Array.isArray(profile.voiceSamples)) {
+  if (profile && Array.isArray(profile.voiceSamples)) {
     for (const s of profile.voiceSamples) {
       if (typeof s === "string" && s.trim()) parts.push(s.trim());
     }
   }
-  if (Array.isArray(profile.handlePostExcerpts)) {
+  if (profile && Array.isArray(profile.handlePostExcerpts)) {
     for (const s of profile.handlePostExcerpts) {
       if (typeof s === "string" && s.trim()) parts.push(s.trim());
     }
   }
+  const exemplarText = exemplarsAsVoiceText(vaultExemplars);
+  if (exemplarText) parts.push(exemplarText);
   return parts.join("\n\n");
 }
 
@@ -573,22 +578,37 @@ function pickInlinePlatforms(generationType, params, profile) {
   return [];
 }
 
-// Lightweight per-user vault summary used to ground the plan generator.
-// Same logic the client used to compute via getVaultPatterns(), now read
-// from the user_data table so the client never has to disclose vault
-// contents on every plan call.
+// Per-user vault summary used to ground voice-producing generations. Returns
+// both the aggregate "patterns" (count + top platform/format the plan
+// builder has always used) AND `exemplars` — up to 5 actual saved/posted
+// items used as few-shot voice examples in the prompt. Single DB read
+// regardless of how many fields callers need.
 async function fetchVaultPatterns(userId) {
-  const empty = { count: 0, topPlatform: null, topFormat: null };
+  const empty = { count: 0, topPlatform: null, topFormat: null, exemplars: [] };
   try {
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/user_data?user_id=eq.${userId}&select=vault`,
+      `${SUPABASE_URL}/rest/v1/user_data?user_id=eq.${userId}&select=vault,results`,
       { headers: { Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, apikey: SUPABASE_SERVICE_KEY } }
     );
     if (!res.ok) return empty;
     const rows = await res.json();
-    const vault = (rows[0] && rows[0].vault) || [];
+    const vault   = (rows[0] && rows[0].vault)   || [];
+    const results = (rows[0] && rows[0].results) || [];
+
+    // [VAULT-EXEMPLARS] Few-shot pool: most recent items the user saved or
+    // posted, joined and ranked in vault-exemplars.js. Returned alongside
+    // the aggregate patterns so the prompt builder can use either or both.
+    // count=5 matches the product decision (richer corpus than 3, still
+    // well under the token budget).
+    const exemplars = selectVaultExemplars(vault, results, 5);
+
     const planItems = vault.filter(v => v && v.type === "plan");
-    if (!planItems.length) return empty;
+    if (!planItems.length) {
+      // No plan-vault items, but exemplars may still exist if the user
+      // logged results on plan cards without saving them. Surface those
+      // for the few-shot path even though the patterns block stays empty.
+      return { count: 0, topPlatform: null, topFormat: null, exemplars };
+    }
     const platformCounts = {};
     const formatCounts   = {};
     for (const v of planItems) {
@@ -600,7 +620,12 @@ async function fetchVaultPatterns(userId) {
       for (const k of Object.keys(counts)) if (counts[k] > max) { max = counts[k]; best = k; }
       return best;
     };
-    return { count: planItems.length, topPlatform: top(platformCounts), topFormat: top(formatCounts) };
+    return {
+      count:       planItems.length,
+      topPlatform: top(platformCounts),
+      topFormat:   top(formatCounts),
+      exemplars,
+    };
   } catch (e) {
     return empty;
   }
@@ -818,9 +843,18 @@ export default async function handler(req, res) {
   // history so the LLM can build narratively week-over-week. Other
   // generation types skip history since they're scoped to a single piece
   // of content.
+  // [VAULT-EXEMPLARS] Fetch vault patterns for any voice-producing
+  // generation type — plan still uses the aggregate counts; caption,
+  // caption_remix, script, plan_partial, plan_strategy use the few-shot
+  // exemplars. Scan types (image/video frame) don't generate creator
+  // voice and don't need either, so they still skip the read.
+  const VOICE_GEN_TYPES = new Set([
+    "plan", "plan_partial", "plan_strategy",
+    "caption", "caption_remix", "script",
+  ]);
   const [profile, vaultPatterns, playbook, cachedTrends, history, complianceRules] = await Promise.all([
     fetchProfile(userId),
-    generationType === "plan" ? fetchVaultPatterns(userId)                                                 : Promise.resolve(null),
+    VOICE_GEN_TYPES.has(generationType) ? fetchVaultPatterns(userId)                                          : Promise.resolve(null),
     loadPlaybook(),
     loadLatestTrends(),
     generationType === "plan" ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart)     : Promise.resolve([]),
@@ -1117,7 +1151,7 @@ export default async function handler(req, res) {
         userId, creditCost,
         usedFreshTrends, trendsSnapshot: trendsSnapshotEcho,
         complianceForNiche,
-        voiceReference: buildVoiceReference(profile),
+        voiceReference: buildVoiceReference(profile, vaultPatterns && vaultPatterns.exemplars),
       });
     }
 
@@ -1217,7 +1251,7 @@ export default async function handler(req, res) {
     // compliance-disabled niche still gets telemetry, and a malformed JSON
     // payload here stays silent (the original `text` is returned untouched
     // and the client's extractJSON deals with recovery).
-    const voiceReference = buildVoiceReference(profile);
+    const voiceReference = buildVoiceReference(profile, vaultPatterns && vaultPatterns.exemplars);
     if (voiceReference && text) {
       try {
         const parsedForDrift = JSON.parse(text);
