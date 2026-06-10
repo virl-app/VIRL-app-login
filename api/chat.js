@@ -776,7 +776,7 @@ export default async function handler(req, res) {
   try {
     const credRes = await fetch(
       `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`
-      + `&select=plan,credits,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining`,
+      + `&select=plan,credits,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,comp_weekly_credits,comp_expires_at`,
       { headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_SERVICE_KEY } }
     );
     if (!credRes.ok) return res.status(500).json({ error: 'Could not verify credits.' });
@@ -786,6 +786,17 @@ export default async function handler(req, res) {
     plan           = row.plan;
     isPaid         = PAID_PLANS.includes(plan);
     currentCredits = row.credits;
+
+    // [COMP] Tester comp — a time-boxed per-user weekly-allowance override that
+    // is independent of plan/tier/Stripe (see migrations/012). While live, the
+    // user gets comp_weekly_credits/week and bypasses the free-trial day cap.
+    // It self-reverts: once comp_expires_at passes, the refill below and the
+    // trial gate fall back to the normal plan-derived behavior with no cleanup.
+    const compExpiresMs = row.comp_expires_at ? Date.parse(row.comp_expires_at) : NaN;
+    const compActive    = !Number.isNaN(compExpiresMs)
+      && compExpiresMs > Date.now()
+      && row.comp_weekly_credits != null;
+    const compAllowance = compActive ? row.comp_weekly_credits : null;
     // Columns default to 1 in the migration; coalesce here for the
     // pre-migration window where they may be null on existing rows.
     freshTrends = {
@@ -801,7 +812,8 @@ export default async function handler(req, res) {
     const resetMs = row.reset_at ? Date.parse(row.reset_at) : NaN;
     const now     = Date.now();
     if (!row.reset_at || Number.isNaN(resetMs) || resetMs <= now) {
-      const newCredits = isPaid ? 150 : 20;
+      // [COMP] comp allowance wins while live; otherwise plan-derived default.
+      const newCredits = compActive ? compAllowance : (isPaid ? 150 : 20);
       const newResetAt = new Date(now + 7 * 86400000).toISOString();
       await fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
         method: 'PATCH',
@@ -827,7 +839,7 @@ export default async function handler(req, res) {
     // already blocks past day 14, but the cap is meaningless if the API
     // doesn't enforce it too. Fail open when created_at is missing so a
     // malformed auth row doesn't lock real users out.
-    if (!isPaid && createdAt) {
+    if (!isPaid && !compActive && createdAt) {
       const signupMs = Date.parse(createdAt);
       if (!Number.isNaN(signupMs)) {
         const daysSinceSignup = Math.floor((Date.now() - signupMs) / 86400000);
