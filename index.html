@@ -4238,13 +4238,27 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   // plan-card edit and used as a voice example in future plan prompts.
   // Default OFF — this is a data/privacy decision and shouldn't be
   // surprise-enabled. Persists to profiles.learn_from_edits (boolean).
-  const [learnFromEdits,setLearnFromEdits] = useState(!!profile.learnFromEdits);
-  // [LEARNING-CONSENT] Three sibling toggles. Default OFF for new users.
-  // Existing-user state is hydrated from the profile row in
-  // loadProfileFromSupabase; nothing here forces it on.
-  const [learnFromVault,setLearnFromVault]                 = useState(!!profile.learnFromVault);
-  const [learnFromResults,setLearnFromResults]             = useState(!!profile.learnFromResults);
-  const [learnFromPublicPosts,setLearnFromPublicPosts]     = useState(!!profile.learnFromPublicPosts);
+  // [LEARNING-CONSENT] Auto-opt-in for new users. profile.name is the
+  // canonical "this user has saved a profile before" signal — when it's
+  // empty/falsy we treat the user as new and default every learning
+  // toggle to ON. Returning users hydrate from whatever's stored in
+  // their profile row (which respects any explicit opt-out they made).
+  // The master toggle below the four can bulk-flip all four; granular
+  // controls remain available so a user can opt out of any single
+  // source without touching the others.
+  const isNewProfile = !(profile && profile.name);
+  const [learnFromEdits,setLearnFromEdits] = useState(
+    isNewProfile ? true : !!profile.learnFromEdits
+  );
+  const [learnFromVault,setLearnFromVault] = useState(
+    isNewProfile ? true : !!profile.learnFromVault
+  );
+  const [learnFromResults,setLearnFromResults] = useState(
+    isNewProfile ? true : !!profile.learnFromResults
+  );
+  const [learnFromPublicPosts,setLearnFromPublicPosts] = useState(
+    isNewProfile ? true : !!profile.learnFromPublicPosts
+  );
   // [VOICE-REFERENCE] Optional additional caption samples — appended to
   // sampleCaption as the voice reference corpus for drift telemetry (and
   // future few-shot exemplars). Capped in the UI at 4 entries to keep the
@@ -4395,15 +4409,53 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   // when Phase 2 is expanded (so privacy reads as the finishing
   // footer to a fuller profile flow). Same DOM, same state hooks,
   // just different anchor point.
+  //
+  // Master toggle behavior: derived ON when ANY of the four sub-toggles
+  // are ON ("VIRL is doing some personalization"). Clicking flips every
+  // sub-toggle in lockstep — to OFF if any are on (kill-switch), or to
+  // ON if none are on (one-click re-enable).
+  const personalizationOn = learnFromEdits || learnFromVault || learnFromResults || learnFromPublicPosts;
+  function toggleMaster() {
+    const next = !personalizationOn;
+    setLearnFromEdits(next);
+    setLearnFromVault(next);
+    setLearnFromResults(next);
+    setLearnFromPublicPosts(next);
+  }
   const privacyCard = (
     <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,padding:"22px 24px"}}>
       <div style={{marginBottom:6,fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.15}}>Personalization &amp; privacy</div>
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:16}}>
-        Help VIRL learn from how you use it. The more you let it learn, the more your generations will sound like you. All toggles default off — you choose what VIRL learns from.
+        VIRL learns from how you use the app so generations sound more like you. Personalization is on by default — you can turn off the whole thing, or any individual source, at any time.
       </div>
-      {/* Compact toggle card. Same visual pattern repeats for each of
-          the four toggles — kept inline (not extracted into a helper)
-          so the section stays grep-able as a single block. */}
+      {/* [LEARNING-CONSENT] Master toggle — visually distinct from the
+          four granular controls (navy fill when on; pill-shaped) so the
+          hierarchy reads as "one decision at the top, fine-grained
+          adjustments below." personalizationOn derives from the OR of
+          the four; toggleMaster flips them all in lockstep. */}
+      <div style={{display:"flex",alignItems:"center",gap:14,padding:"16px 18px",background:personalizationOn?B.navy:B.bg,border:"1px solid "+(personalizationOn?B.navy:B.border),borderRadius:14,cursor:"pointer",transition:"all .2s",marginBottom:18}}
+        onClick={toggleMaster}>
+        <div style={{width:42,height:24,background:personalizationOn?B.sky:B.border,borderRadius:99,position:"relative",flexShrink:0,transition:"background .2s"}}>
+          <div style={{position:"absolute",top:2,left:personalizationOn?20:2,width:20,height:20,borderRadius:"50%",background:B.white,transition:"left .2s",boxShadow:"0 1px 3px rgba(0,0,0,0.15)"}}/>
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:personalizationOn?B.white:B.ink,marginBottom:2,lineHeight:1.4,letterSpacing:"0.02em"}}>
+            {personalizationOn ? "Personalization on" : "Personalization off"}
+          </div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:personalizationOn?"rgba(255,255,255,0.75)":B.muted,lineHeight:1.5}}>
+            {personalizationOn
+              ? "VIRL is learning from the sources you've enabled below."
+              : "VIRL is not learning from any source. Generations will be less tailored to your voice."}
+          </div>
+        </div>
+      </div>
+      {/* Granular controls — each sub-toggle works independently after
+          the master is on. Same visual pattern repeats for each of the
+          four; kept inline (not extracted into a helper) so the section
+          stays grep-able as a single block. */}
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.16em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>
+        Sources VIRL learns from
+      </div>
       <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromEdits?B.navySoft:B.bg,border:"1px solid "+(learnFromEdits?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
         onClick={function(){ setLearnFromEdits(function(v){ return !v; }); }}>
         <div style={{width:18,height:18,border:"2px solid "+(learnFromEdits?B.blue:B.border),borderRadius:4,background:learnFromEdits?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,transition:"all .15s"}}>
@@ -4460,8 +4512,8 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           </div>
         </div>
       </div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:4}}>
-        All forward-looking — turning a toggle off stops future use, but doesn't delete data already collected. To wipe all data, use <strong style={{color:B.navy}}>Delete account</strong> in Settings.
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:12,paddingTop:14,borderTop:"1px solid "+B.divider}}>
+        Turning any toggle off is forward-looking — it stops future use of that source but doesn't delete data already collected. To wipe everything VIRL has learned, use <strong style={{color:B.navy}}>Delete account</strong> in Settings.
       </div>
     </div>
   );
