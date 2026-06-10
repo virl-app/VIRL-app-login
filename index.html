@@ -1844,6 +1844,30 @@ async function logEvent(userId, eventName, properties, token) {
   } catch(e) { /* non-critical — never block UI on analytics */ }
 }
 
+// [SESSION-GATE] Runs effectFn exactly once per userId, ignoring non-id
+// changes to the session ref (e.g., silent Supabase token refreshes
+// every ~hour). The existing per-userId refs in App (hydratedUserIdRef
+// for the vault hydration, planLoadedUserIdRef for the plan + tab auto-
+// jump) follow this same pattern by hand; this hook is the consolidated
+// version for new code. effectFn receives the userId and may return a
+// cleanup function — same contract as the inner function of useEffect.
+//
+// Reset semantics: when userId becomes null/falsy (SIGNED_OUT), the
+// internal "seen" ref clears so the next sign-in re-fires effectFn for
+// the new (or returning) user.
+function useOncePerUser(userId, effectFn) {
+  const seenRef = useRef(null);
+  useEffect(function() {
+    if (!userId) {
+      seenRef.current = null;
+      return;
+    }
+    if (seenRef.current === userId) return;
+    seenRef.current = userId;
+    return effectFn(userId);
+  }, [userId]);
+}
+
 // ── Learning consent ───────────────────────────────────────────────────────
 // [LEARNING-CONSENT] Four opt-in learning toggles plus a contextual prompt
 // system that fires once at the first relevant action. Default OFF. The
@@ -6073,15 +6097,17 @@ function App() {
   // since index 0 is the current week. RLS lets each user read their
   // own rows; if it doesn't or the table is empty, we fail-soft and
   // the collapsible stays hidden.
-  useEffect(function(){
-    if (!session || !session.user || !session.user.id) {
-      setLastWeekPlan(null);
-      return;
-    }
+  //
+  // [SESSION-GATE] Gated to fire once per userId. plan_history only
+  // changes on the weekly cron (Monday's archive flip) — re-fetching
+  // every silent token refresh just burned an idempotent query. The
+  // current-week cutover happens on a page reload, so users don't
+  // need to wait for an hourly poll to see the new "last week" row.
+  useOncePerUser(session && session.user && session.user.id, function(userId){
     var cancelled = false;
     supabaseClient.from("plan_history")
       .select("week_start,strategy,cards")
-      .eq("user_id", session.user.id)
+      .eq("user_id", userId)
       .order("week_start", { ascending: false })
       .limit(2)
       .then(function(out){
@@ -6099,6 +6125,13 @@ function App() {
       })
       .catch(function(){ if (!cancelled) setLastWeekPlan(null); });
     return function(){ cancelled = true; };
+  });
+  // Mirror the old fallback behavior: when there's no session at all,
+  // clear lastWeekPlan to keep the collapsible hidden on the sign-in
+  // screen. Runs cheaply on every render but only does work when
+  // lastWeekPlan transitions from non-null to null.
+  useEffect(function(){
+    if (!session) setLastWeekPlan(null);
   }, [session]);
 
   // ── App data state ──────────────────────────────────────────────────────
