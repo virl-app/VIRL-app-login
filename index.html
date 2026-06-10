@@ -5848,6 +5848,16 @@ function App() {
   // different user signing in on the same browser triggers a fresh
   // hydration.
   const hydratedUserIdRef = useRef(null);
+  // [TAB-PERSIST FIX] Mirrors hydratedUserIdRef but for the plan-load +
+  // tab-auto-jump block in the session-mount useEffect below. Same root
+  // cause as the vault data-loss bug: the useEffect is keyed on
+  // [session], which re-fires every silent Supabase token refresh
+  // (~hourly). Without this gate the plan loader re-runs and the
+  // setTab(...) auto-jump inside its .then() yanks the user back to
+  // the Plan tab even when they've navigated elsewhere mid-session.
+  // Reset to null on SIGNED_OUT so a different user signing in on the
+  // same browser gets the auto-jump treatment cleanly.
+  const planLoadedUserIdRef = useRef(null);
   // [LEARNING-CONSENT] Pending consent prompt — null when no prompt is
   // active, or one of "edits" / "vault" / "results" / "public_posts" when
   // a deep component has fired window.__virlMaybeShowConsent for that
@@ -5904,6 +5914,10 @@ function App() {
         // (same user OR different user on this browser) re-pulls server data
         // instead of treating the previous session's hydration as still valid.
         hydratedUserIdRef.current = null;
+        // [TAB-PERSIST FIX] Same rationale — reset so the next sign-in
+        // re-runs the plan load + auto-jump-to-plan-tab logic exactly once
+        // for that user.
+        planLoadedUserIdRef.current = null;
       }
     });
     return function() { listener.data.subscription.unsubscribe(); };
@@ -6406,7 +6420,16 @@ function App() {
     // expired row is cleaned from both. A missing row leaves the local cache
     // alone (could be a never-generated user, or one whose plan was just
     // cleared elsewhere).
-    loadPlanFromSupabase(userId).then(function(row) {
+    //
+    // [TAB-PERSIST FIX] Gated on planLoadedUserIdRef so this block runs ONCE
+    // per userId — not on every silent token refresh. The setTab(...) call
+    // inside the .then() below was the smoking gun: a token refresh would
+    // re-fire this effect, re-load the plan, and yank the user back to the
+    // Plan tab even if they had navigated to Profile, Vault, etc. mid-
+    // session. Same architectural pattern as the vault hydration gate.
+    if (planLoadedUserIdRef.current !== userId) {
+      planLoadedUserIdRef.current = userId;
+      loadPlanFromSupabase(userId).then(function(row) {
       if (!row || !row.cards || !row.expires_at) return;
       var expiresAt = new Date(row.expires_at).getTime();
       if (expiresAt > Date.now()) {
@@ -6445,7 +6468,8 @@ function App() {
           save(stale);
         } catch(e) {}
       }
-    });
+      });
+    }
 
     // [VAULT-PERSISTENCE] Skip the entire user_data hydration block when we
     // have already hydrated for this userId. The useEffect's [session] dep
