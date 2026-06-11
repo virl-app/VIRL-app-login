@@ -2,8 +2,25 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"/>
 <title>VIRL - Finally, a content strategy that sounds like you.</title>
+<meta name="description" content="VIRL — content strategy that sounds like you. Plans, captions, and scripts tuned to your voice."/>
+
+<!-- [PWA] Installable web app. Tapping "Share → Add to Home Screen" in
+     iOS Safari (or the install icon in desktop / Android Chrome) gives
+     the user a full-screen launcher tile with the icon below, no
+     browser chrome. theme_color sets the iOS status bar tint and the
+     Android task-switcher color. -->
+<link rel="manifest" href="/manifest.json"/>
+<meta name="theme-color" content="#1F3A8A"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="VIRL"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"/>
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png"/>
+<link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png"/>
+
 <script type="text/javascript" src="https://app.termly.io/resource-blocker/a8c380c9-9255-4beb-b922-7a884c5cc9e0?autoBlock=on"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
