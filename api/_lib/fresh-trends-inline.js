@@ -26,13 +26,23 @@ export const MAX_INLINE_PLATFORMS = 4;
 // Returns the shape loadLatestTrends() returns: { [platform]: row | undefined }.
 // `cachedFallback` is the trends map already loaded from Supabase — used to
 // fill gaps when Perplexity fails for a specific platform.
-export async function fetchInlineTrends(platforms, cachedFallback) {
+//
+// [TRENDS-VARIETY] `opts` is forwarded to researchTrends per platform:
+//   - niche:         optional creator niche, sharpens the search toward
+//                    that vertical instead of generic platform trends.
+//   - excludeTrends: optional array of trend description strings to avoid,
+//                    typically pulled from the user's recent plan history
+//                    so week-over-week feels fresh rather than repetitive.
+// When opts is omitted the call falls through to the cron-style generic
+// per-platform query — back-compat preserved for any caller still on the
+// old two-arg signature.
+export async function fetchInlineTrends(platforms, cachedFallback, opts) {
   const list = Array.isArray(platforms)
     ? platforms.filter(p => typeof p === "string" && p).slice(0, MAX_INLINE_PLATFORMS)
     : [];
   if (!list.length) return cachedFallback || {};
 
-  const settled = await Promise.allSettled(list.map(p => researchTrends(p)));
+  const settled = await Promise.allSettled(list.map(p => researchTrends(p, opts)));
 
   const out = Object.assign({}, cachedFallback || {});
   const nowIso = new Date().toISOString();
@@ -43,10 +53,22 @@ export async function fetchInlineTrends(platforms, cachedFallback) {
       // Keep whatever the cached map had for this platform.
       continue;
     }
+    // [TRENDS-VARIETY] Niche-specific queries can come back with 0-2
+    // items when the niche is narrow or quiet. When that happens, prefer
+    // the cached (broader) row over our thin niche-specific row, so the
+    // plan prompt still has signal to weave in. Falls through when no
+    // cached row exists either.
+    const items = Array.isArray(r.value.items) ? r.value.items : [];
+    if (items.length < 3 && cachedFallback && cachedFallback[platform] &&
+        Array.isArray(cachedFallback[platform].items) &&
+        cachedFallback[platform].items.length >= items.length) {
+      // Cached row has same-or-more signal — keep the cached row.
+      continue;
+    }
     out[platform] = {
       platform,
       summary:    r.value.summary || "",
-      items:      Array.isArray(r.value.items)   ? r.value.items   : [],
+      items,
       sources:    Array.isArray(r.value.sources) ? r.value.sources : [],
       fetched_at: nowIso,
     };

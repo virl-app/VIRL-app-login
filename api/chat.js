@@ -9,6 +9,7 @@ import { loadPlaybook }              from "./_lib/playbook.js";
 import { loadLatestTrends }          from "./_lib/trends.js";
 import { loadComplianceRules, getComplianceForNiche, scrubCompliance } from "./_lib/compliance.js";
 import { fetchInlineTrends, isValidTrendsSnapshot } from "./_lib/fresh-trends-inline.js";
+import { fetchRecentTrendStrings }   from "./_lib/recent-trends.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
 import { sendEmail }                 from "./_lib/email-send.js";
@@ -1009,7 +1010,24 @@ export default async function handler(req, res) {
   } else if (freshKey && (isPaid || freshTrends[freshKey] > 0)) {
     const inlinePlatforms = pickInlinePlatforms(generationType, params, profile);
     if (inlinePlatforms.length > 0) {
-      const inline = await fetchInlineTrends(inlinePlatforms, cachedTrends);
+      // [TRENDS-VARIETY] Inline trends are now niche-aware and dedup
+      // against the user's recent surfaced trends. Niche sharpens the
+      // Perplexity query toward the creator's actual vertical (fitness
+      // creators get fitness-specific TikTok signal, etc.). The
+      // exclude-list pushes Perplexity past trends VIRL has already
+      // shown this user in the last ~3 weeks of plans, so week-over-
+      // week feels fresh instead of resurfacing the same items.
+      //
+      // Adds one Supabase query (~50ms) before the Perplexity fan-out;
+      // negligible against the 3-5s Perplexity round-trip. Any error
+      // in the recent-trends fetch returns [] and the inline call
+      // falls through to its pre-variety behavior (no exclude list).
+      const niche = (params && typeof params.niche === "string") ? params.niche : "";
+      const excludeTrends = await fetchRecentTrendStrings(userId).catch(() => []);
+      const inline = await fetchInlineTrends(inlinePlatforms, cachedTrends, {
+        niche,
+        excludeTrends,
+      });
       trends             = inline;
       usedFreshTrends    = true;
       trendsSnapshotEcho = inline;
