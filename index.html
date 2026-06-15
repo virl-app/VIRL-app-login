@@ -38,6 +38,13 @@ body{background:#F8FAFC;-webkit-font-smoothing:antialiased;font-family:'Jost',sa
 .plan-card-drag-ghost{opacity:0.4;background:#EFF6FF;border-radius:18px}
 .plan-card-drag-chosen{box-shadow:0 12px 32px rgba(15,23,42,0.18);transform:scale(1.01);transition:none}
 .plan-day-sortable{min-height:8px}
+/* [DND-HANDLE] Cursor + active-state feedback for the drag-handle bar
+   above each plan card. Default is grab (open hand); active state is
+   grabbing (closed hand). touch-action:none on the handle itself is
+   set inline above — needed for iOS Safari to NOT interpret the
+   gesture as a scroll. */
+.virl-drag-handle:hover{background:#EEF2FF !important}
+.virl-drag-handle:active{cursor:grabbing !important;background:#DBEAFE !important}
 /* [TASK 9] Generic-AI vs VIRL compare card — stacks on mobile, 2-col on tablet+. */
 .virl-compare-grid{display:grid;grid-template-columns:1fr;gap:10px}
 @media(min-width:640px){.virl-compare-grid{grid-template-columns:1fr 1fr}}
@@ -8047,24 +8054,42 @@ function App() {
   // initial page load).
   useEffect(function(){
     if (!Array.isArray(cards) || !cards.length) return;
-    if (typeof Sortable === "undefined") return;
+    if (typeof Sortable === "undefined") {
+      console.warn("[dnd] SortableJS not loaded — drag disabled");
+      return;
+    }
     var containers = document.querySelectorAll(".plan-day-sortable");
-    if (!containers.length) return;
+    if (!containers.length) {
+      console.warn("[dnd] No .plan-day-sortable containers — drag will not initialize");
+      return;
+    }
+    console.log("[dnd] attaching Sortable to", containers.length, "day containers, cards in state:", cards.length);
     var instances = [];
     containers.forEach(function(container) {
       try {
         instances.push(Sortable.create(container, {
           group:       "plan-cards",
           animation:   150,
+          // [DND-HANDLE] Restrict drag initiation to the explicit handle
+          // strip above each card. Solves two prior issues at once:
+          // (1) drag affordance is now visible — users know where to
+          // grab without trial and error, and (2) PlanCard's internal
+          // click/touch handlers (Edit, Save, expand, copy buttons)
+          // can't accidentally capture the touchstart event that
+          // SortableJS needs to start a drag.
+          handle:      ".virl-drag-handle",
           // [REST-DAY] Only real plan cards are draggable — rest-day tip
           // cards (no .plan-card-sortable class) stay anchored to their
           // day so users can't accidentally pick one up.
           draggable:   ".plan-card-sortable",
-          // Drag from the whole card; long-press on mobile picks it up.
-          // delay on mobile prevents accidental drags while scrolling.
-          delay:       150,
-          delayOnTouchOnly: true,
-          touchStartThreshold: 5,
+          // [DND-HANDLE] Drag initiates from the visible handle bar.
+          // Because the handle has no internal handlers competing for
+          // the touch event, we can drop the prior 150ms long-press
+          // delay — drag responds immediately. The handle's
+          // touch-action:none CSS prevents the browser from
+          // interpreting the gesture as a scroll instead.
+          delay:       0,
+          touchStartThreshold: 3,
           ghostClass:  "plan-card-drag-ghost",
           chosenClass: "plan-card-drag-chosen",
           // Don't let SortableJS DOM mutation persist — React re-renders
@@ -9501,7 +9526,22 @@ return (
                             var card = item.card;
                             var i    = item.idx;
                             return (
-                              <div key={i} data-card-idx={i} className="plan-card-sortable">
+                              <div key={i} data-card-idx={i} className="plan-card-sortable" style={{marginBottom:6}}>
+                                {/* [DND-HANDLE] Explicit drag handle. Users
+                                    were trying to drag from anywhere on
+                                    the card and finding nothing happened
+                                    because PlanCard has internal click /
+                                    touch handlers (Edit, Save, expand) that
+                                    interfere with pointerdown-based drag
+                                    detection. Restricting Sortable to a
+                                    visible handle solves both
+                                    affordance ("you can see where to grab")
+                                    and reliability ("the handle has no
+                                    other handlers"). */}
+                                <div className="virl-drag-handle" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"6px 10px",background:B.bg,border:"1px solid "+B.border,borderBottom:"none",borderRadius:"10px 10px 0 0",cursor:"grab",userSelect:"none",WebkitUserSelect:"none",touchAction:"none"}}>
+                                  <span style={{fontSize:14,lineHeight:1,color:B.muted,letterSpacing:"2px"}}>⋮⋮</span>
+                                  <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.16em",textTransform:"uppercase",color:B.muted}}>Drag to move</span>
+                                </div>
                                 <PlanCard card={card} idx={i}
                                   onSave={saveToVault} onLog={logResult}
                                   onSaveScript={saveScriptForCard}
