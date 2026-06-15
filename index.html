@@ -8067,9 +8067,35 @@ function App() {
           touchStartThreshold: 5,
           ghostClass:  "plan-card-drag-ghost",
           chosenClass: "plan-card-drag-chosen",
-          // Don't let SortableJS DOM mutation persist — React re-renders
-          // from state, which is the source of truth.
-          onEnd:       function(evt){ reorderCardsFromDom(evt); },
+          // [HOTFIX] React-as-source-of-truth pattern. SortableJS moves
+          // the dragged element into the destination container
+          // synchronously; if we leave that DOM mutation in place,
+          // React's next reconciliation collides with the live DOM
+          // (especially now that rest-day-card placeholders can appear
+          // in destination containers) and the diff can throw — blanking
+          // the whole tab.
+          //
+          // Three-step dance: (1) read the post-drop DOM in
+          // reorderCardsFromDom to figure out new positions, (2) revert
+          // SortableJS's DOM mutation back to pre-drop state, (3) the
+          // setCards call inside reorderCardsFromDom triggers React's
+          // own re-render which puts the card in its new position via
+          // the normal virtual-DOM path. End-user-visible result is
+          // identical to a direct move; React just owns the DOM the
+          // whole time.
+          onEnd:       function(evt){
+            reorderCardsFromDom(evt);
+            try {
+              if (evt && evt.item && evt.from) {
+                var children = evt.from.children;
+                if (typeof evt.oldIndex === "number" && evt.oldIndex >= 0 && evt.oldIndex < children.length) {
+                  evt.from.insertBefore(evt.item, children[evt.oldIndex]);
+                } else {
+                  evt.from.appendChild(evt.item);
+                }
+              }
+            } catch(e) { /* revert is best-effort; state update has already fired */ }
+          },
         }));
       } catch(e) {
         console.warn("[dnd] Sortable.create failed:", e.message);
