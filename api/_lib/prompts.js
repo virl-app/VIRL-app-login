@@ -772,6 +772,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + " Return ONLY one JSON object with this exact shape: {"
     + "\"strategy\":{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":[{\"value\":\"...\",\"label\":\"...\"}],\"the_bet\":\"...\"},"
     + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"ONE-sentence pitch, ≤20 words.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"<exact phrase from a listed trend below, or omit field entirely>\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"insight\":\"1-2 sentences — the strategic call behind this card.\"}],"
+    + "\"restDayTips\":[{\"day\":\"Day 2 - Tue\",\"type\":\"engage\",\"title\":\"<3-6 word title>\",\"body\":\"<1-2 sentence actionable nudge for THIS creator>\"}],"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
     + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
@@ -877,6 +878,14 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // this user's specific industry.
     + " FORMAT MIX FOR THIS USER'S INDUSTRY: " + industryFormatGuidance
     + " Create 10-14 total posts for THIS week. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    // [REST-DAY-LLM] Generate one tip per day NOT receiving a card. Tips
+    // must be PERSONAL to this creator (niche, goal, audience, last
+    // week's wins / losses if any), not generic. Four type categories
+    // give the model a vocabulary to pick from without overconstraining
+    // the content itself. The static client-side catalog is the safety
+    // net when this field is missing or thin, but the goal is for the
+    // LLM-generated tips to be the steady-state experience.
+    + " ALSO populate `restDayTips` for each day that does NOT receive a card. Each entry references THIS specific creator — their niche, their stated goal, last week's top performer when available, their actual audience — not generic creator advice. Tip types: 'engage' (interact with others), 'research' (consume / study for ideas), 'plan' (work on future content), 'recharge' (intentional time off or audience listening). Title: 3-6 words. Body: 1-2 sentences max, written like a text from a strategist, not a self-help book. If every day has a card, omit `restDayTips` entirely (or return an empty array)."
     + " Open the plan with a STRATEGY object that frames the week. Every field has a strict length cap — the UI breaks on overruns, and the value to the creator comes from sharpness, not volume. The strategy must:"
     + "  - thesis: ONE sentence, MAX 15 words. A specific claim about THIS week for THIS creator. No preamble, no throat-clearing, no semicolons stacking two ideas. Example: \"Launch week — every post narrows the gap between you-the-person and you-the-founder.\""
     + "  - optimizing_for: MAX 8 words naming the dominant signals. No sentence. Example: \"Saves + profile visits + launch-day follow-through.\""
