@@ -672,6 +672,73 @@ function deriveAllDayLabels(cards) {
   return out;
 }
 
+// [REST-DAY] Tip catalog for days without a generated post. Keyed by the
+// user's goal so the guidance pulls toward what they're actually building
+// toward — a "Grow my following" creator gets engagement-window prompts,
+// a "Sell products" creator gets warm-DM nudges, etc. Each entry stays
+// short (one-line title + 1-2 sentence body) so a rest-day card stays
+// visibly smaller than a real plan card. Catalog lives client-side so
+// it costs zero LLM tokens; later versions can layer personalized
+// LLM-generated tips on top if the catalog feels too generic.
+//
+// Each goal has 4 tip types so a 4-rest-day plan rotates through them
+// without obvious repetition. The rotation is deterministic (based on
+// the day's index) so the same plan shows the same tips every render —
+// no flicker on re-renders, no surprise on refresh.
+const REST_DAY_TIPS = {
+  "Grow my following": [
+    { type: "engage",   icon: "💬", title: "Engagement window", body: "Spend 15 min commenting on 10 accounts in your niche. The algorithm rewards visible presence — even on the days you're not posting." },
+    { type: "research", icon: "🔍", title: "Idea capture",      body: "Scroll your feed without posting. Save 3 posts that landed harder than yours and screenshot why — hook, format, or framing." },
+    { type: "plan",     icon: "📓", title: "Hook drafts",       body: "Open a notes doc and write 5 hook lines for next week. No structure, no polish — just the openers." },
+    { type: "recharge", icon: "🌿", title: "Audience listening", body: "Read DMs and comments from the past 7 days. Patterns in what people ask are the most direct line to your next viral angle." },
+  ],
+  "Land brand deals": [
+    { type: "engage",   icon: "💬", title: "Brand engagement",  body: "Comment thoughtfully on 5 accounts of brands you'd want to work with. Visibility is the first step in their DM." },
+    { type: "research", icon: "🔍", title: "Rate-card prep",    body: "Look up 3 creators in your niche with similar reach. Note their typical CPM or partnership rate so your next pitch lands grounded." },
+    { type: "plan",     icon: "📓", title: "Pitch refresh",     body: "Update your media kit screenshot or one-line bio with your latest top-performing post's metrics." },
+    { type: "recharge", icon: "🌿", title: "Portfolio audit",   body: "Pick the 3 strongest posts from the past month. Save links — these are the receipts you reference in brand DMs." },
+  ],
+  "Sell products": [
+    { type: "engage",   icon: "💬", title: "Warm-DM day",       body: "Reply to 10 followers who've recently saved or commented on a product-adjacent post. Build the warm list, not the cold." },
+    { type: "research", icon: "🔍", title: "Buyer language",    body: "Read 10 reviews of products like yours. The exact phrases buyers use become your next caption hooks." },
+    { type: "plan",     icon: "📓", title: "Funnel check",      body: "Click through your own bio link as a stranger would. Note the moment a real buyer would hesitate." },
+    { type: "recharge", icon: "🌿", title: "Listening pass",    body: "Open your last 10 product-mention comments. Reply to every one — the audience that comments buys at 3-5x the rate of lurkers." },
+  ],
+  "Build community": [
+    { type: "engage",   icon: "💬", title: "Reply day",         body: "Spend 20 min replying to every unanswered comment on your last 5 posts. Community = the perception that you actually see them." },
+    { type: "research", icon: "🔍", title: "Question harvest",  body: "Skim your DMs for any question that came up more than once. Those are next week's strongest hooks." },
+    { type: "plan",     icon: "📓", title: "Insider gesture",   body: "Plan one thing to give your most engaged 20 followers next week — early access, a DM, a featured slot in a story." },
+    { type: "recharge", icon: "🌿", title: "Community walk",    body: "Spend 30 min in a Discord, Reddit thread, or DM group where your audience hangs out. Listen, don't post. Bring back one insight." },
+  ],
+  "Go viral": [
+    { type: "engage",   icon: "💬", title: "Format study",      body: "Pick one post hitting 1M+ views in your niche this week. Write down the hook, the cut at 2 seconds, and the comment loop it triggers." },
+    { type: "research", icon: "🔍", title: "Trend ladder",      body: "Find the next emerging sound or format that's growing but isn't peaked yet. Bookmark it for next week's plan." },
+    { type: "plan",     icon: "📓", title: "Hook variants",     body: "Take your most-saved past post and write 5 new hooks for the same idea. Same content, fresh entry points." },
+    { type: "recharge", icon: "🌿", title: "Pattern audit",     body: "Look at your last 30 days of posts ranked by views. The two outliers each direction tell you what your audience actually wants." },
+  ],
+};
+
+// [REST-DAY] Default catalog for users who haven't set a goal yet. Generic
+// but still actionable — these would be everyone's "missing day" tips when
+// VIRL doesn't know what they're optimizing for.
+const REST_DAY_TIPS_DEFAULT = [
+  { type: "engage",   icon: "💬", title: "Engagement window", body: "Spend 15 min commenting on 10 accounts in your niche. Visible presence on off-days is its own form of content." },
+  { type: "research", icon: "🔍", title: "Idea capture",      body: "Scroll your feed without posting. Save 3 posts that landed harder than yours and screenshot why." },
+  { type: "plan",     icon: "📓", title: "Hook drafts",       body: "Open a notes doc and write 5 hook lines for the future. No structure — just the openers." },
+  { type: "recharge", icon: "🌿", title: "Take the day",      body: "Rest is part of the strategy. Coming back to the feed fresh beats grinding through burnout." },
+];
+
+// Pick a rest-day tip deterministically based on the user's goal + the
+// day index (1-7). Deterministic = same plan shows the same tip on the
+// same day across renders — no flicker on re-renders, no swap on
+// refresh. Falls back to the default catalog when the goal isn't
+// recognized or isn't set.
+function pickRestDayTip(goal, dayNumber) {
+  var catalog = (goal && REST_DAY_TIPS[goal]) || REST_DAY_TIPS_DEFAULT;
+  var idx = ((parseInt(dayNumber, 10) || 1) - 1) % catalog.length;
+  return catalog[idx];
+}
+
 // Algorithm playbook is now stored in Supabase (`playbook` table) so it's
 // editable without a code deploy and so server-side prompt builders can
 // inject the same data into every Anthropic call. The Algo tab below
@@ -2630,7 +2697,7 @@ function humanizeFormat(raw) {
 }
 
 // One-line preview shown UNDER the headline on collapsed plan cards so
-// the user can scan 10-14 cards without expanding each one. Picks the
+// the user can scan a stacked week without expanding each one. Picks the
 // most representative opening line per format (video/long-form → hook,
 // carousel → first slide headline, image → photo direction, quote →
 // the quote, story → first frame). Falls back to description for legacy
@@ -3121,8 +3188,8 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profil
   var reminder = "VIRL "+card.day+": "+card.title+" - Post at "+card.postTime+" on "+card.platform;
   var hasSavedScript = !!card.savedScript;
   // [P1] One-line preview shown beneath the title on collapsed cards so
-  // the user can differentiate 10-14 stacked cards without expanding each.
-  // Computed only when collapsed so the expanded view (which renders the
+  // the user can differentiate a stacked week of cards without expanding
+  // each. Computed only when collapsed so the expanded view (which renders the
   // full hook/slides/etc inline) doesn't duplicate it.
   var preview = !expanded ? cardPreview(card) : "";
 
@@ -7949,6 +8016,10 @@ function App() {
         instances.push(Sortable.create(container, {
           group:       "plan-cards",
           animation:   150,
+          // [REST-DAY] Only real plan cards are draggable — rest-day tip
+          // cards (no .plan-card-sortable class) stay anchored to their
+          // day so users can't accidentally pick one up.
+          draggable:   ".plan-card-sortable",
           // Drag from the whole card; long-press on mobile picks it up.
           // delay on mobile prevents accidental drags while scrolling.
           delay:       150,
@@ -9025,7 +9096,7 @@ return (
                 </button>
               </div>
             )}
-            <SherpaTip>Tell VIRL your setup and it builds your entire week across your platforms - 10 to 14 posts with timing, trend angles, and the strategic reason behind every post. Tap Write Script on any card to go even deeper.</SherpaTip>
+            <SherpaTip>Tell VIRL your setup and it builds your week across your platforms — every post with timing, trend angles, and the strategic reason behind it. Number of posts comes from your posting cadence × platform count, so a "daily" creator gets a fuller week than a "few times a week" creator. Tap Write Script on any card to go even deeper.</SherpaTip>
             <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
               {[
                 {lbl:"Your platforms",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={platforms.includes(p)} onClick={function(){setPlatforms(tog(platforms,p));}}>{p}</Chip>;})}</div>},
@@ -9409,11 +9480,38 @@ return (
                               </div>
                             );
                           })}
-                          {items.length === 0 && (
-                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,fontStyle:"italic",color:B.muted,padding:"12px 4px",textAlign:"center",border:"1px dashed "+B.border,borderRadius:10}}>
-                              No post planned — drop a card here to move it to this day
-                            </div>
-                          )}
+                          {items.length === 0 && (function(){
+                            // [REST-DAY] Days without a generated post get a
+                            // tip card instead of a flat "no post" placeholder.
+                            // Visual treatment is intentionally distinct from
+                            // PlanCard (soft sky-tinted background, no
+                            // shadow, lighter typography) so users see at a
+                            // glance: "this is guidance, not content."
+                            // Tip selection is goal-driven and deterministic
+                            // — same day shows same tip across renders.
+                            var dayNumMatch = (dayLabel || "").match(/^Day\s+(\d+)/);
+                            var dayNum = dayNumMatch ? parseInt(dayNumMatch[1], 10) : (gi + 1);
+                            var tip = pickRestDayTip(goal, dayNum);
+                            return (
+                              <div style={{background:B.skySoft,border:"1px solid rgba(59,130,246,0.18)",borderRadius:14,padding:"16px 18px",marginBottom:6}}>
+                                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                                  <span style={{fontSize:18,lineHeight:1}}>{tip.icon}</span>
+                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.sky}}>
+                                    {"Rest day · " + tip.type}
+                                  </div>
+                                </div>
+                                <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy,lineHeight:1.2,marginBottom:8}}>
+                                  {tip.title}
+                                </div>
+                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6,marginBottom:10}}>
+                                  {tip.body}
+                                </div>
+                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,fontStyle:"italic",color:B.muted,paddingTop:8,borderTop:"1px dashed rgba(59,130,246,0.18)"}}>
+                                  Or drop a card here to schedule a post on this day.
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     );
