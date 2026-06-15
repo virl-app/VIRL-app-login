@@ -5,6 +5,32 @@
 // length guides, and JSON schemas off the public source of index.html.
 
 import { formatExemplarsForPrompt } from "./vault-exemplars.js";
+import { formatOptimalDaysForPrompt } from "./optimal-days.js";
+
+// [POSTFREQ-OPTIMAL] Maps the user's profile postFreq selection +
+// selected-platforms count into a target card range for the plan. Old
+// behavior: a flat 10-14 cards regardless of how often the user actually
+// posts. New behavior: total cards = per-platform cadence × platforms,
+// floored at 1 / capped at 21 (3 platforms × daily). When postFreq isn't
+// set, falls back to the historical 10-14 range so existing prompts
+// don't shift unexpectedly.
+function computeCardRange(postFreq, platformCount) {
+  const N = Math.max(1, parseInt(platformCount, 10) || 1);
+  if (postFreq === "Daily") {
+    return { min: Math.min(21, 5 * N), max: Math.min(21, 7 * N) };
+  }
+  if (postFreq === "A few times a week") {
+    return { min: Math.max(N, 2 * N), max: Math.min(16, 4 * N) };
+  }
+  if (postFreq === "Weekly") {
+    return { min: N, max: N };
+  }
+  if (postFreq === "Sporadically") {
+    return { min: Math.max(1, N), max: Math.min(10, 2 * N) };
+  }
+  // Default fallback for older profiles without postFreq set.
+  return { min: 10, max: 14 };
+}
 
 // [VAULT-EXEMPLARS] Renders the user's saved/posted items as a few-shot
 // voice reference block. Goes into plan, caption, and script prompts so
@@ -694,6 +720,15 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   const goal      = params.goal      || "";
   const followers = params.followers || "";
   const context   = params.context   || "";
+  // [POSTFREQ-OPTIMAL] Map the user's posting cadence + selected
+  // platforms into a target card range, and render the per-platform
+  // optimal-days hint when available. cardRange replaces the prior
+  // flat "10-14 cards" instruction; optimalDaysCtx is empty string
+  // when no platforms were passed (the formatter is null-safe).
+  const cardRange = computeCardRange(profile && profile.postFreq, platformsArr.length);
+  const optimalDaysCtx = vaultPatterns && vaultPatterns.optimalDays
+    ? formatOptimalDaysForPrompt(vaultPatterns.optimalDays)
+    : "";
   // [AUDIENCE 1] Week-of business context. Optional free-text from the
   // creator describing what is actually happening in their business
   // this week (events, launches, milestones). Trimmed + length-capped
@@ -774,7 +809,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + "\"cards\":[{\"day\":\"Day 1 - Mon\",\"priority\":\"HIGH\",\"title\":\"punchy title\",\"description\":\"ONE-sentence pitch, ≤20 words.\",\"postTime\":\"7:00 AM\",\"platform\":\"TikTok\",\"trend\":\"<exact phrase from a listed trend below, or omit field entirely>\",\"format\":\"video\",\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\"insight\":\"1-2 sentences — the strategic call behind this card.\"}],"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
-    + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
+    + " The cards array's length is specified per-request in the user prompt (varies by the creator's posting cadence × platform count). Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
     // [COMPLIANCE 1] Optional per-card disclosure field. Empty / omitted by
     // default; only populated when the user's niche has compliance coverage
     // (Real Estate, Wellness) AND the specific card triggers one of the
@@ -876,7 +911,8 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // schema; this line tells the model how to weight format choice for
     // this user's specific industry.
     + " FORMAT MIX FOR THIS USER'S INDUSTRY: " + industryFormatGuidance
-    + " Create 10-14 total posts for THIS week. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + " Create " + cardRange.min + "-" + cardRange.max + " total posts for THIS week, based on the creator's posting cadence + platform count. This is the actual number to ship — do NOT pad to 7 days. If the math says fewer than 7 cards, use only the days that make sense; the other days are intentional rest days. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + (optimalDaysCtx ? "\n\n" + optimalDaysCtx + "\n\nWhen distributing cards across the week, weight the optimal days above heavily — they're either the creator's own best-performing days (when 'performs best on' is shown) or industry rule-of-thumb for the platform (when 'general best days' is shown). The user-history signal is the stronger one when present." : "")
     + " Open the plan with a STRATEGY object that frames the week. Every field has a strict length cap — the UI breaks on overruns, and the value to the creator comes from sharpness, not volume. The strategy must:"
     + "  - thesis: ONE sentence, MAX 15 words. A specific claim about THIS week for THIS creator. No preamble, no throat-clearing, no semicolons stacking two ideas. Example: \"Launch week — every post narrows the gap between you-the-person and you-the-founder.\""
     + "  - optimizing_for: MAX 8 words naming the dominant signals. No sentence. Example: \"Saves + profile visits + launch-day follow-through.\""

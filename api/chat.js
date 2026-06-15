@@ -20,6 +20,7 @@ import { sendLoopsEvent, sendLoopsEventOnce } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
 import { computeVoiceDrift, extractVoiceText } from "./_lib/voice-drift.js";
 import { selectVaultExemplars, exemplarsAsVoiceText } from "./_lib/vault-exemplars.js";
+import { computeOptimalDays } from "./_lib/optimal-days.js";
 
 // [EMAIL-CUTOVER] Feature flag controlling whether milestone sends route
 // through Loops (new) or Resend (legacy). Flip to "true" in Vercel env
@@ -584,8 +585,15 @@ function pickInlinePlatforms(generationType, params, profile) {
 // builder has always used) AND `exemplars` — up to 5 actual saved/posted
 // items used as few-shot voice examples in the prompt. Single DB read
 // regardless of how many fields callers need.
-async function fetchVaultPatterns(userId) {
-  const empty = { count: 0, topPlatform: null, topFormat: null, exemplars: [] };
+//
+// [POSTFREQ-OPTIMAL] Also returns `optimalDays` — per-platform best
+// weekday rankings derived from the user's own logged results, falling
+// back to general platform guidance when signal is thin. Caller scopes
+// the computation to the platforms it cares about via `targetPlatforms`
+// so the prompt doesn't include guidance for platforms the creator
+// isn't using this generation.
+async function fetchVaultPatterns(userId, targetPlatforms) {
+  const empty = { count: 0, topPlatform: null, topFormat: null, exemplars: [], optimalDays: {} };
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/user_data?user_id=eq.${userId}&select=vault,results`,
@@ -602,13 +610,18 @@ async function fetchVaultPatterns(userId) {
     // count=5 matches the product decision (richer corpus than 3, still
     // well under the token budget).
     const exemplars = selectVaultExemplars(vault, results, 5);
+    // [POSTFREQ-OPTIMAL] Per-platform best-day rankings — user history
+    // when n>=3 results on the platform, general platform fallback
+    // otherwise. Scoped to targetPlatforms (this generation's selected
+    // platforms) so the prompt stays relevant.
+    const optimalDays = computeOptimalDays(vault, results, targetPlatforms);
 
     const planItems = vault.filter(v => v && v.type === "plan");
     if (!planItems.length) {
       // No plan-vault items, but exemplars may still exist if the user
       // logged results on plan cards without saving them. Surface those
       // for the few-shot path even though the patterns block stays empty.
-      return { count: 0, topPlatform: null, topFormat: null, exemplars };
+      return { count: 0, topPlatform: null, topFormat: null, exemplars, optimalDays };
     }
     const platformCounts = {};
     const formatCounts   = {};
@@ -626,6 +639,7 @@ async function fetchVaultPatterns(userId) {
       topPlatform: top(platformCounts),
       topFormat:   top(formatCounts),
       exemplars,
+      optimalDays,
     };
   } catch (e) {
     return empty;
@@ -872,9 +886,17 @@ export default async function handler(req, res) {
     "plan", "plan_partial", "plan_strategy",
     "caption", "caption_remix", "script",
   ]);
+  // [POSTFREQ-OPTIMAL] targetPlatforms scopes the optimal-days computation
+  // to the platforms in this request. For plan / plan_partial it's the
+  // user's selected platforms; for caption it's the single target platform;
+  // for script we don't pass any (the optimal-days context is plan-tab
+  // specific and the formatter is null-safe when missing).
+  const targetPlatforms = (generationType === "plan" || generationType === "plan_partial")
+    ? (Array.isArray(params && params.platforms) ? params.platforms : [])
+    : (generationType === "caption" && params && params.platform ? [params.platform] : []);
   const [profile, vaultPatterns, playbook, cachedTrends, history, complianceRules] = await Promise.all([
     fetchProfile(userId),
-    VOICE_GEN_TYPES.has(generationType) ? fetchVaultPatterns(userId)                                          : Promise.resolve(null),
+    VOICE_GEN_TYPES.has(generationType) ? fetchVaultPatterns(userId, targetPlatforms)                         : Promise.resolve(null),
     loadPlaybook(),
     loadLatestTrends(),
     generationType === "plan" ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart)     : Promise.resolve([]),
