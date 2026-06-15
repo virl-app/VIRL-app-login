@@ -667,13 +667,30 @@ function deriveAllDayLabels(cards) {
   // Anchor on the lowest known day number → derive forward + backward.
   const seedNum  = Math.min(...seedNums);
   const seedWd   = dayMap[seedNum].weekday;
-  const seedWdIx = WEEKDAY_NAMES.findIndex(w => w.toLowerCase() === seedWd.toLowerCase());
+  // [HOTFIX] Cards from the server use SHORT weekday names ("Mon", "Wed",
+  // etc. — see api/_lib/prompts.js's WEEKDAYS array). The earlier version
+  // of this function looked the seed weekday up in the LONG-name table
+  // (WEEKDAY_NAMES), which never matched, so seedWdIx came back as -1
+  // and the whole function returned []. With zero day labels, the day-
+  // section renderer in the plan view mapped over an empty array and
+  // showed no cards at all even when state had them. The fix matches
+  // on the first 3 chars (case-insensitive), accepting either form,
+  // and synthesizes missing days using the SAME format the seed card
+  // used so the bucket keys ({byDay[dayLabel]}) align.
+  const SHORT_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const seedKey = seedWd.slice(0, 3).toLowerCase();
+  const seedWdIx = SHORT_NAMES.findIndex(w => w.toLowerCase() === seedKey);
   if (seedWdIx < 0) return [];
+  // Preserve the source format: if the seed weekday is ≤3 chars we treat
+  // it as short ("Mon"), otherwise long ("Monday"). Both formats are
+  // supported in case the prompt format ever changes again.
+  const useShort = seedWd.length <= 3;
+  const NAMES = useShort ? SHORT_NAMES : WEEKDAY_NAMES;
   const out = [];
   for (let n = 1; n <= 7; n++) {
     if (dayMap[n]) { out.push(dayMap[n].full); continue; }
     const wdIx = (seedWdIx + (n - seedNum) % 7 + 7) % 7;
-    out.push("Day " + n + " - " + WEEKDAY_NAMES[wdIx]);
+    out.push("Day " + n + " - " + NAMES[wdIx]);
   }
   return out;
 }
