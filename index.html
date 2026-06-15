@@ -8082,6 +8082,18 @@ function App() {
           // cards (no .plan-card-sortable class) stay anchored to their
           // day so users can't accidentally pick one up.
           draggable:   ".plan-card-sortable",
+          // [DND-IOS] iOS Safari's default pointer-event handling
+          // interprets touch on the handle as a scroll before SortableJS
+          // can claim it — even with touch-action:none on the handle,
+          // because the parent (the Plan tab scroll container) wins the
+          // gesture. forceFallback flips Sortable into its own
+          // touch-event handler that calls preventDefault aggressively,
+          // letting drag actually initiate on iOS. fallbackOnBody
+          // appends the dragged clone to document.body during the drag
+          // so it isn't clipped by any overflow:hidden ancestor.
+          forceFallback:   true,
+          fallbackOnBody:  true,
+          fallbackTolerance: 4,
           // [DND-HANDLE] Drag initiates from the visible handle bar.
           // Because the handle has no internal handlers competing for
           // the touch event, we can drop the prior 150ms long-press
@@ -9538,9 +9550,9 @@ return (
                                     affordance ("you can see where to grab")
                                     and reliability ("the handle has no
                                     other handlers"). */}
-                                <div className="virl-drag-handle" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"6px 10px",background:B.bg,border:"1px solid "+B.border,borderBottom:"none",borderRadius:"10px 10px 0 0",cursor:"grab",userSelect:"none",WebkitUserSelect:"none",touchAction:"none"}}>
-                                  <span style={{fontSize:14,lineHeight:1,color:B.muted,letterSpacing:"2px"}}>⋮⋮</span>
-                                  <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.16em",textTransform:"uppercase",color:B.muted}}>Drag to move</span>
+                                <div className="virl-drag-handle" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"12px 10px",minHeight:44,background:B.bg,border:"1px solid "+B.border,borderBottom:"none",borderRadius:"10px 10px 0 0",cursor:"grab",userSelect:"none",WebkitUserSelect:"none",touchAction:"none",WebkitTouchCallout:"none"}}>
+                                  <span style={{fontSize:18,lineHeight:1,color:B.muted,letterSpacing:"3px"}}>⋮⋮</span>
+                                  <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted}}>Drag to move</span>
                                 </div>
                                 <PlanCard card={card} idx={i}
                                   onSave={saveToVault} onLog={logResult}
