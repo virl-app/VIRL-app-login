@@ -438,8 +438,24 @@ const LOCALE_LINE = "Use US English spelling exclusively in every output (e.g. '
 // zero tokens at steady-state but anchors every generation. Negative
 // constraints heavy on purpose — models default to producing these tells
 // and need a hard NO, not a gentle "consider not using."
+//
+// [TONE-REGISTER] The DO-list (contractions, fragments, casual register)
+// is positive-instruction counterweight to the long negative-instruction
+// section below. Without it, the model interpreted "don't sound like AI"
+// as "be safe, formal" — and produced output without contractions, which
+// reads more formal than any actual creator. Positive register hints
+// trump the model's default "formal academic English" fallback.
 const STYLE_GUARD = ""
-  + "STYLE — write like a human, not an AI. The patterns below are AI giveaways. NEVER use them:\n"
+  + "STYLE — write like a human, not an AI.\n"
+  + "\n"
+  + "Voice register — write like a person texting their audience, not writing an email:\n"
+  + " - USE CONTRACTIONS BY DEFAULT. \"I'm\" not \"I am.\" \"Don't\" not \"do not.\" \"It's\" not \"it is.\" \"You're\" not \"you are.\" \"We'll\" not \"we will.\" Formal register without contractions reads like an AI playing it safe. The only time to drop a contraction is when the creator's reference voice clearly avoids them.\n"
+  + " - Sentence fragments are fine when they land harder than a full sentence. Real people don't speak in perfect grammar.\n"
+  + " - Vary cadence the way someone texting actually varies it: one long sentence, three short. A fragment. Then a question. Then a one-word punctuation. Mechanical rhythm = AI tell.\n"
+  + " - Start sentences with \"And,\" \"But,\" or \"So\" when the rhythm calls for it. Grade-school grammar rules don't apply to social content.\n"
+  + " - Plain words over fancy ones. \"Use\" not \"utilize.\" \"Help\" not \"facilitate.\" \"Show\" not \"demonstrate.\" Find the word the creator would actually say in a voice memo.\n"
+  + "\n"
+  + "The patterns below are AI giveaways. NEVER use them:\n"
   + "\n"
   + "Punctuation:\n"
   + " - Em-dashes (—) are an AI tell when overused. Use AT MOST one per substantive piece of copy (one full caption, one script section, one card's worth of copy); ideally zero. Default to commas, periods, or colons. NEVER use em-dashes as decorative parenthetical asides (\"X — Y, Z, A — B\") or to engineer rhythmic balance within a sentence — those are the dead-giveaway patterns.\n"
