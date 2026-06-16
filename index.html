@@ -10110,19 +10110,40 @@ return (
                  previous week. Past cards render through the existing
                  PlanCard component so all per-card actions (save,
                  mark posted, log results, write script) work normally.
-                 Tertiary visual weight — sits below the current plan
-                 and is collapsed by default. Hidden entirely if the
-                 user has no history. */}
+                 Sits below the current plan and is collapsed by default.
+                 Hidden entirely if the user has no history.
+
+                 [LAST-WEEK-BUTTON] Upgraded from a tertiary muted card
+                 to a secondary-blue treatment so creators can actually
+                 see it. The "still to log" count is the actionable
+                 piece (last week's posts the user hasn't tracked yet),
+                 so we surface it as a navy badge when > 0 — pulls the
+                 eye to the part of the trigger that warrants action. */}
             {!loading && cards && lastWeekPlan && Array.isArray(lastWeekPlan.cards) && lastWeekPlan.cards.length > 0 && (
               <div style={{marginTop:32}}>
                 <button
                   onClick={function(){ setLastWeekExpanded(function(v){ return !v; }); }}
-                  style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"14px 18px",background:B.bg,border:"1px solid "+B.border,borderRadius:12,cursor:"pointer",fontFamily:"'Jost',sans-serif"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{fontSize:11,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted}}>{"Last week's plan"}</span>
-                    <span style={{fontSize:11,fontWeight:300,color:B.muted}}>{"· " + lastWeekPlan.cards.length + " cards · " + lastWeekUnlogged.length + " still to log"}</span>
+                  style={{
+                    display:"flex",alignItems:"center",justifyContent:"space-between",
+                    width:"100%",padding:"16px 20px",
+                    background:B.blueSoft,
+                    border:"1px solid "+B.sky,
+                    borderRadius:14,cursor:"pointer",
+                    fontFamily:"'Jost',sans-serif",
+                    transition:"background .2s, border-color .2s",
+                  }}>
+                  <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                    <span style={{fontSize:12,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.navy}}>{"Last week's plan"}</span>
+                    <span style={{fontSize:12,fontWeight:400,color:B.blue}}>{lastWeekPlan.cards.length + " cards"}</span>
+                    {lastWeekUnlogged.length > 0 && (
+                      <span style={{
+                        fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",
+                        color:B.white,background:B.navy,
+                        padding:"3px 8px",borderRadius:999,
+                      }}>{lastWeekUnlogged.length + " to log"}</span>
+                    )}
                   </div>
-                  <span style={{fontSize:14,color:B.muted,fontWeight:300}}>{lastWeekExpanded ? "▴" : "▾"}</span>
+                  <span style={{fontSize:18,color:B.navy,fontWeight:700,marginLeft:8}}>{lastWeekExpanded ? "▴" : "▾"}</span>
                 </button>
                 {lastWeekExpanded && (
                   <div style={{marginTop:12}}>
