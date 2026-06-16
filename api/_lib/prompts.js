@@ -957,6 +957,18 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
         : "")
     + historyCtx
     + " The week starts TODAY (" + startWeekday + "). When you assign a `day` to a card, use one of these exact day labels: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday. You do NOT have to use all 7 labels — the card count below tells you how many posts to actually produce, and the remaining days are rest days."
+    // [DAY-NAME-GUARD] The model occasionally names a weekday inside the
+    // card copy that doesn't match the card's scheduled day — e.g. a
+    // Tuesday card titled "The Saturday Chaos That Runs on VIRL." That
+    // reads as a glitch to the creator: the post is supposedly for
+    // today, but the copy implies a different day. The rule below is
+    // simple and absolute: weekday names in any user-facing copy
+    // (title, hook, description, caption, body, on-screen text,
+    // slides, frames, closing) MUST match the card's day, period. If
+    // the idea is genuinely day-anchored ("Sunday Reset," "Friday
+    // Drop"), schedule that card on that day. Otherwise drop the
+    // weekday reference.
+    + " WEEKDAY-NAME RULE — STRICT. Within any card's user-facing copy (title, hook, description, caption, body, onScreenText, slides, frames, closing, photoDirection narrative — anywhere words show up to the reader), NEVER reference a specific weekday (Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday) UNLESS that weekday matches the card's assigned `day` field. If an idea is inherently tied to a specific weekday (\"Sunday Reset,\" \"Friday wrap-up,\" \"Monday motivation\"), then SCHEDULE the card on that weekday and only then use the name in the copy. Otherwise, use day-neutral phrasing (\"today,\" \"this week,\" \"start your morning\" — never name a specific weekday). The creator sees a Tuesday card titled \"Saturday Chaos\" as a bug, not creative license."
     // [COST 2] Industry format mix is per-niche, so it stays in userPrompt
     // (moved out of systemPrompt). The systemPrompt holds the static output
     // schema; this line tells the model how to weight format choice for
