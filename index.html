@@ -6458,6 +6458,10 @@ function App() {
         setCards(null);
         setStats(null);
         setStrategy(null);
+        // [REST-DAY-LLM] Clear LLM tips alongside cleared plan so a
+        // future regen starts from a clean state rather than rendering
+        // stale tips on top of new cards.
+        setRestDayTips(null);
       }
     } catch(e){}
   }, []);
@@ -6595,6 +6599,7 @@ function App() {
         setCards(null);
         setStats(null);
         setStrategy(null);
+        setRestDayTips(null);
         try {
           var stale = load() || {};
           delete stale.plan; delete stale.planStats; delete stale.planStrategy; delete stale.planExpiresAt;
@@ -7496,7 +7501,7 @@ function App() {
     // Spinner is gated on (loading && !cards), so the first streamed card
     // hides it naturally; loading stays true until the stream completes
     // so the Generate button can't be double-clicked mid-stream.
-    setLoading(true); setError(""); setCards(null); setStats(null); setStrategy(null); setRestDayTips(null); setRestDayTips(null);
+    setLoading(true); setError(""); setCards(null); setStats(null); setStrategy(null); setRestDayTips(null);
     // [FRESH-TRENDS] Reset the per-plan snapshot + banner flag — they'll
     // be repopulated from the streaming meta event if this generation
     // consumed an inline Perplexity call.
@@ -9351,7 +9356,7 @@ return (
                               />
                             );
                           })}
-                          {items.length === 0 && (function(){
+                          {items.length === 0 && !loading && (function(){
                             // [REST-DAY] Days without a generated post get a
                             // tip card instead of a flat "no post" placeholder.
                             // Visual treatment is intentionally distinct from
