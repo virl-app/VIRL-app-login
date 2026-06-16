@@ -891,6 +891,72 @@ function releaseWakeLock(sentinel) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// [PLAN-JOB-RECOVERY] Client side of the streaming-plan recovery flow.
+// Companion to api/plan-status.js. When the SSE drops mid-stream, the
+// server's Anthropic call usually still completes (Vercel keeps the
+// function alive after client disconnect, up to maxDuration) and writes
+// the result to plan_jobs. This file gives generate() a way to:
+//   1. Mint a UUID v4 (planJobId) per generation, so the server has a
+//      stable key to write the row under and the client has a handle
+//      to poll with.
+//   2. Poll /api/plan-status until the job lands in complete or error.
+//
+// Used by the plan generate flow's .catch handler: on "Stream
+// interrupted," we poll BEFORE kicking off a fresh re-generation —
+// if the server already finished the call, we render that result
+// instead of paying for a new one.
+// ─────────────────────────────────────────────────────────────────────────────
+function makePlanJobId() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch (e) {}
+  // Manual v4 fallback. Math.random isn't cryptographically secure, but
+  // collision probability across a single user's generations is fine —
+  // server only writes the row if the format passes its UUID regex, and
+  // a malformed id just disables recovery for that one call.
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c) {
+    var r = (Math.random() * 16) | 0;
+    var v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+// Poll /api/plan-status until it returns complete / error / missing or
+// we hit the cap. Returns the response body when the job lands in
+// complete or error; null on missing, network failure across all polls,
+// or timeout.
+//
+// Schedule: tight up-front (1s, 2s, 3s, 4s, 5s — covers the common
+// "stream dropped right before completion" case), tapering longer to
+// keep the call count down on slow Anthropic responses. Total wall-
+// clock budget ~75 seconds. Beyond that the user is better served by
+// the auto-retry path kicking off a fresh generation.
+async function pollPlanJob(planJobId, token) {
+  if (!planJobId || !token) return null;
+  var delays = [1000, 2000, 3000, 4000, 5000, 5000, 5000, 5000, 5000, 5000, 8000, 8000, 8000, 10000];
+  for (var i = 0; i < delays.length; i++) {
+    await new Promise(function(resolve){ setTimeout(resolve, delays[i]); });
+    try {
+      var r = await fetch("/api/plan-status?id=" + encodeURIComponent(planJobId), {
+        headers: { Authorization: "Bearer " + token, "Accept": "application/json" },
+      });
+      if (r.status === 404) return null; // never persisted; nothing to recover
+      if (!r.ok) continue;
+      var body = await r.json().catch(function(){ return null; });
+      if (!body) continue;
+      if (body.status === "complete" || body.status === "error") return body;
+      // status === "running" — keep waiting.
+    } catch (e) {
+      // Transient network failure (e.g. tab just came back online from
+      // a backgrounded state). Keep trying.
+    }
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // [VOICE-FINGERPRINT] Client-side mirror of api/_lib/voice-drift.js's
 // computeVoiceFingerprint. Same featurize logic, same categorical
 // thresholds — so the "Your voice fingerprint" panel in the profile shows
@@ -7838,6 +7904,12 @@ function App() {
     // up while we wait for the user to return to the tab. The retry's
     // own generate() call will own the loading lifecycle from there.
     var retryScheduled = false;
+    // [PLAN-JOB-RECOVERY] Mint a UUID for this generation so the server
+    // can persist the result to plan_jobs. On stream interruption we
+    // poll /api/plan-status with this id BEFORE falling back to a fresh
+    // generation — if the server already finished, we render that
+    // result instead of paying for a second Anthropic call.
+    var planJobId = makePlanJobId();
     // [FRESH-TRENDS] Reset the per-plan snapshot + banner flag — they'll
     // be repopulated from the streaming meta event if this generation
     // consumed an inline Perplexity call.
@@ -7849,6 +7921,118 @@ function App() {
     var appliedCost = 0;
     var parser = createStreamingPlanParser();
     var progressiveCards = [];
+
+    // [PLAN-JOB-RECOVERY] Shared render-and-persist path. Streaming
+    // success uses parser.finalize().parsed; recovery uses
+    // JSON.parse(result_text). Both reach the same state-setting +
+    // localStorage + Supabase + analytics fan-out.
+    function applyFinalPlan(parsed, finalText, meta) {
+      meta = meta || {};
+      appliedCost = meta.cost || 0;
+      var freshSnapshot = meta.trendsSnapshot || null;
+      var usedFresh     = !!meta.usedFreshTrends;
+      setPlanTrendsSnapshot(freshSnapshot);
+      setPlanUsedFreshTrends(usedFresh);
+
+      var data = { text: finalText, cost: meta.cost, usage: meta.usage };
+      var parsedCards    = parsed && Array.isArray(parsed.cards) ? parsed.cards : null;
+      var parsedStrategy = parsed && parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
+      var parsedStats    = parsed && parsed.stats    && typeof parsed.stats    === "object" ? parsed.stats    : null;
+      var parsedTips     = parsed && Array.isArray(parsed.restDayTips) ? parsed.restDayTips : null;
+      if (!(parsedCards && parsedCards.length > 0)) {
+        setCards(null); setStats(null); setStrategy(null); setRestDayTips(null);
+        setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers.");
+        return;
+      }
+      setCards(parsedCards);
+      if (parsedStats)    setStats(parsedStats);
+      if (parsedStrategy) setStrategy(parsedStrategy);
+      setRestDayTips(parsedTips);
+      try {
+        var trimmed = (weekContext || "").trim().slice(0, 1200);
+        if (trimmed) {
+          localStorage.setItem("virl_last_week_context", trimmed);
+          setLastWeekContext(trimmed);
+        }
+      } catch (e) {}
+      try {
+        var prevCount = parseInt(localStorage.getItem("virl_plans_completed") || "0", 10);
+        var newCount  = (isNaN(prevCount) ? 0 : prevCount) + 1;
+        localStorage.setItem("virl_plans_completed", String(newCount));
+        if (session && (newCount === 3 || newCount === 7 || newCount === 15)) {
+          if (localStorage.getItem("virl_referral_shown_" + newCount) !== "1") {
+            setReferralMilestone(newCount);
+          }
+        }
+        if (newCount === 1 && localStorage.getItem("virl_first_plan_celebrated") !== "1") {
+          setShowFirstPlanCelebration(true);
+        }
+        if (newCount === 1 && localStorage.getItem("virl_first_plan_event_fired") !== "1") {
+          try { localStorage.setItem("virl_first_plan_event_fired", "1"); } catch(e2) {}
+          fireLoopsEvent("firstPlanGenerated", {
+            firstName: (profile && profile.name) || "",
+            planCount: 1,
+          });
+        }
+        if (newCount === 5 && localStorage.getItem("virl_milestone_5_seen") !== "1") {
+          setShowMilestone5(true);
+        }
+        if (newCount === 5 && localStorage.getItem("virl_milestone_5_fired") !== "1") {
+          try { localStorage.setItem("virl_milestone_5_fired", "1"); } catch(e2) {}
+          fireLoopsEvent("fivePlansMilestone", {
+            firstName: (profile && profile.name) || "",
+            planCount: 5,
+          });
+        }
+        if (newCount === 10 && localStorage.getItem("virl_milestone_10_fired") !== "1") {
+          try { localStorage.setItem("virl_milestone_10_fired", "1"); } catch(e2) {}
+          fireLoopsEvent("tenPlansMilestone", {
+            firstName: (profile && profile.name) || "",
+            planCount: 10,
+          });
+        }
+      } catch(e) {}
+      var planExpiresAt = computePlanExpiry(sbCredits);
+      try {
+        var current = JSON.parse(localStorage.getItem(KEY)||"{}");
+        current.plan = parsedCards;
+        current.planStats = parsedStats;
+        current.planStrategy = parsedStrategy;
+        current.planExpiresAt = planExpiresAt;
+        localStorage.setItem(KEY, JSON.stringify(current));
+      } catch(e){}
+      if (session) savePlanToSupabase(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot, parsedTips);
+      try {
+        var weekStart = (function(){
+          try { return new Date().toISOString().slice(0, 10); }
+          catch(e){ return null; }
+        })();
+        var planUsage = (data && data.usage) || {};
+        logEvent(session && session.user && session.user.id, "plan_generated", {
+          weekStart: weekStart,
+          platforms: platforms,
+          niche:     niche,
+          goal:      goal,
+          formats:   formats,
+          isRegen:   !!cards,
+          cardCount: parsedCards.length,
+          outputTokens:        planUsage.outputTokens        || 0,
+          cachedInputTokens:   planUsage.cachedInputTokens   || 0,
+          uncachedInputTokens: planUsage.uncachedInputTokens || 0,
+          truncated:           !!planUsage.truncated,
+          model:               planUsage.model || null,
+        });
+        if (remixSource) {
+          logEvent(session && session.user && session.user.id, "plan_remixed_from_prior", {
+            source:    remixSource.kind,
+            sourceId:  remixSource.sourceId || null,
+            platform:  remixSource.platform || null,
+            weekStart: weekStart,
+          });
+          setRemixSource(null);
+        }
+      } catch(e){}
+    }
     consumePlanStream("plan", {
       platforms:    platforms,
       niche:        niche,
@@ -7876,6 +8060,10 @@ function App() {
       // which observance dates fall in the 7-day plan window, so the
       // dates it sees match what the picker rendered.
       clientNow:        { iso: new Date().toISOString() },
+      // [PLAN-JOB-RECOVERY] UUID the server uses to persist the result
+      // in plan_jobs. Mirrored back into params for /api/plan-status
+      // polling from the .catch handler.
+      planJobId:        planJobId,
     }, { token: userToken }, {
       onText: function (delta) {
         parser.push(delta, {
@@ -7898,164 +8086,13 @@ function App() {
       },
     }).then(function (result) {
       var meta = (result && result.meta) || {};
-      appliedCost = meta.cost || 0;
-      // [FRESH-TRENDS] Capture the trends signal the server used so a
-      // regen later can reuse it without firing another Perplexity call.
-      // Banner flag also rides on meta so the UI surfaces it only on
-      // generations that actually consumed an inline call.
-      var freshSnapshot = meta.trendsSnapshot || null;
-      var usedFresh     = !!meta.usedFreshTrends;
-      setPlanTrendsSnapshot(freshSnapshot);
-      setPlanUsedFreshTrends(usedFresh);
       // Final parse on the full accumulated buffer is the canonical source
       // of truth — overrides anything the streaming parser may have missed.
       // Any persistence / logging downstream uses these values, not the
       // progressive state, so the saved plan can never diverge from what
       // the model actually produced.
-      const finalized = parser.finalize();
-      const data = { text: finalized.fullText, cost: meta.cost, usage: meta.usage };
-      const parsed = finalized.parsed;
-      const parsedCards    = parsed && Array.isArray(parsed.cards) ? parsed.cards : null;
-      const parsedStrategy = parsed && parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
-      const parsedStats    = parsed && parsed.stats    && typeof parsed.stats    === "object" ? parsed.stats    : null;
-      // [REST-DAY-LLM] Parse the LLM-generated tips. Optional field —
-      // a plan with 7 cards has no rest days, and the model may also
-      // omit the array on an off day. Either case lands as null here,
-      // and the renderer falls back to the static catalog.
-      const parsedTips     = parsed && Array.isArray(parsed.restDayTips) ? parsed.restDayTips : null;
-      if (parsedCards && parsedCards.length > 0) {
-        setCards(parsedCards);
-        if (parsedStats)    setStats(parsedStats);
-        if (parsedStrategy) setStrategy(parsedStrategy);
-        setRestDayTips(parsedTips);
-        // [AUDIENCE 1] Persist this week's context so next week's
-        // generation can offer it as a one-tap suggestion. Trimmed +
-        // length-capped before write so a malformed paste doesn't
-        // bloat localStorage.
-        try {
-          var trimmed = (weekContext || "").trim().slice(0, 1200);
-          if (trimmed) {
-            localStorage.setItem("virl_last_week_context", trimmed);
-            setLastWeekContext(trimmed);
-          }
-        } catch (e) {}
-        // [TASK 5] Bump lifetime plan counter and fire the referral modal the
-        // first time the user hits 3, 7, or 15 plans. Only when signed in —
-        // anonymous sessions have no user.id to build a referral link from.
-        try {
-          var prevCount = parseInt(localStorage.getItem("virl_plans_completed") || "0", 10);
-          var newCount  = (isNaN(prevCount) ? 0 : prevCount) + 1;
-          localStorage.setItem("virl_plans_completed", String(newCount));
-          if (session && (newCount === 3 || newCount === 7 || newCount === 15)) {
-            if (localStorage.getItem("virl_referral_shown_" + newCount) !== "1") {
-              setReferralMilestone(newCount);
-            }
-          }
-          // First plan ever — surface the celebration overlay on top of
-          // the plan render. Per-browser one-shot so a re-install or a
-          // different device doesn't re-fire it gratuitously.
-          if (newCount === 1 && localStorage.getItem("virl_first_plan_celebrated") !== "1") {
-            setShowFirstPlanCelebration(true);
-          }
-          // [PREMIUM 7] First plan ever — fire firstPlanGenerated so
-          // Loops can drop the day-1 followup email. Idempotent flag
-          // matches the celebration overlay so the two share lifecycle.
-          if (newCount === 1 && localStorage.getItem("virl_first_plan_event_fired") !== "1") {
-            try { localStorage.setItem("virl_first_plan_event_fired", "1"); } catch(e2) {}
-            fireLoopsEvent("firstPlanGenerated", {
-              firstName: (profile && profile.name) || "",
-              planCount: 1,
-            });
-          }
-          // [PREMIUM 3] Plan #5 — surface the in-app celebration card.
-          // Card persists at the top of the Plan tab until the user
-          // dismisses it (virl_milestone_5_seen flag).
-          if (newCount === 5 && localStorage.getItem("virl_milestone_5_seen") !== "1") {
-            setShowMilestone5(true);
-          }
-          // [PREMIUM 7] Plan #5 — fire the Loops event alongside the
-          // in-app card so Lauren can layer an email if she wants.
-          // Separate idempotent flag from the in-app dismissal so the
-          // email doesn't refire if the card is dismissed and re-shown.
-          if (newCount === 5 && localStorage.getItem("virl_milestone_5_fired") !== "1") {
-            try { localStorage.setItem("virl_milestone_5_fired", "1"); } catch(e2) {}
-            fireLoopsEvent("fivePlansMilestone", {
-              firstName: (profile && profile.name) || "",
-              planCount: 5,
-            });
-          }
-          // [PREMIUM 3] Plan #10 — fire the Loops event so the
-          // tenPlansMilestone email goes out. Email content + delay
-          // live in Loops; here we just trigger. Idempotent flag
-          // prevents re-firing if a counter ever rolls back.
-          if (newCount === 10 && localStorage.getItem("virl_milestone_10_fired") !== "1") {
-            try { localStorage.setItem("virl_milestone_10_fired", "1"); } catch(e2) {}
-            fireLoopsEvent("tenPlansMilestone", {
-              firstName: (profile && profile.name) || "",
-              planCount: 10,
-            });
-          }
-        } catch(e) {}
-        var planExpiresAt = computePlanExpiry(sbCredits);
-        try {
-          var current = JSON.parse(localStorage.getItem(KEY)||"{}");
-          current.plan = parsedCards;
-          current.planStats = parsedStats;
-          current.planStrategy = parsedStrategy;
-          current.planExpiresAt = planExpiresAt;
-          localStorage.setItem(KEY, JSON.stringify(current));
-        } catch(e){}
-        if (session) savePlanToSupabase(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot, parsedTips);
-        try {
-          // [PREMIUM 10] weekStart anchors the plan to a specific week
-          // so the Sunday Review can group events by plan cycle. Use
-          // the local YYYY-MM-DD of generation; week boundary handling
-          // happens at query time.
-          var weekStart = (function(){
-            try { return new Date().toISOString().slice(0, 10); }
-            catch(e){ return null; }
-          })();
-          // [COST 1] Forward Anthropic usage signal into the same event row
-          // we already log per plan. data.usage is shaped by api/chat.js and
-          // may be missing on older deployments — spread defensively so a
-          // null usage object falls back to the pre-INTEL payload.
-          var planUsage = (data && data.usage) || {};
-          logEvent(session && session.user && session.user.id, "plan_generated", {
-            weekStart: weekStart,
-            platforms: platforms,
-            niche:     niche,
-            goal:      goal,
-            formats:   formats,
-            isRegen:   !!cards,
-            cardCount: parsedCards.length,
-            outputTokens:        planUsage.outputTokens        || 0,
-            cachedInputTokens:   planUsage.cachedInputTokens   || 0,
-            uncachedInputTokens: planUsage.uncachedInputTokens || 0,
-            truncated:           !!planUsage.truncated,
-            model:               planUsage.model || null,
-          });
-          // [PREMIUM 10] If this plan was seeded from a prior post
-          // (Vault remix or Results "plan next week"), fire a second
-          // event tagging the source. The Sunday Review can join this
-          // back to the original card to surface "you doubled down on
-          // last Tuesday's hook" style insights.
-          if (remixSource) {
-            logEvent(session && session.user && session.user.id, "plan_remixed_from_prior", {
-              source:    remixSource.kind,
-              sourceId:  remixSource.sourceId || null,
-              platform:  remixSource.platform || null,
-              weekStart: weekStart,
-            });
-            setRemixSource(null);
-          }
-        } catch(e){}
-      } else {
-        // [PERF 3] Truncated / unparseable final payload. Clear any cards
-        // the streaming parser had already pushed so the user sees the
-        // error message alone, not a half-rendered plan next to it.
-        setCards(null); setStats(null); setStrategy(null); setRestDayTips(null);
-        setError("VIRL got cut off mid-thought. Tap Generate again - it usually works on the second try. If this keeps happening, try fewer platforms or shorter answers.");
-      }
+      var finalized = parser.finalize();
+      applyFinalPlan(finalized.parsed, finalized.fullText, meta);
     }).then(function(){
       // Refresh credits from Supabase after successful generation. Pass the
       // cost so the displayed counter ticks down immediately rather than
@@ -8068,41 +8105,69 @@ function App() {
       // anything that may have streamed in so the error toast isn't
       // sitting on top of a half-rendered plan.
       setCards(null); setStats(null); setStrategy(null); setRestDayTips(null);
-      // [STREAM-RECOVERY] Dominant mobile failure: tab was backgrounded
-      // (screen lock or app switch), the SSE dropped, the reader rejected
-      // with "Stream interrupted." Try once automatically: if the tab is
-      // currently hidden, wait for the user to come back; if visible, retry
-      // after a short delay. The opts.isAutoRetry flag prevents an infinite
-      // loop — a second failure surfaces normally as an error toast.
       var isStreamErr = e && e.message && /stream interrupted/i.test(e.message);
+
+      // [PLAN-JOB-RECOVERY] On stream interruption, FIRST check whether
+      // the server already finished the call and persisted the result.
+      // Mobile SSE drops are common when the tab backgrounds, but the
+      // Vercel function usually keeps running and Anthropic still bills
+      // the call — so polling plan-status BEFORE kicking off a fresh
+      // generation can save the user a paid re-generation AND deliver
+      // the exact plan that was in flight.
+      //
+      // Outcomes:
+      //   - poll returns complete: render via applyFinalPlan, done
+      //   - poll returns error:    surface the server-side error
+      //   - poll returns null:     fall through to the auto-retry path
+      //     below (server didn't finish, or the row was never written
+      //     because the original handler died before INSERT)
+      if (isStreamErr && !opts.isAutoRetry && planJobId && userToken) {
+        retryScheduled = true; // keep spinner up while we poll
+        pollPlanJob(planJobId, userToken).then(function(body){
+          if (body && body.status === "complete" && body.result_text) {
+            var parsed = null;
+            try { parsed = JSON.parse(body.result_text); } catch(e2) {}
+            if (parsed && Array.isArray(parsed.cards) && parsed.cards.length > 0) {
+              // [PLAN-JOB-RECOVERY] meta shape mirrors what the streaming
+              // path's onMeta would have surfaced. Field names align so
+              // applyFinalPlan can't tell which source it came from.
+              applyFinalPlan(parsed, body.result_text, {
+                cost:             body.cost,
+                usage:            body.usage,
+                trendsSnapshot:   body.trends_snapshot,
+                usedFreshTrends:  body.used_fresh_trends,
+              });
+              refreshCredits({ cost: appliedCost });
+              setLoading(false);
+              releaseWakeLock(wakeLockSentinel);
+              return;
+            }
+          }
+          if (body && body.status === "error") {
+            setError("VIRL hit an error generating this plan: " + (body.error_msg || "unknown") + ". Tap Generate to try again.");
+            setLoading(false);
+            releaseWakeLock(wakeLockSentinel);
+            return;
+          }
+          // Nothing recoverable — fall back to the auto-retry path.
+          retryScheduled = false;
+          scheduleAutoRetry();
+        }).catch(function(){
+          retryScheduled = false;
+          scheduleAutoRetry();
+        });
+        return;
+      }
+
+      // [STREAM-RECOVERY] Dominant mobile failure path when recovery
+      // polling didn't find anything to render: kick off one silent
+      // auto-retry. If the tab is currently hidden, wait for the user
+      // to come back; if visible, retry after a short delay. The
+      // opts.isAutoRetry flag prevents an infinite loop — a second
+      // failure surfaces normally as an error toast.
       if (isStreamErr && !opts.isAutoRetry) {
         retryScheduled = true;
-        var fireRetry = function() {
-          // Reset toast text in case the retry path itself sets something.
-          setError("");
-          generate({ isAutoRetry: true });
-        };
-        if (typeof document !== "undefined" && document.hidden) {
-          // Wait for the user to return. Belt-and-suspenders: also fire
-          // after 3 minutes in case visibilitychange never lands (rare on
-          // older mobile browsers); if they're still away, the next time
-          // the page is touched the spinner reflects an in-flight retry.
-          var fired = false;
-          var fireOnce = function() {
-            if (fired) return;
-            fired = true;
-            document.removeEventListener("visibilitychange", onVisible);
-            clearTimeout(fallback);
-            fireRetry();
-          };
-          var onVisible = function() { if (!document.hidden) fireOnce(); };
-          document.addEventListener("visibilitychange", onVisible);
-          var fallback = setTimeout(fireOnce, 180000);
-          return;
-        }
-        // Visible at the moment of failure — retry immediately after a
-        // half-second so the user doesn't see a flicker.
-        setTimeout(fireRetry, 500);
+        scheduleAutoRetry();
         return;
       }
       if (e.message&&e.message.includes("credits")) {
@@ -8116,6 +8181,31 @@ function App() {
         } else {
           setError(e.message||"Something went wrong. Give it another shot.");
         }
+      }
+
+      // [STREAM-RECOVERY] Helper. Schedules the silent auto-retry per the
+      // tab visibility state at the moment of failure.
+      function scheduleAutoRetry() {
+        retryScheduled = true;
+        var fireRetry = function() {
+          setError("");
+          generate({ isAutoRetry: true });
+        };
+        if (typeof document !== "undefined" && document.hidden) {
+          var fired = false;
+          var fireOnce = function() {
+            if (fired) return;
+            fired = true;
+            document.removeEventListener("visibilitychange", onVisible);
+            clearTimeout(fallback);
+            fireRetry();
+          };
+          var onVisible = function() { if (!document.hidden) fireOnce(); };
+          document.addEventListener("visibilitychange", onVisible);
+          var fallback = setTimeout(fireOnce, 180000);
+          return;
+        }
+        setTimeout(fireRetry, 500);
       }
     })
     .finally(function(){

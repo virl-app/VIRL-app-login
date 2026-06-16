@@ -167,7 +167,97 @@ function buildVoiceReference(profile, vaultExemplars) {
 // Mirrors the side-effects of the non-streaming branch: writes usage_events,
 // fires the first-plan + milestone emails. Returns the underlying Express
 // response so the caller's `return` semantics still hold.
-async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot, complianceForNiche, voiceReference }) {
+// [PLAN-JOB-RECOVERY] Insert / update the plan_jobs row that backs the
+// client-side recovery flow. Server-only helpers — never call from a
+// client-facing path. Failures are swallowed and logged: the
+// recovery feature is best-effort, and a failed write must never
+// block the actual generation from streaming.
+async function planJobInsert(userId, planJobId, generationType) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !userId || !planJobId) return;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/plan_jobs`, {
+      method: 'POST',
+      headers: {
+        apikey:         SUPABASE_SERVICE_KEY,
+        Authorization:  `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer:         'resolution=ignore-duplicates',
+      },
+      body: JSON.stringify({
+        id:              planJobId,
+        user_id:         userId,
+        generation_type: generationType,
+        status:          'running',
+      }),
+    });
+    if (!r.ok && r.status !== 409) {
+      const t = await r.text().catch(() => '');
+      console.warn('[plan_jobs] insert failed', r.status, t);
+    }
+  } catch (e) {
+    console.warn('[plan_jobs] insert threw', e.message);
+  }
+}
+async function planJobComplete(userId, planJobId, fields) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !userId || !planJobId) return;
+  try {
+    const body = Object.assign(
+      { status: 'complete', completed_at: new Date().toISOString() },
+      fields || {}
+    );
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/plan_jobs?id=eq.${planJobId}&user_id=eq.${userId}`,
+      {
+        method: 'PATCH',
+        headers: {
+          apikey:         SUPABASE_SERVICE_KEY,
+          Authorization:  `Bearer ${SUPABASE_SERVICE_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }
+    );
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      console.warn('[plan_jobs] complete patch failed', r.status, t);
+    }
+  } catch (e) {
+    console.warn('[plan_jobs] complete patch threw', e.message);
+  }
+}
+async function planJobError(userId, planJobId, errorMsg) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !userId || !planJobId) return;
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/plan_jobs?id=eq.${planJobId}&user_id=eq.${userId}`,
+      {
+        method: 'PATCH',
+        headers: {
+          apikey:         SUPABASE_SERVICE_KEY,
+          Authorization:  `Bearer ${SUPABASE_SERVICE_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          status:       'error',
+          error_msg:    (errorMsg || '').slice(0, 500),
+          completed_at: new Date().toISOString(),
+        }),
+      }
+    );
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      console.warn('[plan_jobs] error patch failed', r.status, t);
+    }
+  } catch (e) {
+    console.warn('[plan_jobs] error patch threw', e.message);
+  }
+}
+// Client-supplied UUID validator — uuid v1-v8 standard form. A bad value
+// just skips persistence (recovery becomes unavailable for that gen);
+// the generation itself still streams normally.
+const PLAN_JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot, complianceForNiche, voiceReference, planJobId }) {
   res.statusCode = 200;
   res.setHeader('Content-Type',  'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -175,6 +265,21 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
   // Disable proxy buffering so chunks reach the browser as they're written.
   res.setHeader('X-Accel-Buffering', 'no');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  // [PLAN-JOB-RECOVERY] Validate the client's planJobId. A missing or
+  // malformed id just skips persistence — the stream still runs
+  // normally, the client just can't recover via /api/plan-status.
+  const validPlanJobId = (typeof planJobId === 'string' && PLAN_JOB_ID_RE.test(planJobId))
+    ? planJobId
+    : null;
+  if (validPlanJobId) {
+    // Fire-and-forget; do NOT await. We want the stream to start
+    // immediately and the row write to race the first SSE byte —
+    // worst case it lands a few hundred ms after the first delta,
+    // which is still well before any client-side disconnect could
+    // happen.
+    planJobInsert(userId, validPlanJobId, generationType).catch(() => {});
+  }
 
   function sendEvent(eventName, dataObj) {
     res.write('event: ' + eventName + '\n');
@@ -201,8 +306,9 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
         body: JSON.stringify({ ...currentPayload, stream: true }),
       });
     } catch (e) {
-      sendEvent('error', { error: 'Could not reach AI provider: ' + (e.message || 'unknown') });
-      return { errored: true };
+      const msg = 'Could not reach AI provider: ' + (e.message || 'unknown');
+      sendEvent('error', { error: msg });
+      return { errored: true, errorMsg: msg };
     }
 
     if (!anthropicRes.ok) {
@@ -210,10 +316,9 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
       let parsed = null;
       try { parsed = JSON.parse(errBody); } catch (e) { /* keep raw */ }
       console.error('Anthropic error:', anthropicRes.status, parsed || errBody);
-      sendEvent('error', {
-        error: 'AI error ' + anthropicRes.status + ': ' + ((parsed && parsed.error && parsed.error.message) || 'Unknown'),
-      });
-      return { errored: true };
+      const msg = 'AI error ' + anthropicRes.status + ': ' + ((parsed && parsed.error && parsed.error.message) || 'Unknown');
+      sendEvent('error', { error: msg });
+      return { errored: true, errorMsg: msg };
     }
 
     let inputTokens       = 0;
@@ -273,8 +378,9 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
       if (sseBuf.trim()) processSseEvent(sseBuf);
     } catch (e) {
       console.error('Plan stream read error:', e.message);
-      sendEvent('error', { error: 'Stream interrupted: ' + (e.message || 'unknown') });
-      return { errored: true };
+      const msg = 'Stream interrupted: ' + (e.message || 'unknown');
+      sendEvent('error', { error: msg });
+      return { errored: true, errorMsg: msg };
     }
 
     return {
@@ -286,7 +392,15 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
   }
 
   const first = await streamAnthropicOnce(payload);
-  if (first.errored) { res.end(); return res; }
+  if (first.errored) {
+    // [PLAN-JOB-RECOVERY] Tag the job as errored so a polling client
+    // can stop waiting and surface the failure instead of hanging.
+    if (validPlanJobId) {
+      planJobError(userId, validPlanJobId, first.errorMsg || 'upstream stream errored').catch(() => {});
+    }
+    res.end();
+    return res;
+  }
 
   let inputTokens      = first.inputTokens;
   let cacheReadTokens  = first.cacheReadTokens;
@@ -309,7 +423,13 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
     sendEvent('reset', {});
     const retryPayload = { ...payload, max_tokens: 16000 };
     const second = await streamAnthropicOnce(retryPayload);
-    if (second.errored) { res.end(); return res; }
+    if (second.errored) {
+      if (validPlanJobId) {
+        planJobError(userId, validPlanJobId, second.errorMsg || 'retry stream errored').catch(() => {});
+      }
+      res.end();
+      return res;
+    }
     retried = true;
     inputTokens      += second.inputTokens;
     cacheReadTokens  += second.cacheReadTokens;
@@ -425,6 +545,20 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
       // Same swallow rationale as compliance above — JSON parse failure here
       // surfaces as the existing client-side error UI; telemetry stays quiet.
     }
+  }
+
+  // [PLAN-JOB-RECOVERY] Persist the completed generation so a client
+  // whose SSE dropped mid-stream can recover by polling /api/plan-status.
+  // Fire-and-forget — the client already got the data via SSE on the
+  // happy path, so a failed write here costs nothing for that user.
+  if (validPlanJobId) {
+    planJobComplete(userId, validPlanJobId, {
+      result_text:       finalText,
+      cost:              creditCost,
+      usage:             clientUsage,
+      trends_snapshot:   trendsSnapshot || null,
+      used_fresh_trends: !!usedFreshTrends,
+    }).catch(() => {});
   }
 
   sendEvent('meta', {
@@ -1248,6 +1382,12 @@ export default async function handler(req, res) {
         usedFreshTrends, trendsSnapshot: trendsSnapshotEcho,
         complianceForNiche,
         voiceReference: buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars),
+        // [PLAN-JOB-RECOVERY] Client-generated UUID for this generation.
+        // The streaming handler persists a plan_jobs row keyed by this id
+        // so the client can recover via /api/plan-status if the SSE drops.
+        // Untrusted input — handleStreamingPlan validates the format before
+        // any DB write.
+        planJobId: params && params.planJobId,
       });
     }
 
