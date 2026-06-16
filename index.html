@@ -853,6 +853,44 @@ function pickRestDayTip(goal, dayNumber) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// [STREAM-RECOVERY] Two small primitives that together make plan
+// generation survive the dominant mobile failure mode: device sleep /
+// tab background while the SSE stream is mid-flight.
+//
+// 1. requestWakeLock — asks the browser to keep the screen awake during
+//    generation. When the user sets the phone down, iOS would otherwise
+//    auto-lock in 30-60s and kill the HTTP connection, returning the
+//    user to "Stream interrupted - tap Generate again." With the Wake
+//    Lock held, the screen stays on for the ~20-40s a plan takes.
+//
+//    Browser support: iOS Safari 16.4+, Chrome 84+, modern Edge / Firefox.
+//    Older browsers silently no-op — no benefit, no harm.
+//
+// 2. The wake lock sentinel is released as soon as generate() finishes
+//    (success or failure) so the user doesn't carry a wake lock around
+//    after the plan lands. The browser also releases it automatically
+//    when the tab is backgrounded; explicit release is just cleaner.
+//
+// The auto-retry-on-visibility logic lives inside the generate()
+// function itself — it needs access to React state setters there, so
+// it can't hoist to module scope cleanly.
+// ─────────────────────────────────────────────────────────────────────────────
+async function requestWakeLock() {
+  try {
+    if (typeof navigator === "undefined" || !("wakeLock" in navigator)) return null;
+    var sentinel = await navigator.wakeLock.request("screen");
+    return sentinel;
+  } catch (e) {
+    // Permission denied / no user gesture / unsupported. Silently no-op.
+    return null;
+  }
+}
+function releaseWakeLock(sentinel) {
+  if (!sentinel || typeof sentinel.release !== "function") return;
+  try { sentinel.release(); } catch (e) {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // [VOICE-FINGERPRINT] Client-side mirror of api/_lib/voice-drift.js's
 // computeVoiceFingerprint. Same featurize logic, same categorical
 // thresholds — so the "Your voice fingerprint" panel in the profile shows
@@ -7775,7 +7813,8 @@ function App() {
     });
   }
 
-  function generate() {
+  function generate(opts) {
+    opts = opts || {};
     if (!platforms.length||!formats.length) return;
     // Block generation if trial expired or out of credits
     if (!isFoundingOrPro && trialExpired) {
@@ -7788,6 +7827,17 @@ function App() {
     // hides it naturally; loading stays true until the stream completes
     // so the Generate button can't be double-clicked mid-stream.
     setLoading(true); setError(""); setCards(null); setStats(null); setStrategy(null); setRestDayTips(null);
+    // [STREAM-RECOVERY] Hold the screen awake for the duration of the
+    // generation so iOS can't auto-lock and kill the SSE. Released in
+    // .finally() below. Re-requested on auto-retry too, because Wake
+    // Lock is automatically released when the tab is hidden.
+    var wakeLockSentinel = null;
+    requestWakeLock().then(function(s){ wakeLockSentinel = s; });
+    // [STREAM-RECOVERY] Set to true if .catch schedules an automatic
+    // retry; .finally then skips setLoading(false) so the spinner stays
+    // up while we wait for the user to return to the tab. The retry's
+    // own generate() call will own the loading lifecycle from there.
+    var retryScheduled = false;
     // [FRESH-TRENDS] Reset the per-plan snapshot + banner flag — they'll
     // be repopulated from the streaming meta event if this generation
     // consumed an inline Perplexity call.
@@ -8018,13 +8068,66 @@ function App() {
       // anything that may have streamed in so the error toast isn't
       // sitting on top of a half-rendered plan.
       setCards(null); setStats(null); setStrategy(null); setRestDayTips(null);
+      // [STREAM-RECOVERY] Dominant mobile failure: tab was backgrounded
+      // (screen lock or app switch), the SSE dropped, the reader rejected
+      // with "Stream interrupted." Try once automatically: if the tab is
+      // currently hidden, wait for the user to come back; if visible, retry
+      // after a short delay. The opts.isAutoRetry flag prevents an infinite
+      // loop — a second failure surfaces normally as an error toast.
+      var isStreamErr = e && e.message && /stream interrupted/i.test(e.message);
+      if (isStreamErr && !opts.isAutoRetry) {
+        retryScheduled = true;
+        var fireRetry = function() {
+          // Reset toast text in case the retry path itself sets something.
+          setError("");
+          generate({ isAutoRetry: true });
+        };
+        if (typeof document !== "undefined" && document.hidden) {
+          // Wait for the user to return. Belt-and-suspenders: also fire
+          // after 3 minutes in case visibilitychange never lands (rare on
+          // older mobile browsers); if they're still away, the next time
+          // the page is touched the spinner reflects an in-flight retry.
+          var fired = false;
+          var fireOnce = function() {
+            if (fired) return;
+            fired = true;
+            document.removeEventListener("visibilitychange", onVisible);
+            clearTimeout(fallback);
+            fireRetry();
+          };
+          var onVisible = function() { if (!document.hidden) fireOnce(); };
+          document.addEventListener("visibilitychange", onVisible);
+          var fallback = setTimeout(fireOnce, 180000);
+          return;
+        }
+        // Visible at the moment of failure — retry immediately after a
+        // half-second so the user doesn't see a flicker.
+        setTimeout(fireRetry, 500);
+        return;
+      }
       if (e.message&&e.message.includes("credits")) {
         setUpgradeReason("credits"); setShowUpgrade(true);
       } else {
-        setError(e.message||"Something went wrong. Give it another shot.");
+        // [STREAM-RECOVERY] Friendlier copy for the case where the auto-
+        // retry itself failed. The first failure is silent; users only see
+        // this when even the retry didn't take.
+        if (isStreamErr) {
+          setError("Connection dropped twice — tap Generate to try once more, or check your signal.");
+        } else {
+          setError(e.message||"Something went wrong. Give it another shot.");
+        }
       }
     })
-    .finally(function(){ setLoading(false); });
+    .finally(function(){
+      // [STREAM-RECOVERY] Always release this call's Wake Lock (the
+      // browser may have already revoked it when the tab hid; either
+      // way release() is safe). Only skip clearing the loading state
+      // when a retry is scheduled — the follow-up generate() call owns
+      // the lifecycle from there and will set loading true → false
+      // around its own attempt.
+      releaseWakeLock(wakeLockSentinel);
+      if (!retryScheduled) setLoading(false);
+    });
   }
 
   function saveToVault(card) {
