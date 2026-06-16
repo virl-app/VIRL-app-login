@@ -7,6 +7,7 @@
 import { formatExemplarsForPrompt } from "./vault-exemplars.js";
 import { formatOptimalDaysForPrompt } from "./optimal-days.js";
 import { formatObservancesForPrompt } from "./holidays.js";
+import { computeVoiceFingerprint, formatFingerprintForPrompt } from "./voice-drift.js";
 
 // [POSTFREQ-OPTIMAL] Maps the user's profile postFreq selection +
 // selected-platforms count into a target card range for the plan. Old
@@ -42,6 +43,34 @@ function buildVaultExemplarsBlock(vaultPatterns) {
   if (!rendered) return "";
   return "Recent posts the creator saved or shipped (align with this energy in tone, rhythm, and structure — these tell you what 'sounds right' for THIS creator better than any abstract voice description; do NOT copy them, they are voice references, not templates):\n\n"
     + rendered;
+}
+
+// [VOICE-FINGERPRINT] Derive the per-user voice fingerprint from the
+// creator's authored voice references — sampleCaption + voiceSamples.
+// Returns "" when there isn't enough text to produce stable per-100
+// rates (< 20 words combined), so concatenating below is a no-op for
+// fresh profiles.
+//
+// Pulls ONLY from text the user explicitly wrote as voice reference,
+// not from vault exemplars or Perplexity excerpts. Reason: the client
+// mirrors this same computation to show the user their fingerprint in
+// the Profile panel, and the user can only validate / edit text they
+// authored themselves. If the fingerprint were derived from derived
+// data, the Profile panel would become a black box.
+function buildVoiceFingerprintBlock(profile) {
+  if (!profile) return "";
+  const parts = [];
+  if (typeof profile.sampleCaption === "string" && profile.sampleCaption.trim()) {
+    parts.push(profile.sampleCaption.trim());
+  }
+  if (Array.isArray(profile.voiceSamples)) {
+    for (const s of profile.voiceSamples) {
+      if (typeof s === "string" && s.trim()) parts.push(s.trim());
+    }
+  }
+  if (!parts.length) return "";
+  const fp = computeVoiceFingerprint(parts.join("\n\n"));
+  return formatFingerprintForPrompt(fp);
 }
 //
 // Determined attackers can still try prompt-injection to leak these — we
@@ -605,6 +634,17 @@ function buildSystemPrompt(profile, role, vaultPatterns) {
     if (perUser) perUser += "\n\n";
     perUser += exemplarsBlock;
   }
+  // [VOICE-FINGERPRINT] Stylometric anchors derived from the user's own
+  // sampleCaption + voiceSamples. Concrete categorical labels + numeric
+  // per-100-word rates ("Heavy contractions ~6/100. Short sentences avg
+  // 7 words.") give the model explicit targets that the qualitative
+  // "sample caption: ..." block can't. Empty string for profiles
+  // without enough authored voice reference (< 20 words combined).
+  const fingerprintBlock = buildVoiceFingerprintBlock(profile);
+  if (fingerprintBlock) {
+    if (perUser) perUser += "\n\n";
+    perUser += fingerprintBlock;
+  }
   // [VOICE-ANCHOR] Append only when there's actual creator context to
   // anchor to — anchoring to "THIS creator" with no profile would be
   // confusing for the model. Sits at the end of the block so it's the
@@ -855,6 +895,16 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // saves or logged results, keeping the prompt clean for new accounts.
   if (vaultExemplarsBlock) {
     perUserSystemPrompt += "\n\n" + vaultExemplarsBlock;
+  }
+  // [VOICE-FINGERPRINT] Stylometric anchors from the user's authored
+  // voice reference (sampleCaption + voiceSamples). Goes between the
+  // exemplars and the voice anchor: exemplars show the model what to
+  // sound like, fingerprint tells it which specific axes matter most
+  // for this creator. Empty for new profiles without enough reference
+  // text.
+  const fingerprintBlock = buildVoiceFingerprintBlock(profile);
+  if (fingerprintBlock) {
+    perUserSystemPrompt += "\n\n" + fingerprintBlock;
   }
   if (profileCtx) {
     perUserSystemPrompt += "\n\n" + VOICE_ANCHOR;

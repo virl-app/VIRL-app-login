@@ -852,6 +852,91 @@ function pickRestDayTip(goal, dayNumber) {
   return catalog[idx];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// [VOICE-FINGERPRINT] Client-side mirror of api/_lib/voice-drift.js's
+// computeVoiceFingerprint. Same featurize logic, same categorical
+// thresholds — so the "Your voice fingerprint" panel in the profile shows
+// the user the exact same numbers the server is feeding the LLM. If the two
+// computations diverge, users will see a different fingerprint than the one
+// the model receives; keep them in lock-step on any change.
+//
+// Pure JS, no deps. Runs every render of the profile panel — featurize on
+// a 200-word reference is fractions of a millisecond, no need to memoize
+// at this scale.
+// ─────────────────────────────────────────────────────────────────────────────
+
+var VF_CONTRACTION_RE = /\b\w+'(s|re|ve|m|d|ll|t)\b/gi;
+var VF_EMDASH_RE      = /—/g;
+var VF_EMOJI_RE       = /\p{Extended_Pictographic}/gu;
+var VF_ALLCAPS_RE     = /\b[A-Z]{2,}\b/g;
+
+function vfTokenize(text) {
+  return text.toLowerCase().match(/[a-z]+(?:'[a-z]+)?/g) || [];
+}
+function vfSentenceCount(text) {
+  var parts = text.split(/[.!?]+(?:\s+|$)/).filter(function(s){ return s.trim().length > 0; });
+  return Math.max(1, parts.length);
+}
+function vfFeaturize(text) {
+  if (!text || typeof text !== "string") return null;
+  var words = vfTokenize(text);
+  var wc = words.length;
+  if (wc < 20) return null;
+  var sents = vfSentenceCount(text);
+  function per100(n) { return (n * 100) / wc; }
+  return {
+    wordCount:    wc,
+    avgSentLen:   +(wc / sents).toFixed(2),
+    avgWordLen:   +(words.reduce(function(s,w){return s + w.length;}, 0) / wc).toFixed(2),
+    contractRate: +per100((text.match(VF_CONTRACTION_RE) || []).length).toFixed(2),
+    exclamRate:   +per100((text.match(/!/g) || []).length).toFixed(2),
+    questionRate: +per100((text.match(/\?/g) || []).length).toFixed(2),
+    emdashRate:   +per100((text.match(VF_EMDASH_RE) || []).length).toFixed(2),
+    emojiRate:    +per100((text.match(VF_EMOJI_RE) || []).length).toFixed(2),
+    allcapsRate:  +per100((text.match(VF_ALLCAPS_RE) || []).length).toFixed(2),
+  };
+}
+// Buckets must match FINGERPRINT_BUCKETS in voice-drift.js exactly.
+var VF_BUCKETS = {
+  contractRate: { heavy: 4,    averse: 1   },
+  exclamRate:   { heavy: 2,    averse: 0.5 },
+  questionRate: { heavy: 2,    averse: 0.5 },
+  emdashRate:   { heavy: 0.5,  averse: 0   },
+  emojiRate:    { heavy: 2,    averse: 0.3 },
+  allcapsRate:  { heavy: 1,    averse: 0.2 },
+};
+function vfBucket(rate, cuts) {
+  if (rate >= cuts.heavy)  return "heavy";
+  if (rate <= cuts.averse) return "averse";
+  return "typical";
+}
+function computeVoiceFingerprintClient(text) {
+  var f = vfFeaturize(text);
+  if (!f) return null;
+  return {
+    wordCount:    f.wordCount,
+    avgSentLen:   f.avgSentLen,
+    avgWordLen:   f.avgWordLen,
+    contractRate: f.contractRate,
+    exclamRate:   f.exclamRate,
+    questionRate: f.questionRate,
+    emdashRate:   f.emdashRate,
+    emojiRate:    f.emojiRate,
+    allcapsRate:  f.allcapsRate,
+    labels: {
+      contractions: vfBucket(f.contractRate, VF_BUCKETS.contractRate),
+      exclamations: vfBucket(f.exclamRate,   VF_BUCKETS.exclamRate),
+      questions:    vfBucket(f.questionRate, VF_BUCKETS.questionRate),
+      emdashes:     vfBucket(f.emdashRate,   VF_BUCKETS.emdashRate),
+      emojis:       vfBucket(f.emojiRate,    VF_BUCKETS.emojiRate),
+      allcaps:      vfBucket(f.allcapsRate,  VF_BUCKETS.allcapsRate),
+      sentenceLen:  f.avgSentLen <= 10 ? "short"
+                  : f.avgSentLen >= 22 ? "long"
+                  : "medium",
+    },
+  };
+}
+
 // Algorithm playbook is now stored in Supabase (`playbook` table) so it's
 // editable without a code deploy and so server-side prompt builders can
 // inject the same data into every Anthropic call. The Algo tab below
@@ -5062,6 +5147,81 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
               </button>
             )}
           </div>
+
+          {/* [VOICE-FINGERPRINT] Read-only panel that shows the user the
+              stylometric features VIRL derived from their sampleCaption +
+              voiceSamples. Same computation runs server-side in
+              api/_lib/voice-drift.js → computeVoiceFingerprint and is
+              injected into every plan/caption/script prompt. Surfacing it
+              here makes the personalization auditable: the user can SEE
+              what VIRL learned and either nod ("yes that's me") or add
+              more samples until the readout feels right.
+
+              Recomputes on every keystroke — featurize on a few hundred
+              words is sub-millisecond, no memoization needed at this scale.
+              When the combined reference text is below 20 words, the
+              fingerprint is null and we render a "needs more text" hint
+              instead of fake numbers. */}
+          {(function(){
+            var combined = [sampleCaption || ""].concat(voiceSamples || []).filter(function(s){ return s && s.trim(); }).join("\n\n");
+            var fp = computeVoiceFingerprintClient(combined);
+            var panelStyle = {marginBottom:20,padding:"16px 18px",background:B.navySoft,borderRadius:12,border:"1px solid "+B.border};
+            var headerStyle = {fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.navy,marginBottom:6};
+            var subStyle = {fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.5,marginBottom:fp?14:0};
+            if (!fp) {
+              return (
+                <div style={panelStyle}>
+                  <div style={headerStyle}>Your voice fingerprint</div>
+                  <div style={subStyle}>Add a caption or two above and VIRL will surface the stylometric pattern it learned from your words — the register the model anchors every generation to.</div>
+                </div>
+              );
+            }
+            // Each row: a category label + the bucket reading + the raw rate. Numbers
+            // are intentionally visible so the user can sanity-check ("yeah I do use
+            // contractions a lot") rather than trusting an opaque label.
+            function bucketLabel(axis, val, rate, unit) {
+              var copy = {
+                contractions: { heavy: "Heavy contractions",     typical: "Natural contractions",     averse: "Spells words out"      },
+                sentenceLen:  { short: "Short, punchy sentences", medium: "Mixed sentence lengths",   long:   "Long, flowing sentences" },
+                emdashes:     { heavy: "Em-dashes are part of your voice", typical: "Em-dashes occasional", averse: "Em-dash averse" },
+                exclamations: { heavy: "High exclamation energy",  typical: "Balanced exclamations",   averse: "Rarely exclaims"        },
+                emojis:       { heavy: "Heavy emoji use",          typical: "Moderate emoji use",      averse: "Rarely uses emojis"     },
+                questions:    { heavy: "Asks lots of questions",   typical: "Occasional questions",    averse: "Rarely asks questions" },
+                allcaps:      { heavy: "Uses ALL CAPS for emphasis", typical: "Occasional caps",       averse: "Rarely uses caps"       },
+              };
+              var labelText = (copy[axis] && copy[axis][val]) || val;
+              var detail = (typeof rate === "number") ? (" — " + rate + " " + unit) : "";
+              return labelText + detail;
+            }
+            var rows = [
+              { axis:"contractions", val:fp.labels.contractions, rate:fp.contractRate, unit:"per 100 words" },
+              { axis:"sentenceLen",  val:fp.labels.sentenceLen,  rate:fp.avgSentLen,   unit:"words avg"     },
+              { axis:"emdashes",     val:fp.labels.emdashes,     rate:fp.emdashRate,   unit:"per 100 words" },
+              { axis:"exclamations", val:fp.labels.exclamations, rate:fp.exclamRate,   unit:"per 100 words" },
+              { axis:"emojis",       val:fp.labels.emojis,       rate:fp.emojiRate,    unit:"per 100 words" },
+              { axis:"questions",    val:fp.labels.questions,    rate:fp.questionRate, unit:"per 100 words" },
+              { axis:"allcaps",      val:fp.labels.allcaps,      rate:fp.allcapsRate,  unit:"per 100 words" },
+            ];
+            return (
+              <div style={panelStyle}>
+                <div style={headerStyle}>Your voice fingerprint</div>
+                <div style={subStyle}>This is the stylometric pattern VIRL pulls from your reference captions and feeds into every generation. If something looks off, add another sample above and watch it shift.</div>
+                <ul style={{listStyle:"none",margin:0,padding:0}}>
+                  {rows.map(function(r){
+                    return (
+                      <li key={r.axis} style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.ink,padding:"6px 0",borderTop:"1px solid "+B.divider,display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{width:8,height:8,borderRadius:"50%",background:r.val==="heavy"?B.navy:r.val==="averse"?B.coral:B.muted,flexShrink:0}}></span>
+                        <span>{bucketLabel(r.axis, r.val, r.rate, r.unit)}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:10,fontStyle:"italic"}}>
+                  Built from {fp.wordCount} words of your reference text.
+                </div>
+              </div>
+            );
+          })()}
 
           {/* [LEARNING-CONSENT] The Personalization & Privacy section
               used to live inline here, nested inside Phase 2 (so users
