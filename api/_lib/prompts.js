@@ -5,6 +5,7 @@
 // length guides, and JSON schemas off the public source of index.html.
 
 import { formatExemplarsForPrompt } from "./vault-exemplars.js";
+import { formatObservancesForPrompt } from "./holidays.js";
 
 // [VAULT-EXEMPLARS] Renders the user's saved/posted items as a few-shot
 // voice reference block. Goes into plan, caption, and script prompts so
@@ -700,6 +701,13 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // server-side as defense against accidental novel-length pastes.
   const weekContext = String(params.weekContext || "").trim().slice(0, 1200);
   const isRegen   = !!params.isRegen;
+  // [HOLIDAY-PICKER] Observance ids the user opted IN to via the picker
+  // on the Plan tab. The picker defaults all observances to OFF; only
+  // explicitly-checked ones arrive in params.observances. clientNow
+  // anchors the date window so the formatter's resolved dates match
+  // what the picker showed; falls back to server-now otherwise.
+  const observanceAnchor = (params.clientNow && params.clientNow.iso) ? new Date(params.clientNow.iso) : new Date();
+  const observancesCtx   = formatObservancesForPrompt(params.observances, observanceAnchor, 7);
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
   const historyCtx  = planHistoryContext(history);
@@ -908,6 +916,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // given, or omit. The creator should be able to verify any cited
     // trend against the trends list they see in-app.
     + " For the `trend` field: include it ONLY if a card genuinely builds on a current trend listed in the TRENDS block below. Use the trend item's exact phrasing (or a close paraphrase). If no listed trend authentically fits the card, OMIT the field entirely — do not invent generic riffs ('morning routine content', 'self-care vibes', 'aesthetic content'). It's better to have 3 cards with real trends and 7 without, than 10 cards with made-up trends."
+    + (observancesCtx ? "\n\n" + observancesCtx : "")
     + playbookCtx
     + trendsCtx
     + editsCtx;
