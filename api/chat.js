@@ -12,6 +12,7 @@ import { fetchInlineTrends, isValidTrendsSnapshot } from "./_lib/fresh-trends-in
 import { fetchRecentTrendStrings }   from "./_lib/recent-trends.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
+import { fetchEditsForMining, mineDenylistFromEdits } from "./_lib/personal-denylist.js";
 import { sendEmail }                 from "./_lib/email-send.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
@@ -1106,6 +1107,25 @@ export default async function handler(req, res) {
     ? await fetchRecentEdits(userId)
     : [];
 
+  // [PERSONAL-DENYLIST] Mine the user's broader edit history (up to 50
+  // recent edits) for phrases they consistently strip out, and surface
+  // the top N as a per-creator banned-vocab block in the system prompt.
+  // Gated on the same learn_from_edits consent as the few-shot block.
+  // Fail-open: a fetch error returns empty edits → empty denylist →
+  // prompt block is omitted. Skipped entirely for generation types that
+  // don't surface user-edited text (matches recentEdits gating above).
+  let personalDenylist = [];
+  if (EDIT_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits) {
+    try {
+      const editsForMining = await fetchEditsForMining(userId);
+      personalDenylist = mineDenylistFromEdits(editsForMining);
+    } catch (e) {
+      // Logged inside the helper; swallow here so a denylist failure
+      // can never block the actual generation.
+      personalDenylist = [];
+    }
+  }
+
   // [HANDLE-RESEARCH] Pull a Perplexity-sourced summary of the creator's
   // actual posting patterns across their connected social handles. Cached
   // 30 days in creator_handle_research; refreshes on handle change. Attached
@@ -1192,7 +1212,7 @@ export default async function handler(req, res) {
 
   let built;
   try {
-    built = dispatch(generationType, params, profile, gatedVaultPatterns, playbook, trends, history, recentEdits, complianceForNiche);
+    built = dispatch(generationType, params, profile, gatedVaultPatterns, playbook, trends, history, recentEdits, complianceForNiche, personalDenylist);
   } catch (e) {
     return res.status(400).json({ error: e.message || 'Bad request.' });
   }
