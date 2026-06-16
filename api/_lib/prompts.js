@@ -8,6 +8,7 @@ import { formatExemplarsForPrompt } from "./vault-exemplars.js";
 import { formatOptimalDaysForPrompt } from "./optimal-days.js";
 import { formatObservancesForPrompt } from "./holidays.js";
 import { computeVoiceFingerprint, formatFingerprintForPrompt } from "./voice-drift.js";
+import { formatDenylistForPrompt } from "./personal-denylist.js";
 
 // [POSTFREQ-OPTIMAL] Maps the user's profile postFreq selection +
 // selected-platforms count into a target card range for the plan. Old
@@ -602,7 +603,7 @@ function buildCriticalFactsBlock(profile) {
 // ("CRITICAL PERSONAL FACTS — NEVER CONTRADICT") so the model attends to
 // them with the same priority — they just no longer sit at literal
 // position 0 of the system prompt.
-function buildSystemPrompt(profile, role, vaultPatterns) {
+function buildSystemPrompt(profile, role, vaultPatterns, personalDenylist) {
   const critical = buildCriticalFactsBlock(profile);
   const ctx      = buildProfileCtx(profile);
 
@@ -645,6 +646,17 @@ function buildSystemPrompt(profile, role, vaultPatterns) {
     if (perUser) perUser += "\n\n";
     perUser += fingerprintBlock;
   }
+  // [PERSONAL-DENYLIST] Self-tuning per-creator banned vocabulary,
+  // mined from the user's own edit history. Sits next to the
+  // fingerprint because both are "this is the creator's voice"
+  // signal — the fingerprint says what TO sound like, the denylist
+  // says what NOT to. Empty string when the user has fewer than a
+  // handful of edits or no repeated removal patterns.
+  const denylistBlock = formatDenylistForPrompt(personalDenylist);
+  if (denylistBlock) {
+    if (perUser) perUser += "\n\n";
+    perUser += denylistBlock;
+  }
   // [VOICE-ANCHOR] Append only when there's actual creator context to
   // anchor to — anchoring to "THIS creator" with no profile would be
   // confusing for the model. Sits at the end of the block so it's the
@@ -671,8 +683,8 @@ function buildSystemPrompt(profile, role, vaultPatterns) {
 // Non-plan builders all use this helper. buildPlan / buildPlanStrategy
 // compose their own shared/perUser pair because they have additional
 // shared content (schema, format diversity, format-specific fields).
-function composeSystemPrompt(profile, role, compliance, vaultPatterns) {
-  const sp = buildSystemPrompt(profile, role, vaultPatterns);
+function composeSystemPrompt(profile, role, compliance, vaultPatterns, personalDenylist) {
+  const sp = buildSystemPrompt(profile, role, vaultPatterns, personalDenylist);
   return {
     shared:  sp.shared + buildComplianceBlock(compliance),
     perUser: sp.perUser,
@@ -745,7 +757,7 @@ const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mi
 
 // ── Builders, one per generation type ──────────────────────────────────────
 
-function buildPlan(params, profile, vaultPatterns, playbook, trends, history, recentEdits, compliance) {
+function buildPlan(params, profile, vaultPatterns, playbook, trends, history, recentEdits, compliance, personalDenylist) {
   const platformsArr = params.platforms || [];
   const platforms = platformsArr.join(",");
   const formats   = (params.formats   || []).join(",");
@@ -906,6 +918,15 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   if (fingerprintBlock) {
     perUserSystemPrompt += "\n\n" + fingerprintBlock;
   }
+  // [PERSONAL-DENYLIST] Per-creator banned vocabulary mined from the
+  // user's own edits. Sits next to the fingerprint — both are "this
+  // is the voice of THIS creator" signal, just opposite sides of the
+  // same coin (fingerprint says what TO sound like, denylist says
+  // what NOT to). Empty for users with no repeated removal patterns.
+  const denylistBlock = formatDenylistForPrompt(personalDenylist);
+  if (denylistBlock) {
+    perUserSystemPrompt += "\n\n" + denylistBlock;
+  }
   if (profileCtx) {
     perUserSystemPrompt += "\n\n" + VOICE_ANCHOR;
   }
@@ -1032,7 +1053,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
 // declares the strategy locked, lists kept cards as do-not-duplicate
 // context, and demands exactly N replacements for the supplied day
 // labels — no strategy/stats in the output.
-function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance) {
+function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   const keptCards        = Array.isArray(params.keptCards)        ? params.keptCards        : [];
   const replaceDayLabels = Array.isArray(params.replaceDayLabels) ? params.replaceDayLabels : [];
   const strategy         = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
@@ -1045,9 +1066,9 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   // between full plan generations and partial regens. The history arg is
   // [] because partial regen doesn't care about week-over-week context —
   // it's anchored to the current week's strategy, not last week's. The
-  // compliance arg threads through so the per-niche guardrail block ends
-  // up in the shared cached prefix for both gen paths.
-  const fullBuilt = buildPlan(params, profile, vaultPatterns, playbook, trends, [], undefined, compliance);
+  // compliance + personalDenylist args thread through so both gen paths
+  // share the same cached prefix.
+  const fullBuilt = buildPlan(params, profile, vaultPatterns, playbook, trends, [], undefined, compliance, personalDenylist);
 
   const keptLines = keptCards.map(function (c) {
     const day      = c && c.day      ? c.day      : "?";
@@ -1106,7 +1127,7 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
 // object for the same cards. The new framing must fit what's actually
 // on screen, not propose a different week — otherwise the banner
 // would lie about the user's plan.
-function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, _history, _recentEdits, compliance) {
+function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, _history, _recentEdits, compliance, personalDenylist) {
   const cards    = Array.isArray(params.cards) ? params.cards : [];
   const previous = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
 
@@ -1116,7 +1137,8 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
 
   // [COMPLIANCE 1] Per-niche guardrails ride the cached system prefix
   // alongside the base role prompt. Empty string for out-of-scope niches.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and creative director", compliance);
+  // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and creative director", compliance, null, personalDenylist);
 
   // Condensed per-card line — enough signal for the model to find a
   // through-line, no card bodies/hashtags that would inflate tokens.
@@ -1165,14 +1187,15 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
   };
 }
 
-function buildScript(params, profile, vaultPatterns, playbook, _trends, _history, _recentEdits, compliance) {
+function buildScript(params, profile, vaultPatterns, playbook, _trends, _history, _recentEdits, compliance, personalDenylist) {
   const card = params.card || {};
   const platform = card.platform || "TikTok";
   const guide = SCRIPT_PLATFORM_GUIDE[platform] || "short-form social video 60 seconds.";
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // [VAULT-EXEMPLARS] vaultPatterns threaded through so scripts get the
   // same few-shot voice references as plans + captions.
-  const systemPrompt = composeSystemPrompt(profile, "content scriptwriter", compliance, vaultPatterns);
+  // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
+  const systemPrompt = composeSystemPrompt(profile, "content scriptwriter", compliance, vaultPatterns, personalDenylist);
   const userPrompt = "Write a complete ready-to-film script for this post: " + (card.title || "") + ". "
     + "Platform: " + platform + " — format guide: " + guide
     + scriptPlaybookContext(playbook, platform) + " "
@@ -1203,7 +1226,7 @@ function captionMaxTokens(platform, length) {
   return Math.min(4000, Math.round(base * mult));
 }
 
-function buildCaption(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance) {
+function buildCaption(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   const platform = params.platform || "TikTok";
   const tone     = params.tone     || "Warm & relatable";
   const length   = params.length   || "Medium";
@@ -1214,7 +1237,8 @@ function buildCaption(params, profile, vaultPatterns, playbook, trends, _history
 
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // [VAULT-EXEMPLARS] Caption builder gets the few-shot voice references too.
-  const systemPrompt = composeSystemPrompt(profile, "caption writer and content strategist", compliance, vaultPatterns);
+  // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
+  const systemPrompt = composeSystemPrompt(profile, "caption writer and content strategist", compliance, vaultPatterns, personalDenylist);
   const userPrompt = "Generate 3 caption options for a " + platform + " post about: " + topic + ". "
     + "Tone: " + tone + ". Length: " + length + " — " + lengthRule + " "
     + "Platform style: " + platformCtx
@@ -1236,13 +1260,14 @@ function buildCaption(params, profile, vaultPatterns, playbook, trends, _history
   };
 }
 
-function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _history, recentEdits, compliance) {
+function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _history, recentEdits, compliance, personalDenylist) {
   const text = params.text || "";
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // [VAULT-EXEMPLARS] Caption remix gets exemplars too — the user is asking
   // for a different angle on a caption, so steering toward THEIR voice is
   // doubly important here vs. a fresh caption from a blank brief.
-  const systemPrompt = composeSystemPrompt(profile, "caption writer and remixer", compliance, vaultPatterns);
+  // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
+  const systemPrompt = composeSystemPrompt(profile, "caption writer and remixer", compliance, vaultPatterns, personalDenylist);
   const userPrompt = "Rewrite this caption 3 ways. Keep the core message but vary the angle. "
     + "Each version must sound like the creator — same voice, different approach. "
     + "Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"},\"compliance_note\":\"OPTIONAL — short disclosure when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"} "
@@ -1260,13 +1285,14 @@ function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _
   };
 }
 
-function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance) {
+function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // Scan outputs a single ready-to-post caption, so the same Fair Housing /
   // FDA rules apply — but per the v1 scope decision (Recommended), only the
   // prompt-level block fires on scans; the post-generation scrub stays
   // wired to plan / script / caption paths.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance);
+  // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist);
   const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
@@ -1292,10 +1318,11 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
   };
 }
 
-function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance) {
+function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // Same v1 scope as buildScanImage — prompt-level block only, no scrub.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance);
+  // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist);
   const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
@@ -1353,8 +1380,8 @@ export function requiresImage(t) {
 //                    block into the cached system-prompt prefix; null is a
 //                    no-op.
 // All default to empty / [] / null on missing infra; builders skip injection gracefully.
-export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits, compliance) {
+export function dispatch(generationType, params, profile, vaultPatterns, playbook, trends, history, recentEdits, compliance, personalDenylist) {
   const builder = BUILDERS[generationType];
   if (!builder) throw new Error("Unknown generationType: " + generationType);
-  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {}, history || [], recentEdits || [], compliance || null);
+  return builder(params || {}, profile || {}, vaultPatterns, playbook || {}, trends || {}, history || [], recentEdits || [], compliance || null, personalDenylist || null);
 }
