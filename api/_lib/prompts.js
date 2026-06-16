@@ -6,6 +6,7 @@
 
 import { formatExemplarsForPrompt } from "./vault-exemplars.js";
 import { formatOptimalDaysForPrompt } from "./optimal-days.js";
+import { formatObservancesForPrompt } from "./holidays.js";
 
 // [POSTFREQ-OPTIMAL] Maps the user's profile postFreq selection +
 // selected-platforms count into a target card range for the plan. Old
@@ -718,6 +719,13 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // server-side as defense against accidental novel-length pastes.
   const weekContext = String(params.weekContext || "").trim().slice(0, 1200);
   const isRegen   = !!params.isRegen;
+  // [HOLIDAY-PICKER] Observance ids the user opted IN to via the picker
+  // on the Plan tab. The picker defaults all observances to OFF; only
+  // explicitly-checked ones arrive in params.observances. clientNow
+  // anchors the date window so the resolved dates here match what the
+  // picker showed; falls back to server-now otherwise.
+  const observanceAnchor = (params.clientNow && params.clientNow.iso) ? new Date(params.clientNow.iso) : new Date();
+  const observancesCtx   = formatObservancesForPrompt(params.observances, observanceAnchor, 7);
   // [POSTFREQ-OPTIMAL] Map the user's posting cadence + selected
   // platforms into a target card range, and render the per-platform
   // optimal-days hint when available. cardRange replaces the prior
@@ -936,6 +944,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // given, or omit. The creator should be able to verify any cited
     // trend against the trends list they see in-app.
     + " For the `trend` field: include it ONLY if a card genuinely builds on a current trend listed in the TRENDS block below. Use the trend item's exact phrasing (or a close paraphrase). If no listed trend authentically fits the card, OMIT the field entirely — do not invent generic riffs ('morning routine content', 'self-care vibes', 'aesthetic content'). It's better to have 3 cards with real trends and 7 without, than 10 cards with made-up trends."
+    + (observancesCtx ? "\n\n" + observancesCtx : "")
     + playbookCtx
     + trendsCtx
     + editsCtx;
