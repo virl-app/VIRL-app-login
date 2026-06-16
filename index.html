@@ -9,11 +9,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-<!-- [DND] SortableJS — touch-friendly drag-and-drop. Used to let users
-     reorder plan cards across days. Pure JS lib (~3KB), works on iOS
-     Safari + Android Chrome out of the box. Attached imperatively in
-     useEffect; state remains React's source of truth via onEnd. -->
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Italiana&family=Jost:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -30,21 +25,6 @@ body{background:#F8FAFC;-webkit-font-smoothing:antialiased;font-family:'Jost',sa
    (width:100%) states so there's no flicker on mount or after completion. */
 @keyframes signupBarFill{from{width:0}to{width:100%}}
 .signup-bar{animation:signupBarFill 1.5s ease-out both}
-/* [DND] SortableJS visual states. ghost = the placeholder where the card
-   will drop; chosen = the card the user is currently holding. Soft sky
-   accent on the ghost so the drop target reads clearly without
-   overwhelming the layout; the chosen card lifts slightly with a
-   shadow for tactile feedback. */
-.plan-card-drag-ghost{opacity:0.4;background:#EFF6FF;border-radius:18px}
-.plan-card-drag-chosen{box-shadow:0 12px 32px rgba(15,23,42,0.18);transform:scale(1.01);transition:none}
-.plan-day-sortable{min-height:8px}
-/* [DND-HANDLE] Cursor + active-state feedback for the drag-handle bar
-   above each plan card. Default is grab (open hand); active state is
-   grabbing (closed hand). touch-action:none on the handle itself is
-   set inline above — needed for iOS Safari to NOT interpret the
-   gesture as a scroll. */
-.virl-drag-handle:hover{background:#EEF2FF !important}
-.virl-drag-handle:active{cursor:grabbing !important;background:#DBEAFE !important}
 /* [TASK 9] Generic-AI vs VIRL compare card — stacks on mobile, 2-col on tablet+. */
 .virl-compare-grid{display:grid;grid-template-columns:1fr;gap:10px}
 @media(min-width:640px){.virl-compare-grid{grid-template-columns:1fr 1fr}}
@@ -637,23 +617,7 @@ const EMOJI_PREFS = ["Never","Sometimes","Always"];
 const POST_FREQ = ["Daily","A few times a week","Weekly","Sporadically"];
 const CONTENT_LENGTH = ["Short & punchy","Medium - balanced","Long-form & detailed"];
 
-// [DND] Static platform timing guidance surfaced as a small toast after a
-// user drops a card on a new day. Intentionally generic — these are
-// industry-rule-of-thumb tips, not user-specific. The richer per-user
-// timing (based on the creator's own logged results) lives server-side
-// in the plan generator and influences which days the LLM picks; this
-// tooltip just helps a user reason about a manual move.
-const PLATFORM_TIMING_TIPS = {
-  TikTok:    "TikTok engagement tends to peak Tue–Thu, 7–10pm. Mid-afternoon posts can ride the evening curve.",
-  Instagram: "Instagram (Reels + feed) tends to peak Wed + Fri midday and 7–9pm. Stories don't follow this — post when relevant.",
-  LinkedIn:  "LinkedIn peaks Tue–Thu, 8–10am in viewer time zone. Weekends are graveyard hours.",
-  YouTube:   "YouTube upload day matters less than upload time. Thu–Sat afternoons (creator time zone) tend to lift first-24-hour velocity.",
-  X:         "X is real-time. Post when something timely is happening — day of week matters less than the conversation cycle.",
-  Pinterest: "Pinterest has the longest tail — engagement compounds for weeks. Time of day matters very little.",
-  Facebook:  "Facebook (organic) peaks weekdays 1–4pm. Reels and video lift higher than static.",
-};
-
-// [DND] Derive all 7 day labels from the cards array. The server includes
+// Derive all 7 day labels from the cards array. The server includes
 // the full weekday name in card.day (e.g. "Day 4 - Thursday"); when some
 // days have cards and others don't, we extrapolate the weekday sequence
 // from any card we have. Returns 7 labels in order; an empty array if we
@@ -7966,157 +7930,6 @@ function App() {
     return function(){ try { delete window.__virlCaptureEdit; } catch(e) {} };
   }, [profile, session]);
 
-  // [DND] Toast for the smart-day tooltip after a drop. Holds the
-  // platform tip string for the just-moved card; cleared after a short
-  // timeout so the toast auto-dismisses without needing a close button.
-  const [dndToast, setDndToast] = useState(null);
-
-  // [DND] Rebuild the cards array from the current DOM order across all
-  // .plan-day-sortable containers. SortableJS has already mutated the DOM
-  // by the time this runs; we read data-card-idx to find which original
-  // card each element represents, and the parent container's
-  // data-plan-day to know what day that card is now assigned to. This is
-  // robust against multi-card moves and within-day reorders without
-  // needing to diff old vs new state.
-  function reorderCardsFromDom(evt) {
-    if (!Array.isArray(cards) || !cards.length) return;
-    var containers = document.querySelectorAll(".plan-day-sortable");
-    var next = [];
-    containers.forEach(function(container) {
-      var newDay = container.getAttribute("data-plan-day");
-      var cardEls = container.querySelectorAll(".plan-card-sortable");
-      cardEls.forEach(function(el) {
-        var idxAttr = el.getAttribute("data-card-idx");
-        if (idxAttr == null) return;
-        var origIdx = parseInt(idxAttr, 10);
-        if (isNaN(origIdx) || origIdx < 0 || origIdx >= cards.length) return;
-        var orig = cards[origIdx];
-        if (!orig) return;
-        // Only mutate `day` when it actually changed. Within-day reorder
-        // keeps the same day label.
-        next.push(orig.day === newDay ? orig : Object.assign({}, orig, { day: newDay }));
-      });
-    });
-    if (next.length !== cards.length) {
-      // Defensive: if the DOM read came back with a different count, bail.
-      // Could happen if React is mid-render or SortableJS lost an item.
-      console.warn("[dnd] card count mismatch: dom=", next.length, "state=", cards.length);
-      return;
-    }
-    setCards(next);
-    // Persist immediately, mirroring the updateCardAt pattern.
-    var expiresAt;
-    try {
-      var current = JSON.parse(localStorage.getItem(KEY)||"{}");
-      expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
-        ? current.planExpiresAt : computePlanExpiry(sbCredits);
-      current.plan = next;
-      current.planExpiresAt = expiresAt;
-      localStorage.setItem(KEY, JSON.stringify(current));
-    } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-    if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
-
-    // [DND] Surface the platform timing tip as a toast when the move
-    // crossed days. Within-day reorders skip the toast — they don't
-    // change the day-of-week story so the tip would be noise. Identify
-    // the moved item by its DOM position; if data-card-idx matches an
-    // original card whose day differs from its new container's day,
-    // that's our move target.
-    if (evt && evt.item && evt.from && evt.to && evt.from !== evt.to) {
-      try {
-        var movedIdx = parseInt(evt.item.getAttribute("data-card-idx"), 10);
-        var movedCard = !isNaN(movedIdx) ? cards[movedIdx] : null;
-        if (movedCard && movedCard.platform && PLATFORM_TIMING_TIPS[movedCard.platform]) {
-          setDndToast({
-            platform: movedCard.platform,
-            tip:      PLATFORM_TIMING_TIPS[movedCard.platform],
-          });
-        }
-      } catch(e) { /* toast is non-critical */ }
-    }
-  }
-
-  // [DND] Auto-dismiss the toast 6 seconds after it appears. Long enough
-  // to read the timing tip, short enough that it doesn't linger past the
-  // moment of relevance.
-  useEffect(function(){
-    if (!dndToast) return;
-    var t = setTimeout(function(){ setDndToast(null); }, 6000);
-    return function(){ clearTimeout(t); };
-  }, [dndToast]);
-
-  // [DND] Attach SortableJS to each day container after every cards
-  // render. Re-attaching is wasteful (~7 attach+detach per render) but
-  // safe — Sortable instances are lightweight and the React-as-source-
-  // of-truth model is much easier to reason about than trying to keep
-  // instances alive across renders. Bails early if the CDN script
-  // hasn't loaded yet (rare; would happen only on a network race at
-  // initial page load).
-  useEffect(function(){
-    if (!Array.isArray(cards) || !cards.length) return;
-    if (typeof Sortable === "undefined") {
-      console.warn("[dnd] SortableJS not loaded — drag disabled");
-      return;
-    }
-    var containers = document.querySelectorAll(".plan-day-sortable");
-    if (!containers.length) {
-      console.warn("[dnd] No .plan-day-sortable containers — drag will not initialize");
-      return;
-    }
-    console.log("[dnd] attaching Sortable to", containers.length, "day containers, cards in state:", cards.length);
-    var instances = [];
-    containers.forEach(function(container) {
-      try {
-        instances.push(Sortable.create(container, {
-          group:       "plan-cards",
-          animation:   150,
-          // [DND-HANDLE] Restrict drag initiation to the explicit handle
-          // strip above each card. Solves two prior issues at once:
-          // (1) drag affordance is now visible — users know where to
-          // grab without trial and error, and (2) PlanCard's internal
-          // click/touch handlers (Edit, Save, expand, copy buttons)
-          // can't accidentally capture the touchstart event that
-          // SortableJS needs to start a drag.
-          handle:      ".virl-drag-handle",
-          // [REST-DAY] Only real plan cards are draggable — rest-day tip
-          // cards (no .plan-card-sortable class) stay anchored to their
-          // day so users can't accidentally pick one up.
-          draggable:   ".plan-card-sortable",
-          // [DND-IOS] iOS Safari's default pointer-event handling
-          // interprets touch on the handle as a scroll before SortableJS
-          // can claim it — even with touch-action:none on the handle,
-          // because the parent (the Plan tab scroll container) wins the
-          // gesture. forceFallback flips Sortable into its own
-          // touch-event handler that calls preventDefault aggressively,
-          // letting drag actually initiate on iOS. fallbackOnBody
-          // appends the dragged clone to document.body during the drag
-          // so it isn't clipped by any overflow:hidden ancestor.
-          forceFallback:   true,
-          fallbackOnBody:  true,
-          fallbackTolerance: 4,
-          // [DND-HANDLE] Drag initiates from the visible handle bar.
-          // Because the handle has no internal handlers competing for
-          // the touch event, we can drop the prior 150ms long-press
-          // delay — drag responds immediately. The handle's
-          // touch-action:none CSS prevents the browser from
-          // interpreting the gesture as a scroll instead.
-          delay:       0,
-          touchStartThreshold: 3,
-          ghostClass:  "plan-card-drag-ghost",
-          chosenClass: "plan-card-drag-chosen",
-          // Don't let SortableJS DOM mutation persist — React re-renders
-          // from state, which is the source of truth.
-          onEnd:       function(evt){ reorderCardsFromDom(evt); },
-        }));
-      } catch(e) {
-        console.warn("[dnd] Sortable.create failed:", e.message);
-      }
-    });
-    return function(){
-      instances.forEach(function(s){ try { s.destroy(); } catch(e){} });
-    };
-  }, [cards]);
-
   // [EDIT] Apply an in-place edit to one plan card. Mirrors the
   // save/persist pattern from saveScriptForCard (immutable cards update +
   // localStorage + Supabase under the same plan expiry). Extra job: when
@@ -8341,24 +8154,6 @@ return (
         <ConsentPromptModal kind={pendingConsent}
           onYes={function(){ dismissConsent(true); }}
           onNotNow={function(){ dismissConsent(false); }}/>
-      )}
-
-      {/* [DND] Smart-day timing tip toast — appears after a card is
-          dropped on a new day, gives platform-specific guidance, auto-
-          dismisses after 6s. Positioned bottom-left so it doesn't fight
-          the bottom-right feedback widget. Pure platform-rule-of-thumb;
-          per-user historical optimal days surface server-side in plan
-          generation (see PR #3 in this series). */}
-      {dndToast && (
-        <div style={{position:"fixed",bottom:24,left:24,maxWidth:340,background:B.navy,color:B.white,borderRadius:14,padding:"14px 18px",boxShadow:"0 8px 32px rgba(15,23,42,0.35)",zIndex:480,animation:"slideUp .25s ease",cursor:"pointer"}}
-          onClick={function(){ setDndToast(null); }}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>
-            {dndToast.platform + " timing"}
-          </div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,lineHeight:1.55,color:"rgba(255,255,255,0.92)"}}>
-            {dndToast.tip}
-          </div>
-        </div>
       )}
 
       {/* Floating feedback widget — bottom-right pill, visible on every
@@ -9488,12 +9283,13 @@ return (
                     rendered as a discrete editorial "chapter" — today
                     gets a sky-tinted hero wash + "Today, Friday" Italiana
                     header, other days get Italiana day-name headers
-                    without the wash.
-                    [DND] All 7 day sections render even when empty so
-                    drag-and-drop can use any day as a drop target. Each
-                    cards container is a SortableJS instance attached in
-                    the useEffect below; state remains React's source of
-                    truth via the onEnd callback. */}
+                    without the wash. All 7 day sections render even when
+                    empty so the rest-day tip cards have somewhere to
+                    appear (showing a goal-driven nudge on days the
+                    creator isn't posting). DnD across days was previously
+                    here but was rolled back due to reliability issues;
+                    re-introducing reordering is a separate planned
+                    feature. */}
                 {(function(){
                   // Derive the full 7-day label list (including days with
                   // zero cards) and bucket the cards by exact day match.
@@ -9526,50 +9322,33 @@ return (
                             <div style={{flex:1,height:1,background:"rgba(31,58,138,0.12)"}}/>
                           </div>
                         )}
-                        {/* [DND] Sortable container — SortableJS attaches
-                            via the data-plan-day attribute. Drops from
-                            another day's container land here and the
-                            onEnd handler rewrites the moved card's day
-                            field to this dayLabel. Min-height keeps
-                            empty days visible as drop targets. */}
-                        <div className="plan-day-sortable" data-plan-day={dayLabel}
-                          style={{minHeight:items.length === 0 ? 48 : 0}}>
+                        {/* Day's card list. DnD was rolled back; cards
+                            render in straightforward chronological order
+                            with no per-card drag handle or sortable
+                            wrapper. The day-section structure stays
+                            (all 7 days rendered) so rest-day cards still
+                            show on empty days. Re-introducing reordering
+                            is a separate planned feature. */}
+                        <div>
                           {items.map(function(item){
                             var card = item.card;
                             var i    = item.idx;
                             return (
-                              <div key={i} data-card-idx={i} className="plan-card-sortable" style={{marginBottom:6}}>
-                                {/* [DND-HANDLE] Explicit drag handle. Users
-                                    were trying to drag from anywhere on
-                                    the card and finding nothing happened
-                                    because PlanCard has internal click /
-                                    touch handlers (Edit, Save, expand) that
-                                    interfere with pointerdown-based drag
-                                    detection. Restricting Sortable to a
-                                    visible handle solves both
-                                    affordance ("you can see where to grab")
-                                    and reliability ("the handle has no
-                                    other handlers"). */}
-                                <div className="virl-drag-handle" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"12px 10px",minHeight:44,background:B.bg,border:"1px solid "+B.border,borderBottom:"none",borderRadius:"10px 10px 0 0",cursor:"grab",userSelect:"none",WebkitUserSelect:"none",touchAction:"none",WebkitTouchCallout:"none"}}>
-                                  <span style={{fontSize:18,lineHeight:1,color:B.muted,letterSpacing:"3px"}}>⋮⋮</span>
-                                  <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted}}>Drag to move</span>
-                                </div>
-                                <PlanCard card={card} idx={i}
-                                  onSave={saveToVault} onLog={logResult}
-                                  onSaveScript={saveScriptForCard}
-                                  onEdit={updateCardAt}
-                                  saved={vault.some(function(v){return v.id===card.title+card.day;})}
-                                  result={results.find(function(r){return r.id===card.title+card.day;})}
-                                  profile={profile}
-                                  userToken={userToken}
-                                  onCreditsUsed={refreshCredits}
-                                  editMode={editMode}
-                                  markedReplace={replaceSet.has(i)}
-                                  onToggleReplace={toggleReplaceAt}
-                                  replacing={partialReplacing.has(i)}
-                                  usedFreshTrends={planUsedFreshTrends}
-                                />
-                              </div>
+                              <PlanCard key={i} card={card} idx={i}
+                                onSave={saveToVault} onLog={logResult}
+                                onSaveScript={saveScriptForCard}
+                                onEdit={updateCardAt}
+                                saved={vault.some(function(v){return v.id===card.title+card.day;})}
+                                result={results.find(function(r){return r.id===card.title+card.day;})}
+                                profile={profile}
+                                userToken={userToken}
+                                onCreditsUsed={refreshCredits}
+                                editMode={editMode}
+                                markedReplace={replaceSet.has(i)}
+                                onToggleReplace={toggleReplaceAt}
+                                replacing={partialReplacing.has(i)}
+                                usedFreshTrends={planUsedFreshTrends}
+                              />
                             );
                           })}
                           {items.length === 0 && (function(){
@@ -9626,7 +9405,7 @@ return (
                                   {tip.body}
                                 </div>
                                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,fontStyle:"italic",color:B.muted,paddingTop:8,borderTop:"1px dashed rgba(59,130,246,0.18)"}}>
-                                  Or drop a card here to schedule a post on this day.
+                                  Rest is part of the strategy — use the time on something that compounds.
                                 </div>
                               </div>
                             );
