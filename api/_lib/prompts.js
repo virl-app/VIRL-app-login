@@ -5,6 +5,24 @@
 // length guides, and JSON schemas off the public source of index.html.
 
 import { formatExemplarsForPrompt } from "./vault-exemplars.js";
+import { formatOptimalDaysForPrompt } from "./optimal-days.js";
+
+// [POSTFREQ-OPTIMAL] Maps the user's profile postFreq selection +
+// selected-platforms count into a target card range for the plan. Old
+// behavior: a flat 10-14 cards regardless of how often the user actually
+// posts (which produced "one card per day" in practice). New behavior:
+// total cards = per-platform cadence × platforms, with sensible caps so
+// a "daily × 5 platforms" doesn't generate 35 cards. When postFreq isn't
+// set, falls back to the historical 10-14 range so existing profiles
+// without the field don't shift unexpectedly.
+function computeCardRange(postFreq, platformCount) {
+  const N = Math.max(1, parseInt(platformCount, 10) || 1);
+  if (postFreq === "Daily")              return { min: Math.min(21, 5 * N), max: Math.min(21, 7 * N) };
+  if (postFreq === "A few times a week") return { min: Math.max(N, 2 * N), max: Math.min(16, 4 * N) };
+  if (postFreq === "Weekly")             return { min: N, max: N };
+  if (postFreq === "Sporadically")       return { min: Math.max(1, N), max: Math.min(10, 2 * N) };
+  return { min: 10, max: 14 };
+}
 
 // [VAULT-EXEMPLARS] Renders the user's saved/posted items as a few-shot
 // voice reference block. Goes into plan, caption, and script prompts so
@@ -700,6 +718,15 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // server-side as defense against accidental novel-length pastes.
   const weekContext = String(params.weekContext || "").trim().slice(0, 1200);
   const isRegen   = !!params.isRegen;
+  // [POSTFREQ-OPTIMAL] Map the user's posting cadence + selected
+  // platforms into a target card range, and render the per-platform
+  // optimal-days hint when available. cardRange replaces the prior
+  // flat "10-14 cards" instruction; optimalDaysCtx is empty string
+  // when no platforms were passed (the formatter is null-safe).
+  const cardRange = computeCardRange(profile && profile.postFreq, platformsArr.length);
+  const optimalDaysCtx = vaultPatterns && vaultPatterns.optimalDays
+    ? formatOptimalDaysForPrompt(vaultPatterns.optimalDays)
+    : "";
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
   const historyCtx  = planHistoryContext(history);
@@ -775,7 +802,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + "\"restDayTips\":[{\"day\":\"Day 2 - Tue\",\"type\":\"engage\",\"title\":\"<3-6 word title>\",\"body\":\"<1-2 sentence actionable nudge for THIS creator>\"}],"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
-    + " The cards array should have 10-14 objects. Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
+    + " The cards array's length is specified per-request in the user prompt below (varies by the creator's posting cadence × platform count). Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
     // [COMPLIANCE 1] Optional per-card disclosure field. Empty / omitted by
     // default; only populated when the user's niche has compliance coverage
     // (Real Estate, Wellness) AND the specific card triggers one of the
@@ -871,13 +898,14 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
         + "\n\nIMPORTANT: At least 2 posts in the plan must reference, build on, or directly support what is happening this week. Do not make the plan generic when specific context is provided."
         : "")
     + historyCtx
-    + " The week starts TODAY (" + startWeekday + "). Use these exact day labels in the order they appear: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday."
+    + " The week starts TODAY (" + startWeekday + "). When you assign a `day` to a card, use one of these exact day labels: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday. You do NOT have to use all 7 labels — the card count below tells you how many posts to actually produce, and the remaining days are rest days."
     // [COST 2] Industry format mix is per-niche, so it stays in userPrompt
     // (moved out of systemPrompt). The systemPrompt holds the static output
     // schema; this line tells the model how to weight format choice for
     // this user's specific industry.
     + " FORMAT MIX FOR THIS USER'S INDUSTRY: " + industryFormatGuidance
-    + " Create 10-14 total posts for THIS week. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + " Create " + cardRange.min + "-" + cardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + (optimalDaysCtx ? "\n\n" + optimalDaysCtx + "\n\nWhen distributing cards across the week, weight the optimal days above heavily — they're either the creator's own best-performing days (when 'performs best on' is shown) or industry rule-of-thumb for the platform (when 'general best days' is shown). The user-history signal is the stronger one when present." : "")
     // [REST-DAY-LLM] Generate one tip per day NOT receiving a card. Tips
     // must be PERSONAL to this creator (niche, goal, audience, last
     // week's wins / losses if any), not generic. Four type categories
