@@ -7294,6 +7294,19 @@ function App() {
   });
   const [adminData,setAdminData] = useState(null);
   const [adminLoading,setAdminLoading] = useState(false);
+  // [AGENCY-PROVISIONING] State for the inline provisioning form on the
+  // admin dashboard. emails+password fields stay top-level so they're
+  // easy to fill; the broader intake (voice, audience, handles, etc.)
+  // lands as pasted JSON to keep the form short. submitState mirrors
+  // the lifecycle for inline UX feedback.
+  const [provisionOpen,    setProvisionOpen]    = useState(false);
+  const [provisionEmail,   setProvisionEmail]   = useState("");
+  const [provisionPwd,     setProvisionPwd]     = useState("");
+  const [provisionName,    setProvisionName]    = useState("");
+  const [provisionJson,    setProvisionJson]    = useState("");
+  const [provisionWeeks,   setProvisionWeeks]   = useState("52");
+  const [provisionWeekly,  setProvisionWeekly]  = useState("150");
+  const [provisionState,   setProvisionState]   = useState({ status: "idle" });
   const [usageStats,setUsageStats] = useState(null);
   const [feedbackInbox,setFeedbackInbox] = useState(null);
   const [bizStats,setBizStats] = useState(null);
@@ -10497,7 +10510,158 @@ return (
                 style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:"transparent",color:B.navy,border:"1px solid "+B.navy,borderRadius:99,cursor:"pointer",marginLeft:8}}>
                 Email previews
               </button>
+              {/* [AGENCY-PROVISIONING] Toggle the inline form. Keeps the
+                  dashboard clean by default; expands only when Lauren is
+                  actually onboarding a client. */}
+              <button onClick={function(){ setProvisionOpen(function(v){ return !v; }); }}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:"transparent",color:B.navy,border:"1px solid "+B.navy,borderRadius:99,cursor:"pointer",marginLeft:8}}>
+                {provisionOpen ? "Close provision form" : "Provision agency client"}
+              </button>
             </div>
+
+            {/* [AGENCY-PROVISIONING] Inline form to create a new agency-
+                pilot account in one round-trip. The 3 required fields
+                sit at the top (email + password + client name); the rest
+                of the intake (voice, audience, handles, etc.) goes in
+                the JSON textarea so the form stays small while still
+                covering every profile field that buildPlan / buildCaption
+                care about. Result block shows the new user_id and login
+                URL so Lauren can paste them into her tracking sheet. */}
+            {provisionOpen && (
+              <div style={{background:B.card,borderRadius:16,padding:"24px",marginBottom:24,border:"1px solid "+B.border}}>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.navy,marginBottom:6}}>Provision agency client</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:18}}>
+                  Creates an auth user + profile + comped credits in one shot. The credits row uses the comp_weekly_credits mechanism — refills automatically until comp_expires_at passes. Agency clients are billed through the agency owner's master invoice, not per-seat.
+                </div>
+
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+                  <div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>Login email</div>
+                    <input value={provisionEmail} onChange={function(e){setProvisionEmail(e.target.value);}}
+                      placeholder="jordan+brightsmile@nelsondental.co"
+                      style={{width:"100%",padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13}}/>
+                  </div>
+                  <div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>Initial password</div>
+                    <input value={provisionPwd} onChange={function(e){setProvisionPwd(e.target.value);}}
+                      placeholder="≥ 12 chars, shared with agency owner"
+                      style={{width:"100%",padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13}}/>
+                  </div>
+                </div>
+
+                <div style={{marginBottom:12}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>Client / practice name</div>
+                  <input value={provisionName} onChange={function(e){setProvisionName(e.target.value);}}
+                    placeholder="Bright Smile Dental"
+                    style={{width:"100%",padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13}}/>
+                </div>
+
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+                  <div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>Comp weeks</div>
+                    <input value={provisionWeeks} onChange={function(e){setProvisionWeeks(e.target.value);}}
+                      style={{width:"100%",padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13}}/>
+                  </div>
+                  <div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>Weekly credits</div>
+                    <input value={provisionWeekly} onChange={function(e){setProvisionWeekly(e.target.value);}}
+                      style={{width:"100%",padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13}}/>
+                  </div>
+                </div>
+
+                <div style={{marginBottom:14}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>
+                    Additional intake fields (JSON — optional)
+                  </div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginBottom:6,lineHeight:1.5}}>
+                    Paste fields beyond name/email/password. Supported keys: audience, voice, sampleCaption, voiceSamples, myPlatforms, vibes, topics, purpose, offLimits, inspiration, pillars, emojiPref, handles, platformAudiences, platformFormats, postFreq, contentLength, workedWell.
+                  </div>
+                  <textarea value={provisionJson} onChange={function(e){setProvisionJson(e.target.value);}}
+                    placeholder={'{\n  "audience": "...",\n  "voice": "...",\n  "sampleCaption": "...",\n  "handles": {"instagram":"..."}\n}'}
+                    style={{width:"100%",minHeight:140,padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"monospace",fontSize:12,lineHeight:1.5}}/>
+                </div>
+
+                <button
+                  disabled={provisionState.status === "submitting"}
+                  onClick={function(){
+                    setProvisionState({ status: "submitting" });
+                    var intake = { name: (provisionName || "").trim() };
+                    if (provisionJson.trim()) {
+                      try {
+                        var parsed = JSON.parse(provisionJson);
+                        if (parsed && typeof parsed === "object") {
+                          Object.assign(intake, parsed);
+                          intake.name = (provisionName || "").trim() || intake.name;
+                        }
+                      } catch (e) {
+                        setProvisionState({ status: "error", error: "Intake JSON is not valid JSON: " + e.message });
+                        return;
+                      }
+                    }
+                    var body = {
+                      email:    (provisionEmail || "").trim(),
+                      password: provisionPwd || "",
+                      intake:   intake,
+                    };
+                    var wks = parseInt(provisionWeeks, 10);
+                    var wkly = parseInt(provisionWeekly, 10);
+                    if (Number.isFinite(wks)  && wks  > 0) body.compWeeks  = wks;
+                    if (Number.isFinite(wkly) && wkly > 0) body.compWeekly = wkly;
+
+                    fetch("/api/admin-provision-client", {
+                      method:  "POST",
+                      headers: {
+                        "Content-Type":  "application/json",
+                        "Authorization": "Bearer " + (session && session.access_token),
+                      },
+                      body: JSON.stringify(body),
+                    }).then(function(r){ return r.json().then(function(j){ return { status: r.status, body: j }; }); })
+                      .then(function(r){
+                        if (r.status === 200) {
+                          setProvisionState({ status: "success", result: r.body });
+                          // Clear the form so the next client starts clean.
+                          setProvisionEmail(""); setProvisionPwd(""); setProvisionName(""); setProvisionJson("");
+                          return;
+                        }
+                        if (r.status === 409 && r.body && r.body.existing_user_id) {
+                          setProvisionState({ status: "error", error: "User already exists. user_id: " + r.body.existing_user_id });
+                          return;
+                        }
+                        setProvisionState({ status: "error", error: (r.body && r.body.error) || ("HTTP " + r.status) });
+                      })
+                      .catch(function(e){
+                        setProvisionState({ status: "error", error: e.message || "Network error" });
+                      });
+                  }}
+                  style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",
+                    padding:"12px 24px",background:provisionState.status==="submitting"?B.muted:B.navy,
+                    color:B.white,border:"none",borderRadius:99,cursor:provisionState.status==="submitting"?"default":"pointer",
+                  }}>
+                  {provisionState.status==="submitting" ? "Provisioning..." : "Provision client"}
+                </button>
+
+                {provisionState.status === "success" && provisionState.result && (
+                  <div style={{marginTop:16,padding:"14px 18px",background:B.greenSoft,border:"1px solid "+B.green,borderRadius:10,fontFamily:"'Jost',sans-serif",fontSize:12,color:B.ink,lineHeight:1.6}}>
+                    <div style={{fontWeight:700,marginBottom:6}}>Provisioned ✓</div>
+                    <div><b>user_id:</b> {provisionState.result.user_id}</div>
+                    <div><b>login_email:</b> {provisionState.result.login_email}</div>
+                    <div><b>login_url:</b> {provisionState.result.login_url}</div>
+                    {provisionState.result.comp && (
+                      <div style={{marginTop:4,fontSize:11,color:B.muted}}>
+                        Comp: {provisionState.result.comp.weekly_credits} credits/week through {String(provisionState.result.comp.expires_at).slice(0,10)}.
+                      </div>
+                    )}
+                  </div>
+                )}
+                {provisionState.status === "error" && (
+                  <div style={{marginTop:16,padding:"14px 18px",background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:10,fontFamily:"'Jost',sans-serif",fontSize:12,color:B.ink,lineHeight:1.6}}>
+                    <div style={{fontWeight:700,marginBottom:4}}>Provision failed</div>
+                    <div>{provisionState.error}</div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {!adminData&&!adminLoading&&(
               <div style={{background:B.card,borderRadius:16,padding:"40px 24px",textAlign:"center"}}>
