@@ -666,6 +666,125 @@ function deriveAllDayLabels(cards) {
   return out;
 }
 
+// [HOLIDAY-PICKER] Client-side mirror of the US observance catalog from
+// api/_lib/holidays.js. Kept in sync by hand — both files are short, the
+// catalog rarely changes, and avoiding a build step keeps VIRL's
+// no-bundler React architecture intact. If this drifts from the server
+// catalog the worst-case is a picker that shows entries the server
+// silently drops (or vice versa); generation isn't broken either way.
+const HOLIDAY_OBSERVANCES = [
+  { id: "new-years-day",    name: "New Year's Day",      category: "federal",  fixed: { month: 1, day: 1 } },
+  { id: "mlk-day",          name: "MLK Day",             category: "federal",  nth:   { month: 1, nth: 3, weekday: 1 } },
+  { id: "black-history-month", name: "Black History Month", category: "heritage", range: { startMonth: 2, endMonth: 2 } },
+  { id: "valentines-day",   name: "Valentine's Day",     category: "cultural", fixed: { month: 2, day: 14 } },
+  { id: "presidents-day",   name: "Presidents Day",      category: "federal",  nth:   { month: 2, nth: 3, weekday: 1 } },
+  { id: "womens-history-month", name: "Women's History Month", category: "heritage", range: { startMonth: 3, endMonth: 3 } },
+  { id: "st-patricks-day",  name: "St. Patrick's Day",   category: "cultural", fixed: { month: 3, day: 17 } },
+  { id: "aapi-heritage-month", name: "AAPI Heritage Month", category: "heritage", range: { startMonth: 5, endMonth: 5 } },
+  { id: "mental-health-month", name: "Mental Health Awareness Month", category: "awareness", range: { startMonth: 5, endMonth: 5 } },
+  { id: "mothers-day",      name: "Mother's Day",        category: "cultural", nth:   { month: 5, nth: 2, weekday: 0 } },
+  { id: "memorial-day",     name: "Memorial Day",        category: "federal",  last:  { month: 5, weekday: 1 } },
+  { id: "pride-month",          name: "Pride Month",                category: "heritage", range: { startMonth: 6, endMonth: 6 } },
+  { id: "black-music-month",    name: "Black Music Month",          category: "heritage", range: { startMonth: 6, endMonth: 6 } },
+  { id: "caribbean-heritage",   name: "Caribbean American Heritage Month", category: "heritage", range: { startMonth: 6, endMonth: 6 } },
+  { id: "fathers-day",      name: "Father's Day",        category: "cultural", nth:   { month: 6, nth: 3, weekday: 0 } },
+  { id: "juneteenth",       name: "Juneteenth",          category: "federal",  fixed: { month: 6, day: 19 } },
+  { id: "independence-day", name: "Independence Day",    category: "federal",  fixed: { month: 7, day: 4 } },
+  { id: "hispanic-heritage-month", name: "Hispanic Heritage Month", category: "heritage", range: { startMonth: 9, startDay: 15, endMonth: 10, endDay: 15 } },
+  { id: "labor-day",        name: "Labor Day",           category: "federal",  nth:   { month: 9, nth: 1, weekday: 1 } },
+  { id: "lgbtq-history-month", name: "LGBTQ+ History Month", category: "heritage", range: { startMonth: 10, endMonth: 10 } },
+  { id: "columbus-indigenous", name: "Columbus Day / Indigenous Peoples' Day", category: "federal", nth: { month: 10, nth: 2, weekday: 1 } },
+  { id: "halloween",        name: "Halloween",           category: "cultural", fixed: { month: 10, day: 31 } },
+  { id: "native-american-month", name: "Native American Heritage Month", category: "heritage", range: { startMonth: 11, endMonth: 11 } },
+  { id: "veterans-day",     name: "Veterans Day",        category: "federal",  fixed: { month: 11, day: 11 } },
+  { id: "thanksgiving",     name: "Thanksgiving",        category: "federal",  nth:   { month: 11, nth: 4, weekday: 4 } },
+  { id: "black-friday",     name: "Black Friday",        category: "retail",   nth:   { month: 11, nth: 4, weekday: 4, offset: 1 } },
+  { id: "small-biz-sat",    name: "Small Business Saturday", category: "retail", nth: { month: 11, nth: 4, weekday: 4, offset: 2 } },
+  { id: "cyber-monday",     name: "Cyber Monday",        category: "retail",   nth:   { month: 11, nth: 4, weekday: 4, offset: 4 } },
+  { id: "christmas",        name: "Christmas Day",       category: "federal",  fixed: { month: 12, day: 25 } },
+  { id: "new-years-eve",    name: "New Year's Eve",      category: "cultural", fixed: { month: 12, day: 31 } },
+];
+
+function resolveHolidayDate(entry, year) {
+  if (entry.fixed) return new Date(Date.UTC(year, entry.fixed.month - 1, entry.fixed.day));
+  if (entry.nth) {
+    var cfg = entry.nth;
+    var first = new Date(Date.UTC(year, cfg.month - 1, 1));
+    var daysUntil = (cfg.weekday - first.getUTCDay() + 7) % 7;
+    daysUntil += (cfg.nth - 1) * 7;
+    var d = new Date(Date.UTC(year, cfg.month - 1, 1 + daysUntil));
+    if (cfg.offset) d.setUTCDate(d.getUTCDate() + cfg.offset);
+    return d;
+  }
+  if (entry.last) {
+    var cfg2 = entry.last;
+    var firstNext = new Date(Date.UTC(year, cfg2.month, 1));
+    var lastDay   = new Date(firstNext.getTime() - 86400000);
+    var back      = (lastDay.getUTCDay() - cfg2.weekday + 7) % 7;
+    return new Date(lastDay.getTime() - back * 86400000);
+  }
+  return null;
+}
+
+function resolveHolidayRange(entry, year) {
+  if (!entry.range) return null;
+  var r = entry.range;
+  var start = new Date(Date.UTC(year, r.startMonth - 1, r.startDay || 1));
+  var end   = r.endDay
+    ? new Date(Date.UTC(year, r.endMonth - 1, r.endDay))
+    : new Date(Date.UTC(year, r.endMonth, 1) - 86400000);
+  return { start: start, end: end };
+}
+
+// [HOLIDAY-PICKER] Returns { singleDay: [...], ongoing: [...] } observances
+// overlapping the [fromDate, fromDate + dayRange] window. Single-day entries
+// sorted by date; ongoing entries sorted by start. Empty arrays when nothing
+// falls in the window (the picker hides itself in that case).
+function getUpcomingHolidays(fromDate, dayRange) {
+  var from = fromDate instanceof Date ? fromDate : new Date();
+  var range = Math.max(1, Math.min(60, parseInt(dayRange, 10) || 7));
+  var to = new Date(from.getTime() + range * 86400000);
+  var fromY = from.getUTCFullYear();
+  var toY   = to.getUTCFullYear();
+  var WEEKDAYS_LOCAL = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  var MONTHS_LOCAL   = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  var singleDay = [];
+  var ongoing   = [];
+  HOLIDAY_OBSERVANCES.forEach(function(entry){
+    if (entry.fixed || entry.nth || entry.last) {
+      for (var y = fromY; y <= toY; y++) {
+        var d = resolveHolidayDate(entry, y);
+        if (!d) continue;
+        if (d.getTime() >= from.getTime() && d.getTime() <= to.getTime()) {
+          singleDay.push({
+            id:        entry.id,
+            name:      entry.name,
+            dateLabel: WEEKDAYS_LOCAL[d.getUTCDay()] + ", " + MONTHS_LOCAL[d.getUTCMonth()] + " " + d.getUTCDate(),
+            ts:        d.getTime(),
+          });
+        }
+      }
+      return;
+    }
+    if (entry.range) {
+      for (var y2 = fromY; y2 <= toY; y2++) {
+        var r = resolveHolidayRange(entry, y2);
+        if (!r) continue;
+        if (r.end.getTime() < from.getTime() || r.start.getTime() > to.getTime()) continue;
+        ongoing.push({
+          id:        entry.id,
+          name:      entry.name,
+          dateLabel: "ongoing through " + MONTHS_LOCAL[r.end.getUTCMonth()] + " " + r.end.getUTCDate(),
+          ts:        r.start.getTime(),
+        });
+      }
+    }
+  });
+  singleDay.sort(function(a,b){ return a.ts - b.ts; });
+  ongoing.sort(function(a,b){   return a.ts - b.ts; });
+  return { singleDay: singleDay, ongoing: ongoing };
+}
+
 // [REST-DAY] Tip catalog for days without a generated post. Keyed by the
 // user's goal so the guidance pulls toward what they're actually building
 // toward — a "Grow my following" creator gets engagement-window prompts,
@@ -6337,6 +6456,13 @@ function App() {
   // when the LLM omitted the field. Renderer falls back to the static
   // REST_DAY_TIPS catalog for any day not covered.
   const [restDayTips,setRestDayTips] = useState(null);
+  // [HOLIDAY-PICKER] Set of observance ids the user has checked in the
+  // holiday picker above the Plan generator. Defaults empty (all
+  // observances default OFF — no app-side opinion about what matters).
+  // Cleared whenever the calendar window changes so a stale Independence
+  // Day selection doesn't carry into a December plan. Sent to the API
+  // as params.observances when the user clicks Generate.
+  const [selectedObservances,setSelectedObservances] = useState([]);
   // [FRESH-TRENDS] True iff the latest plan generation consumed the
   // user's weekly fresh-trends allowance (or fired Perplexity inline for
   // a paid user). Drives the post-action banner above the plan.
@@ -7530,6 +7656,16 @@ function App() {
       // history it loads, so a same-week regenerate is treated as
       // "still week N" instead of bumping to week N+1.
       currentWeekStart: weekStartISO(Date.now()),
+      // [HOLIDAY-PICKER] Observance ids the user opted in to via the
+      // picker above the Generate button. Server resolves these to
+      // dates against the same window the picker showed (via
+      // clientNow.iso below). Empty array → no observance block in
+      // the prompt at all.
+      observances:      selectedObservances,
+      // Anchor for date resolution: the server uses this to compute
+      // which observance dates fall in the 7-day plan window, so the
+      // dates it sees match what the picker rendered.
+      clientNow:        { iso: new Date().toISOString() },
     }, { token: userToken }, {
       onText: function (delta) {
         parser.push(delta, {
@@ -9021,6 +9157,75 @@ return (
               isPaid={isPaid}
               daysUntilReset={daysUntilReset}
               onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
+            {/* [HOLIDAY-PICKER] Optional observance picker. Lists every US
+                observance (federal holiday, cultural moment, retail moment,
+                heritage month) whose date overlaps with the next 7 days,
+                sorted chronologically. Defaults all unchecked — VIRL takes
+                no opinion on what matters; the creator decides. Selections
+                ride into the API call as params.observances, then the
+                plan prompt receives a block telling the model to weave
+                them in where they fit. Hidden entirely when nothing falls
+                in the window. */}
+            {(function(){
+              var upcoming = getUpcomingHolidays(new Date(), 7);
+              var hasAny = upcoming.singleDay.length > 0 || upcoming.ongoing.length > 0;
+              if (!hasAny) return null;
+              function toggle(id) {
+                setSelectedObservances(function(prev){
+                  if (prev.indexOf(id) >= 0) return prev.filter(function(x){ return x !== id; });
+                  return prev.concat([id]);
+                });
+              }
+              function rowStyle(checked) {
+                return {display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:10,cursor:"pointer",background:checked?B.navySoft:"transparent",transition:"background .15s"};
+              }
+              function checkboxStyle(checked) {
+                return {width:18,height:18,border:"2px solid "+(checked?B.blue:B.border),borderRadius:4,background:checked?B.blue:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all .15s"};
+              }
+              return (
+                <div style={{background:B.card,borderRadius:14,padding:"16px 18px",marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>
+                    Happening this week + ongoing
+                  </div>
+                  {upcoming.singleDay.map(function(o){
+                    var checked = selectedObservances.indexOf(o.id) >= 0;
+                    return (
+                      <div key={o.id} style={rowStyle(checked)} onClick={function(){ toggle(o.id); }}>
+                        <div style={checkboxStyle(checked)}>
+                          {checked && <span style={{color:B.white,fontSize:11,lineHeight:1}}>{"✓"}</span>}
+                        </div>
+                        <div style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:13,color:checked?B.navy:B.ink}}>
+                          {o.name}
+                          <span style={{color:B.muted,fontWeight:300,marginLeft:8}}>{"— " + o.dateLabel}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {upcoming.ongoing.length > 0 && (
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginTop:upcoming.singleDay.length>0?14:0,marginBottom:6}}>
+                      Ongoing this month
+                    </div>
+                  )}
+                  {upcoming.ongoing.map(function(o){
+                    var checked = selectedObservances.indexOf(o.id) >= 0;
+                    return (
+                      <div key={o.id} style={rowStyle(checked)} onClick={function(){ toggle(o.id); }}>
+                        <div style={checkboxStyle(checked)}>
+                          {checked && <span style={{color:B.white,fontSize:11,lineHeight:1}}>{"✓"}</span>}
+                        </div>
+                        <div style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:13,color:checked?B.navy:B.ink}}>
+                          {o.name}
+                          <span style={{color:B.muted,fontWeight:300,marginLeft:8}}>{"— " + o.dateLabel}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:10}}>
+                    Check anything you want VIRL to consider in this week's content.
+                  </div>
+                </div>
+              );
+            })()}
             <GenBtn onClick={generate} loading={loading} disabled={!platforms.length||!formats.length}>
               {loading?"Strategizing...":"Generate my 7-day plan"}
             </GenBtn>
