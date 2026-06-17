@@ -1001,6 +1001,15 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // schema; this line tells the model how to weight format choice for
     // this user's specific industry.
     + " FORMAT MIX FOR THIS USER'S INDUSTRY: " + industryFormatGuidance
+    // [LONG-FORM-PILL] When the user has selected "Long-form post" in
+    // their preferred-formats chip palette, map it to the long_form_text
+    // card format and bias the plan toward at least 1-2 long-form text
+    // cards per week (LinkedIn especially — Facebook secondary). Without
+    // this mapping the model can interpret the chip as generic "longer
+    // copy" and pick caption or carousel formats instead.
+    + (Array.isArray(params.formats) && params.formats.indexOf("Long-form post") >= 0
+        ? " The user explicitly selected 'Long-form post' as one of their preferred formats — include AT LEAST 1-2 cards with format='long_form_text' this week, anchored to LinkedIn if LinkedIn is in their platforms (Facebook as fallback). The long_form_text cards are the user's path to thought-leadership content; do not silently skip them."
+        : "")
     + " Create " + cardRange.min + "-" + cardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
     + (optimalDaysCtx ? "\n\n" + optimalDaysCtx + "\n\nWhen distributing cards across the week, weight the optimal days above heavily — they're either the creator's own best-performing days (when 'performs best on' is shown) or industry rule-of-thumb for the platform (when 'general best days' is shown). The user-history signal is the stronger one when present." : "")
     // [REST-DAY-LLM] Generate one tip per day NOT receiving a card. Tips
