@@ -3206,31 +3206,33 @@ function FormatSpecificBody({card}) {
 // — each requires its own per-item UI that's a separate pass.
 // onScreenText (video) is supported as a newline-separated textarea.
 // Hashtags collapse to a comma-separated input and re-split on save.
-function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
+function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
   var fmt = normalizeFormat(format);
-  // Per-format text fields. Multiline = textarea, otherwise = input.
-  // Order matches how the read view presents the same fields, so the
-  // user's eye doesn't have to remap during the edit-save round trip.
+  // [EDIT-LOCKDOWN] Per-format editable fields. Production-direction
+  // fields (audioRecommendation, photoDirection, compositionTip,
+  // designDirection, interactiveElement) deliberately omitted — those
+  // are VIRL's strategic call about HOW to execute the post, not the
+  // copy the user publishes. They render as read-only blocks below the
+  // editable fields so users can still see the recommendation but not
+  // overwrite it. Same lockdown logic applies to the per-slide
+  // designDirection (carousel) and per-frame interactiveElement (story)
+  // editors further down.
   var perFormat = {
     video: [
-      {key:"hook",                label:"Hook",                multiline:true},
-      {key:"caption",             label:"Caption",             multiline:true},
-      {key:"onScreenText",        label:"On-screen text — one per line",  multiline:true, isList:true},
-      {key:"audioRecommendation", label:"Audio",               multiline:false},
+      {key:"hook",         label:"Hook",                multiline:true},
+      {key:"caption",      label:"Caption",             multiline:true},
+      {key:"onScreenText", label:"On-screen text — one per line",  multiline:true, isList:true},
     ],
     single_image: [
-      {key:"caption",        label:"Caption",         multiline:true},
-      {key:"photoDirection", label:"Photo direction", multiline:true},
-      {key:"compositionTip", label:"Composition tip", multiline:true},
+      {key:"caption",      label:"Caption",         multiline:true},
     ],
     carousel: [
-      {key:"caption",        label:"Caption",         multiline:true},
+      {key:"caption",      label:"Caption",         multiline:true},
     ],
     quote_graphic: [
-      {key:"quote",           label:"Quote",            multiline:true},
-      {key:"attribution",     label:"Attribution",      multiline:false},
-      {key:"caption",         label:"Caption",          multiline:true},
-      {key:"designDirection", label:"Design direction", multiline:true},
+      {key:"quote",        label:"Quote",            multiline:true},
+      {key:"attribution",  label:"Attribution",      multiline:false},
+      {key:"caption",      label:"Caption",          multiline:true},
     ],
     story: [],
     long_form_text: [
@@ -3239,9 +3241,28 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
       {key:"closing", label:"Closing", multiline:false},
     ],
   };
+  // [EDIT-LOCKDOWN] Per-format strategic / direction fields shown as
+  // read-only. Keyed by format → list of {key, label} for fields that
+  // VIRL produced as part of the card's strategy and should NOT be
+  // user-editable.
+  var perFormatLocked = {
+    video:          [{key:"audioRecommendation", label:"Audio direction"}],
+    single_image:   [
+      {key:"photoDirection", label:"Photo direction"},
+      {key:"compositionTip", label:"Composition tip"},
+    ],
+    carousel:       [],
+    quote_graphic:  [{key:"designDirection", label:"Design direction"}],
+    story:          [],
+    long_form_text: [],
+  };
+  // [EDIT-LOCKDOWN] Top-level editable fields. `insight` ("Why this
+  // works") was previously editable here — removed because it's the
+  // core strategic rationale of the card, not content. It now renders
+  // in a locked read-only block below the editor so users can refer
+  // to it while editing copy but can't override it.
   var fields = [
     {key:"description", label:"Description", multiline:true},
-    {key:"insight",     label:"Why this works", multiline:true},
   ]
     .concat(perFormat[fmt] || [])
     .concat([{key:"hashtags", label:"Hashtags — comma-separated, no #", multiline:false}]);
@@ -3249,6 +3270,20 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
   var textareaStyle = Object.assign({}, inputBase, {resize:"vertical",minHeight:60});
   var compactInput    = Object.assign({}, inputBase, {padding:"8px 10px",fontSize:13});
   var compactTextarea = Object.assign({}, compactInput, {resize:"vertical",minHeight:48});
+  // [EDIT-LOCKDOWN] Shared styling for read-only strategic fields so
+  // they're visibly different from editable inputs but still
+  // readable in-context. Muted background, no input border, italic
+  // label so the user immediately grasps "this is not a textarea."
+  var lockedLabel = {fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6,display:"flex",alignItems:"center",gap:6};
+  var lockedBody  = {fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6,padding:"10px 12px",background:B.navySoft,borderRadius:8,whiteSpace:"pre-wrap"};
+
+  // Pull strategic / locked field values from the ORIGINAL card (not
+  // the draft) since the draft is meant for user edits — locked fields
+  // should always show what VIRL produced.
+  var insightLocked = (card && (card.insight || card.why)) || "";
+  var lockedForFormat = (perFormatLocked[fmt] || []).map(function(f){
+    return { key: f.key, label: f.label, value: (card && card[f.key]) || "" };
+  }).filter(function(f){ return f.value && String(f.value).trim(); });
   return (
     <div style={{marginBottom:14}}>
       {fields.map(function(f){
@@ -3274,8 +3309,18 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
       {fmt === "carousel" && Array.isArray(draftCard.slides) && draftCard.slides.length > 0 && (
         <div style={{marginBottom:10}}>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Slides ("+draftCard.slides.length+")"}</div>
+          {/* [EDIT-LOCKDOWN] Each slide's `designDirection` is now
+              rendered as a read-only line under its editable fields
+              instead of as a third input. Headline and body remain
+              editable (those are the copy that actually publishes);
+              design direction stays as VIRL's strategic call. */}
           {draftCard.slides.map(function(slide, sIdx){
             var num = slide.slideNumber || (sIdx + 1);
+            // Pull the original slide's designDirection so the locked
+            // line shows VIRL's recommendation even if the user
+            // somehow changed it via stale state.
+            var origSlide = (card && Array.isArray(card.slides) && card.slides[sIdx]) || slide;
+            var lockedDir = (origSlide.designDirection || "").trim();
             return (
               <div key={sIdx} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.blue,marginBottom:8}}>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.blue,letterSpacing:"0.05em",flexShrink:0,minWidth:18,paddingTop:8}}>{num}</div>
@@ -3288,10 +3333,12 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
                     placeholder="Body (1-2 sentences)"
                     onChange={function(e){ updateDraftItem("slides", sIdx, "body", e.target.value); }}
                     style={compactTextarea}/>
-                  <input value={slide.designDirection||""}
-                    placeholder="Design direction"
-                    onChange={function(e){ updateDraftItem("slides", sIdx, "designDirection", e.target.value); }}
-                    style={Object.assign({}, compactInput, {fontStyle:"italic",color:B.sub})}/>
+                  {lockedDir && (
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.muted,lineHeight:1.5,paddingLeft:4,display:"flex",gap:6}}>
+                      <span style={{flexShrink:0}}>{"🔒"}</span>
+                      <span><span style={{fontWeight:600}}>Design direction:</span> {lockedDir}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -3304,8 +3351,15 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
       {fmt === "story" && Array.isArray(draftCard.frames) && draftCard.frames.length > 0 && (
         <div style={{marginBottom:10}}>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Story frames ("+draftCard.frames.length+")"}</div>
+          {/* [EDIT-LOCKDOWN] Each frame's `interactiveElement` is now
+              rendered as a read-only line under its editable fields.
+              Content and text overlay remain editable (publishable
+              copy); the interactive mechanic stays as VIRL's
+              strategic call about how the frame engages viewers. */}
           {draftCard.frames.map(function(frame, fIdx){
             var num = frame.frameNumber || (fIdx + 1);
+            var origFrame = (card && Array.isArray(card.frames) && card.frames[fIdx]) || frame;
+            var lockedInteractive = (origFrame.interactiveElement || "").trim();
             return (
               <div key={fIdx} style={{display:"flex",gap:10,padding:"10px 12px",background:B.bg,borderRadius:10,borderLeft:"3px solid "+B.coral,marginBottom:8}}>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.coral,letterSpacing:"0.05em",flexShrink:0,minWidth:18,paddingTop:8}}>{num}</div>
@@ -3318,11 +3372,44 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
                     placeholder="Text overlay"
                     onChange={function(e){ updateDraftItem("frames", fIdx, "textOverlay", e.target.value); }}
                     style={Object.assign({}, compactInput, {fontWeight:600,color:B.ink})}/>
-                  <input value={frame.interactiveElement||""}
-                    placeholder="Interactive element (poll, slider, sticker, etc.)"
-                    onChange={function(e){ updateDraftItem("frames", fIdx, "interactiveElement", e.target.value); }}
-                    style={Object.assign({}, compactInput, {fontStyle:"italic",color:B.coral})}/>
+                  {lockedInteractive && (
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.muted,lineHeight:1.5,paddingLeft:4,display:"flex",gap:6}}>
+                      <span style={{flexShrink:0}}>{"🔒"}</span>
+                      <span><span style={{fontWeight:600}}>Interactive element:</span> {lockedInteractive}</span>
+                    </div>
+                  )}
                 </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* [EDIT-LOCKDOWN] Strategic / locked block. Renders below all
+           editable fields so users can refer to VIRL's strategic
+           rationale + execution direction while editing the copy
+           above. Includes the "Why this works" insight (always when
+           present) plus any per-format production-direction fields
+           not folded into the slides/frames editors. Block is hidden
+           entirely when there's nothing to show — keeps the edit
+           surface clean for cards without strategic copy. */}
+      {(insightLocked || lockedForFormat.length > 0) && (
+        <div style={{marginTop:16,padding:"12px 14px",background:B.navySoft,borderRadius:10,border:"1px solid "+B.border}}>
+          <div style={Object.assign({}, lockedLabel, {marginBottom:10,color:B.navy})}>
+            <span>{"🔒"}</span>
+            <span>{"VIRL's strategy — preserved"}</span>
+          </div>
+          {insightLocked && (
+            <div style={{marginBottom: lockedForFormat.length > 0 ? 10 : 0}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>{"Why this works"}</div>
+              <div style={lockedBody}>{insightLocked}</div>
+            </div>
+          )}
+          {lockedForFormat.map(function(f, fi){
+            return (
+              <div key={f.key} style={{marginBottom: fi === lockedForFormat.length - 1 ? 0 : 10}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>{f.label}</div>
+                <div style={lockedBody}>{f.value}</div>
               </div>
             );
           })}
@@ -3581,7 +3668,7 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
   );
 }
 
-function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends}) {
+function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends,allDayLabels}) {
   // When `replacing` is true, this card slot is awaiting a streaming
   // replacement from /api/chat?generationType=plan_partial. Render a
   // skeleton instead of the real card so the user sees their kept cards
@@ -3606,6 +3693,12 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
   // in practice only one is shown at a time but the state separation
   // keeps the rendering logic predictable.
   const [showLongPost,setShowLongPost] = useState(false);
+  // [MOVE-CARD] Inline popover state. Open → list of weekday labels;
+  // tap a label → updateCardAt fires with { day: newLabel }, the
+  // existing persistence + id-migration path takes over. Replaces
+  // the rolled-back drag-and-drop reorder with a more reliable
+  // button-driven move.
+  const [showMoveMenu,setShowMoveMenu] = useState(false);
   // [EDIT] Inline card editing. Tapping Edit opens an in-place form
   // showing every top-level text field the model emitted for this
   // card's format. Save commits via onEdit prop (parent updates the
@@ -3669,16 +3762,23 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
     // accidentally write a `body` field (the long-form-only field
     // they never see) onto a video card, and unchanged hidden fields
     // can't be inadvertently wiped to "".
+    //
+    // [EDIT-LOCKDOWN] insight + the production-direction fields
+    // (audioRecommendation, photoDirection, compositionTip,
+    // designDirection) deliberately omitted from this list — those
+    // are VIRL's strategic call about the post, not the user's copy
+    // to edit. They render in the read-only locked block but never
+    // hit updates here.
     var fmt = normalizeFormat(card.format);
     var formatTextKeys = {
-      video:          ["hook","caption","audioRecommendation"],
-      single_image:   ["caption","photoDirection","compositionTip"],
+      video:          ["hook","caption"],
+      single_image:   ["caption"],
       carousel:       ["caption"],
-      quote_graphic:  ["quote","attribution","caption","designDirection"],
+      quote_graphic:  ["quote","attribution","caption"],
       story:          [],
       long_form_text: ["hook","body","closing"],
     };
-    var textKeys = ["title","description","insight"].concat(formatTextKeys[fmt] || []);
+    var textKeys = ["title","description"].concat(formatTextKeys[fmt] || []);
     var updates = {};
     textKeys.forEach(function(k){
       var draftVal = (draftCard[k] || "").trim();
@@ -3686,7 +3786,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
       // title would orphan vault/posted/saved/results keys. Skip the
       // update silently rather than overwriting with "".
       if (k === "title" && draftVal === "") return;
-      var currVal  = (card[k] || (k === "insight" ? card.why : "") || "").toString().trim();
+      var currVal  = (card[k] || "").toString().trim();
       if (draftVal !== currVal) updates[k] = draftVal;
     });
     // Hashtags: comma/newline-separated string → array of plain words, "#" stripped.
@@ -3706,16 +3806,21 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
       if (draftOst.join("|") !== currOst.join("|")) updates.onScreenText = draftOst;
     }
     // Carousel slides: diff each item's editable text fields. The
-    // slideNumber + count are preserved from the original; only
-    // headline/body/designDirection can be edited in this pass.
+    // slideNumber + count + designDirection are preserved from the
+    // original (designDirection is locked — VIRL's design call); only
+    // headline + body can be edited in this pass.
     if (fmt === "carousel" && Array.isArray(draftCard.slides)) {
       var currSlides = Array.isArray(card.slides) ? card.slides : [];
       var nextSlides = draftCard.slides.map(function(s, i){
-        return Object.assign({}, currSlides[i] || s, {
-          slideNumber:     (currSlides[i] && currSlides[i].slideNumber) || s.slideNumber || (i + 1),
+        var orig = currSlides[i] || {};
+        return Object.assign({}, orig, {
+          slideNumber:     orig.slideNumber || s.slideNumber || (i + 1),
           headline:        (s.headline || "").trim(),
           body:            (s.body || "").trim(),
-          designDirection: (s.designDirection || "").trim(),
+          // [EDIT-LOCKDOWN] designDirection always comes from the
+          // original — never the draft — so a user's stray edit
+          // can't slip through.
+          designDirection: (orig.designDirection || "").trim(),
         });
       });
       // Cheap deep equality — serialize to canonical JSON.
@@ -3723,16 +3828,20 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
         updates.slides = nextSlides;
       }
     }
-    // Story frames: same shape — edit content/textOverlay/interactiveElement,
-    // preserve frameNumber + count.
+    // Story frames: edit content + textOverlay (publishable copy),
+    // preserve frameNumber + count + interactiveElement (VIRL's
+    // strategic engagement call).
     if (fmt === "story" && Array.isArray(draftCard.frames)) {
       var currFrames = Array.isArray(card.frames) ? card.frames : [];
       var nextFrames = draftCard.frames.map(function(f, i){
-        return Object.assign({}, currFrames[i] || f, {
-          frameNumber:        (currFrames[i] && currFrames[i].frameNumber) || f.frameNumber || (i + 1),
-          content:            (f.content || "").trim(),
-          textOverlay:        (f.textOverlay || "").trim(),
-          interactiveElement: (f.interactiveElement || "").trim(),
+        var orig = currFrames[i] || {};
+        return Object.assign({}, orig, {
+          frameNumber: orig.frameNumber || f.frameNumber || (i + 1),
+          content:     (f.content || "").trim(),
+          textOverlay: (f.textOverlay || "").trim(),
+          // [EDIT-LOCKDOWN] interactiveElement always comes from the
+          // original — same lockdown semantics as designDirection.
+          interactiveElement: (orig.interactiveElement || "").trim(),
         });
       });
       if (JSON.stringify(nextFrames) !== JSON.stringify(currFrames)) {
@@ -3897,7 +4006,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
            edit mode. Renders inputs/textareas for every top-level text
            field the model emits for this card's format. */}
       {editing && draftCard && (
-        <EditCardBody draftCard={draftCard} format={card.format} updateDraft={updateDraft} updateDraftItem={updateDraftItem}/>
+        <EditCardBody card={card} draftCard={draftCard} format={card.format} updateDraft={updateDraft} updateDraftItem={updateDraftItem}/>
       )}
 
       {/* [UX-01] Expanded section: full description, why-this-works,
@@ -4000,6 +4109,18 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
             {"Edit"}
           </button>
         )}
+        {/* [MOVE-CARD] Move to a different day. Replaces the
+             rolled-back drag-and-drop reorder with a button-driven
+             menu — same expanded-only gate as Edit, hidden in
+             read-only contexts (no onEdit prop). Only renders when
+             allDayLabels has been provided AND has at least two
+             entries (no point moving when the week has one day). */}
+        {expanded && onEdit && Array.isArray(allDayLabels) && allDayLabels.length > 1 && (
+          <button onClick={function(){ setShowMoveMenu(function(v){ return !v; }); }}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:showMoveMenu?B.navy:B.bg,color:showMoveMenu?B.white:B.sub,border:"1px solid "+(showMoveMenu?B.navy:B.border),borderRadius:99,cursor:"pointer"}}>
+            {showMoveMenu ? "Cancel" : "Move to…"}
+          </button>
+        )}
         {/* Expanded-only secondary actions. Log Results moved out — the
              state-dependent third slot above replaces it. */}
         {expanded && (
@@ -4025,6 +4146,42 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
           <RatingButtons sessionToken={userToken} generationType="plan_card" targetRef={(card.title||"")+"|"+(card.day||"")} size="sm"/>
         )}
       </div>
+      )}
+
+      {/* [MOVE-CARD] Day-picker popover. Opens below the action row when
+           "Move to..." is tapped. Lists the full set of weekday labels;
+           the current day is shown as the active row (disabled). Tapping
+           any other day calls onEdit with { day: newLabel } and closes
+           the popover. updateCardAt handles the persistence + id
+           migration (vault, results, posted/saved flags) for the day
+           change. */}
+      {expanded && showMoveMenu && Array.isArray(allDayLabels) && allDayLabels.length > 1 && (
+        <div style={{marginTop:14,padding:"12px 14px",background:B.bg,border:"1px solid "+B.border,borderRadius:12}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>{"Move this card to"}</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {allDayLabels.map(function(label){
+              var isCurrent = label === card.day;
+              return (
+                <button key={label}
+                  disabled={isCurrent}
+                  onClick={isCurrent ? null : function(){
+                    if (onEdit) onEdit(idx, { day: label });
+                    setShowMoveMenu(false);
+                  }}
+                  style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",
+                    padding:"6px 12px",borderRadius:99,cursor:isCurrent?"default":"pointer",
+                    background:isCurrent?B.navySoft:B.card,
+                    color:isCurrent?B.navy:B.sub,
+                    border:"1px solid "+(isCurrent?B.navy:B.border),
+                    opacity:isCurrent?0.7:1,
+                  }}>
+                  {parseDayName(label) || label}{isCurrent ? " (current)" : ""}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       )}
 
       {/* [RESULTS-OVERHAUL] Inline log form. Renders in both collapsed
@@ -10258,6 +10415,7 @@ return (
                                 onSaveScript={saveScriptForCard}
                                 onSaveLongPost={saveLongPostForCard}
                                 onEdit={updateCardAt}
+                                allDayLabels={allDayLabels}
                                 saved={vault.some(function(v){return v.id===card.title+card.day;})}
                                 result={results.find(function(r){return r.id===card.title+card.day;})}
                                 profile={profile}
