@@ -3395,32 +3395,38 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
     setLoading(true); setPost(null); setError("");
     setEditing(false); setDraftPost(null);
     callAPI("long_post", { card: card, length: length }, { token: userToken }).then(function(data) {
-      if (data && data.text) {
-        try {
-          var parsed = JSON.parse(data.text);
-          setPost(parsed);
-          setSavedOnCard(false);
-          if (onCreditsUsed) onCreditsUsed({ cost: (data && data.cost) || 2 });
-          try {
-            var postUsage = (data && data.usage) || {};
-            logEvent(session && session.user && session.user.id, "long_post_generated", {
-              cardId:   (card.title || "") + (card.day || ""),
-              platform: card.platform || "LinkedIn",
-              day:      card.day || null,
-              length:   length,
-              outputTokens:        postUsage.outputTokens        || 0,
-              cachedInputTokens:   postUsage.cachedInputTokens   || 0,
-              uncachedInputTokens: postUsage.uncachedInputTokens || 0,
-              truncated:           !!postUsage.truncated,
-              model:               postUsage.model || null,
-            });
-          } catch(e){}
-        } catch(e) {
-          setError("Got a response but couldn't parse it. Tap Try Again.");
-        }
-      } else {
+      if (!(data && data.text)) {
         setError("VIRL's still warming up - tap Try Again.");
+        return;
       }
+      // [LONG-POST-PARSE] Use the tolerant extractJSON helper that
+      // ScriptGenerator already relies on. Strips ```json``` code fences
+      // and locates the outer { ... } block even when the model adds
+      // preamble — strict JSON.parse failed in production whenever the
+      // model wrapped its reply in markdown despite the prompt-side
+      // "no markdown" instruction.
+      var parsed = extractJSON(data.text);
+      if (!parsed || typeof parsed !== "object" || !parsed.hook) {
+        setError("VIRL drafted something but the format came back garbled. Tap Try Again.");
+        return;
+      }
+      setPost(parsed);
+      setSavedOnCard(false);
+      if (onCreditsUsed) onCreditsUsed({ cost: (data && data.cost) || 2 });
+      try {
+        var postUsage = (data && data.usage) || {};
+        logEvent(session && session.user && session.user.id, "long_post_generated", {
+          cardId:   (card.title || "") + (card.day || ""),
+          platform: card.platform || "LinkedIn",
+          day:      card.day || null,
+          length:   length,
+          outputTokens:        postUsage.outputTokens        || 0,
+          cachedInputTokens:   postUsage.cachedInputTokens   || 0,
+          uncachedInputTokens: postUsage.uncachedInputTokens || 0,
+          truncated:           !!postUsage.truncated,
+          model:               postUsage.model || null,
+        });
+      } catch(e){}
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
   }
 
