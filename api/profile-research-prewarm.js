@@ -54,39 +54,51 @@ export default async function handler(req, res) {
   // same trusted source.
   let handles = {};
   let inspiration = "";
+  let businessWebsite = "";
   let learnFromPublicPosts = false;
   try {
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=handles,inspiration,learn_from_public_posts`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=handles,inspiration,business_website,learn_from_public_posts`,
       { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
     );
     if (r.ok) {
       const rows = await r.json();
       handles              = (rows[0] && rows[0].handles && typeof rows[0].handles === "object") ? rows[0].handles : {};
       inspiration          = (rows[0] && typeof rows[0].inspiration === "string") ? rows[0].inspiration : "";
+      // [BUSINESS-WEBSITE] Read the URL alongside handles so Perplexity
+      // can incorporate it. Pre-migration-015 rows return undefined for
+      // this column — the || "" falls through cleanly.
+      businessWebsite      = (rows[0] && typeof rows[0].business_website === "string") ? rows[0].business_website : "";
       learnFromPublicPosts = !!(rows[0] && rows[0].learn_from_public_posts);
     }
   } catch (e) { /* fail-open below */ }
 
-  const hasAny = handles && Object.keys(handles).some(k => handles[k]);
-  if (!hasAny) {
-    return res.status(200).json({ refreshed: false, reason: "no_handles" });
+  // [BUSINESS-WEBSITE] Pre-warming proceeds when there's anything to
+  // research — either at least one social handle OR a business website.
+  // Creators who set up handles first, website later (or vice versa) get
+  // research either way.
+  const hasHandle  = handles && Object.keys(handles).some(k => handles[k]);
+  const hasWebsite = !!(businessWebsite && businessWebsite.trim());
+  if (!hasHandle && !hasWebsite) {
+    return res.status(200).json({ refreshed: false, reason: "no_handles_or_website" });
   }
 
   // [LEARNING-CONSENT] Skip the Perplexity research call entirely when the
   // user has not opted in to learn_from_public_posts. Mirrors the gate in
-  // chat.js — no third-party network request fires without consent.
+  // chat.js — no third-party network request fires without consent. This
+  // gate covers the business website too: reading the public site is the
+  // same kind of public-data-research the toggle authorizes.
   if (!learnFromPublicPosts) {
     return res.status(200).json({ refreshed: false, reason: "consent_off" });
   }
 
   // fetchHandleResearch is idempotent: returns cached text when fresh,
-  // fires Perplexity + writes cache when stale or handles changed. Either
-  // way the client's intent ("get the cache hot for the next generation")
-  // is satisfied.
+  // fires Perplexity + writes cache when stale or handles / website /
+  // inspiration changed. Either way the client's intent ("get the cache
+  // hot for the next generation") is satisfied.
   let research = null;
   try {
-    research = await fetchHandleResearch(userId, handles, inspiration);
+    research = await fetchHandleResearch(userId, handles, inspiration, businessWebsite);
   } catch (e) { /* fail-open */ }
 
   return res.status(200).json({

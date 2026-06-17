@@ -31,7 +31,11 @@ const TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // set of inputs. Sorted keys keep {tiktok, instagram} === {instagram, tiktok}.
 // Inspiration is included so changing the admired-creator answer forces a
 // re-fetch — Perplexity's response materially depends on it.
-function hashHandles(handles, inspiration) {
+// [BUSINESS-WEBSITE] businessWebsite is folded into the same hash so
+// editing or adding a URL re-fetches research that incorporates it.
+// Empty / absent website hashes the same as before, so users without a
+// site don't get cache churn from this change.
+function hashHandles(handles, inspiration, businessWebsite) {
   const safeHandles = (handles && typeof handles === "object") ? handles : {};
   const sortedHandles = Object.keys(safeHandles)
     .filter(k => safeHandles[k])
@@ -40,8 +44,11 @@ function hashHandles(handles, inspiration) {
   const inspStr = (inspiration && typeof inspiration === "string")
     ? inspiration.trim().toLowerCase()
     : "";
+  const siteStr = (businessWebsite && typeof businessWebsite === "string")
+    ? businessWebsite.trim().toLowerCase()
+    : "";
   return crypto.createHash("sha256")
-    .update(sortedHandles.join("|") + "||insp:" + inspStr)
+    .update(sortedHandles.join("|") + "||insp:" + inspStr + "||site:" + siteStr)
     .digest("hex");
 }
 
@@ -99,7 +106,7 @@ async function writeCache(userId, research_text, post_excerpts, handles_hash) {
 // defeat the purpose. The descriptive paragraph IS allowed to note how the
 // user's actual posting compares to that aspiration, which can sharpen the
 // LLM's voice instructions.
-function buildResearchPrompt(handles, inspiration) {
+function buildResearchPrompt(handles, inspiration, businessWebsite) {
   const handleList = Object.keys(handles)
     .filter(k => handles[k])
     .map(k => k + ": " + String(handles[k]).trim())
@@ -107,23 +114,43 @@ function buildResearchPrompt(handles, inspiration) {
   const inspirationLine = (inspiration && typeof inspiration === "string" && inspiration.trim())
     ? "Style aspiration the creator named (context only — do NOT excerpt this person's posts): " + inspiration.trim()
     : "";
+  // [BUSINESS-WEBSITE] When the creator has supplied a business / brand
+  // URL AND consented to public-post research, ask Perplexity to read
+  // the site for voice + offering signals. Crucially: we want the site
+  // to INFORM the descriptive paragraph (voice + topics), not become
+  // its own deliverable. Marketing-page voice is often more polished
+  // than the creator's social voice, so we tell Perplexity to weight
+  // the social handles more heavily and use the site as a secondary
+  // input for offerings, services, and any specific terminology /
+  // claims the brand uses consistently.
+  const businessLine = (businessWebsite && typeof businessWebsite === "string" && businessWebsite.trim())
+    ? "Business / brand website (read this for the creator's actual offerings, services, and brand-consistent terminology — use as a secondary voice signal behind the social handles, since marketing copy on a website is often more formal than this creator's social posts): " + businessWebsite.trim()
+    : "";
+  const hasWebsite = !!businessLine;
+
   return [
-    "Research this creator's actual posting patterns across their connected platforms.",
+    "Research this creator's actual posting patterns across their connected platforms"
+      + (hasWebsite ? ", and review their business website for offerings + brand-consistent terminology" : "")
+      + ".",
     "",
-    "Handles: " + handleList,
+    handleList ? "Handles: " + handleList : "Handles: (none provided)",
     ...(inspirationLine ? ["", inspirationLine] : []),
+    ...(businessLine    ? ["", businessLine]    : []),
     "",
     "Look at what's publicly visible. Surface:",
     "  1. What topics or themes do they consistently post about? (3-5 specific ones)",
-    "  2. What's their voice / tone like? Pick concrete adjectives (warm, dry, conversational, authoritative, irreverent, etc.) — not generic praise. If they named a style aspiration above, briefly note how their actual voice compares (matches it, partway there, diverges).",
+    "  2. What's their voice / tone like? Pick concrete adjectives (warm, dry, conversational, authoritative, irreverent, etc.) — not generic praise. Anchor your read in the SOCIAL posts, not the website (which may be more formal). If they named a style aspiration above, briefly note how their actual voice compares (matches it, partway there, diverges).",
     "  3. What visual signature, if any? (e.g. 'always shot outdoors,' 'high-contrast B&W,' 'kitchen flat-lays,' 'screen-recorded tutorials')",
     "  4. Any recurring phrases, sign-offs, or in-jokes that show up in their captions?",
+    ...(hasWebsite
+      ? ["  5. From the business website: what specific products, services, or programs does this creator actually offer? Any branded terminology (program names, signature methods, taglines) that should be used verbatim in generated content rather than improvised? Stay concrete — name the actual offerings, do not paraphrase the website's marketing language."]
+      : []),
     "",
     "Be honest about uncertainty. If a handle returns very few indexable posts, say so plainly — DO NOT invent details. If the creator is small / new and you find nothing useful, return EXACTLY this string and nothing else: NO_USEFUL_RESEARCH",
     "",
     "Format your reply with TWO sections separated by a blank line:",
     "",
-    "FIRST SECTION — one tight paragraph (max 8 sentences) summarizing 1-4. No headings, no bullet points, no marketing language. Treat this as a brief to another writer who needs to sound like this person.",
+    "FIRST SECTION — one tight paragraph (max " + (hasWebsite ? "10" : "8") + " sentences) summarizing the points above. No headings, no bullet points, no marketing language. Treat this as a brief to another writer who needs to sound like this person and reference their actual business correctly.",
     "",
     "SECOND SECTION — a line that says exactly 'POST_EXCERPTS:' followed by up to 5 verbatim caption / post excerpts from THIS creator's actual indexed posts, one per line, each starting with '- '. Pick excerpts that show their voice — opening hooks, sign-offs, or one-liners are ideal. Each excerpt should be 8-50 words. Quote them exactly — do not paraphrase. If you cannot find any real excerpts (uncached, private, or too few posts), output exactly 'POST_EXCERPTS: NONE' instead.",
   ].join("\n");
@@ -175,14 +202,25 @@ function parseResearchResponse(rawText) {
 // the prompts.js consumption shape) and profile.handlePostExcerpts =
 // postExcerpts (for voice-drift telemetry and future few-shot exemplars).
 //
-// Cache TTL is 30 days; handles_hash refresh is immediate on handle OR
-// inspiration change.
-export async function fetchHandleResearch(userId, handles, inspiration) {
-  if (!userId || !handles || typeof handles !== "object") return null;
-  const wanted = Object.keys(handles).filter(k => handles[k]).length;
-  if (wanted === 0) return null;
+// Cache TTL is 30 days; handles_hash refresh is immediate on handle,
+// inspiration, OR business-website change. The website is gated on the
+// same learn_from_public_posts consent as the handle research — callers
+// must check the flag before invoking. We don't gate inside this
+// function because chat.js + profile-research-prewarm.js each have
+// their own reasons for the call (and chat.js short-circuits before
+// reaching here when consent is off).
+export async function fetchHandleResearch(userId, handles, inspiration, businessWebsite) {
+  if (!userId) return null;
+  const safeHandles = (handles && typeof handles === "object") ? handles : {};
+  const hasHandle  = Object.keys(safeHandles).some(k => safeHandles[k]);
+  const hasWebsite = !!(businessWebsite && typeof businessWebsite === "string" && businessWebsite.trim());
+  // [BUSINESS-WEBSITE] If neither handles nor a website is present
+  // there's literally nothing for Perplexity to read — skip. With
+  // either signal, proceed: a creator with only a website (no public
+  // social handles yet) still gets brand-grounded research.
+  if (!hasHandle && !hasWebsite) return null;
 
-  const currentHash = hashHandles(handles, inspiration);
+  const currentHash = hashHandles(safeHandles, inspiration, businessWebsite);
   const cached = await readCache(userId);
   if (cached && cached.handles_hash === currentHash) {
     const ageMs = Date.now() - Date.parse(cached.fetched_at || 0);
@@ -197,11 +235,13 @@ export async function fetchHandleResearch(userId, handles, inspiration) {
     }
   }
 
-  // Cache miss / stale / inputs changed → re-fetch.
+  // Cache miss / stale / inputs changed → re-fetch. Bump the token
+  // budget when the website is included since Perplexity needs room
+  // to surface offerings + voice signals in the same paragraph.
   const out = await callPerplexity({
-    prompt:    buildResearchPrompt(handles, inspiration),
+    prompt:    buildResearchPrompt(safeHandles, inspiration, businessWebsite),
     model:     "sonar",
-    maxTokens: 900,
+    maxTokens: hasWebsite ? 1200 : 900,
   });
   if (!out || typeof out.text !== "string") return null;
   const rawText = out.text.trim();

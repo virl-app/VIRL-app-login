@@ -5415,6 +5415,24 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
             <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{JOURNEYS.map(function(j){return <Chip key={j} active={journey===j} onClick={function(){setJourney(journey===j?"":j);}}>{j}</Chip>;})}</div>
           </div>
 
+          {/* [BUSINESS-WEBSITE] Optional business / brand URL. Sits ABOVE
+              the per-platform handles section because conceptually it's
+              the "home base" of the creator's brand — the canonical
+              destination that the social handles often link back TO.
+              Reading order should be: this is my business → these are my
+              social handles. The Perplexity research call also reads this
+              URL when learn_from_public_posts is on, so surfacing it
+              before handles lets users tee up the strongest research
+              signal up front. Not part of the profile tier calculation —
+              personal-brand creators leave it blank without penalty. */}
+          <div id="vp-businessWebsite" style={{marginBottom:24}}>
+            <Label>Your business or brand website (optional)</Label>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+              If your content points to a business, VIRL uses this as the canonical link destination in CTAs and grounds real product/service names. If you've opted into "Research my public posts" under Personalization & Privacy, VIRL will also read your site for voice and offerings the next time it learns about you. Skip this if you're a personal brand — it won't affect your profile completeness.
+            </div>
+            <input value={businessWebsite} onChange={function(e){setBusinessWebsite(e.target.value);}} placeholder="https://yourbusiness.com" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
+          </div>
+
           {myPlatforms.length>0 && (
             <div>
               <div style={subhead}>Your platforms in detail</div>
@@ -5470,21 +5488,6 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
             <input value={inspiration} onChange={function(e){setInspiration(e.target.value);}} placeholder="e.g. @aliabdaal - explains complex ideas in plain language" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
 
-          {/* [BUSINESS-WEBSITE] Optional business / brand URL — surfaced
-              so prompts.js can reference it in CTAs and ground product
-              mentions in real services. Personal-brand creators without
-              a business site simply leave it blank; the profile tier
-              calculation (nextSharperField above) does NOT include
-              this field, so unfilled doesn't drop anyone to a lower
-              tier badge. Helper copy makes the optionality explicit
-              so users don't think they're skipping a real requirement. */}
-          <div id="vp-businessWebsite" style={{marginBottom:18}}>
-            <Label>Your business or brand website (optional)</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
-              If your content points to a business, VIRL will use this as the canonical link destination in CTAs and ground real product names. Skip this if you're a personal brand — it won't affect your profile completeness.
-            </div>
-            <input value={businessWebsite} onChange={function(e){setBusinessWebsite(e.target.value);}} placeholder="https://yourbusiness.com" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
-          </div>
           <div id="vp-sampleCaption" style={{marginBottom:14}}>
             <Label>Paste a caption you love <TierBadge tier="elite"/></Label>
             <textarea value={sampleCaption} onChange={function(e){setSample(e.target.value);}} placeholder="Paste a caption from one of your posts that felt totally like you..." style={Object.assign({},textareaStyle,{minHeight:88})}/>

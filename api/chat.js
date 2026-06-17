@@ -838,6 +838,11 @@ async function fetchProfile(userId) {
       // Used by voice-drift.js to enrich the reference corpus when the
       // single sample_caption would otherwise be too thin.
       voiceSamples:      Array.isArray(data.voice_samples) ? data.voice_samples : [],
+      // [BUSINESS-WEBSITE] Optional URL. Threaded into the Perplexity
+      // research call (gated on learn_from_public_posts) and into
+      // prompts.js buildProfileCtx as canonical CTA destination.
+      // Pre-migration-015 rows return undefined; || "" normalizes.
+      businessWebsite:   data.business_website || "",
     };
   } catch (e) {
     return {};
@@ -1148,7 +1153,13 @@ export default async function handler(req, res) {
   // cached. Existing cached research from before the user revoked
   // consent stays in the row but is forward-looking ignored (the row
   // gets refreshed-with-empty on next opt-in cache miss).
-  if (profile && profile.handles && profile.learnFromPublicPosts) {
+  // [BUSINESS-WEBSITE] Gate-fire when EITHER handles or a business
+  // website is present — research now incorporates the website when
+  // available, so creators without social handles but with a brand
+  // site still get brand-grounded research.
+  const hasResearchableHandles = !!(profile && profile.handles && Object.keys(profile.handles).some(k => profile.handles[k]));
+  const hasResearchableSite    = !!(profile && profile.businessWebsite && String(profile.businessWebsite).trim());
+  if (profile && profile.learnFromPublicPosts && (hasResearchableHandles || hasResearchableSite)) {
     try {
       // [STABILITY] Race the research call against a 2s timeout so a
       // cold-cache Perplexity round-trip can't extend the chat.js
@@ -1159,7 +1170,7 @@ export default async function handler(req, res) {
       // calls. The prewarm endpoint on profile save is the steady-state
       // path; this timeout protects the rare cold-cache chat call.
       const research = await Promise.race([
-        fetchHandleResearch(userId, profile.handles, profile.inspiration),
+        fetchHandleResearch(userId, profile.handles, profile.inspiration, profile.businessWebsite),
         new Promise(function(resolve){ setTimeout(function(){ resolve(null); }, 2000); }),
       ]);
       if (research) {
