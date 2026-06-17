@@ -4543,6 +4543,272 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLe
   );
 }
 
+// [VIRL-POSTS-TAB] Dedicated long-form writing surface. Drives the
+// `long_post` (LinkedIn) and `blog_post` (blog) generation types
+// from a topic + supporting points form instead of needing a plan
+// card seed (which the in-plan "Write Full Post" action already
+// covers). Reuses every voice signal — vault exemplars, fingerprint,
+// recent edits, denylist — because long-form is the heaviest voice
+// fidelity test VIRL has.
+function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpgrade,onSavePost}) {
+  // Mode selects which generation type fires. Output shape branches
+  // accordingly; LinkedIn = hook/body/closing/hashtags, blog = title/
+  // intro/sections/conclusion/meta_description.
+  const [mode,setMode]            = useState("linkedin");
+  const [topic,setTopic]          = useState("");
+  const [points,setPoints]        = useState("");
+  const [tone,setTone]            = useState("");
+  const [length,setLength]        = useState("medium");
+  const [loading,setLoading]      = useState(false);
+  const [error,setError]          = useState("");
+  const [post,setPost]            = useState(null);
+
+  // Length labels differ across modes — blog goes much longer than
+  // LinkedIn. UI-only copy; server enforces the actual word ranges
+  // (api/_lib/prompts.js buildLongPost / buildBlogPost).
+  var lengthOptions = mode === "blog"
+    ? [
+        {v:"short",  l:"Short (~750 words)"},
+        {v:"medium", l:"Medium (~1300 words)"},
+        {v:"long",   l:"Long (~2000+ words)"},
+      ]
+    : [
+        {v:"short",  l:"Short (~350 words)"},
+        {v:"medium", l:"Medium (~600 words)"},
+        {v:"long",   l:"Long (~1200 words)"},
+      ];
+
+  function generate() {
+    if (!topic.trim()) return;
+    setLoading(true); setError(""); setPost(null);
+    // Supporting points: textarea is one-per-line for the user; server
+    // expects an array.
+    var supportingPoints = (points || "")
+      .split(/\n+/)
+      .map(function(s){ return s.replace(/^[-•*]\s*/, "").trim(); })
+      .filter(Boolean);
+    var genType = mode === "blog" ? "blog_post" : "long_post";
+    var params = {
+      topic:            topic.trim(),
+      supportingPoints: supportingPoints,
+      tone:             (tone || "").trim() || null,
+      length:           length,
+    };
+    callAPI(genType, params, { token: userToken }).then(function(data){
+      if (!(data && data.text)) {
+        setError("VIRL's still warming up — tap Try Again.");
+        return;
+      }
+      // [LONG-POST-PARSE] Tolerant parser strips markdown fences /
+      // preamble that Claude occasionally adds despite the prompt.
+      var parsed = extractJSON(data.text);
+      // Sanity-check the shape per mode so a wrong-type response
+      // doesn't half-render in the UI.
+      var ok = parsed && typeof parsed === "object" && (
+        mode === "blog"
+          ? (parsed.title && parsed.sections)
+          : (parsed.hook && parsed.body)
+      );
+      if (!ok) {
+        setError("VIRL drafted something but the format came back garbled. Tap Try Again.");
+        return;
+      }
+      setPost(parsed);
+      if (onCreditsUsed) onCreditsUsed({ cost: (data && data.cost) || 2 });
+      try {
+        var u = (data && data.usage) || {};
+        logEvent(window.__virlUserId||null, mode === "blog" ? "blog_post_generated" : "long_post_generated", {
+          source:              "posts_tab",
+          length:              length,
+          topicLen:            topic.length,
+          supportingPointsLen: supportingPoints.length,
+          outputTokens:        u.outputTokens        || 0,
+          cachedInputTokens:   u.cachedInputTokens   || 0,
+          uncachedInputTokens: u.uncachedInputTokens || 0,
+          truncated:           !!u.truncated,
+          model:               u.model || null,
+        });
+      } catch(e) {}
+    }).catch(function(e){
+      setError((e && e.message) || "Something went wrong. Try again.");
+    }).finally(function(){ setLoading(false); });
+  }
+
+  function copyPost() {
+    if (!post) return;
+    var text;
+    if (mode === "blog") {
+      var sections = (post.sections || []).map(function(s){
+        return (s.heading ? s.heading + "\n\n" : "") + (s.body || "");
+      }).join("\n\n");
+      text = (post.title || "") + "\n\n"
+           + (post.subtitle ? post.subtitle + "\n\n" : "")
+           + (post.intro || "") + "\n\n"
+           + sections + "\n\n"
+           + (post.conclusion || "");
+    } else {
+      var hashtagLine = (post.hashtags && post.hashtags.length)
+        ? "\n\n" + post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")
+        : "";
+      text = (post.hook || "") + "\n\n"
+           + (post.body || "")
+           + (post.closing ? "\n\n" + post.closing : "")
+           + hashtagLine;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function(){});
+    }
+  }
+
+  return (
+    <div>
+      <SherpaTip>
+        {mode === "blog"
+          ? "Give VIRL a blog topic and 2-5 supporting points. It drafts a structured post with title, sections, and SEO summary — in your voice."
+          : "Give VIRL a topic and your supporting points. It drafts a LinkedIn long-form post that hooks before the 'see more' fold and lands in your voice."}
+      </SherpaTip>
+
+      <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
+        {/* Mode picker */}
+        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
+          <Label>What are you writing?</Label>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <Chip active={mode==="linkedin"} onClick={function(){setMode("linkedin"); setPost(null); setError("");}}>{"LinkedIn long-form post"}</Chip>
+            <Chip active={mode==="blog"}     onClick={function(){setMode("blog");     setPost(null); setError("");}}>{"Blog post"}</Chip>
+          </div>
+          <div style={{marginTop:10,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,fontStyle:"italic",lineHeight:1.5}}>
+            {mode === "blog"
+              ? "Structured for a blog / Substack / website. Title, sections with headings, SEO summary."
+              : "Optimized for LinkedIn's see-more fold + plain-text formatting (no markdown)."}
+          </div>
+        </div>
+
+        {/* Topic */}
+        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
+          <Label>{mode === "blog" ? "Blog topic" : "What is this post about?"}</Label>
+          <textarea value={topic} onChange={function(e){setTopic(e.target.value);}}
+            placeholder={mode === "blog"
+              ? "e.g. The hidden cost of daily standups for early-stage teams"
+              : "e.g. Why I stopped doing client work for free, and what changed"}
+            style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,fontStyle:"italic",padding:"11px 14px",resize:"vertical",minHeight:72,lineHeight:1.6}}/>
+        </div>
+
+        {/* Supporting points */}
+        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
+          <Label>Supporting points (optional, one per line)</Label>
+          <textarea value={points} onChange={function(e){setPoints(e.target.value);}}
+            placeholder={"e.g.\nWhat I tried first\nThe moment I realized it wasn't working\nWhat I do now instead"}
+            style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,padding:"11px 14px",resize:"vertical",minHeight:96,lineHeight:1.6}}/>
+          <div style={{marginTop:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,fontStyle:"italic",lineHeight:1.5}}>
+            Skip if you want VIRL to develop the argument on its own — but giving it 2-5 beats anchors the post in YOUR thinking.
+          </div>
+        </div>
+
+        {/* Optional tone refinement */}
+        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
+          <Label>Tone for this post (optional)</Label>
+          <input value={tone} onChange={function(e){setTone(e.target.value);}}
+            placeholder="e.g. contrarian, story-led, data-driven, vulnerable…"
+            style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,padding:"11px 14px",lineHeight:1.6}}/>
+          <div style={{marginTop:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,fontStyle:"italic",lineHeight:1.5}}>
+            Defaults to your saved profile voice. Use this to nudge a specific post in a different direction.
+          </div>
+        </div>
+
+        {/* Length */}
+        <div style={{padding:"22px 26px"}}>
+          <Label>Length</Label>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {lengthOptions.map(function(opt){
+              return <Chip key={opt.v} active={length===opt.v} onClick={function(){setLength(opt.v);}}>{opt.l}</Chip>;
+            })}
+          </div>
+        </div>
+      </div>
+
+      <GenBtn onClick={generate} loading={loading} disabled={!topic.trim()}>
+        {loading
+          ? (mode === "blog" ? "Drafting your blog post..." : "Writing your post...")
+          : (mode === "blog" ? "Write the blog post" : "Write the LinkedIn post")}
+      </GenBtn>
+      <ErrBox msg={error}/>
+      {loading && !post && <Spinner/>}
+
+      {/* Result rendering — branches per mode */}
+      {post && mode === "linkedin" && (
+        <div style={{background:B.card,borderRadius:16,padding:"22px 24px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.ink,lineHeight:1.6,marginBottom:14,whiteSpace:"pre-wrap"}}>{post.hook}</div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{post.body}</div>
+          {post.closing && <div style={{marginTop:16,fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{post.closing}</div>}
+          {post.hashtags && post.hashtags.length > 0 && (
+            <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.blue}}>
+              {post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")}
+            </div>
+          )}
+          {post.compliance_note && (
+            <div style={{marginTop:14,padding:"10px 14px",background:B.coralSoft,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.coral,lineHeight:1.5}}>
+              {"Suggested disclosure: " + post.compliance_note}
+            </div>
+          )}
+          <div style={{marginTop:18,display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button onClick={copyPost}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+              {"Copy"}
+            </button>
+            <button onClick={generate} disabled={loading}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:loading?"default":"pointer"}}>
+              {"Regenerate"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {post && mode === "blog" && (
+        <div style={{background:B.card,borderRadius:16,padding:"24px 26px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
+          <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.ink,lineHeight:1.2,marginBottom:8}}>{post.title}</div>
+          {post.subtitle && <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.55,marginBottom:18}}>{post.subtitle}</div>}
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-wrap",marginBottom:18}}>{post.intro}</div>
+          {Array.isArray(post.sections) && post.sections.map(function(s, i){
+            return (
+              <div key={"sec-"+i} style={{marginBottom:18}}>
+                {s.heading && <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.navy,lineHeight:1.3,marginBottom:8}}>{s.heading}</div>}
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-wrap"}}>{s.body}</div>
+              </div>
+            );
+          })}
+          {post.conclusion && <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:400,color:B.ink,lineHeight:1.75,whiteSpace:"pre-wrap",paddingTop:14,borderTop:"1px solid "+B.divider}}>{post.conclusion}</div>}
+          {post.meta_description && (
+            <div style={{marginTop:18,padding:"12px 14px",background:B.bg,borderRadius:10,border:"1px solid "+B.divider}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>{"Meta description (SEO)"}</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.55}}>{post.meta_description}</div>
+            </div>
+          )}
+          {post.hashtags && post.hashtags.length > 0 && (
+            <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.blue}}>
+              {post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")}
+            </div>
+          )}
+          {post.compliance_note && (
+            <div style={{marginTop:14,padding:"10px 14px",background:B.coralSoft,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.coral,lineHeight:1.5}}>
+              {"Suggested disclosure: " + post.compliance_note}
+            </div>
+          )}
+          <div style={{marginTop:20,display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button onClick={copyPost}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+              {"Copy full post"}
+            </button>
+            <button onClick={generate} disabled={loading}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:loading?"default":"pointer"}}>
+              {"Regenerate"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCreditsUsed}) {
   const [editing,setEditing] = useState(false);
   const [text,setText] = useState(captionText||"");
@@ -8094,6 +8360,13 @@ function App() {
     {key:"profile", label:"My Profile"},
     {key:"plan",    label:"VIRL Plan"},
     {key:"caption", label:"VIRL Captions"},
+    // [VIRL-POSTS-TAB] Dedicated surface for long-form text content
+    // (LinkedIn long posts, blog posts). Sits between Captions and
+    // Scan so the writing surfaces cluster together. Built on the
+    // long_post + blog_post generation types — same prompt builders
+    // the Plan tab's "Write Full Post" action uses, just driven by
+    // a topic + supporting points instead of a plan card seed.
+    {key:"posts",   label:"VIRL Posts"},
     {key:"scan",    label:"VIRL Scan"},
     // Algorithm tab removed — strategic insights moving inline. Keep
     // this commented for easy restoration:
@@ -10714,6 +10987,32 @@ return (
             <CaptionGen profile={profile} onSaveCaption={saveCaption} userToken={userToken} onCreditsUsed={refreshCredits}
               freshTrendsLeft={freshTrendsCaptionLeft} isPaid={isPaid} daysUntilReset={daysUntilReset}
               onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
+          </div>
+        )}
+
+        {/* [VIRL-POSTS-TAB] Long-form writing surface — LinkedIn long
+            posts + blog posts, driven by topic + supporting points
+            (no plan card seed needed). Same trial-gating + sign-in
+            requirements as the other generation tabs. */}
+        {tab==="posts"&&(
+          <div>
+            <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
+              <Eyebrow>VIRL Posts</Eyebrow>
+              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+                Long-form,<br/><span style={{color:B.navy}}>still in your voice.</span>
+              </div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.65,maxWidth:520,marginBottom:profileComplete?12:0}}>
+                For the LinkedIn post you've been meaning to write, or the blog post that's been sitting in your drafts. Give VIRL the topic and your supporting points — it does the rest in your voice.
+              </div>
+              {profileComplete && <div style={{background:B.navySoft,borderRadius:10,padding:"10px 16px",fontFamily:"'Jost',sans-serif",fontSize:13,color:B.navy}}>{"Writing in " + profile.name + "'s voice — tuned to long-form."}</div>}
+            </div>
+            <PostWriter
+              profile={profile}
+              userToken={userToken}
+              onCreditsUsed={refreshCredits}
+              isPaid={isPaid}
+              daysUntilReset={daysUntilReset}
+              onUpgrade={function(){ setUpgradeReason("credits"); setShowUpgrade(true); }}/>
           </div>
         )}
 

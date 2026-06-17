@@ -1030,6 +1030,8 @@ export default async function handler(req, res) {
     // edits, denylist) so the post sounds like the creator and not
     // generic LinkedIn thought-leadership writing.
     "long_post",
+    // [VIRL-POSTS-TAB] Blog posts get the same treatment.
+    "blog_post",
   ]);
   // [POSTFREQ-OPTIMAL] targetPlatforms scopes the optimal-days computation
   // to the platforms in this request. Plan / plan_partial use the user's
@@ -1116,6 +1118,9 @@ export default async function handler(req, res) {
     // — feed in recent edits + the mined denylist so the model can hit
     // THIS creator's register, not generic LinkedIn slop.
     "long_post",
+    // [VIRL-POSTS-TAB] Blog posts are the longest single-artifact
+    // generation we produce; voice fidelity matters even more here.
+    "blog_post",
   ]);
   const recentEdits = (EDIT_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits)
     ? await fetchRecentEdits(userId)
