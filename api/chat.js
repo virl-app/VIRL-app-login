@@ -1436,16 +1436,26 @@ export default async function handler(req, res) {
       });
     }
 
-    const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key':         ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type':      'application/json',
-        ...(useCache ? { 'anthropic-beta': 'prompt-caching-2024-07-31' } : {}),
-      },
-      body: JSON.stringify(payload),
-    });
+    // [NO-TRUNCATION] One-call helper so we can run the same request
+    // twice if the first attempt comes back with stop_reason="max_tokens".
+    // The streaming-plan path has its own retry inside handleStreamingPlan;
+    // this is the non-streaming peer for long_post, blog_post, script,
+    // caption, scan, etc.
+    async function callAnthropic(currentPayload) {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key':         ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'Content-Type':      'application/json',
+          ...(useCache ? { 'anthropic-beta': 'prompt-caching-2024-07-31' } : {}),
+        },
+        body: JSON.stringify(currentPayload),
+      });
+      return r;
+    }
+
+    let anthropicRes = await callAnthropic(payload);
 
     if (!anthropicRes.ok) {
       const err = await anthropicRes.json().catch(() => ({}));
@@ -1455,23 +1465,65 @@ export default async function handler(req, res) {
       });
     }
 
-    const data = await anthropicRes.json();
+    let data = await anthropicRes.json();
 
     // [COST 1] Truncation flag derived from Anthropic's stop_reason. Captured
     // here so it lands on both the usage_events row (admin trends) and the
     // response payload (per-event client telemetry).
-    const stopReason = data.stop_reason || null;
-    const truncated  = stopReason === 'max_tokens';
+    let stopReason = data.stop_reason || null;
+    let truncated  = stopReason === 'max_tokens';
+
+    // [NO-TRUNCATION] Auto-retry on max_tokens truncation for the
+    // non-streaming path — same pattern handleStreamingPlan uses for
+    // the plan path. Caps the retry at 16000 tokens (Sonnet 4.6's
+    // output ceiling is far higher, but 16000 covers the longest
+    // realistic blog post + JSON overhead with room to spare). Only
+    // retries ONCE — if 16000 still isn't enough something else is
+    // wrong and surfacing the truncation flag is more useful than
+    // looping further.
+    let retried = false;
+    let inputTokensAcc        = (data.usage && data.usage.input_tokens)        || 0;
+    let outputTokensAcc       = (data.usage && data.usage.output_tokens)       || 0;
+    let cacheReadAcc          = (data.usage && data.usage.cache_read_input_tokens)     || 0;
+    let cacheWriteAcc         = (data.usage && data.usage.cache_creation_input_tokens) || 0;
+    if (truncated && (payload.max_tokens || 0) < 16000) {
+      const retryPayload = { ...payload, max_tokens: 16000 };
+      const retryRes = await callAnthropic(retryPayload);
+      if (retryRes.ok) {
+        const retryData = await retryRes.json();
+        retried = true;
+        // Sum tokens across both attempts so usage_events reflects
+        // what Anthropic actually billed.
+        inputTokensAcc  += (retryData.usage && retryData.usage.input_tokens)         || 0;
+        outputTokensAcc += (retryData.usage && retryData.usage.output_tokens)        || 0;
+        cacheReadAcc    += (retryData.usage && retryData.usage.cache_read_input_tokens)     || 0;
+        cacheWriteAcc   += (retryData.usage && retryData.usage.cache_creation_input_tokens) || 0;
+        data       = retryData;
+        stopReason = retryData.stop_reason || null;
+        truncated  = stopReason === 'max_tokens';
+      } else {
+        // First call already succeeded; if the retry transport-fails
+        // we keep the first (truncated) response. Client gets the
+        // truncation flag on usage and the existing extractJSON path
+        // surfaces a "format came back garbled" error if the JSON
+        // can't be parsed.
+        const errBody = await retryRes.text().catch(() => '');
+        console.warn('[no-truncation] retry transport-failed', retryRes.status, errBody.slice(0, 200));
+      }
+    }
 
     let clientUsage = null;
     if (data.usage) {
+      // [NO-TRUNCATION] Use the accumulated tokens (which include the
+      // retry attempt when one happened) so usage_events reflects the
+      // total billing, not just the second attempt.
       const usage = {
         generationType,
         model:               selectedModel,
-        input_tokens:        data.usage.input_tokens        || 0,
-        output_tokens:       data.usage.output_tokens       || 0,
-        cache_read_tokens:   data.usage.cache_read_input_tokens     || 0,
-        cache_write_tokens:  data.usage.cache_creation_input_tokens || 0,
+        input_tokens:        inputTokensAcc,
+        output_tokens:       outputTokensAcc,
+        cache_read_tokens:   cacheReadAcc,
+        cache_write_tokens:  cacheWriteAcc,
         truncated,
         stop_reason:         stopReason,
       };
@@ -1492,6 +1544,7 @@ export default async function handler(req, res) {
         truncated,
         stopReason,
         model:               selectedModel,
+        retried,
       };
     }
 

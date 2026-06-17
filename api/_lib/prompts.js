@@ -1328,10 +1328,19 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    // 4000 max_tokens covers ~1500 words of body + hook/closing/hashtags
-    // with headroom. Lower bound (length=short) easily fits; the cap
-    // prevents the model from running away on length=long.
-    maxTokens: 4000,
+    // [NO-TRUNCATION] Length-aware cap so a "long" generation has the
+    // headroom it actually needs. Empirically:
+    //   - short  (~350w): ~600 output tokens
+    //   - medium (~600w): ~1100 output tokens
+    //   - long  (~1200w): ~2200 output tokens
+    // Plus hashtags + closing + JSON wrapping overhead (~500 tokens).
+    // The caps below are 2x+ headroom over the realistic worst case so
+    // truncation should not happen even on the verbose end. The
+    // non-streaming retry path in chat.js doubles + caps at 16000 if
+    // it ever does happen, providing a safety net.
+    maxTokens: lengthTarget === "short"  ? 2500
+             : lengthTarget === "long"   ? 8000
+             :                              4500,
     cost:      CREDIT_COSTS.long_post,
   };
 }
@@ -1404,7 +1413,17 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    maxTokens: 5000,
+    // [NO-TRUNCATION] Length-aware cap. Blog targets are
+    // substantially longer than LinkedIn long posts AND the JSON
+    // wrapping is heavier (sections array, meta description, optional
+    // subtitle). Empirical worst case for a "long" blog (2500 words +
+    // 6 sections + meta + hashtags) lands around 5500 output tokens;
+    // 12000 gives ~2x headroom. Short / medium variants get
+    // proportional caps. Non-streaming retry path in chat.js doubles
+    // + caps at 16000 as a safety net.
+    maxTokens: lengthTarget === "short"  ? 4000
+             : lengthTarget === "long"   ? 12000
+             :                              7000,
     cost:      CREDIT_COSTS.long_post,
   };
 }
