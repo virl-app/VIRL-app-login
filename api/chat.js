@@ -1020,6 +1020,11 @@ export default async function handler(req, res) {
   const VOICE_GEN_TYPES = new Set([
     "plan", "plan_partial", "plan_strategy",
     "caption", "caption_remix", "script",
+    // [LINKEDIN-LONG-POST] Long-form is the heaviest voice-fidelity test
+    // we have — pull every signal (vault exemplars, fingerprint, recent
+    // edits, denylist) so the post sounds like the creator and not
+    // generic LinkedIn thought-leadership writing.
+    "long_post",
   ]);
   // [POSTFREQ-OPTIMAL] targetPlatforms scopes the optimal-days computation
   // to the platforms in this request. Plan / plan_partial use the user's
@@ -1102,6 +1107,10 @@ export default async function handler(req, res) {
     "plan", "plan_partial",
     "caption", "caption_remix",
     "scan_image", "scan_video_frame",
+    // [LINKEDIN-LONG-POST] Long-form posts are voice-heavy by definition
+    // — feed in recent edits + the mined denylist so the model can hit
+    // THIS creator's register, not generic LinkedIn slop.
+    "long_post",
   ]);
   const recentEdits = (EDIT_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits)
     ? await fetchRecentEdits(userId)

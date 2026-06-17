@@ -123,7 +123,11 @@ async function saveProfileToSupabase(profile, userId) {
       // mid-edit with whitespace-only values that shouldn't persist.
       voice_samples: Array.isArray(profile.voiceSamples)
         ? profile.voiceSamples.map(function(s){ return String(s||"").trim(); }).filter(Boolean)
-        : []
+        : [],
+      // [BUSINESS-WEBSITE] Optional business / brand URL. Trim before
+      // write so a stray trailing space doesn't break URL matching
+      // downstream; empty string normalizes to NULL on the server.
+      business_website: (profile.businessWebsite || "").trim() || null,
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -212,7 +216,10 @@ async function loadProfileFromSupabase(userId) {
       learnFromPublicPosts:  !!data.learn_from_public_posts,
       // [VOICE-REFERENCE] Optional additional voice samples. Empty array on
       // pre-migration rows so the UI editor renders no extra slots.
-      voiceSamples: Array.isArray(data.voice_samples) ? data.voice_samples : []
+      voiceSamples: Array.isArray(data.voice_samples) ? data.voice_samples : [],
+      // [BUSINESS-WEBSITE] Optional URL. Empty string on pre-migration
+      // rows so the input field hydrates empty rather than "null".
+      businessWebsite: data.business_website || ""
     };
   } catch(e) { return {}; }
 }
@@ -3319,7 +3326,250 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem}) {
   );
 }
 
-function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends}) {
+// [LINKEDIN-LONG-POST] Modal that expands a long_form_text plan card
+// into a full 500-1500 word LinkedIn post. Mirrors ScriptGenerator's
+// shape so the user experience is consistent across "Write Script"
+// (video) and "Write Full Post" (long-form text) actions.
+//
+// State lifecycle matches ScriptGenerator: opens with any previously-
+// saved long post on the card, lets the user regenerate / edit /
+// copy / save to the card. "Save to card" persists the artifact on
+// the card so it survives session reloads and shows the saved
+// version next time the modal opens (no re-billing).
+function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveLongPost}) {
+  const initialSaved = card && card.savedLongPost ? card.savedLongPost : null;
+  const [post,setPost]         = useState(initialSaved);
+  const [loading,setLoading]   = useState(false);
+  const [error,setError]       = useState("");
+  const [length,setLength]     = useState("medium");
+  const [savedOnCard,setSavedOnCard] = useState(!!initialSaved);
+
+  // [POST-EDIT] Inline edit, same shape as ScriptGenerator's edit mode.
+  const [editing,setEditing]       = useState(false);
+  const [draftPost,setDraftPost]   = useState(null);
+  function startEdit() {
+    if (!post) return;
+    setDraftPost({
+      hook:     post.hook || "",
+      body:     post.body || "",
+      closing:  post.closing || "",
+      hashtags: Array.isArray(post.hashtags) ? post.hashtags.join(" ") : "",
+    });
+    setEditing(true);
+  }
+  function cancelEdit() { setDraftPost(null); setEditing(false); }
+  function updateDraft(field, value) {
+    setDraftPost(function(d){ return d ? Object.assign({}, d, { [field]: value }) : d; });
+  }
+  function saveEdit() {
+    if (!draftPost) { setEditing(false); return; }
+    var nextHashtags = (draftPost.hashtags || "")
+      .split(/[\s,]+/)
+      .map(function(t){ return t.replace(/^#/, "").trim(); })
+      .filter(Boolean);
+    var next = {
+      hook:     (draftPost.hook || "").trim(),
+      body:     (draftPost.body || "").trim(),
+      closing:  (draftPost.closing || "").trim(),
+      hashtags: nextHashtags,
+    };
+    if (post && typeof window !== "undefined" && typeof window.__virlCaptureEdit === "function") {
+      try {
+        window.__virlCaptureEdit(
+          "long_post",
+          { hook: post.hook || "", body: post.body || "", closing: post.closing || "" },
+          { hook: next.hook,        body: next.body,        closing: next.closing },
+        );
+      } catch(e){}
+    }
+    setPost(next);
+    setDraftPost(null);
+    setEditing(false);
+    if (onSaveLongPost) {
+      onSaveLongPost(next);
+      setSavedOnCard(true);
+    }
+  }
+
+  function generate() {
+    setLoading(true); setPost(null); setError("");
+    setEditing(false); setDraftPost(null);
+    callAPI("long_post", { card: card, length: length }, { token: userToken }).then(function(data) {
+      if (data && data.text) {
+        try {
+          var parsed = JSON.parse(data.text);
+          setPost(parsed);
+          setSavedOnCard(false);
+          if (onCreditsUsed) onCreditsUsed({ cost: (data && data.cost) || 2 });
+          try {
+            var postUsage = (data && data.usage) || {};
+            logEvent(session && session.user && session.user.id, "long_post_generated", {
+              cardId:   (card.title || "") + (card.day || ""),
+              platform: card.platform || "LinkedIn",
+              day:      card.day || null,
+              length:   length,
+              outputTokens:        postUsage.outputTokens        || 0,
+              cachedInputTokens:   postUsage.cachedInputTokens   || 0,
+              uncachedInputTokens: postUsage.uncachedInputTokens || 0,
+              truncated:           !!postUsage.truncated,
+              model:               postUsage.model || null,
+            });
+          } catch(e){}
+        } catch(e) {
+          setError("Got a response but couldn't parse it. Tap Try Again.");
+        }
+      } else {
+        setError("VIRL's still warming up - tap Try Again.");
+      }
+    }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
+  }
+
+  function copyPost() {
+    if (!post) return;
+    var hashtagLine = (post.hashtags && post.hashtags.length)
+      ? "\n\n" + post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")
+      : "";
+    var full = (post.hook || "") + "\n\n"
+             + (post.body || "")
+             + (post.closing ? "\n\n" + post.closing : "")
+             + hashtagLine;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(full).catch(function(){});
+    }
+  }
+
+  // Modal shell — same overlay treatment as ScriptGenerator so the two
+  // generators feel like a pair.
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.55)",zIndex:9999,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}} onClick={onClose}>
+      <div onClick={function(e){ e.stopPropagation(); }}
+        style={{background:B.card,borderRadius:18,maxWidth:680,width:"100%",padding:"28px 28px 24px",boxShadow:"0 24px 60px rgba(15,23,42,0.35)",position:"relative"}}>
+        <button onClick={onClose} aria-label="Close"
+          style={{position:"absolute",top:14,right:14,width:32,height:32,borderRadius:"50%",border:"none",background:"transparent",fontSize:22,color:B.muted,cursor:"pointer",lineHeight:1}}>{"×"}</button>
+
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>{"LinkedIn long-form post"}</div>
+        <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,lineHeight:1.2,marginBottom:6}}>{card.title || "Long-form post"}</div>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:18}}>{card.description || ""}</div>
+
+        {/* Length chips */}
+        {!post && !loading && (
+          <div style={{marginBottom:18}}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>{"Target length"}</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {[
+                {v:"short",  l:"Short (~350 words)"},
+                {v:"medium", l:"Medium (~600 words)"},
+                {v:"long",   l:"Long (~1200 words)"},
+              ].map(function(opt){
+                var active = length === opt.v;
+                return (
+                  <button key={opt.v} onClick={function(){setLength(opt.v);}}
+                    style={{
+                      fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",
+                      padding:"8px 14px",borderRadius:99,cursor:"pointer",
+                      background:active?B.navy:B.bg,color:active?B.white:B.sub,border:"1px solid "+(active?B.navy:B.border),
+                    }}>{opt.l}</button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {!post && !loading && (
+          <button onClick={generate}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 22px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+            {"Write the full post"}
+          </button>
+        )}
+
+        {loading && (
+          <div style={{padding:"30px 0",textAlign:"center",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted}}>
+            {"Drafting your post…"}
+          </div>
+        )}
+
+        {error && !loading && (
+          <div style={{marginTop:12,padding:"12px 16px",background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:10,fontFamily:"'Jost',sans-serif",fontSize:12,color:B.ink}}>{error}</div>
+        )}
+
+        {/* Render the post — edit mode is a parallel set of textareas. */}
+        {post && !editing && (
+          <div>
+            <div style={{padding:"18px 20px",background:B.bg,borderRadius:12,border:"1px solid "+B.border,marginBottom:14}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.ink,lineHeight:1.6,marginBottom:12,whiteSpace:"pre-wrap"}}>{post.hook}</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{post.body}</div>
+              {post.closing && <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{post.closing}</div>}
+              {post.hashtags && post.hashtags.length > 0 && (
+                <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.blue}}>
+                  {post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")}
+                </div>
+              )}
+              {post.compliance_note && (
+                <div style={{marginTop:14,padding:"10px 14px",background:B.coralSoft,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.coral,lineHeight:1.5}}>
+                  {"Suggested disclosure: " + post.compliance_note}
+                </div>
+              )}
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button onClick={copyPost}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+                {"Copy"}
+              </button>
+              {onSaveLongPost && !savedOnCard && (
+                <button onClick={function(){ onSaveLongPost(post); setSavedOnCard(true); }}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
+                  {"Save to card"}
+                </button>
+              )}
+              {onSaveLongPost && savedOnCard && (
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",color:B.green}}>
+                  {"Saved ✓"}
+                </span>
+              )}
+              <button onClick={startEdit}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
+                {"Edit"}
+              </button>
+              <button onClick={generate}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
+                {"Regenerate"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {post && editing && draftPost && (
+          <div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Hook"}</div>
+            <textarea value={draftPost.hook} onChange={function(e){updateDraft("hook", e.target.value);}}
+              style={{width:"100%",minHeight:60,padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13,marginBottom:12}}/>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Body"}</div>
+            <textarea value={draftPost.body} onChange={function(e){updateDraft("body", e.target.value);}}
+              style={{width:"100%",minHeight:200,padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13,lineHeight:1.6,marginBottom:12}}/>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Closing"}</div>
+            <textarea value={draftPost.closing} onChange={function(e){updateDraft("closing", e.target.value);}}
+              style={{width:"100%",minHeight:60,padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13,marginBottom:12}}/>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Hashtags (space-separated, no #)"}</div>
+            <input value={draftPost.hashtags} onChange={function(e){updateDraft("hashtags", e.target.value);}}
+              style={{width:"100%",padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13,marginBottom:14}}/>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={saveEdit}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+                {"Save changes"}
+              </button>
+              <button onClick={cancelEdit}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
+                {"Cancel"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends}) {
   // When `replacing` is true, this card slot is awaiting a streaming
   // replacement from /api/chat?generationType=plan_partial. Render a
   // skeleton instead of the real card so the user sees their kept cards
@@ -3339,6 +3589,11 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profil
   const [expanded,setExpanded] = useState(false);
   const [showLog,setShowLog]   = useState(false);
   const [showScript,setShowScript] = useState(false);
+  // [LINKEDIN-LONG-POST] Parallel state to showScript. Independent
+  // so a user could conceptually have both modals' actions queued —
+  // in practice only one is shown at a time but the state separation
+  // keeps the rendering logic predictable.
+  const [showLongPost,setShowLongPost] = useState(false);
   // [EDIT] Inline card editing. Tapping Edit opens an in-place form
   // showing every top-level text field the model emitted for this
   // card's format. Save commits via onEdit prop (parent updates the
@@ -3558,6 +3813,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profil
   return (
     <div className="su" style={{background:cardBackground,borderRadius:12,boxShadow:cardShadow,borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity,transition:"background .15s, box-shadow .15s"}}>
       {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
+      {showLongPost&&<LongFormPostGenerator card={card} onClose={function(){setShowLongPost(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveLongPost={onSaveLongPost ? function(p){ onSaveLongPost(idx, p); } : null}/>}
 
       {/* [UX-01 / P3] Header row. postTime leads at high contrast — it's
            the most actionable atom on the card and previously sat at 9px
@@ -3738,6 +3994,18 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,saved,result,profil
           <button onClick={function(){ setShowScript(true); }}
             style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
             {"Write Script"}
+          </button>
+        )}
+        {/* [LINKEDIN-LONG-POST] Surface "Write Full Post" only when
+            the card is a long-form text card. The seed (hook, body,
+            closing fragments produced by the planner) feeds into the
+            long_post prompt as starting material rather than the model
+            improvising from a blank brief. Hidden for video/carousel/
+            etc. — those cards have other action affordances. */}
+        {expanded && card.format === "long_form_text" && (
+          <button onClick={function(){ setShowLongPost(true); }}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
+            {card.savedLongPost ? "View Full Post" : "Write Full Post"}
           </button>
         )}
         {expanded && <SharePlanCard card={card}/>}
@@ -4695,6 +4963,11 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   // profile form scannable; revisit the cap, not the schema, if it needs
   // to grow.
   const [voiceSamples,setVoiceSamples] = useState(Array.isArray(profile.voiceSamples)?profile.voiceSamples:[]);
+  // [BUSINESS-WEBSITE] Optional URL the creator can attach for context
+  // in CTAs, long-form posts, etc. Not part of any tier-completeness
+  // check — personal-brand creators without a business site are fully
+  // "Elite" without this field. See nextSharperField below.
+  const [businessWebsite,setBusinessWebsite] = useState(profile.businessWebsite||"");
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -4749,7 +5022,7 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -4761,7 +5034,7 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
   // — otherwise a user who flips a toggle and clicks "Save my profile"
   // would have their toggle silently wiped to false by the upsert.
   function handleSavePhase1() {
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite});
     setPhase1Saved(true);
     setPhase1JustSaved(true);
   }
@@ -5195,6 +5468,22 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
           <div id="vp-inspiration" style={{marginBottom:18}}>
             <Label>A creator whose style you admire <TierBadge tier="elite"/></Label>
             <input value={inspiration} onChange={function(e){setInspiration(e.target.value);}} placeholder="e.g. @aliabdaal - explains complex ideas in plain language" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
+          </div>
+
+          {/* [BUSINESS-WEBSITE] Optional business / brand URL — surfaced
+              so prompts.js can reference it in CTAs and ground product
+              mentions in real services. Personal-brand creators without
+              a business site simply leave it blank; the profile tier
+              calculation (nextSharperField above) does NOT include
+              this field, so unfilled doesn't drop anyone to a lower
+              tier badge. Helper copy makes the optionality explicit
+              so users don't think they're skipping a real requirement. */}
+          <div id="vp-businessWebsite" style={{marginBottom:18}}>
+            <Label>Your business or brand website (optional)</Label>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+              If your content points to a business, VIRL will use this as the canonical link destination in CTAs and ground real product names. Skip this if you're a personal brand — it won't affect your profile completeness.
+            </div>
+            <input value={businessWebsite} onChange={function(e){setBusinessWebsite(e.target.value);}} placeholder="https://yourbusiness.com" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
           <div id="vp-sampleCaption" style={{marginBottom:14}}>
             <Label>Paste a caption you love <TierBadge tier="elite"/></Label>
@@ -8372,6 +8661,32 @@ function App() {
       return next;
     });
   }
+
+  // [LINKEDIN-LONG-POST] Mirror of saveScriptForCard for the long-form
+  // post artifact. Same immutable-update + localStorage + Supabase
+  // persistence pattern; the persistence path simply writes the
+  // savedLongPost field onto the card alongside savedScript. Both
+  // can coexist on the same card if the user wants to generate
+  // multiple expansions of an idea (unlikely in practice, but the
+  // shape doesn't preclude it).
+  function saveLongPostForCard(cardIdx, longPost) {
+    setCards(function(prev) {
+      if (!prev || !Array.isArray(prev) || cardIdx < 0 || cardIdx >= prev.length) return prev;
+      var next = prev.slice();
+      next[cardIdx] = Object.assign({}, prev[cardIdx], { savedLongPost: longPost });
+      var expiresAt;
+      try {
+        var current = JSON.parse(localStorage.getItem(KEY)||"{}");
+        expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
+          ? current.planExpiresAt : computePlanExpiry(sbCredits);
+        current.plan = next;
+        current.planExpiresAt = expiresAt;
+        localStorage.setItem(KEY, JSON.stringify(current));
+      } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
+      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      return next;
+    });
+  }
   // [LEARNING-CONSENT] Unified edit-diff capture for the learning loop.
   // Used by updateCardAt (plan cards) + by deep edit surfaces (caption,
   // hook, script, scan caption) via window.__virlCaptureEdit. Always
@@ -9900,6 +10215,7 @@ return (
                               <PlanCard key={i} card={card} idx={i}
                                 onSave={saveToVault} onLog={logResult}
                                 onSaveScript={saveScriptForCard}
+                                onSaveLongPost={saveLongPostForCard}
                                 onEdit={updateCardAt}
                                 saved={vault.some(function(v){return v.id===card.title+card.day;})}
                                 result={results.find(function(r){return r.id===card.title+card.day;})}
@@ -10157,6 +10473,7 @@ return (
                           onSave={saveToVault}
                           onLog={logResult}
                           onSaveScript={null}
+                          onSaveLongPost={null}
                           saved={vault.some(function(v){ return v.id === card.title + card.day; })}
                           result={results.find(function(r){ return r.id === card.title + card.day; })}
                           profile={profile}
