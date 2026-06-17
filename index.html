@@ -613,7 +613,13 @@ function getFormatsForPlatform(platform) {
 }
 const NICHES = ["Lifestyle","Fitness","Food & Recipes","Finance","Beauty","Travel","Education","Parenting","Home & Family","Wellness","Small Business","Real Estate","Gaming","Tech","Sports","Fashion"];
 const GOALS = ["Grow my following","Land brand deals","Sell products","Build community","Go viral"];
-const FORMATS = ["Talking-head video","Aesthetic B-roll","Day in my life","Tutorial","Trend duets","Carousel"];
+// [LONG-FORM-PILL] Long-form post added so LinkedIn-first creators
+// can opt into thought-leadership / blog-style content as part of
+// their weekly mix. When this chip is on, the planner biases toward
+// long_form_text format cards (LinkedIn especially per industry
+// format guidance), and the "Write Full Post" action surfaces on
+// those cards in the rendered plan.
+const FORMATS = ["Talking-head video","Aesthetic B-roll","Day in my life","Tutorial","Trend duets","Carousel","Long-form post"];
 const FOLLOWERS = ["Under 1K","1K-5K","5K-20K","20K-100K","100K+"];
 const TONES = ["Warm & relatable","Educational","Funny & playful","Inspirational","Bold & direct"];
 const VIBES = ["Real & unfiltered","Bold & direct","Witty & dry","Educational expert","Motivational coach","No-nonsense","Analytical","Soft & aesthetic","Warm & nurturing","Conversational bestie","Hype & energetic","Laid-back & chill"];
