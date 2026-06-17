@@ -386,7 +386,7 @@ const CAPTION_LENGTH_GUIDE = {
 };
 
 const GENERATION_TYPES = [
-  "plan", "plan_partial", "plan_strategy", "script", "caption", "caption_remix", "scan_image", "scan_video_frame", "long_post",
+  "plan", "plan_partial", "plan_strategy", "script", "caption", "caption_remix", "scan_image", "scan_video_frame", "long_post", "blog_post",
 ];
 
 const IMAGE_REQUIRED_TYPES = new Set(["scan_image", "scan_video_frame"]);
@@ -1269,6 +1269,18 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
   const systemPrompt = composeSystemPrompt(profile, "long-form LinkedIn writer", compliance, vaultPatterns, personalDenylist);
 
+  // [VIRL-POSTS-TAB] Two seed modes — plan-card seed (existing flow:
+  // "Write Full Post" on a long_form_text plan card) OR standalone
+  // topic seed (new flow: VIRL Posts tab where the user types a
+  // topic + supporting points from scratch). Either path produces
+  // the same output shape so the renderer is shared.
+  const standalone = !!(params.topic && String(params.topic).trim());
+  const topic       = standalone ? String(params.topic).trim() : "";
+  const points      = (standalone && Array.isArray(params.supportingPoints))
+    ? params.supportingPoints.map(s => String(s || "").trim()).filter(Boolean)
+    : [];
+  const tone        = (params.tone && typeof params.tone === "string")
+    ? params.tone.trim() : "";
   // Pull whatever the planner already produced. The full plan flow
   // emits hook / body / closing on long_form_text cards; if the user
   // hits this from a non-plan flow we still want to work with
@@ -1277,14 +1289,21 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
   const seedBody    = (card.body    || "").trim();
   const seedClosing = (card.closing || "").trim();
 
-  const seedBlock = [
-    "## SEED FROM THE WEEKLY PLAN",
-    "Card title: " + (card.title || "(no title)"),
-    "Strategic angle: " + (card.description || card.insight || "(no description)"),
-    seedHook    ? "Planner-suggested hook: "    + seedHook    : "",
-    seedBody    ? "Planner-suggested body: "    + seedBody    : "",
-    seedClosing ? "Planner-suggested closing: " + seedClosing : "",
-  ].filter(Boolean).join("\n");
+  const seedBlock = standalone
+    ? [
+        "## TOPIC & SUPPORTING POINTS",
+        "Topic: " + topic,
+        points.length ? "Supporting points the creator wants to make:\n" + points.map(p => "  - " + p).join("\n") : "",
+        tone ? "Tone direction for this specific post: " + tone : "",
+      ].filter(Boolean).join("\n")
+    : [
+        "## SEED FROM THE WEEKLY PLAN",
+        "Card title: " + (card.title || "(no title)"),
+        "Strategic angle: " + (card.description || card.insight || "(no description)"),
+        seedHook    ? "Planner-suggested hook: "    + seedHook    : "",
+        seedBody    ? "Planner-suggested body: "    + seedBody    : "",
+        seedClosing ? "Planner-suggested closing: " + seedClosing : "",
+      ].filter(Boolean).join("\n");
 
   const userPrompt = ""
     + "Write a complete LinkedIn long-form text post that builds on the seed below. "
@@ -1313,6 +1332,79 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
     // with headroom. Lower bound (length=short) easily fits; the cap
     // prevents the model from running away on length=long.
     maxTokens: 4000,
+    cost:      CREDIT_COSTS.long_post,
+  };
+}
+
+// [VIRL-POSTS-TAB] Blog post builder. Paired with buildLongPost — same
+// creator-voice plumbing, different output shape. Blog posts use
+// headers, longer narrative arcs, and a meta description for SEO,
+// none of which fit LinkedIn's see-more-fold + no-markdown reality.
+//
+// Output shape: { title, subtitle?, intro, sections:[{heading, body}],
+//                 conclusion, meta_description, hashtags?, compliance_note? }
+// `body` inside each section is markdown-light (paragraph breaks via
+// \n; no fancy bold/italic syntax — let the creator's own CMS handle
+// styling on the way out).
+//
+// Cap at 5000 output tokens — bigger than long_post because blog
+// targets are 1000-2500 words. Cost matches long_post (2 credits)
+// since the per-token billing carries the actual variance.
+function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _history, _recentEdits, compliance, personalDenylist) {
+  const topic = (params.topic && typeof params.topic === "string") ? params.topic.trim() : "";
+  const points = Array.isArray(params.supportingPoints)
+    ? params.supportingPoints.map(s => String(s || "").trim()).filter(Boolean)
+    : [];
+  const tone = (params.tone && typeof params.tone === "string") ? params.tone.trim() : "";
+  const lengthTarget = (params.length === "short" || params.length === "long")
+    ? params.length
+    : "medium";
+  const targetWords = lengthTarget === "short" ? "600-900"
+                    : lengthTarget === "long"  ? "1800-2500"
+                    :                           "1200-1500";
+  const lengthHint  = lengthTarget === "short"
+        ? "Concise — 3-4 sections covering the topic without padding. Use when the topic has a clean single argument."
+    : lengthTarget === "long"
+        ? "Deep — 5-7 sections, room for an extended example or case study. Earn the length with specifics, not padding."
+        : "Standard blog length — 4-5 sections, enough room to develop the argument without taxing the reader.";
+
+  const systemPrompt = composeSystemPrompt(profile, "long-form blog writer", compliance, vaultPatterns, personalDenylist);
+
+  const seedBlock = [
+    "## TOPIC & SUPPORTING POINTS",
+    "Topic: " + (topic || "(no topic provided — refuse politely if blank)"),
+    points.length ? "Supporting points the creator wants to make:\n" + points.map(p => "  - " + p).join("\n") : "",
+    tone ? "Tone direction for this specific post: " + tone : "",
+  ].filter(Boolean).join("\n");
+
+  const userPrompt = ""
+    + "Write a complete blog post on the topic below in the creator's voice. "
+    + "Target length: " + targetWords + " words. " + lengthHint + "\n\n"
+    + seedBlock + "\n\n"
+    + "FORMAT — long-form blog post. Use clean structural elements: a punchy title, an opening intro paragraph that earns the click, 4-6 sections each with a short heading + 2-4 paragraphs of substance, and a closing conclusion that resolves the through-line. No markdown styling inside the body strings (no **bold** or *italic*) — the creator's CMS will handle styling. Paragraph breaks via \\n between paragraphs. Headings live in their own `heading` field per section, never inline.\n\n"
+    + "Structure rules:\n"
+    + "  - TITLE: 6-12 words. Specific over clever. Should make the click obvious from the topic alone.\n"
+    + "  - INTRO: 1-2 paragraphs. Hook the reader within the first sentence. State the post's argument or promise clearly.\n"
+    + "  - SECTIONS: 4-6 ordered sections. Each `heading` is 3-7 words (not a question), each `body` is 2-4 paragraphs separated by \\n. Build the argument cumulatively — section 2 should rely on section 1.\n"
+    + "  - CONCLUSION: 1-2 paragraphs. Restate the argument in a sharper form than the intro, NOT a simple recap. Optional one-line CTA if it fits the creator's voice.\n"
+    + "  - META DESCRIPTION: 150-160 characters. SEO-ready summary that would make a search-result click feel obvious. NOT the title rephrased.\n\n"
+    + "Voice fidelity is non-negotiable. Read the creator context, vault exemplars, voice fingerprint, and personal denylist above before drafting — every paragraph should sound like THIS creator, not generic content-marketing blog slop.\n\n"
+    + "Return ONLY valid JSON with this shape: {"
+    + "\"title\":\"6-12 word post title\","
+    + "\"subtitle\":\"OPTIONAL 6-15 word kicker; omit field entirely if not strong\","
+    + "\"intro\":\"opening 1-2 paragraphs in creator voice — paragraphs separated by \\n\","
+    + "\"sections\":[{\"heading\":\"3-7 word section heading\",\"body\":\"section body, paragraphs separated by \\n\"}],"
+    + "\"conclusion\":\"closing 1-2 paragraphs in creator voice\","
+    + "\"meta_description\":\"150-160 character SEO summary\","
+    + "\"hashtags\":[\"OPTIONAL 3-5 tag words for the creator's CMS; omit if not useful\"],"
+    + "\"compliance_note\":\"OPTIONAL short disclosure; omit field entirely otherwise\""
+    + "}";
+
+  return {
+    systemPrompt,
+    userPrompt,
+    model:     MODEL_SONNET,
+    maxTokens: 5000,
     cost:      CREDIT_COSTS.long_post,
   };
 }
@@ -1467,6 +1559,7 @@ const BUILDERS = {
   scan_image:       buildScanImage,
   scan_video_frame: buildScanVideoFrame,
   long_post:        buildLongPost,
+  blog_post:        buildBlogPost,
 };
 
 export function isValidGenerationType(t) {
