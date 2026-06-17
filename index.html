@@ -3581,7 +3581,7 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
   );
 }
 
-function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends}) {
+function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends,allDayLabels}) {
   // When `replacing` is true, this card slot is awaiting a streaming
   // replacement from /api/chat?generationType=plan_partial. Render a
   // skeleton instead of the real card so the user sees their kept cards
@@ -3606,6 +3606,12 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
   // in practice only one is shown at a time but the state separation
   // keeps the rendering logic predictable.
   const [showLongPost,setShowLongPost] = useState(false);
+  // [MOVE-CARD] Inline popover state. Open → list of weekday labels;
+  // tap a label → updateCardAt fires with { day: newLabel }, the
+  // existing persistence + id-migration path takes over. Replaces
+  // the rolled-back drag-and-drop reorder with a more reliable
+  // button-driven move.
+  const [showMoveMenu,setShowMoveMenu] = useState(false);
   // [EDIT] Inline card editing. Tapping Edit opens an in-place form
   // showing every top-level text field the model emitted for this
   // card's format. Save commits via onEdit prop (parent updates the
@@ -4000,6 +4006,18 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
             {"Edit"}
           </button>
         )}
+        {/* [MOVE-CARD] Move to a different day. Replaces the
+             rolled-back drag-and-drop reorder with a button-driven
+             menu — same expanded-only gate as Edit, hidden in
+             read-only contexts (no onEdit prop). Only renders when
+             allDayLabels has been provided AND has at least two
+             entries (no point moving when the week has one day). */}
+        {expanded && onEdit && Array.isArray(allDayLabels) && allDayLabels.length > 1 && (
+          <button onClick={function(){ setShowMoveMenu(function(v){ return !v; }); }}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:showMoveMenu?B.navy:B.bg,color:showMoveMenu?B.white:B.sub,border:"1px solid "+(showMoveMenu?B.navy:B.border),borderRadius:99,cursor:"pointer"}}>
+            {showMoveMenu ? "Cancel" : "Move to…"}
+          </button>
+        )}
         {/* Expanded-only secondary actions. Log Results moved out — the
              state-dependent third slot above replaces it. */}
         {expanded && (
@@ -4025,6 +4043,42 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
           <RatingButtons sessionToken={userToken} generationType="plan_card" targetRef={(card.title||"")+"|"+(card.day||"")} size="sm"/>
         )}
       </div>
+      )}
+
+      {/* [MOVE-CARD] Day-picker popover. Opens below the action row when
+           "Move to..." is tapped. Lists the full set of weekday labels;
+           the current day is shown as the active row (disabled). Tapping
+           any other day calls onEdit with { day: newLabel } and closes
+           the popover. updateCardAt handles the persistence + id
+           migration (vault, results, posted/saved flags) for the day
+           change. */}
+      {expanded && showMoveMenu && Array.isArray(allDayLabels) && allDayLabels.length > 1 && (
+        <div style={{marginTop:14,padding:"12px 14px",background:B.bg,border:"1px solid "+B.border,borderRadius:12}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>{"Move this card to"}</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {allDayLabels.map(function(label){
+              var isCurrent = label === card.day;
+              return (
+                <button key={label}
+                  disabled={isCurrent}
+                  onClick={isCurrent ? null : function(){
+                    if (onEdit) onEdit(idx, { day: label });
+                    setShowMoveMenu(false);
+                  }}
+                  style={{
+                    fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",
+                    padding:"6px 12px",borderRadius:99,cursor:isCurrent?"default":"pointer",
+                    background:isCurrent?B.navySoft:B.card,
+                    color:isCurrent?B.navy:B.sub,
+                    border:"1px solid "+(isCurrent?B.navy:B.border),
+                    opacity:isCurrent?0.7:1,
+                  }}>
+                  {parseDayName(label) || label}{isCurrent ? " (current)" : ""}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       )}
 
       {/* [RESULTS-OVERHAUL] Inline log form. Renders in both collapsed
@@ -10258,6 +10312,7 @@ return (
                                 onSaveScript={saveScriptForCard}
                                 onSaveLongPost={saveLongPostForCard}
                                 onEdit={updateCardAt}
+                                allDayLabels={allDayLabels}
                                 saved={vault.some(function(v){return v.id===card.title+card.day;})}
                                 result={results.find(function(r){return r.id===card.title+card.day;})}
                                 profile={profile}
