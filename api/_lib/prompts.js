@@ -87,7 +87,7 @@ export const MODEL_HAIKU     = "claude-haiku-4-5-20251001";
 export const ALLOWED_MODELS  = [MODEL_SONNET, MODEL_HAIKU];
 
 // ── Credit costs (server is the source of truth) ──────────────────────────
-export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1 };
+export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1, long_post: 2 };
 
 // ── Playbook helpers ──────────────────────────────────────────────────────
 // `playbook` is a map keyed by platform: { TikTok: {cadence, peak_times, ...} }.
@@ -386,7 +386,7 @@ const CAPTION_LENGTH_GUIDE = {
 };
 
 const GENERATION_TYPES = [
-  "plan", "plan_partial", "plan_strategy", "script", "caption", "caption_remix", "scan_image", "scan_video_frame",
+  "plan", "plan_partial", "plan_strategy", "script", "caption", "caption_remix", "scan_image", "scan_video_frame", "long_post",
 ];
 
 const IMAGE_REQUIRED_TYPES = new Set(["scan_image", "scan_video_frame"]);
@@ -468,6 +468,12 @@ function buildProfileCtx(profile) {
   if (profile.contentLength) parts.push("Preferred content length: " + profile.contentLength + ".");
   if (profile.workedWell)    parts.push("Content that has worked well before: " + profile.workedWell + ".");
   if (profile.inspiration)   parts.push("Style inspiration/reference: " + profile.inspiration + ".");
+  // [BUSINESS-WEBSITE] Optional URL of the creator's business / brand
+  // site. Surfacing it gives the model a canonical destination for CTAs
+  // ("link in bio" → the actual URL) and grounds product/service mentions
+  // in real offerings instead of inventions. Personal-brand creators
+  // without a business site simply don't have this field set.
+  if (profile.businessWebsite) parts.push("Business / brand website (use as the canonical link destination in CTAs and reference real services from this domain — do not invent product names): " + profile.businessWebsite + ".");
 
   return parts.join(" ");
 }
@@ -1209,6 +1215,99 @@ function buildScript(params, profile, vaultPatterns, playbook, _trends, _history
   };
 }
 
+// [LINKEDIN-LONG-POST] Expand a long_form_text plan card into a full
+// LinkedIn-shaped long-form post (500-1500 words). Designed as a peer
+// of buildScript: starts from an existing plan card (seed idea) and
+// produces a ready-to-post artifact. The card seed gives the model
+// the title, the description (the strategic angle), and any hook /
+// body / closing fragments the planner produced — so the long post
+// builds on the planner's thinking instead of starting from a blank
+// brief.
+//
+// Output shape: { hook, body, closing, hashtags?, compliance_note? }.
+// Mirrors the long_form_text plan card shape so the renderer can
+// reuse LongFormCardBody. Body is a single string with \n-separated
+// paragraphs (LinkedIn ignores most markdown — line breaks are the
+// only formatting native to the platform).
+//
+// Cap at 4000 output tokens — comfortable headroom for a ~1500-word
+// post plus hashtags + compliance note. LinkedIn's hard character
+// limit is 3000 characters for the body (~450 words). The 500-1500
+// word target above is for posts that USE the "see more" expansion;
+// generated posts above 3000 chars will still flow, just truncated
+// on the platform unless the user trims them. We let the model lean
+// long so creators have material to cut from, not stretch.
+function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _history, _recentEdits, compliance, personalDenylist) {
+  const card = params.card || {};
+  // Length target. Users can specify "short" (~350 words / under
+  // LinkedIn's see-more cutoff), "medium" (~600 words, default),
+  // or "long" (~1200 words, full thought-leadership essay).
+  const lengthTarget = (params.length === "short" || params.length === "long")
+    ? params.length
+    : "medium";
+  const targetWords = lengthTarget === "short" ? "300-450"
+                    : lengthTarget === "long"  ? "1000-1500"
+                    :                           "550-800";
+  const lengthHint  = lengthTarget === "short"
+        ? "Lean punchy — fit comfortably under LinkedIn's 'see more' fold (around 3 short paragraphs) so the full post is visible without expanding."
+    : lengthTarget === "long"
+        ? "Essay-length. Earn the length with concrete examples, specific numbers, and turns of phrase — every paragraph should pay off the time it costs the reader."
+        : "Standard LinkedIn long-form. Hook + 3-5 short paragraphs of substance + closing turn or CTA.";
+
+  // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
+  // [VAULT-EXEMPLARS] vaultPatterns threaded through so long posts get the
+  // same few-shot voice references as plans, scripts, captions.
+  // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
+  const systemPrompt = composeSystemPrompt(profile, "long-form LinkedIn writer", compliance, vaultPatterns, personalDenylist);
+
+  // Pull whatever the planner already produced. The full plan flow
+  // emits hook / body / closing on long_form_text cards; if the user
+  // hits this from a non-plan flow we still want to work with
+  // whatever the card carries (title + description as minimum).
+  const seedHook    = (card.hook    || "").trim();
+  const seedBody    = (card.body    || "").trim();
+  const seedClosing = (card.closing || "").trim();
+
+  const seedBlock = [
+    "## SEED FROM THE WEEKLY PLAN",
+    "Card title: " + (card.title || "(no title)"),
+    "Strategic angle: " + (card.description || card.insight || "(no description)"),
+    seedHook    ? "Planner-suggested hook: "    + seedHook    : "",
+    seedBody    ? "Planner-suggested body: "    + seedBody    : "",
+    seedClosing ? "Planner-suggested closing: " + seedClosing : "",
+  ].filter(Boolean).join("\n");
+
+  const userPrompt = ""
+    + "Write a complete LinkedIn long-form text post that builds on the seed below. "
+    + "This is a STANDALONE LinkedIn post — no image, no video, narrative writing only. "
+    + "Target length: " + targetWords + " words. " + lengthHint + "\n\n"
+    + seedBlock + "\n\n"
+    + "FORMAT — LinkedIn-native long-form. The body is a single string with line breaks (\\n) between paragraphs and (occasionally) before a punch line. Do NOT use markdown headers, bold/italics, or bullet styling — LinkedIn strips most of it. White space between paragraphs IS the formatting.\n\n"
+    + "Structure:\n"
+    + "  - HOOK: 1-2 sentences. First line MUST land before LinkedIn's 'see more' fold (~210 characters). Pattern-interrupt the feed; specific over clever. No emoji-heavy openers, no \"in today's world\" framings (already banned in STYLE_GUARD).\n"
+    + "  - BODY: 3-5 short paragraphs (1-3 sentences each) of substance. Specific examples, real numbers, a story beat, a contrarian take — earn the length. Don't pad with throat-clearing or rhetorical questions designed to pivot. Insert a one-line punch every 2-3 paragraphs to keep the eye moving.\n"
+    + "  - CLOSING: 1-2 sentences. Resolve the through-line OR invite the reader's take in a way that's specific to THIS post, not generic (\"What's your take?\" is dead). If a CTA fits the creator's voice and the post's intent (e.g. a service-business closing pointing to their site), include it — otherwise skip it.\n\n"
+    + "Voice fidelity is non-negotiable. Read the creator context, vault exemplars, voice fingerprint, and personal denylist above before drafting — every paragraph should sound like THIS creator, not generic thought-leadership LinkedIn slop.\n\n"
+    + "Return ONLY valid JSON with this shape: {"
+    + "\"hook\":\"opening 1-2 sentences in creator voice — must hook before LinkedIn's see-more fold\","
+    + "\"body\":\"the full body with \\n separating paragraphs\","
+    + "\"closing\":\"final 1-2 sentences in creator voice\","
+    + "\"hashtags\":[\"3-5 LinkedIn hashtags, plain words no # prefix\"],"
+    + "\"compliance_note\":\"OPTIONAL short disclosure; omit field entirely otherwise\""
+    + "}";
+
+  return {
+    systemPrompt,
+    userPrompt,
+    model:     MODEL_SONNET,
+    // 4000 max_tokens covers ~1500 words of body + hook/closing/hashtags
+    // with headroom. Lower bound (length=short) easily fits; the cap
+    // prevents the model from running away on length=long.
+    maxTokens: 4000,
+    cost:      CREDIT_COSTS.long_post,
+  };
+}
+
 // Caption output budget. A fixed 900-token ceiling truncated LinkedIn "Long"
 // captions mid-JSON (7-10 narrative lines × 3 options + hook + 7 hashtags
 // easily clears 900 output tokens). When extractJSON fails on the client, the
@@ -1358,6 +1457,7 @@ const BUILDERS = {
   caption_remix:    buildCaptionRemix,
   scan_image:       buildScanImage,
   scan_video_frame: buildScanVideoFrame,
+  long_post:        buildLongPost,
 };
 
 export function isValidGenerationType(t) {
