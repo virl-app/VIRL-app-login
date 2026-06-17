@@ -4900,7 +4900,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
 }
 
 
-function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
+function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   const [myPlatforms,setMyPlatforms] = useState(profile.myPlatforms||[]);
   const [name,setName] = useState(profile.name||"");
   const [audience,setAudience] = useState(profile.audience||"");
@@ -5686,7 +5686,20 @@ function CreatorProfile({profile,syncState,onSave,onNavigateToPlan}) {
       )}
       {syncState==="failed"&&(
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:500,color:B.coral,textAlign:"center",marginBottom:8,lineHeight:1.5}}>
-          {"Saved locally, but couldn't sync to your account. Open devtools console for the exact error, or try again in a minute."}
+          {"Saved locally, but couldn't sync to your account."}
+          {syncError && (
+            <div style={{
+              marginTop:8,padding:"8px 12px",
+              background:B.coralSoft,borderRadius:8,
+              fontFamily:"monospace",fontSize:11,color:B.ink,
+              textAlign:"left",wordBreak:"break-word",
+            }}>
+              {syncError}
+            </div>
+          )}
+          <div style={{marginTop:6,color:B.muted,fontSize:10}}>
+            {"Try again in a minute, or send the message above to support."}
+          </div>
         </div>
       )}
       {eliteDone && (
@@ -7035,6 +7048,13 @@ function App() {
   const [sbCredits,setSbCredits]     = useState(null); // Supabase credits row (authoritative)
   // [TASK 1] Sync state for profile save: "idle" | "syncing" | "synced" | "failed"
   const [profileSync,setProfileSync] = useState("idle");
+  // [SYNC-ERROR] When the Supabase upsert fails, capture the actual
+  // error message string so the failed-state UI can surface it
+  // alongside the generic banner. Helps users on devices where
+  // devtools aren't easily accessible (notably iOS Safari) diagnose
+  // schema mismatches, RLS denials, and constraint violations
+  // without having to file a support ticket.
+  const [profileSyncError,setProfileSyncError] = useState("");
 
   const [hasSeenExplainer,setHasSeenExplainer] = useState(function(){
     try { return localStorage.getItem("virl_seen_explainer")==="1"; } catch(e) { return false; }
@@ -9528,7 +9548,7 @@ return (
                 Fill this in once. Every plan and caption VIRL generates will sound authentically like you - not generic AI.
               </div>
             </div>
-            <CreatorProfile profile={profile} syncState={profileSync}
+            <CreatorProfile profile={profile} syncState={profileSync} syncError={profileSyncError}
               // [CHANGE 1] Lets Phase 1 success state navigate to the plan tab,
               // mirroring how the welcome modal hands off to plan.
               onNavigateToPlan={function(){setTab("plan");}}
@@ -9537,11 +9557,17 @@ return (
               // [TASK 1] Track the Supabase round-trip so CreatorProfile can show Synced/Syncing/Failed.
               if (session) {
                 setProfileSync("syncing");
+                setProfileSyncError("");
                 saveProfileToSupabase(p, session.user.id).then(function(result){
-                  setProfileSync((result && result.ok) ? "synced" : "failed");
+                  var ok = !!(result && result.ok);
+                  setProfileSync(ok ? "synced" : "failed");
+                  setProfileSyncError(ok ? "" : ((result && result.error) ? String(result.error) : ""));
                   // Failed states stay visible longer so the user has a chance
-                  // to notice. Console always carries the specific error.
-                  setTimeout(function(){ setProfileSync("idle"); }, (result && result.ok) ? 3000 : 8000);
+                  // to notice. Console always carries the specific error too.
+                  setTimeout(function(){
+                    setProfileSync("idle");
+                    setProfileSyncError("");
+                  }, ok ? 3000 : 30000);
                 });
               }
             }}/>
