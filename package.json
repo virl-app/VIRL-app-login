@@ -7,6 +7,7 @@
     "check:index": "node scripts/check-index-syntax.mjs"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "resend": "^4.0.0",
     "stripe": "^14.0.0"
   },
