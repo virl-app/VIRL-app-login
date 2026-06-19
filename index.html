@@ -5550,17 +5550,22 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   // profile.name) start with every section unlocked so they can
   // jump to any field they want to edit.
   //
-  // Section IDs keep their EXISTING subhead names from the old Phase 2
-  // structure — fields stay in their current positions in this PR
-  // (PR-A1). Re-bucketing into Voice / Business / Content / etc.
-  // sections lands in a follow-up PR-A2.
+  // PR-A2 refactor: re-bucketed fields into 7 audience-centric
+  // sections (You & your voice / Your business / Your content /
+  // Your platforms / Your strategy / Voice references / Personal
+  // context). Section 02 — Your business — only has businessWebsite
+  // today; PR-B fills it out with offerings, service area, ideal
+  // client problem, primary CTA, and common objections so service
+  // businesses (real estate agents, coaches, dental practices) get
+  // first-class profile fields.
   const SECTIONS = [
     { id: "voice",      title: "You & your voice" },
-    { id: "facts",      title: "What VIRL must get right" },
-    { id: "style",      title: "Your style" },
-    { id: "strategy",   title: "Your strategy" },
+    { id: "business",   title: "Your business" },
+    { id: "content",    title: "Your content" },
     { id: "platforms",  title: "Your platforms in detail" },
-    { id: "boundaries", title: "Voice references & boundaries" },
+    { id: "strategy",   title: "Your strategy" },
+    { id: "references", title: "Voice references" },
+    { id: "personal",   title: "Personal context" },
   ];
   const isReturningUser = !!(profile && profile.name);
   const [maxUnlocked, setMaxUnlocked] = useState(isReturningUser ? SECTIONS.length - 1 : 0);
@@ -5586,12 +5591,13 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   // Not gating; purely visual feedback so users see what they've
   // completed at a glance.
   function sectionFilled(id) {
-    if (id === "voice")      return !!(name && voice && hasAudienceSignal);
-    if (id === "facts")      return !!(personalFacts || neverAssume || loveToReference);
-    if (id === "style")      return !!((vibes||[]).length && postFreq);
-    if (id === "strategy")   return !!(knownFor && (pillars||[]).length && topics);
+    if (id === "voice")      return !!(name && voice && hasAudienceSignal && knownFor);
+    if (id === "business")   return !!(businessWebsite && businessWebsite.trim());
+    if (id === "content")    return !!((pillars||[]).length && topics && postFreq);
     if (id === "platforms")  return !!(myPlatforms && myPlatforms.length);
-    if (id === "boundaries") return !!(sampleCaption || inspiration);
+    if (id === "strategy")   return !!(purpose && (vibes||[]).length && journey);
+    if (id === "references") return !!(sampleCaption || inspiration);
+    if (id === "personal")   return !!(personalFacts || loveToReference || offLimits);
     return false;
   }
 
@@ -5599,15 +5605,17 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   // Used to auto-expand the right section when the tier-badge sharper
   // hint jumps to a field — without this, scrollIntoView would land
   // on a collapsed section and the user would see only the header.
+  // [PR-A2] Re-bucketed alongside the SECTIONS array.
   const FIELD_TO_SECTION = {
-    "vp-name":          0,
-    "vp-audience":      0,
-    "vp-voice":         0,
-    "vp-vibes":         2,
-    "vp-knownFor":      3,
-    "vp-offLimits":     5,
-    "vp-inspiration":   5,
-    "vp-sampleCaption": 5,
+    "vp-name":            0,  // voice
+    "vp-audience":        0,  // voice
+    "vp-voice":           0,  // voice
+    "vp-knownFor":        0,  // voice
+    "vp-businessWebsite": 1,  // business
+    "vp-vibes":           4,  // strategy
+    "vp-offLimits":       6,  // personal
+    "vp-inspiration":     5,  // references
+    "vp-sampleCaption":   5,  // references
   };
 
   // Section header — clickable when unlocked, muted + locked icon
@@ -5806,11 +5814,12 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
         </div>
       </div>
 
-      {/* [PROFILE-WIZARD] Section 01 — You & your voice. Wraps the
-          former Phase-1 fields in the accordion shell. Continue button
-          unlocks section 02. Returning users see all sections unlocked
-          so they can collapse this and jump anywhere; new users
-          progress one section at a time. */}
+      {/* [PROFILE-WIZARD][PR-A2] Section 01 — You & your voice.
+          Identity + positioning fields. knownFor moved here from
+          the former "strategy" section so the answer to "what do
+          you want to be known for" lives next to the voice that
+          delivers it. Where-do-you-post stays here because the
+          per-platform configuration in section 04 depends on it. */}
       <div id="profile-section-voice" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
         <SectionHeader idx={0} expanded={expandedIdx===0} filled={sectionFilled("voice")}/>
         {expandedIdx === 0 && 0 <= maxUnlocked && (
@@ -5831,6 +5840,10 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
                 placeholder="e.g. Millennial moms 28-38 who want real talk about parenting and home life"
                 style={Object.assign({},textareaStyle,{minHeight:72})}/>
             </div>
+            <div id="vp-knownFor" style={{marginBottom:18}}>
+              <Label>One thing you want to be known for <TierBadge tier="dialed"/></Label>
+              <input value={knownFor} onChange={function(e){setKnownFor(e.target.value);}} placeholder="e.g. makes busy moms feel like they have their life together" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
+            </div>
             <div style={{marginBottom:4}}>
               <Label>Where do you post?</Label>
               <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={myPlatforms.includes(p)} onClick={function(){setMyPlatforms(tog(myPlatforms,p));}}>{p}</Chip>;})}</div>
@@ -5840,82 +5853,37 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
         )}
       </div>
 
-      {/* [PROFILE-WIZARD] Section 02 — What VIRL must get right. */}
-      <div id="profile-section-facts" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
-        <SectionHeader idx={1} expanded={expandedIdx===1} filled={sectionFilled("facts")}/>
+      {/* [PROFILE-WIZARD][PR-A2] Section 02 — Your business.
+          Only businessWebsite lives here in PR-A2 — service-business
+          fields (offerings, service area, ideal client problem,
+          primary CTA, common objections) land in PR-B. Optional
+          section; doesn't count against profile completeness. */}
+      <div id="profile-section-business" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
+        <SectionHeader idx={1} expanded={expandedIdx===1} filled={sectionFilled("business")}/>
         {expandedIdx === 1 && 1 <= maxUnlocked && (
           <div style={{padding:"4px 24px 22px"}}>
-            <div style={{marginBottom:18}}>
-              <Label>Personal facts VIRL should always get right</Label>
-              <textarea value={personalFacts} onChange={function(e){setPersonalFacts(e.target.value);}}
-                placeholder="e.g. I have three sons (ages 4, 7, 10). I am married to Mike. We live in Indianapolis. I have a golden retriever named Charlie. I run a pilates studio."
-                style={Object.assign({},textareaStyle,{minHeight:90})}/>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
-                VIRL will treat these as canonical facts and never contradict them in any output.
+            <div id="vp-businessWebsite" style={{marginBottom:4}}>
+              <Label>Your business or brand website (optional)</Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+                If your content points to a business, VIRL uses this as the canonical link destination in CTAs and grounds real product/service names. If you've opted into "Research my public posts" under Personalization & Privacy, VIRL will also read your site for voice and offerings the next time it learns about you. Skip this if you're a personal brand — it won't affect your profile completeness.
               </div>
-            </div>
-            <div style={{marginBottom:18}}>
-              <Label>Things VIRL should never assume about you</Label>
-              <textarea value={neverAssume} onChange={function(e){setNeverAssume(e.target.value);}}
-                placeholder="e.g. Don't assume I have daughters. Don't assume I work from home. Don't assume I'm religious. Don't assume my partner is a husband."
-                style={Object.assign({},textareaStyle,{minHeight:72})}/>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
-                If VIRL doesn't know something, it leaves it out – never guesses.
-              </div>
-            </div>
-            <div style={{marginBottom:18}}>
-              <Label>Things you'd love VIRL to reference naturally</Label>
-              <textarea value={loveToReference} onChange={function(e){setLoveToReference(e.target.value);}}
-                placeholder="e.g. My kids' personalities, our dog Charlie, my morning coffee ritual, our family Sunday tradition."
-                style={Object.assign({},textareaStyle,{minHeight:72})}/>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
-                VIRL weaves these in occasionally to make content feel personal – never forced.
-              </div>
+              <input value={businessWebsite} onChange={function(e){setBusinessWebsite(e.target.value);}} placeholder="https://yourbusiness.com" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
             </div>
             <SectionFooter idx={1}/>
           </div>
         )}
       </div>
 
-      {/* [PROFILE-WIZARD] Section 03 — Your style. */}
-      <div id="profile-section-style" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
-        <SectionHeader idx={2} expanded={expandedIdx===2} filled={sectionFilled("style")}/>
+      {/* [PROFILE-WIZARD][PR-A2] Section 03 — Your content.
+          Pillars + topics + posting cadence + content length + emoji
+          preference. Pulls pillars and topics out of the former
+          "strategy" section; pulls cadence, length, and emoji out
+          of the former "style" section so all "what + how often"
+          decisions live together. */}
+      <div id="profile-section-content" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
+        <SectionHeader idx={2} expanded={expandedIdx===2} filled={sectionFilled("content")}/>
         {expandedIdx === 2 && 2 <= maxUnlocked && (
           <div style={{padding:"4px 24px 22px"}}>
-            <div id="vp-vibes" style={{marginBottom:18}}>
-              <Label>Your content vibe <TierBadge tier="dialed"/></Label>
-              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{VIBES.map(function(v){return <Chip key={v} active={vibes.includes(v)} onClick={function(){setVibes(tog(vibes,v));}}>{v}</Chip>;})}</div>
-            </div>
-            <div style={{marginBottom:18}}>
-              <Label>Emoji usage</Label>
-              <div style={{display:"flex",gap:8}}>{EMOJI_PREFS.map(function(e){return <Chip key={e} active={emojiPref===e} onClick={function(){setEmojiPref(e);}}>{e}</Chip>;})}</div>
-            </div>
-            <div style={{marginBottom:18}}>
-              <Label>Preferred content length</Label>
-              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{CONTENT_LENGTH.map(function(l){return <Chip key={l} active={contentLength===l} onClick={function(){setContentLength(contentLength===l?"":l);}}>{l}</Chip>;})}</div>
-            </div>
-            <div style={{marginBottom:18}}>
-              <Label>How often do you post?</Label>
-              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{POST_FREQ.map(function(f){return <Chip key={f} active={postFreq===f} onClick={function(){setPostFreq(postFreq===f?"":f);}}>{f}</Chip>;})}</div>
-            </div>
-            <div style={{marginBottom:4}}>
-              <Label>When you show up, you are...</Label>
-              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PURPOSES.map(function(p){return <Chip key={p} active={purpose===p} onClick={function(){setPurpose(purpose===p?"":p);}}>{p}</Chip>;})}</div>
-            </div>
-            <SectionFooter idx={2}/>
-          </div>
-        )}
-      </div>
-
-      {/* [PROFILE-WIZARD] Section 04 — Your strategy. */}
-      <div id="profile-section-strategy" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
-        <SectionHeader idx={3} expanded={expandedIdx===3} filled={sectionFilled("strategy")}/>
-        {expandedIdx === 3 && 3 <= maxUnlocked && (
-          <div style={{padding:"4px 24px 22px"}}>
-            <div id="vp-knownFor" style={{marginBottom:18}}>
-              <Label>One thing you want to be known for <TierBadge tier="dialed"/></Label>
-              <input value={knownFor} onChange={function(e){setKnownFor(e.target.value);}} placeholder="e.g. makes busy moms feel like they have their life together" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
-            </div>
             <div style={{marginBottom:18}}>
               <Label>Your content pillars</Label>
               <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PILLARS.map(function(p){return <Chip key={p} active={pillars.includes(p)} onClick={function(){setPillars(tog(pillars,p));}}>{p}</Chip>;})}</div>
@@ -5925,31 +5893,26 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
               <textarea value={topics} onChange={function(e){setTopics(e.target.value);}} placeholder="e.g. morning routines, productivity hacks, meal prep, workouts, tutorials, personal growth" style={Object.assign({},textareaStyle,{minHeight:66})}/>
             </div>
             <div style={{marginBottom:18}}>
-              <Label>What has worked well for you before?</Label>
-              <textarea value={workedWell} onChange={function(e){setWorkedWell(e.target.value);}}
-                placeholder="e.g. tutorial videos, behind-the-scenes content, hot takes, personal stories..."
-                style={Object.assign({},textareaStyle,{minHeight:66})}/>
+              <Label>How often do you post?</Label>
+              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{POST_FREQ.map(function(f){return <Chip key={f} active={postFreq===f} onClick={function(){setPostFreq(postFreq===f?"":f);}}>{f}</Chip>;})}</div>
             </div>
             <div style={{marginBottom:18}}>
-              <Label>Where are you in your creator journey?</Label>
-              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{JOURNEYS.map(function(j){return <Chip key={j} active={journey===j} onClick={function(){setJourney(journey===j?"":j);}}>{j}</Chip>;})}</div>
+              <Label>Preferred content length</Label>
+              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{CONTENT_LENGTH.map(function(l){return <Chip key={l} active={contentLength===l} onClick={function(){setContentLength(contentLength===l?"":l);}}>{l}</Chip>;})}</div>
             </div>
-            <div id="vp-businessWebsite" style={{marginBottom:4}}>
-              <Label>Your business or brand website (optional)</Label>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
-                If your content points to a business, VIRL uses this as the canonical link destination in CTAs and grounds real product/service names. If you've opted into "Research my public posts" under Personalization & Privacy, VIRL will also read your site for voice and offerings the next time it learns about you. Skip this if you're a personal brand — it won't affect your profile completeness.
-              </div>
-              <input value={businessWebsite} onChange={function(e){setBusinessWebsite(e.target.value);}} placeholder="https://yourbusiness.com" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
+            <div style={{marginBottom:4}}>
+              <Label>Emoji usage</Label>
+              <div style={{display:"flex",gap:8}}>{EMOJI_PREFS.map(function(e){return <Chip key={e} active={emojiPref===e} onClick={function(){setEmojiPref(e);}}>{e}</Chip>;})}</div>
             </div>
-            <SectionFooter idx={3}/>
+            <SectionFooter idx={2}/>
           </div>
         )}
       </div>
 
-      {/* [PROFILE-WIZARD] Section 05 — Your platforms in detail. */}
+      {/* [PROFILE-WIZARD][PR-A2] Section 04 — Your platforms in detail. */}
       <div id="profile-section-platforms" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
-        <SectionHeader idx={4} expanded={expandedIdx===4} filled={sectionFilled("platforms")}/>
-        {expandedIdx === 4 && 4 <= maxUnlocked && (
+        <SectionHeader idx={3} expanded={expandedIdx===3} filled={sectionFilled("platforms")}/>
+        {expandedIdx === 3 && 3 <= maxUnlocked && (
           <div style={{padding:"4px 24px 22px"}}>
             {myPlatforms.length === 0 ? (
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,lineHeight:1.65,marginBottom:14}}>
@@ -5986,23 +5949,53 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
                 );
               })
             )}
+            <SectionFooter idx={3}/>
+          </div>
+        )}
+      </div>
+
+      {/* [PROFILE-WIZARD][PR-A2] Section 05 — Your strategy.
+          Strategic posture fields: when you show up purpose, vibes,
+          journey stage, what's worked well. Pulled out of the former
+          "style" + "strategy" sections so this reads as "how do you
+          approach content overall" rather than "what's your tone." */}
+      <div id="profile-section-strategy" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
+        <SectionHeader idx={4} expanded={expandedIdx===4} filled={sectionFilled("strategy")}/>
+        {expandedIdx === 4 && 4 <= maxUnlocked && (
+          <div style={{padding:"4px 24px 22px"}}>
+            <div style={{marginBottom:18}}>
+              <Label>When you show up, you are...</Label>
+              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PURPOSES.map(function(p){return <Chip key={p} active={purpose===p} onClick={function(){setPurpose(purpose===p?"":p);}}>{p}</Chip>;})}</div>
+            </div>
+            <div id="vp-vibes" style={{marginBottom:18}}>
+              <Label>Your content vibe <TierBadge tier="dialed"/></Label>
+              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{VIBES.map(function(v){return <Chip key={v} active={vibes.includes(v)} onClick={function(){setVibes(tog(vibes,v));}}>{v}</Chip>;})}</div>
+            </div>
+            <div style={{marginBottom:18}}>
+              <Label>Where are you in your creator journey?</Label>
+              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{JOURNEYS.map(function(j){return <Chip key={j} active={journey===j} onClick={function(){setJourney(journey===j?"":j);}}>{j}</Chip>;})}</div>
+            </div>
+            <div style={{marginBottom:4}}>
+              <Label>What has worked well for you before?</Label>
+              <textarea value={workedWell} onChange={function(e){setWorkedWell(e.target.value);}}
+                placeholder="e.g. tutorial videos, behind-the-scenes content, hot takes, personal stories..."
+                style={Object.assign({},textareaStyle,{minHeight:66})}/>
+            </div>
             <SectionFooter idx={4}/>
           </div>
         )}
       </div>
 
-      {/* [PROFILE-WIZARD] Section 06 — Voice references & boundaries.
-          Last section in the wizard; its footer Save my profile button
-          (via SectionFooter idx={5}) calls handleSave. The saved
-          banner below the wizard shows the post-save confirmation. */}
-      <div id="profile-section-boundaries" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
-        <SectionHeader idx={5} expanded={expandedIdx===5} filled={sectionFilled("boundaries")}/>
+      {/* [PROFILE-WIZARD][PR-A2] Section 06 — Voice references.
+          Concrete material VIRL uses as voice ground-truth: a sample
+          caption, additional voice samples, a creator the user
+          admires, and the auto-derived stylometric fingerprint.
+          offLimits moved to section 07 — Personal context, where it
+          sits with the other "never reference these" type fields. */}
+      <div id="profile-section-references" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
+        <SectionHeader idx={5} expanded={expandedIdx===5} filled={sectionFilled("references")}/>
         {expandedIdx === 5 && 5 <= maxUnlocked && (
           <div style={{padding:"4px 24px 22px"}}>
-            <div id="vp-offLimits" style={{marginBottom:18}}>
-              <Label>What do you never want to talk about? <TierBadge tier="elite"/></Label>
-              <input value={offLimits} onChange={function(e){setOffLimits(e.target.value);}} placeholder="e.g. politics, my relationship, diet culture" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
-            </div>
             <div id="vp-inspiration" style={{marginBottom:18}}>
               <Label>A creator whose style you admire <TierBadge tier="elite"/></Label>
               <input value={inspiration} onChange={function(e){setInspiration(e.target.value);}} placeholder="e.g. @aliabdaal - explains complex ideas in plain language" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
@@ -6119,6 +6112,50 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
         )}
       </div>
 
+      {/* [PROFILE-WIZARD][PR-A2] Section 07 — Personal context.
+          Final section in the wizard. Identity facts VIRL must never
+          contradict + off-limits topics. Footer button is "Save my
+          profile" because idx=6 is the last section. */}
+      <div id="profile-section-personal" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
+        <SectionHeader idx={6} expanded={expandedIdx===6} filled={sectionFilled("personal")}/>
+        {expandedIdx === 6 && 6 <= maxUnlocked && (
+          <div style={{padding:"4px 24px 22px"}}>
+            <div style={{marginBottom:18}}>
+              <Label>Personal facts VIRL should always get right</Label>
+              <textarea value={personalFacts} onChange={function(e){setPersonalFacts(e.target.value);}}
+                placeholder="e.g. I have three sons (ages 4, 7, 10). I am married to Mike. We live in Indianapolis. I have a golden retriever named Charlie. I run a pilates studio."
+                style={Object.assign({},textareaStyle,{minHeight:90})}/>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
+                VIRL will treat these as canonical facts and never contradict them in any output.
+              </div>
+            </div>
+            <div style={{marginBottom:18}}>
+              <Label>Things VIRL should never assume about you</Label>
+              <textarea value={neverAssume} onChange={function(e){setNeverAssume(e.target.value);}}
+                placeholder="e.g. Don't assume I have daughters. Don't assume I work from home. Don't assume I'm religious. Don't assume my partner is a husband."
+                style={Object.assign({},textareaStyle,{minHeight:72})}/>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
+                If VIRL doesn't know something, it leaves it out – never guesses.
+              </div>
+            </div>
+            <div style={{marginBottom:18}}>
+              <Label>Things you'd love VIRL to reference naturally</Label>
+              <textarea value={loveToReference} onChange={function(e){setLoveToReference(e.target.value);}}
+                placeholder="e.g. My kids' personalities, our dog Charlie, my morning coffee ritual, our family Sunday tradition."
+                style={Object.assign({},textareaStyle,{minHeight:72})}/>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6,lineHeight:1.5}}>
+                VIRL weaves these in occasionally to make content feel personal – never forced.
+              </div>
+            </div>
+            <div id="vp-offLimits" style={{marginBottom:4}}>
+              <Label>What do you never want to talk about? <TierBadge tier="elite"/></Label>
+              <input value={offLimits} onChange={function(e){setOffLimits(e.target.value);}} placeholder="e.g. politics, my relationship, diet culture" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
+            </div>
+            <SectionFooter idx={6}/>
+          </div>
+        )}
+      </div>
+
       {/* [PROFILE-WIZARD] Post-wizard saved banner — surfaces after
           the user clicks Save my profile on section 06. Returning
           users who edit + save again see this too. */}
@@ -6162,11 +6199,8 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
         </button>
       )}
 
-      {/* [DEAD-CODE-MARKER] Old Phase 2 wrapper retained below as
-          conditional that never renders — `showPhase2` is no longer
-          set anywhere now that the wizard supersedes the binary
-          expand model. Kept as a dead block in case anything still
-          references it; planned cleanup in PR-A2. */}
+      {/* [PR-A2] Dead-code Phase 2 wrapper from PR-A1 removed. The
+          replacement is the 7 section accordions above. */}
       {false && (
         <div>
           <div style={{marginBottom:6,fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.15}}>Make VIRL even sharper (optional)</div>
