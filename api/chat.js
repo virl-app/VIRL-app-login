@@ -843,6 +843,15 @@ async function fetchProfile(userId) {
       // prompts.js buildProfileCtx as canonical CTA destination.
       // Pre-migration-015 rows return undefined; || "" normalizes.
       businessWebsite:   data.business_website || "",
+      // [PROFILE-SALES-FIELDS] Five service-business fields (migration
+      // 016). All fall back to "" so pre-migration profiles flow
+      // through cleanly. Injected into the prompt via buildProfileCtx
+      // — only present fields produce prompt copy.
+      offerings:          data.offerings            || "",
+      serviceArea:        data.service_area         || "",
+      idealClientProblem: data.ideal_client_problem || "",
+      primaryCta:         data.primary_cta          || "",
+      commonObjections:   data.common_objections    || "",
     };
   } catch (e) {
     return {};

@@ -128,6 +128,16 @@ async function saveProfileToSupabase(profile, userId) {
       // write so a stray trailing space doesn't break URL matching
       // downstream; empty string normalizes to NULL on the server.
       business_website: (profile.businessWebsite || "").trim() || null,
+      // [PROFILE-SALES-FIELDS] Five optional service-business fields.
+      // All trim → null on empty so a partially-filled section doesn't
+      // persist "" placeholders. Migration 016 must run before these
+      // columns exist; until then the upsert errors with "column not
+      // found" (same surface the diagnostic banner from PR #159 shows).
+      offerings:            (profile.offerings            || "").trim() || null,
+      service_area:         (profile.serviceArea          || "").trim() || null,
+      ideal_client_problem: (profile.idealClientProblem   || "").trim() || null,
+      primary_cta:          (profile.primaryCta           || "").trim() || null,
+      common_objections:    (profile.commonObjections     || "").trim() || null,
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -219,7 +229,15 @@ async function loadProfileFromSupabase(userId) {
       voiceSamples: Array.isArray(data.voice_samples) ? data.voice_samples : [],
       // [BUSINESS-WEBSITE] Optional URL. Empty string on pre-migration
       // rows so the input field hydrates empty rather than "null".
-      businessWebsite: data.business_website || ""
+      businessWebsite: data.business_website || "",
+      // [PROFILE-SALES-FIELDS] Five service-business fields. All fall
+      // back to "" for pre-migration-016 rows so the inputs render
+      // empty without showing "null" text.
+      offerings:           data.offerings            || "",
+      serviceArea:         data.service_area         || "",
+      idealClientProblem:  data.ideal_client_problem || "",
+      primaryCta:          data.primary_cta          || "",
+      commonObjections:    data.common_objections    || ""
     };
   } catch(e) { return {}; }
 }
@@ -612,7 +630,11 @@ function getFormatsForPlatform(platform) {
   }
 }
 const NICHES = ["Lifestyle","Fitness","Food & Recipes","Finance","Beauty","Travel","Education","Parenting","Home & Family","Wellness","Small Business","Real Estate","Gaming","Tech","Sports","Fashion"];
-const GOALS = ["Grow my following","Land brand deals","Sell products","Build community","Go viral"];
+// [PROFILE-SALES-FIELDS] GOALS expanded with conversion-focused
+// options for the service-business audience (agents, coaches,
+// dental practices, small biz). Original five all preserved so
+// existing profiles don't lose their selection.
+const GOALS = ["Grow my following","Land brand deals","Sell products","Sell my services","Book appointments / consults","Generate leads","Convert followers to clients","Drive traffic to my site or listings","Build community","Go viral"];
 // [LONG-FORM-PILL] Long-form post added so LinkedIn-first creators
 // can opt into thought-leadership / blog-style content as part of
 // their weekly mix. When this chip is on, the planner biases toward
@@ -623,9 +645,14 @@ const FORMATS = ["Talking-head video","Aesthetic B-roll","Day in my life","Tutor
 const FOLLOWERS = ["Under 1K","1K-5K","5K-20K","20K-100K","100K+"];
 const TONES = ["Warm & relatable","Educational","Funny & playful","Inspirational","Bold & direct"];
 const VIBES = ["Real & unfiltered","Bold & direct","Witty & dry","Educational expert","Motivational coach","No-nonsense","Analytical","Soft & aesthetic","Warm & nurturing","Conversational bestie","Hype & energetic","Laid-back & chill"];
-const PURPOSES = ["Teaching something","Sharing my life","Making people laugh","Inspiring action","Starting conversations","Building a brand"];
+// [PROFILE-SALES-FIELDS] PURPOSES expanded with sales-oriented
+// options so a real estate agent or coach has something to pick
+// other than the creator-y defaults. Original six all preserved.
+const PURPOSES = ["Teaching something","Sharing my life","Making people laugh","Inspiring action","Starting conversations","Building a brand","Selling products or services","Generating leads","Booking clients or appointments","Showcasing my work","Demonstrating expertise"];
 const JOURNEYS = ["Just starting out","Finding my voice","Growing consistently","Ready to monetize","Established - scaling"];
-const PILLARS = ["Education","Entertainment","Inspiration","Promotion","Personal / Behind the scenes","Community / Conversation"];
+// [PROFILE-SALES-FIELDS] PILLARS expanded with conversion-focused
+// content categories. Original six preserved.
+const PILLARS = ["Education","Entertainment","Inspiration","Promotion","Personal / Behind the scenes","Community / Conversation","Social proof / Testimonials","Case studies / Client wins","Offers / Calls to action"];
 const EMOJI_PREFS = ["Never","Sometimes","Always"];
 const POST_FREQ = ["Daily","A few times a week","Weekly","Sporadically"];
 const CONTENT_LENGTH = ["Short & punchy","Medium - balanced","Long-form & detailed"];
@@ -5403,6 +5430,15 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   // check — personal-brand creators without a business site are fully
   // "Elite" without this field. See nextSharperField below.
   const [businessWebsite,setBusinessWebsite] = useState(profile.businessWebsite||"");
+  // [PROFILE-SALES-FIELDS] Five service-business fields surfaced in
+  // section 02 of the Profile wizard. All optional, all skipped
+  // cleanly by the prompt-builder when empty. Migration 016 adds
+  // the columns; saveProfileToSupabase writes the trimmed values.
+  const [offerings,setOfferings]                   = useState(profile.offerings||"");
+  const [serviceArea,setServiceArea]               = useState(profile.serviceArea||"");
+  const [idealClientProblem,setIdealClientProblem] = useState(profile.idealClientProblem||"");
+  const [primaryCta,setPrimaryCta]                 = useState(profile.primaryCta||"");
+  const [commonObjections,setCommonObjections]     = useState(profile.commonObjections||"");
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -5457,7 +5493,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -5469,7 +5505,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   // — otherwise a user who flips a toggle and clicks "Save my profile"
   // would have their toggle silently wiped to false by the upsert.
   function handleSavePhase1() {
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections});
     setPhase1Saved(true);
     setPhase1JustSaved(true);
   }
@@ -5835,9 +5871,12 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
                 style={Object.assign({},textareaStyle,{minHeight:88})}/>
             </div>
             <div id="vp-audience" style={{marginBottom:18}}>
-              <Label>Who is your audience? <TierBadge tier="basic"/></Label>
+              <Label>Who is your ideal audience or client? <TierBadge tier="basic"/></Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginBottom:6,lineHeight:1.55}}>
+                Get specific — demographic + what they're after. For service businesses, describe your ideal client too. Section 02 has space to go deeper on the problem they have when they find you.
+              </div>
               <textarea value={audience} onChange={function(e){setAudience(e.target.value);}}
-                placeholder="e.g. Millennial moms 28-38 who want real talk about parenting and home life"
+                placeholder="e.g. Millennial moms 28-38 who want real talk about parenting and home life — OR — First-time homebuyers in their late 20s priced out of their dream neighborhood"
                 style={Object.assign({},textareaStyle,{minHeight:72})}/>
             </div>
             <div id="vp-knownFor" style={{marginBottom:18}}>
@@ -5853,22 +5892,79 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
         )}
       </div>
 
-      {/* [PROFILE-WIZARD][PR-A2] Section 02 — Your business.
-          Only businessWebsite lives here in PR-A2 — service-business
-          fields (offerings, service area, ideal client problem,
-          primary CTA, common objections) land in PR-B. Optional
-          section; doesn't count against profile completeness. */}
+      {/* [PROFILE-WIZARD][PR-B] Section 02 — Your business.
+          Service-business depth: offerings, service area, ideal-
+          client problem, primary CTA, common objections. Every field
+          is optional — personal-brand creators leave them blank and
+          profile completeness isn't affected. Each field VIRL has
+          is one more signal it uses to generate content that
+          actually converts. */}
       <div id="profile-section-business" style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
         <SectionHeader idx={1} expanded={expandedIdx===1} filled={sectionFilled("business")}/>
         {expandedIdx === 1 && 1 <= maxUnlocked && (
           <div style={{padding:"4px 24px 22px"}}>
-            <div id="vp-businessWebsite" style={{marginBottom:4}}>
-              <Label>Your business or brand website (optional)</Label>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
-                If your content points to a business, VIRL uses this as the canonical link destination in CTAs and grounds real product/service names. If you've opted into "Research my public posts" under Personalization & Privacy, VIRL will also read your site for voice and offerings the next time it learns about you. Skip this if you're a personal brand — it won't affect your profile completeness.
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.65,marginBottom:18,padding:"10px 14px",background:B.navySoft,borderRadius:10,border:"1px solid "+B.border}}>
+              These fields unlock content that actually converts — for real estate agents, dental practices, coaches, fitness pros, small businesses. Every one is optional. Skip the whole section if you're a personal brand only.
+            </div>
+
+            <div id="vp-businessWebsite" style={{marginBottom:18}}>
+              <Label>Your business or brand website</Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+                VIRL uses this as the canonical link destination in CTAs. If you've opted into "Research my public posts" under Personalization & Privacy, VIRL also reads your site for voice + offerings.
               </div>
               <input value={businessWebsite} onChange={function(e){setBusinessWebsite(e.target.value);}} placeholder="https://yourbusiness.com" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
             </div>
+
+            <div id="vp-offerings" style={{marginBottom:18}}>
+              <Label>What do you offer?</Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+                List your real services, packages, or products by name. VIRL will reference these instead of inventing offerings.
+              </div>
+              <textarea value={offerings} onChange={function(e){setOfferings(e.target.value);}}
+                placeholder="e.g. Listing presentations, buyer consultations, market analyses, off-market property tours"
+                style={Object.assign({},textareaStyle,{minHeight:66})}/>
+            </div>
+
+            <div id="vp-serviceArea" style={{marginBottom:18}}>
+              <Label>Service area</Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+                If your business is local, name the city/region/markets you serve. VIRL will keep content grounded there and won't reference other markets.
+              </div>
+              <input value={serviceArea} onChange={function(e){setServiceArea(e.target.value);}}
+                placeholder="e.g. Phoenix metro + Scottsdale, AZ"
+                style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
+            </div>
+
+            <div id="vp-idealClientProblem" style={{marginBottom:18}}>
+              <Label>Ideal client + their problem</Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+                Sharper version of "Who is your audience" — what's the specific pain that brings them to you? Content can then speak directly to that pain.
+              </div>
+              <textarea value={idealClientProblem} onChange={function(e){setIdealClientProblem(e.target.value);}}
+                placeholder="e.g. First-time homebuyers in their late 20s who feel priced out of their dream neighborhood and don't know whether to keep waiting or stretch their budget"
+                style={Object.assign({},textareaStyle,{minHeight:72})}/>
+            </div>
+
+            <div id="vp-primaryCta" style={{marginBottom:18}}>
+              <Label>Primary call-to-action</Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+                How do you close posts? VIRL will use this CTA pattern when it fits the post's intent. Adapt wording per post; same action.
+              </div>
+              <input value={primaryCta} onChange={function(e){setPrimaryCta(e.target.value);}}
+                placeholder="e.g. DM 'GUIDE' for the first-time buyer roadmap — OR — Book a 15-min discovery call (link in bio)"
+                style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
+            </div>
+
+            <div id="vp-commonObjections" style={{marginBottom:4}}>
+              <Label>Common objections you hear</Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+                The hesitations or pushback you get from prospects most. VIRL will resolve these head-on in generated content — turning each into a hook, story, or counter-frame.
+              </div>
+              <textarea value={commonObjections} onChange={function(e){setCommonObjections(e.target.value);}}
+                placeholder="e.g. 'Rates are too high right now', 'I don't want to commit', 'I should wait for prices to drop'"
+                style={Object.assign({},textareaStyle,{minHeight:66})}/>
+            </div>
+
             <SectionFooter idx={1}/>
           </div>
         )}

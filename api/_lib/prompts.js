@@ -475,6 +475,28 @@ function buildProfileCtx(profile) {
   // without a business site simply don't have this field set.
   if (profile.businessWebsite) parts.push("Business / brand website (use as the canonical link destination in CTAs and reference real services from this domain — do not invent product names): " + profile.businessWebsite + ".");
 
+  // [PROFILE-SALES-FIELDS] Five optional service-business fields that
+  // unlock high-leverage content for the selling audience (real estate
+  // agents, dental practices, coaches, fitness pros, small business
+  // owners). Each renders as its own labelled sentence so the model
+  // can attend to it individually — concatenating them into one blob
+  // would dilute the signal. Empty fields skip cleanly.
+  if (profile.offerings) {
+    parts.push("WHAT THE CREATOR ACTUALLY OFFERS (reference these real services / packages / products by name when relevant — do NOT invent offerings the creator hasn't listed): " + profile.offerings + ".");
+  }
+  if (profile.serviceArea) {
+    parts.push("SERVICE AREA (this creator's content must stay grounded to this geography — do NOT reference markets, cities, or regions outside it; use this location naturally in local-business content): " + profile.serviceArea + ".");
+  }
+  if (profile.idealClientProblem) {
+    parts.push("IDEAL CLIENT + THEIR PROBLEM (sharper read on who the content must resonate with — speak DIRECTLY to this problem in plan strategy, hooks, captions, and long-form posts): " + profile.idealClientProblem + ".");
+  }
+  if (profile.primaryCta) {
+    parts.push("PRIMARY CALL-TO-ACTION pattern the creator uses (close generated posts with this CTA framing when it fits the post's intent — adapt the wording to the post but keep the action the same): " + profile.primaryCta + ".");
+  }
+  if (profile.commonObjections) {
+    parts.push("COMMON OBJECTIONS this creator hears from prospects (generated content should resolve these head-on whenever the topic lets it — turn each objection into a hook, a story, or a counter-frame; do not pretend they don't exist): " + profile.commonObjections + ".");
+  }
+
   return parts.join(" ");
 }
 
