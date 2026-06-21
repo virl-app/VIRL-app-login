@@ -356,6 +356,19 @@ function scanTrendsContext(trends) {
   return "\n\nThis week's trends (use to break ties when picking the best platform):\n" + lines.join("\n");
 }
 
+// [SCAN-DETAILS] Optional free-text the creator types before scanning — any
+// context they want reflected in the output (who/what's in the shot, the
+// occasion, the message or feeling they want to share, a product name, etc.).
+// Clamped to 600 chars so a pasted essay can't blow the prompt budget, and
+// framed as creator-supplied context the model should weave in WITHOUT
+// inventing facts the visual itself doesn't support.
+function scanDetailsContext(params) {
+  const raw = (params && params.details != null) ? String(params.details).trim() : "";
+  if (!raw) return "";
+  const details = raw.slice(0, 600);
+  return "\n\nThe creator shared these details to support this post — weave the relevant ones into the caption, hook, and analysis where they genuinely strengthen it, but do NOT assert anything the image/frame itself doesn't support: " + details;
+}
+
 // ── Internal lookup tables (kept server-side) ─────────────────────────────
 const PLATFORM_TONE = {
   TikTok:    "Short, punchy, conversational. Hook in first line. Emojis natural. End with question or CTA.",
@@ -1537,6 +1550,7 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
   const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
+    + scanDetailsContext(params)
     + "\n\nReply ONLY with valid JSON (no markdown): "
     + "{\"score\":\"X.X out of 10\","
     + "\"platform\":\"best platform\","
@@ -1567,6 +1581,7 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, 
   const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
+    + scanDetailsContext(params)
     + "\n\nReply ONLY with valid JSON (no markdown): "
     + "{\"score\":\"X.X out of 10\","
     + "\"platform\":\"best platform\","

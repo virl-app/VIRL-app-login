@@ -3695,7 +3695,7 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
   );
 }
 
-function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends,allDayLabels}) {
+function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRegenerate,regenBusy,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends,allDayLabels}) {
   // When `replacing` is true, this card slot is awaiting a streaming
   // replacement from /api/chat?generationType=plan_partial. Render a
   // skeleton instead of the real card so the user sees their kept cards
@@ -4134,6 +4134,19 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,save
           <button onClick={enterEdit}
             style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
             {"Edit"}
+          </button>
+        )}
+        {/* [REGEN-CARD] Per-card Regenerate. Swaps just this post for a
+             fresh take that still fits the week's strategy — same pipeline
+             and single-credit cost as the Edit-plan bulk flow, minus the
+             select step. Hidden in editMode (the Keep/Replace pills own
+             that interaction) and in read-only contexts (no onRegenerate
+             prop). Disabled while any partial regen is mid-stream. */}
+        {expanded && onRegenerate && !editMode && (
+          <button onClick={function(){ if (!regenBusy) onRegenerate(idx); }}
+            disabled={regenBusy}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:regenBusy?B.muted:B.coral,border:"1px solid "+(regenBusy?B.border:B.coral),borderRadius:99,cursor:regenBusy?"default":"pointer",opacity:regenBusy?0.5:1}}>
+            {"Regenerate"}
           </button>
         )}
         {/* [MOVE-CARD] Move to a different day. Replaces the
@@ -5075,6 +5088,12 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
   }
   var [scanning,setScanning] = useState(false);
   var [current,setCurrent]   = useState(0);
+  // [SCAN-DETAILS] Optional free-text the creator can add before scanning —
+  // any context they want reflected in the caption/hook/analysis (who or
+  // what's in the shot, the occasion, the message they want to share). Sent
+  // to the scan builders as params.details; transient like the rest of the
+  // scan state (cleared when they pick a different file).
+  var [details,setDetails]   = useState("");
   // [FRESH-TRENDS] Banner state — true after a scan that consumed the
   // user's weekly fresh-trends allowance (or fired Perplexity inline
   // for a paid user). Reset on each new scan attempt below.
@@ -5175,7 +5194,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
         if (isVideo) {
           extractVideoFrame(file, 1)
             .then(function(fd) {
-              return callAPI("scan_video_frame", {}, { token: userToken, imageBase64: fd.b64, imageType: "image/jpeg", trendsSnapshot: batchSnapshot })
+              return callAPI("scan_video_frame", { details: details }, { token: userToken, imageBase64: fd.b64, imageType: "image/jpeg", trendsSnapshot: batchSnapshot })
                 .then(function(data) {
                   totalCost += data.cost || 0;
                   accumulateUsage(data && data.usage);
@@ -5208,7 +5227,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
           // the old generic "try screenshotting" hint.
           decodeAndResizeImage(file)
             .then(function(img) {
-              return callAPI("scan_image", {}, { token: userToken, imageBase64: img.b64, imageType: img.mediaType, trendsSnapshot: batchSnapshot });
+              return callAPI("scan_image", { details: details }, { token: userToken, imageBase64: img.b64, imageType: img.mediaType, trendsSnapshot: batchSnapshot });
             })
             .then(function(data) {
               totalCost += data.cost || 0;
@@ -5276,6 +5295,25 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
                 {(f.type.startsWith("video/")?"🎬 ":"🖼 ")+f.name.slice(0,24)}
               </div>
             );})}
+          </div>
+          {/* [SCAN-DETAILS] Optional context box. Anything the creator types
+               here is woven into the caption/hook/analysis server-side so the
+               output reflects what's actually going on in the shot — names,
+               the occasion, the message they want to land — rather than VIRL
+               guessing from pixels alone. */}
+          <div style={{marginBottom:16}}>
+            <label htmlFor="virl-scan-details" style={{display:"block",fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>
+              Anything you want to share? <span style={{textTransform:"none",letterSpacing:0,fontWeight:300,fontStyle:"italic",color:B.muted}}>(optional)</span>
+            </label>
+            <textarea id="virl-scan-details" value={details}
+              onChange={function(e){ setDetails(e.target.value); }}
+              maxLength={600}
+              placeholder="Details to support the post — who or what's in it, the occasion, the message or feeling you want to share, a product or location to name…"
+              rows={3}
+              style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,background:B.bg,border:"1px solid "+B.border,borderRadius:12,padding:"12px 14px",lineHeight:1.6,outline:"none",resize:"vertical",boxSizing:"border-box"}}/>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,fontStyle:"italic",color:B.muted,marginTop:6}}>
+              VIRL uses this to shape the caption and won't claim anything the photo doesn't show.
+            </div>
           </div>
           <FreshTrendsChip
             kind="scan"
@@ -8941,6 +8979,16 @@ function App() {
     setReplaceSet(new Set());
   }
 
+  // Per-card Regenerate. Reuses the partial-regen pipeline for a single
+  // card index so the user can swap one post without entering Edit-plan
+  // mode and hand-selecting it. The card shows the same streaming skeleton
+  // (via partialReplacing) while its replacement arrives, and it costs the
+  // same single plan_partial credit as the bulk flow.
+  function regenerateCardAt(i) {
+    if (typeof i !== "number") return;
+    runPartialRegen([i]);
+  }
+
   // Partial regeneration: rewrite only the cards the user marked for
   // replacement, keeping the rest (and the strategy) intact. Streams via
   // the same SSE pipeline as full plan generation; the parser is started
@@ -8949,13 +8997,23 @@ function App() {
   // pending replacement index. When the user has selected ALL cards we
   // fall through to a full regen instead — same cost, plus the user gets
   // a fresh strategy and stats out of it.
-  function runPartialRegen() {
+  function runPartialRegen(explicitIndices) {
     if (!cards || !cards.length) return;
-    if (!replaceSet.size) return;
+    // Source of indices to regenerate. The per-card Regenerate button
+    // passes an explicit [idx]; the Edit-plan action bar calls with no
+    // argument (or the click event) and falls back to the replace-set.
+    // The Array.isArray guard is what lets onClick={runPartialRegen} keep
+    // working — the click event isn't an array, so it routes to replaceSet.
+    var indices = Array.isArray(explicitIndices)
+      ? explicitIndices.filter(function (i) { return typeof i === "number" && i >= 0 && i < cards.length; })
+      : Array.from(replaceSet);
+    if (!indices.length) return;
+    // A partial regen is already streaming — ignore re-entrant taps.
+    if (partialLoading) return;
 
     // Selecting every card → just do a full regen; user gets strategy +
     // stats refreshed too, and the cost matches their intent.
-    if (replaceSet.size === cards.length) {
+    if (indices.length === cards.length) {
       cancelEditMode();
       generate();
       return;
@@ -8965,11 +9023,15 @@ function App() {
       setUpgradeReason("trial"); setShowUpgrade(true); return;
     }
 
-    var sorted = Array.from(replaceSet).sort(function (a, b) { return a - b; });
+    var sorted = indices.slice().sort(function (a, b) { return a - b; });
+    // Set of indices being replaced this run — derived from `indices` (not
+    // replaceSet) so the per-card Regenerate path, which never touches
+    // replaceSet, still keeps the right cards as context.
+    var replaceIdxSet = new Set(sorted);
     var replaceDayLabels = sorted.map(function (i) { return cards[i] && cards[i].day; }).filter(Boolean);
     var keptCards = cards
       .map(function (c, i) { return { c: c, i: i }; })
-      .filter(function (x) { return !replaceSet.has(x.i) && x.c; })
+      .filter(function (x) { return !replaceIdxSet.has(x.i) && x.c; })
       .map(function (x) {
         return {
           day:      x.c.day      || null,
@@ -11232,6 +11294,8 @@ return (
                                 editMode={editMode}
                                 markedReplace={replaceSet.has(i)}
                                 onToggleReplace={toggleReplaceAt}
+                                onRegenerate={regenerateCardAt}
+                                regenBusy={partialLoading}
                                 replacing={partialReplacing.has(i)}
                                 usedFreshTrends={planUsedFreshTrends}
                               />
