@@ -16,7 +16,7 @@ import * as T from "../_lib/email-templates.js";
 // [PREMIUM 7] thirtyDayMilestone is fired here (not the app) because
 // it's a calendar-day check that has to run whether or not the user
 // is currently online.
-import { sendLoopsEvent, sendLoopsEventOnce } from "../_lib/loops.js";
+import { sendLoopsEvent, sendLoopsEventOnce, updateLoopsContact, loopsPlanValue, computeDaysIntoTrial } from "../_lib/loops.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -146,6 +146,26 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
   const name = await fetchProfileName(userId);
   const unsubToken = makeUnsubToken(userId);
   const lastSignInDays = daysSince(user.last_sign_in_at);
+
+  // [LOOPS-PLAN] Periodic contact-property sync. Two jobs here:
+  //   1. Keep `plan` non-blank and current — free/trial users (whose plan
+  //      was never pushed at signup before this change, or who downgraded
+  //      back to free) land at "free"; paid/cancelled tiers pass through.
+  //   2. Recompute `daysIntoTrial` daily so the trial audience guard
+  //      advances over time instead of freezing at the signup-day value.
+  // Loops stores a static number, so only a re-PUT moves it — this daily
+  // cron is that re-PUT. Awaited (paces us under Loops's rate ceiling) but
+  // failure-tolerant: updateLoopsContact logs and swallows its own errors
+  // and never throws, so a Loops blip can't abort the user's email
+  // triggers below.
+  await updateLoopsContact({
+    userId, email,
+    properties: {
+      plan:          loopsPlanValue(plan),
+      daysIntoTrial: computeDaysIntoTrial(user.created_at),
+      signupAt:      user.created_at || undefined,
+    },
+  });
 
   // Welcome safety-net: catches anyone the inline /api/email/welcome call
   // missed (network errors, function cold-start timeouts, etc).

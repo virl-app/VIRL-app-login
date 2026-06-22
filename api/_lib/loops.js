@@ -13,6 +13,36 @@ function loopsApiKey() {
   return process.env.LOOPS_API_KEY || null;
 }
 
+// [LOOPS-PLAN] Map the app's internal Supabase `credits.plan` value to the
+// `plan` contact property Loops audience filters key off. The trial-
+// conversion workflows filter on `plan == "free"`, so a free/trial user
+// must NEVER arrive blank — that's the bug this normalizer closes. Paid
+// tiers pass through unchanged; cancelled / past_due are preserved so the
+// reactivation + dunning segments still match; everything else (the string
+// "free", "trial", null, "", or an unknown value) collapses to "free".
+//
+// Keep this the single source of truth for the property value so the signup
+// path, the periodic cron sync, and the backfill all agree.
+export function loopsPlanValue(supabasePlan) {
+  const p = (supabasePlan == null ? "" : String(supabasePlan)).trim().toLowerCase();
+  if (p === "founding" || p === "standard" || p === "pro") return p;
+  if (p === "cancelled" || p === "canceled") return "cancelled";
+  if (p === "past_due"  || p === "unpaid")   return "past_due";
+  return "free";
+}
+
+// [LOOPS-PLAN] Whole days since signup, floored, never negative. Backs the
+// numeric `daysIntoTrial` contact property the trial audience guard relies
+// on. Recomputed every time a contact is synced (signup + daily cron) so it
+// advances as days pass instead of freezing at the signup value. Returns
+// undefined for an unparseable date so the caller omits the property rather
+// than writing NaN/0.
+export function computeDaysIntoTrial(signupAtIso) {
+  const t = Date.parse(signupAtIso);
+  if (Number.isNaN(t)) return undefined;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+}
+
 // Fire a one-off event for a contact. Loops resolves the contact by
 // userId or email, so callers should pass at least one. eventProperties
 // are exposed in Loops's email template variables.
