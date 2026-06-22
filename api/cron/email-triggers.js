@@ -17,10 +17,10 @@ import * as T from "../_lib/email-templates.js";
 // it's a calendar-day check that has to run whether or not the user
 // is currently online.
 import { sendLoopsEvent, sendLoopsEventOnce, updateLoopsContact, loopsPlanValue, computeDaysIntoTrial } from "../_lib/loops.js";
+import { cronAuthorized } from "../_lib/cron-auth.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const CRON_SECRET          = process.env.CRON_SECRET;
 
 // [EMAIL-CUTOVER] When true, this cron skips the welcome safety-net AND the
 // trial day 7/11/13/expired Resend sends. Both are now handled by Loops
@@ -306,9 +306,9 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
 export default async function handler(req, res) {
   // Auth: Vercel cron sends `Authorization: Bearer ${CRON_SECRET}`. Reject
   // any caller without the right secret so the endpoint isn't externally
-  // hittable. (CRON_SECRET set as a Vercel env var.)
-  const auth = req.headers.authorization || "";
-  if (!CRON_SECRET || auth !== `Bearer ${CRON_SECRET}`) {
+  // hittable. cronAuthorized logs the rejection reason (missing secret vs.
+  // bearer mismatch) so a misconfigured CRON_SECRET doesn't fail silently.
+  if (!cronAuthorized(req, "email-triggers")) {
     return res.status(401).json({ error: "unauthorized" });
   }
 
