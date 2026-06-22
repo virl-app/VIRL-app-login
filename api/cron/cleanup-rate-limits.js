@@ -5,13 +5,13 @@
 // Auth: same CRON_SECRET pattern as /api/cron/email-triggers — Vercel
 // sends `Authorization: Bearer ${CRON_SECRET}` on scheduled invocations.
 
+import { cronAuthorized } from "../_lib/cron-auth.js";
+
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const CRON_SECRET          = process.env.CRON_SECRET;
 
 export default async function handler(req, res) {
-  const auth = req.headers.authorization || "";
-  if (!CRON_SECRET || auth !== `Bearer ${CRON_SECRET}`) {
+  if (!cronAuthorized(req, "cleanup-rate-limits")) {
     return res.status(401).json({ error: "unauthorized" });
   }
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
