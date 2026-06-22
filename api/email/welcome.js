@@ -23,7 +23,7 @@
 
 import { sendEmail, emailEnabled }              from "../_lib/email-send.js";
 import { welcome as welcomeTemplate }           from "../_lib/email-templates.js";
-import { sendLoopsEvent, updateLoopsContact }   from "../_lib/loops.js";
+import { sendLoopsEvent, updateLoopsContact, loopsPlanValue, computeDaysIntoTrial } from "../_lib/loops.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -75,6 +75,25 @@ export default async function handler(req, res) {
   if (typeof meta.last_name === "string") lastName = meta.last_name;
   const marketingSubscribed = !!meta.marketing_opt_in;
 
+  // [LOOPS-PLAN] Derive the contact's plan from the credits row so the Loops
+  // `plan` property is set on the very first sync instead of arriving blank.
+  // A brand-new signup usually has no credits row yet (lazy-provisioned) →
+  // null → loopsPlanValue() maps it to "free". The rare user who paid before
+  // this inline welcome fires keeps their real paid tier. Best-effort: a
+  // read failure falls through to "free" rather than blocking the sync.
+  let supabasePlan = null;
+  try {
+    const credRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${user.id}&select=plan`,
+      { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    if (credRes.ok) {
+      const rows = await credRes.json();
+      if (rows[0] && rows[0].plan != null) supabasePlan = rows[0].plan;
+    }
+  } catch (e) { /* non-fatal — defaults to "free" */ }
+  const signupAt = user.created_at || new Date().toISOString();
+
   // [EMAIL-CUTOVER] Always-on: sync contact properties to Loops. This is
   // §9 audit fix #4 — Loops's contact data now mirrors the Supabase
   // source of truth, so audience filters can suppress marketing sends to
@@ -86,8 +105,13 @@ export default async function handler(req, res) {
     properties: {
       firstName:           firstName || undefined,
       lastName:            lastName  || undefined,
-      signupAt:            user.created_at || new Date().toISOString(),
+      signupAt:            signupAt,
       marketingSubscribed,
+      // [LOOPS-PLAN] Never blank: free/trial → "free", paid → real tier.
+      // daysIntoTrial seeds the trial audience guard at 0 on signup day;
+      // the daily cron sync advances it as days pass.
+      plan:                loopsPlanValue(supabasePlan),
+      daysIntoTrial:       computeDaysIntoTrial(signupAt),
     },
   }).catch(() => {});
 

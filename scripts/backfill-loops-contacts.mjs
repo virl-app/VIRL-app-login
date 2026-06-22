@@ -6,6 +6,12 @@
 // day-N from signupAt, marketing suppression from marketingSubscribed)
 // work for users who signed up before migration 003 ran.
 //
+// [LOOPS-PLAN] Also backfills `plan` + `daysIntoTrial`. Contacts created
+// before the welcome/cron changes have a BLANK plan, which silently fails
+// the trial-conversion workflows' `plan == "free"` filter. This script is
+// how those existing contacts self-correct — they won't otherwise update
+// until the daily cron sync next touches them. Run once after deploy.
+//
 // Why this exists: without the backfill, only NEW signups after
 // /api/email/welcome's updateLoopsContact change will have the §9
 // properties populated. Existing contacts are invisible to the new
@@ -47,6 +53,23 @@ function sleep(ms) {
   return new Promise(function(r){ setTimeout(r, ms); });
 }
 
+// [LOOPS-PLAN] Inlined copies of api/_lib/loops.js helpers — kept local so
+// this script stays dependency-free (it deliberately inlines its own Loops
+// PUT rather than importing the serverless module). Must mirror that file:
+// free/trial → "free", paid tiers pass through, cancelled/past_due preserved.
+function loopsPlanValue(supabasePlan) {
+  const p = (supabasePlan == null ? "" : String(supabasePlan)).trim().toLowerCase();
+  if (p === "founding" || p === "standard" || p === "pro") return p;
+  if (p === "cancelled" || p === "canceled") return "cancelled";
+  if (p === "past_due"  || p === "unpaid")   return "past_due";
+  return "free";
+}
+function computeDaysIntoTrial(signupAtIso) {
+  const t = Date.parse(signupAtIso);
+  if (Number.isNaN(t)) return undefined;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+}
+
 // Page through auth.users via the Supabase admin API. Returns the users
 // array for one page plus a hint at whether more pages exist (Supabase's
 // page param is 1-indexed).
@@ -78,6 +101,23 @@ async function fetchOptOutMap(userIds) {
   if (!r.ok) return out; // fail open — missing row falls through to the user_metadata default
   const rows = await r.json();
   for (const row of rows) out.set(row.user_id, !!row.marketing_opt_out);
+  return out;
+}
+
+// [LOOPS-PLAN] Read credits.plan for a batch of user IDs in one round-trip.
+// Returns a Map user_id → plan string. Users with no credits row are absent
+// from the map; the caller maps that (and any unknown value) to "free".
+async function fetchPlanMap(userIds) {
+  const out = new Map();
+  if (!userIds.length) return out;
+  const params = "user_id=in.(" + userIds.join(",") + ")&select=user_id,plan";
+  const r = await fetch(
+    SUPABASE_URL + "/rest/v1/credits?" + params,
+    { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY } }
+  );
+  if (!r.ok) return out; // fail open — missing plan falls through to "free"
+  const rows = await r.json();
+  for (const row of rows) out.set(row.user_id, row.plan);
   return out;
 }
 
@@ -118,6 +158,7 @@ async function main() {
 
     const userIds = users.map(function(u){ return u.id; }).filter(Boolean);
     const optOutMap = await fetchOptOutMap(userIds);
+    const planMap   = await fetchPlanMap(userIds);
 
     for (const u of users) {
       totalSeen++;
@@ -131,6 +172,10 @@ async function main() {
         lastName:            meta.last_name  || undefined,
         signupAt:            u.created_at || undefined,
         marketingSubscribed: !optOut,
+        // [LOOPS-PLAN] Fixes the blank-plan contacts: free/trial → "free",
+        // paid tiers preserved. daysIntoTrial recomputed from signup.
+        plan:                loopsPlanValue(planMap.get(u.id)),
+        daysIntoTrial:       computeDaysIntoTrial(u.created_at),
       };
 
       const result = await putLoopsContact(contact);
