@@ -204,17 +204,19 @@ export function subscriptionCancelled({ name }) {
   };
 }
 
-// 8. Weekly Monday reset — re-engagement nudge for active users.
+// 8. Weekly credit-reset reminder — re-engagement nudge for active users.
+// Greeting is weekday-neutral: the cron now sends this on each user's own
+// credit-reset day (see api/cron/email-triggers.js), which is rarely a Monday.
 export function weeklyReset({ name, unsubscribeToken }) {
   const headline = "Fresh week, fresh momentum.";
   const body = `
-    <p style="margin:0 0 12px">${name ? "Happy Monday, " + name + "." : "Happy Monday."} A new week — perfect time to draft your next plan and ship it before the week gets ahead of you.</p>
+    <p style="margin:0 0 12px">${name ? "Fresh week, " + name + "." : "Fresh week."} A new week — perfect time to draft your next plan and ship it before the week gets ahead of you.</p>
     <p style="margin:0 0 12px">A 60-second plan generation sets the next seven days. The earlier you draft it, the more room you have to actually post it.</p>
     <p style="margin:0">If your audience expanded last week — or anything changed about how you sound — update your profile first, then generate.</p>`;
   return {
     subject: "Fresh week, fresh VIRL plan",
     html:    layout({ eyebrow: "Fresh week", headline, body, primaryCta: { href: APP_URL, label: "Generate this week's plan" }, unsubscribeToken }),
-    text:    `${headline}\n\nHappy Monday. A new week — perfect time to draft your next plan.\n\nA 60-second generation sets the next seven days.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nFresh week. A new week — perfect time to draft your next plan.\n\nA 60-second generation sets the next seven days.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 

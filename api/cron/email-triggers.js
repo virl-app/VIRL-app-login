@@ -64,14 +64,14 @@ async function fetchUsersBatch(page, perPage) {
   return json.users || [];
 }
 
-async function fetchPlan(userId) {
+async function fetchCredits(userId) {
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan`,
+    `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}&select=plan,reset_at`,
     { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
   );
   if (!res.ok) return null;
   const rows = await res.json();
-  return rows[0] ? rows[0].plan : null;
+  return rows[0] || null;
 }
 
 async function fetchProfileName(userId) {
@@ -135,13 +135,15 @@ async function fetchUnloggedCount(userId) {
 }
 
 // Per-user dispatch — figures out which (if any) trigger applies today.
-async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
+async function processUser(user, todayIsSunday, weekKey) {
   const userId   = user.id;
   const email    = user.email;
   const days     = daysSince(user.created_at);
   if (!email || days === null) return;
 
-  const plan = await fetchPlan(userId);
+  const credit  = await fetchCredits(userId);
+  const plan    = credit ? credit.plan : null;
+  const resetAt = credit ? credit.reset_at : null;
   const isPaid = PAID_PLANS.includes(plan);
   const name = await fetchProfileName(userId);
   const unsubToken = makeUnsubToken(userId);
@@ -223,12 +225,29 @@ async function processUser(user, todayIsMonday, todayIsSunday, weekKey) {
     }
   }
 
-  // Weekly Monday reset — marketing, opt-out-able. Skip users still in the
-  // first week (the welcome already covers them).
-  if (todayIsMonday && days >= 7) {
+  // Weekly credit-reset reminder — marketing, opt-out-able. Anchored to the
+  // user's OWN reset cycle (credits.reset_at), NOT a global Monday.
+  //
+  // Source of truth: credits reset on a per-user 7-day window stored in
+  // credits.reset_at. handle_new_user seeds the first window, and the lazy
+  // reset in api/chat.js re-anchors reset_at to now()+7d on the first
+  // generation after the window expires — so an active user's reset day
+  // drifts to whatever day/time they generate, and is almost never a
+  // calendar Monday. Gating on Mondays therefore fired the reminder on the
+  // wrong day (a day early, every week) for anyone off the Monday cadence.
+  //
+  // We now fire once the user's window has actually rolled over
+  // (now >= reset_at), so the email lands on their real reset day. Deduped
+  // per cycle by the reset_at date: each new cycle gets a fresh reset_at
+  // (different date) → exactly one send; a frozen reset_at (a user who hasn't
+  // generated since expiry) keeps the same key → no resend on later runs.
+  // The days >= 7 floor keeps first-week users on the welcome track.
+  const resetMs = resetAt ? Date.parse(resetAt) : NaN;
+  if (days >= 7 && !Number.isNaN(resetMs) && Date.now() >= resetMs) {
+    const cycleKey = resetAt.slice(0, 10); // YYYY-MM-DD of this cycle's reset
     const tpl = T.weeklyReset({ name, unsubscribeToken: unsubToken });
     await sendEmail({
-      userId, to: email, template: "weekly_reset", dedupeKey: `weekly_reset_${weekKey}`,
+      userId, to: email, template: "weekly_reset", dedupeKey: `weekly_reset_${cycleKey}`,
       subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
     });
   }
@@ -329,7 +348,7 @@ export default async function handler(req, res) {
       const batch = await fetchUsersBatch(page, perPage);
       if (!batch.length) break;
       for (const u of batch) {
-        try { await processUser(u, todayIsMonday, todayIsSunday, weekKey); processed++; }
+        try { await processUser(u, todayIsSunday, weekKey); processed++; }
         catch (e) { errors++; console.error("[cron/email] user error", u.id, e.message); }
       }
       if (batch.length < perPage) break;
