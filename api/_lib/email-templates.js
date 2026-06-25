@@ -6,6 +6,17 @@
 const APP_URL          = process.env.APP_URL || "https://app.govirl.ai";
 const UNSUBSCRIBE_BASE = `${APP_URL}/api/email/unsubscribe`;
 
+// Footer links — pulled from govirl.ai. Privacy is the live Termly-hosted policy.
+const PRIVACY_URL   = "https://app.termly.io/policy-viewer/policy.html?policyUUID=bc2fc2c6-2e38-40d0-9d73-de9941f510d0";
+const INSTAGRAM_URL = "https://www.instagram.com/virl_app";
+const TIKTOK_URL    = "https://www.tiktok.com/@virlapp";
+
+// Wordmark image — "VIRL" rendered in the brand font (Italiana) and served as a
+// static asset from the app root, so it's pixel-identical in every email client
+// (including Gmail/Outlook, which don't load web fonts). Falls back to alt text.
+const WORDMARK_URL      = `${APP_URL}/virl-wordmark.png`;        // white, for navy header band
+const WORDMARK_NAVY_URL = `${APP_URL}/virl-wordmark-navy.png`;   // navy, for white footer
+
 // Brand colours mirror index.html's `B` palette.
 const COLOR = {
   bg:      "#F8FAFC",
@@ -34,8 +45,15 @@ function unsubscribeFooter(unsubscribeToken) {
     : `Account &amp; billing receipts only — no unsubscribe needed.`;
   return `
     <tr><td style="padding:32px 32px 28px;border-top:1px solid ${COLOR.border};text-align:center">
-      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:18px;color:${COLOR.navy};letter-spacing:0.05em;margin-bottom:4px">VIRL</div>
-      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:11px;color:${COLOR.sky};letter-spacing:0.02em;margin-bottom:14px">${BRAND_TAGLINE}</div>
+      <img src="${WORDMARK_NAVY_URL}" width="63" height="22" alt="VIRL" style="display:block;margin:0 auto 6px;border:0;outline:none;text-decoration:none;height:22px;width:63px">
+      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:11px;color:${COLOR.sky};letter-spacing:0.02em;margin-bottom:16px">${BRAND_TAGLINE}</div>
+      <div style="font-family:Helvetica,Arial,sans-serif;font-size:11px;line-height:1.8;margin-bottom:12px">
+        <a href="${INSTAGRAM_URL}" style="color:${COLOR.navy};text-decoration:none;font-weight:700">Instagram</a>
+        &nbsp;·&nbsp;
+        <a href="${TIKTOK_URL}" style="color:${COLOR.navy};text-decoration:none;font-weight:700">TikTok</a>
+        &nbsp;·&nbsp;
+        <a href="${PRIVACY_URL}" style="color:${COLOR.muted};text-decoration:underline">Privacy Policy</a>
+      </div>
       <div style="font-family:Helvetica,Arial,sans-serif;font-size:11px;color:${COLOR.muted};line-height:1.65">
         ${unsubLink}
       </div>
@@ -45,7 +63,7 @@ function unsubscribeFooter(unsubscribeToken) {
 function unsubscribeFooterText(unsubscribeToken) {
   if (!unsubscribeToken) return "";
   const url = `${UNSUBSCRIBE_BASE}?t=${encodeURIComponent(unsubscribeToken)}`;
-  return `\n\n---\nVIRL — ${BRAND_TAGLINE}\nUnsubscribe: ${url}\nAccount & billing emails will still be sent.`;
+  return `\n\n---\nVIRL — ${BRAND_TAGLINE}\nInstagram: ${INSTAGRAM_URL}\nTikTok: ${TIKTOK_URL}\nPrivacy: ${PRIVACY_URL}\nUnsubscribe: ${url}\nAccount & billing emails will still be sent.`;
 }
 
 // Email frame. Every template renders through this so a single-line
@@ -63,9 +81,10 @@ function layout({ headline, body, primaryCta, eyebrow, unsubscribeToken, accent 
   const accentEyebrow    = accent === "coral" ? COLOR.coral : COLOR.navy;
   const accentShadowRGB  = accent === "coral" ? "244,63,94" : "37,99,235";
 
-  const eyebrowBlock = eyebrow
-    ? `<tr><td style="padding:0 36px 6px"><div style="font-family:Helvetica,Arial,sans-serif;font-size:10px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:${accentEyebrow}">${eyebrow}</div></td></tr>`
-    : "";
+  // Eyebrow/subheading removed per brand direction (Jun 2026) — headers now go
+  // straight from the wordmark to the headline. The `eyebrow` arg is retained on
+  // each template call but intentionally left unrendered.
+  const eyebrowBlock = "";
 
   const cta = primaryCta
     ? `<tr><td style="padding:8px 36px 36px">
@@ -74,20 +93,49 @@ function layout({ headline, body, primaryCta, eyebrow, unsubscribeToken, accent 
     : `<tr><td style="padding:0 36px 32px"></td></tr>`;
 
   return `<!doctype html>
-<html><body style="margin:0;padding:32px 12px;background:${COLOR.bg};font-family:Helvetica,Arial,sans-serif;color:${COLOR.ink}">
-  <table role="presentation" cellpadding="0" cellspacing="0" align="center" width="100%" style="max-width:600px;background:${COLOR.card};border-radius:18px;overflow:hidden;border:1px solid ${COLOR.border};box-shadow:0 4px 30px rgba(15,23,42,0.06)">
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Wordmark renders as a hosted image (Italiana) in both header and footer,
+     so no web font is needed — identical in every client including Gmail. -->
+<!-- Force light rendering. Without these, Gmail/Apple Mail/Outlook dark mode
+     auto-invert the navy header into a washed-out lavender and flip the white
+     "VIRL" wordmark to black (the unprofessional look reported Jun 2026). One
+     declaration here cascades to all templates via layout(). -->
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<style>
+  :root { color-scheme: only light; supported-color-schemes: only light; }
+  body  { color-scheme: only light; }
+  /* Outlook.com / Outlook app dark mode repaints colors regardless of the
+     hint above — pin the brand colors so the header stays navy + wordmark white. */
+  [data-ogsc] .virl-header   { background:${COLOR.navy} !important; }
+  [data-ogsc] .virl-wordmark { color:${COLOR.white} !important; }
+  [data-ogsc] .virl-card     { background:${COLOR.card} !important; }
+</style>
+</head>
+<body style="margin:0;padding:32px 12px;background:${COLOR.bg};font-family:Helvetica,Arial,sans-serif;color:${COLOR.ink}">
+  <table role="presentation" cellpadding="0" cellspacing="0" align="center" width="100%" class="virl-card" style="max-width:600px;background:${COLOR.card};border-radius:18px;overflow:hidden;border:1px solid ${COLOR.border};box-shadow:0 4px 30px rgba(15,23,42,0.06)">
     <!-- Navy header band — mirrors the in-app top nav. VIRL mark + italic tagline. -->
-    <tr><td style="background:${COLOR.navy};padding:22px 36px 20px">
-      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:26px;color:${COLOR.white};letter-spacing:0.06em;line-height:1">VIRL</div>
-      <div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:11px;color:${COLOR.sky};letter-spacing:0.02em;margin-top:4px">${BRAND_TAGLINE}</div>
+    <tr><td class="virl-header" style="background:${COLOR.navy};padding:22px 36px">
+      <img src="${WORDMARK_URL}" width="103" height="36" alt="VIRL" style="display:block;border:0;outline:none;text-decoration:none;height:36px;width:103px;color:${COLOR.white};font-family:'Italiana',Georgia,'Times New Roman',serif;font-size:28px;letter-spacing:0.16em">
     </td></tr>
     ${eyebrowBlock}
-    <tr><td style="padding:${eyebrow ? "4px" : "32px"} 36px 16px"><div style="font-family:Georgia,'Times New Roman',serif;font-size:32px;line-height:1.2;color:${COLOR.ink};letter-spacing:-0.005em">${headline}</div></td></tr>
+    <tr><td style="padding:28px 36px 16px"><div style="font-family:Georgia,'Times New Roman',serif;font-size:32px;line-height:1.2;color:${COLOR.ink};letter-spacing:-0.005em">${headline}</div></td></tr>
     <tr><td style="padding:0 36px 22px;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:1.75;color:${COLOR.sub}">${body}</td></tr>
     ${cta}
     ${unsubscribeFooter(unsubscribeToken)}
   </table>
 </body></html>`;
+}
+
+// Inline CTA button — same pill as layout()'s primary CTA, but usable mid-body
+// when a template needs the button before a closing paragraph (e.g. trialExpired).
+function inlineButton({ href, label, accent }) {
+  const bg     = accent === "coral" ? COLOR.coral : COLOR.blue;
+  const shadow = accent === "coral" ? "244,63,94" : "37,99,235";
+  return `<div style="margin:6px 0 22px"><a href="${href}" style="display:inline-block;background:${bg};color:${COLOR.white};font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;padding:15px 30px;border-radius:99px;box-shadow:0 6px 18px rgba(${shadow},0.35)">${label}</a></div>`;
 }
 
 // ── Templates ─────────────────────────────────────────────────────────────
@@ -115,13 +163,13 @@ export function welcome({ name }) {
 export function trialDay11({ name, unsubscribeToken }) {
   const headline = "Three days left in your free trial.";
   const body = `
-    <p style="margin:0 0 12px">${name ? name + ", you've" : "You've"} had ${"&nbsp;"}11 days with VIRL. Three more before the trial ends.</p>
+    <p style="margin:0 0 12px">${name ? name + ", you've" : "You've"} had 11 days with VIRL. Three more before the trial ends.</p>
     <p style="margin:0 0 12px">If VIRL is helping, the Founder Circle locks in $20/month for life as long as you stay subscribed — first 50 paying members only.</p>
     <p style="margin:0">No pressure if it's not the right fit. Either way, your plans and vault stay safe.</p>`;
   return {
     subject: "3 days left in your VIRL trial",
-    html:    layout({ eyebrow: "Reminder", headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "See plans" }, unsubscribeToken }),
-    text:    `${headline}\n\nYou've had 11 days with VIRL. Three more before the trial ends.\n\nIf VIRL is helping, the Founder Circle locks in $20/month for life as long as you stay subscribed — first 50 paying members only.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
+    html:    layout({ eyebrow: "Reminder", headline, body, primaryCta: { href: `${APP_URL}/?intent=founder&plan=monthly`, label: "Upgrade now" }, unsubscribeToken }),
+    text:    `${headline}\n\nYou've had 11 days with VIRL. Three more before the trial ends.\n\nIf VIRL is helping, the Founder Circle locks in $20/month for life as long as you stay subscribed — first 50 paying members only.\n\n${APP_URL}/?intent=founder&plan=monthly${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -134,8 +182,8 @@ export function trialDay13({ name, unsubscribeToken }) {
     <p style="margin:0">If it's not the fit, that's totally fine — your account stays open, your vault and saved plans are yours to keep.</p>`;
   return {
     subject: "Last day of your VIRL trial",
-    html:    layout({ eyebrow: "Last day", accent: "coral", headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "Claim my Founder Circle spot" }, unsubscribeToken }),
-    text:    `${headline}\n\nToday is day 14 — your trial ends tonight.\n\nIf you've found VIRL useful, the Founder Circle is still open: $20/mo or $215/yr, locked for life. First 50 only.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
+    html:    layout({ eyebrow: "Last day", accent: "coral", headline, body, primaryCta: { href: `${APP_URL}/?intent=founder&plan=annual`, label: "Claim my spot" }, unsubscribeToken }),
+    text:    `${headline}\n\nToday is day 14 — your trial ends tonight.\n\nIf you've found VIRL useful, the Founder Circle is still open: $20/mo or $215/yr, locked for life. First 50 only.\n\n${APP_URL}/?intent=founder&plan=annual${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -144,15 +192,13 @@ export function trialExpired({ name, unsubscribeToken }) {
   const headline = "Your free trial ended.";
   const body = `
     <p style="margin:0 0 12px">${name ? name + ", your" : "Your"} 14-day trial is over. Your profile, vault, and saved plans are still here — they don't go anywhere.</p>
-    <p style="margin:0 0 12px">If you'd like to keep generating new plans, captions, scripts, and scans, here's how:</p>
-    <ul style="margin:0 0 16px;padding-left:18px">
-      <li><strong>Standard</strong> — $25/mo or $249/yr (2 months free). 150 credits/week, every feature.</li>
-    </ul>
+    <p style="margin:0 0 16px">If you'd like to keep generating new plans, captions, posts, scripts, and scans, subscribe today.</p>
+    ${inlineButton({ href: `${APP_URL}`, label: "Upgrade to Standard" })}
     <p style="margin:0">No hard feelings if not — reply and tell me why VIRL didn't fit. That feedback is gold this early.</p>`;
   return {
     subject: "Your VIRL free trial has ended",
-    html:    layout({ eyebrow: "Trial ended", headline, body, primaryCta: { href: `${APP_URL}/?upgrade=1`, label: "Upgrade to Standard" }, unsubscribeToken }),
-    text:    `${headline}\n\nYour 14-day trial is over. Your profile, vault, and saved plans stay safe.\n\nStandard: $25/mo or $249/yr — 150 credits/week, every feature.\n\n${APP_URL}/?upgrade=1${unsubscribeFooterText(unsubscribeToken)}`,
+    html:    layout({ eyebrow: "Trial ended", headline, body, unsubscribeToken }),
+    text:    `${headline}\n\nYour 14-day trial is over. Your profile, vault, and saved plans stay safe.\n\nKeep generating new plans, captions, posts, scripts, and scans on Standard — $25/mo or $249/yr, 150 credits/week.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -210,13 +256,13 @@ export function subscriptionCancelled({ name }) {
 export function weeklyReset({ name, unsubscribeToken }) {
   const headline = "Fresh week, fresh momentum.";
   const body = `
-    <p style="margin:0 0 12px">${name ? "Fresh week, " + name + "." : "Fresh week."} A new week — perfect time to draft your next plan and ship it before the week gets ahead of you.</p>
+    <p style="margin:0 0 12px">A new week — perfect time to draft your next plan and ship it before the week gets ahead of you.</p>
     <p style="margin:0 0 12px">A 60-second plan generation sets the next seven days. The earlier you draft it, the more room you have to actually post it.</p>
     <p style="margin:0">If your audience expanded last week — or anything changed about how you sound — update your profile first, then generate.</p>`;
   return {
     subject: "Fresh week, fresh VIRL plan",
     html:    layout({ eyebrow: "Fresh week", headline, body, primaryCta: { href: APP_URL, label: "Generate this week's plan" }, unsubscribeToken }),
-    text:    `${headline}\n\nFresh week. A new week — perfect time to draft your next plan.\n\nA 60-second generation sets the next seven days.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nA new week — perfect time to draft your next plan.\n\nA 60-second generation sets the next seven days.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
