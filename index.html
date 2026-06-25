@@ -9029,6 +9029,15 @@ function App() {
     // replaceSet, still keeps the right cards as context.
     var replaceIdxSet = new Set(sorted);
     var replaceDayLabels = sorted.map(function (i) { return cards[i] && cards[i].day; }).filter(Boolean);
+    // [REGEN-PLATFORM-FIX] Send each replaced slot's own platform/format so
+    // the server keeps the regenerated card on the SAME channel/format as
+    // the card it swaps out (and never drifts to an unselected platform like
+    // LinkedIn). Same order as `sorted` so it lines up with the streamed
+    // replacements.
+    var replaceSlots = sorted.map(function (i) {
+      var c = cards[i] || {};
+      return { day: c.day || null, platform: c.platform || null, format: c.format || null };
+    }).filter(function (s) { return s.day; });
     var keptCards = cards
       .map(function (c, i) { return { c: c, i: i }; })
       .filter(function (x) { return !replaceIdxSet.has(x.i) && x.c; })
@@ -9064,6 +9073,7 @@ function App() {
       strategy:     strategy || null,
       keptCards:    keptCards,
       replaceDayLabels: replaceDayLabels,
+      replaceSlots: replaceSlots,
       // Skip plan_history's prior-week lookup — this is a same-week
       // edit, not a new week.
       currentWeekStart: weekStartISO(Date.now()),
