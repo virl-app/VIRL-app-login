@@ -1107,7 +1107,24 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   const keptCards        = Array.isArray(params.keptCards)        ? params.keptCards        : [];
   const replaceDayLabels = Array.isArray(params.replaceDayLabels) ? params.replaceDayLabels : [];
   const strategy         = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
-  const N = replaceDayLabels.length;
+
+  // [REGEN-PLATFORM-FIX] buildPlan keeps the allowed-platforms/formats
+  // constraint in its USER prompt, which this builder does NOT reuse (only
+  // the cached system prompt is shared). Without restating it here the model
+  // had no allow-list and drifted to whatever platform/format was missing
+  // from the kept cards — reliably LinkedIn long_form_text. Restate the
+  // allow-list, and prefer `replaceSlots` ({day,platform,format} of each card
+  // being replaced) so each regenerated card stays on the SAME platform/
+  // format as the one it swaps out. Older clients send only day labels →
+  // fall back to those (platform/format unconstrained per-slot, but the
+  // allow-list below still prevents the LinkedIn drift).
+  const platformsArr = Array.isArray(params.platforms) ? params.platforms.filter(Boolean) : [];
+  const formatsArr   = Array.isArray(params.formats)   ? params.formats.filter(Boolean)   : [];
+  const replaceSlots = (Array.isArray(params.replaceSlots) && params.replaceSlots.length)
+    ? params.replaceSlots
+    : replaceDayLabels.map(function (d) { return { day: d, platform: null, format: null }; });
+
+  const N = replaceSlots.length;
 
   if (N < 1)  throw new Error("plan_partial requires at least one day label to replace.");
   if (N > 14) throw new Error("plan_partial cannot replace more than 14 cards.");
@@ -1137,16 +1154,28 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   if (strategy.the_bet)        strategyLines.push("The bet: "        + strategy.the_bet);
   const strategyBlock = strategyLines.length ? strategyLines.join("\n") : "(no strategy provided — improvise from the kept cards)";
 
-  const labelList = replaceDayLabels.map(function (d) { return "\"" + d + "\""; }).join(", ");
+  // [REGEN-PLATFORM-FIX] One line per slot being replaced, carrying the
+  // platform/format of the card it swaps out so the model holds them steady.
+  const slotLines = replaceSlots.map(function (s) {
+    const day = (s && s.day) ? s.day : "?";
+    if (s && s.platform && s.format) return "  " + day + " → keep platform=" + s.platform + ", format=" + s.format;
+    if (s && s.platform)             return "  " + day + " → keep platform=" + s.platform;
+    return "  " + day;
+  }).join("\n");
+  const platformsLine = platformsArr.length ? platformsArr.join(", ") : "(the creator's selected platforms only)";
+  const formatsLine   = formatsArr.length   ? formatsArr.join(", ")   : "(the creator's selected formats only)";
 
   const userPrompt = ""
     + "PARTIAL REGENERATION — you are rewriting specific cards within an EXISTING weekly plan."
     + "\n\nLOCKED STRATEGY (do not change this; do not re-emit it in your output):\n" + strategyBlock
-    + "\n\nKEPT CARDS (already in the plan — do NOT regenerate these, do NOT duplicate their angles, and lean toward formats/platforms UNDER-represented in this set when the playbook cadence allows):\n"
+    + "\n\nKEPT CARDS (already in the plan — do NOT regenerate these and do NOT duplicate their angles or topics):\n"
     + (keptLines || "  (none — every card is being replaced)")
-    + "\n\nGENERATE EXACTLY " + N + " new card" + (N === 1 ? "" : "s") + " for these day labels, in this order: " + labelList + "."
+    + "\n\nALLOWED PLATFORMS — every new card's `platform` field MUST be exactly one of these. NEVER output a platform outside this list (in particular, do NOT use LinkedIn unless it appears here): " + platformsLine + "."
+    + "\n\nALLOWED FORMATS — every new card's `format` MUST be consistent with the creator's selected content formats: " + formatsLine + ". Do NOT introduce long_form_text / LinkedIn-style posts unless they are allowed here."
+    + "\n\nGENERATE EXACTLY " + N + " new card" + (N === 1 ? "" : "s") + " — one for each slot below, in this order:\n" + slotLines
     + "\n\nRules for the new cards:"
     + "\n  - Use the EXACT day labels above. Do not invent other days, do not regenerate kept days."
+    + "\n  - Keep each new card on the SAME platform and format as the slot it replaces (shown above): produce a genuinely different idea/angle for that slot — a fresh take, NOT a different channel. Only deviate from a slot's platform/format if it is not in the ALLOWED lists above, in which case pick the closest ALLOWED platform/format."
     + "\n  - Fit the locked strategy thesis and bet. The new cards should feel like they belong to the SAME week as the kept cards."
     + "\n  - Follow ALL the same per-card field rules from the system prompt (universal fields + format-specific fields based on the card's `format`)."
     + "\n  - Hashtag arrays still follow the platform's playbook hashtag_count. Strings still omit the '#' prefix."
