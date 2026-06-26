@@ -4598,6 +4598,7 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
   const [topic,setTopic]          = useState("");
   const [points,setPoints]        = useState("");
   const [tone,setTone]            = useState("");
+  const [guidance,setGuidance]    = useState("");
   const [length,setLength]        = useState("medium");
   const [loading,setLoading]      = useState(false);
   const [error,setError]          = useState("");
@@ -4640,6 +4641,7 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
       topic:            topic.trim(),
       supportingPoints: supportingPoints,
       tone:             (tone || "").trim() || null,
+      guidance:         (guidance || "").trim() || null,
       length:           length,
     };
     callAPI(genType, params, { token: userToken }).then(function(data){
@@ -4926,6 +4928,20 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
             style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,padding:"11px 14px",lineHeight:1.6}}/>
           <div style={{marginTop:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,fontStyle:"italic",lineHeight:1.5}}>
             Defaults to your saved profile voice. Use this to nudge a specific post in a different direction.
+          </div>
+        </div>
+
+        {/* [POST-GUIDANCE] Optional free-text guidance for this specific post */}
+        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
+          <Label>Specific guidance for this post (optional)</Label>
+          <textarea value={guidance} onChange={function(e){setGuidance(e.target.value);}}
+            maxLength={800}
+            placeholder={mode === "blog"
+              ? "e.g. Open with the client story, mention our new pricing, avoid jargon, end pointing to the booking page"
+              : "e.g. Take a contrarian angle, reference the launch, speak to first-time founders, don't pitch"}
+            style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,padding:"11px 14px",resize:"vertical",minHeight:72,lineHeight:1.6}}/>
+          <div style={{marginTop:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,fontStyle:"italic",lineHeight:1.5}}>
+            Anything VIRL should do (or avoid) for this post — an angle, a detail to include, a CTA. VIRL follows it while keeping your voice.
           </div>
         </div>
 

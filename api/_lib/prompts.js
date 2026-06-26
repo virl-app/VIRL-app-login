@@ -1345,6 +1345,15 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
     : [];
   const tone        = (params.tone && typeof params.tone === "string")
     ? params.tone.trim() : "";
+  // [POST-GUIDANCE] Optional free-text the creator types before generating —
+  // specific instructions for THIS post (angle to take, something to mention
+  // or avoid, audience to speak to). Clamped so a pasted essay can't blow the
+  // prompt budget. Rendered as a high-priority block below the seed.
+  const guidance    = (params.guidance && typeof params.guidance === "string")
+    ? params.guidance.trim().slice(0, 800) : "";
+  const guidanceBlock = guidance
+    ? "\n\n## SPECIFIC GUIDANCE FROM THE CREATOR (follow this closely for this post — it overrides generic defaults, but never the voice/compliance rules above)\n" + guidance
+    : "";
   // Pull whatever the planner already produced. The full plan flow
   // emits hook / body / closing on long_form_text cards; if the user
   // hits this from a non-plan flow we still want to work with
@@ -1373,7 +1382,7 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
     + "Write a complete LinkedIn long-form text post that builds on the seed below. "
     + "This is a STANDALONE LinkedIn post — no image, no video, narrative writing only. "
     + "Target length: " + targetWords + " words. " + lengthHint + "\n\n"
-    + seedBlock + "\n\n"
+    + seedBlock + guidanceBlock + "\n\n"
     + "FORMAT — LinkedIn-native long-form. The body is a single string with line breaks (\\n) between paragraphs and (occasionally) before a punch line. Do NOT use markdown headers, bold/italics, or bullet styling — LinkedIn strips most of it. White space between paragraphs IS the formatting.\n\n"
     + "Structure:\n"
     + "  - HOOK: 1-2 sentences. First line MUST land before LinkedIn's 'see more' fold (~210 characters). Pattern-interrupt the feed; specific over clever. No emoji-heavy openers, no \"in today's world\" framings (already banned in STYLE_GUARD).\n"
@@ -1429,6 +1438,13 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
     ? params.supportingPoints.map(s => String(s || "").trim()).filter(Boolean)
     : [];
   const tone = (params.tone && typeof params.tone === "string") ? params.tone.trim() : "";
+  // [POST-GUIDANCE] Optional per-post instructions from the creator (see
+  // buildLongPost). Clamped + rendered as a high-priority block below the seed.
+  const guidance = (params.guidance && typeof params.guidance === "string")
+    ? params.guidance.trim().slice(0, 800) : "";
+  const guidanceBlock = guidance
+    ? "\n\n## SPECIFIC GUIDANCE FROM THE CREATOR (follow this closely for this post — it overrides generic defaults, but never the voice/compliance rules above)\n" + guidance
+    : "";
   const lengthTarget = (params.length === "short" || params.length === "long")
     ? params.length
     : "medium";
@@ -1453,7 +1469,7 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
   const userPrompt = ""
     + "Write a complete blog post on the topic below in the creator's voice. "
     + "Target length: " + targetWords + " words. " + lengthHint + "\n\n"
-    + seedBlock + "\n\n"
+    + seedBlock + guidanceBlock + "\n\n"
     + "FORMAT — long-form blog post. Use clean structural elements: a punchy title, an opening intro paragraph that earns the click, 4-6 sections each with a short heading + 2-4 paragraphs of substance, and a closing conclusion that resolves the through-line. No markdown styling inside the body strings (no **bold** or *italic*) — the creator's CMS will handle styling. Paragraph breaks via \\n between paragraphs. Headings live in their own `heading` field per section, never inline.\n\n"
     + "Structure rules:\n"
     + "  - TITLE: 6-12 words. Specific over clever. Should make the click obvious from the topic alone.\n"
