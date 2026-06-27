@@ -46,6 +46,69 @@ function buildVaultExemplarsBlock(vaultPatterns) {
     + rendered;
 }
 
+// [VOICE-SAMPLES] Render the creator's OWN words as labelled few-shot
+// examples: sampleCaption + voiceSamples (what they typed as voice reference)
+// + handlePostExcerpts (verbatim captions Perplexity pulled from their real
+// posts). Previously these only fed the numeric voice fingerprint + post-hoc
+// drift telemetry — the model never actually SAW them. They're the single
+// strongest "sounds like me" signal AND the only voice examples a brand-new
+// user has (empty vault → buildVaultExemplarsBlock returns ""), so showing
+// them directly is the main cold-start fix. Capped + truncated so the block
+// stays small and cache-friendly. Returns "" when there's nothing usable.
+const VOICE_SAMPLE_MAX = 4;
+const VOICE_SAMPLE_CHARS = 400;
+function buildVoiceSamplesBlock(profile) {
+  if (!profile) return "";
+  const raw = [];
+  if (typeof profile.sampleCaption === "string" && profile.sampleCaption.trim()) {
+    raw.push(profile.sampleCaption.trim());
+  }
+  if (Array.isArray(profile.voiceSamples)) {
+    for (const s of profile.voiceSamples) {
+      if (typeof s === "string" && s.trim()) raw.push(s.trim());
+    }
+  }
+  if (Array.isArray(profile.handlePostExcerpts)) {
+    for (const s of profile.handlePostExcerpts) {
+      if (typeof s === "string" && s.trim()) raw.push(s.trim());
+    }
+  }
+  const seen = new Set();
+  const picked = [];
+  for (const s of raw) {
+    const key = s.slice(0, 80).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    picked.push(s.length > VOICE_SAMPLE_CHARS ? s.slice(0, VOICE_SAMPLE_CHARS - 1) + "…" : s);
+    if (picked.length >= VOICE_SAMPLE_MAX) break;
+  }
+  if (!picked.length) return "";
+  return "THE CREATOR'S OWN WRITING — verbatim samples of how they actually sound. This is the single best guide to sounding like them: match their sentence rhythm, vocabulary, contraction level, and how much (or little) they lean on punctuation like em-dashes. Do NOT copy these — they are voice references, not templates:\n\n"
+    + picked.map(function (s, i) { return (i + 1) + ". " + s; }).join("\n\n");
+}
+
+// [VOICE-STACK] Single source of truth for the per-user voice blocks that
+// EVERY generation surface must include (plan, posts, captions, scan,
+// script). Both buildPlan and buildSystemPrompt assemble their per-user tier
+// from this, so a voice signal can never again be present on one surface and
+// silently missing on another — the bug that had left Plan with no style
+// guard and no personal facts. Returns the non-empty blocks in priority
+// order (creator's own words first, then saved/shipped exemplars, then the
+// stylometric fingerprint, then the mined denylist). Caller joins with
+// "\n\n" and supplies its own profile-context line + voice anchor.
+function buildVoiceBlocks(profile, vaultPatterns, personalDenylist) {
+  const blocks = [];
+  const samples     = buildVoiceSamplesBlock(profile);
+  const exemplars   = buildVaultExemplarsBlock(vaultPatterns);
+  const fingerprint = buildVoiceFingerprintBlock(profile);
+  const denylist    = formatDenylistForPrompt(personalDenylist);
+  if (samples)     blocks.push(samples);
+  if (exemplars)   blocks.push(exemplars);
+  if (fingerprint) blocks.push(fingerprint);
+  if (denylist)    blocks.push(denylist);
+  return blocks;
+}
+
 // [VOICE-FINGERPRINT] Derive the per-user voice fingerprint from the
 // creator's authored voice references — sampleCaption + voiceSamples.
 // Returns "" when there isn't enough text to produce stable per-100
@@ -603,7 +666,7 @@ function buildCriticalFactsBlock(profile) {
 
   if (facts) {
     sections.push(
-      "CRITICAL PERSONAL FACTS — NEVER CONTRADICT. The following facts about the user are non-negotiable. Every output must be consistent with them. If you cannot incorporate a topic without violating these facts, omit the topic entirely rather than guess. FACTS: "
+      "CRITICAL PERSONAL FACTS — NEVER CONTRADICT, NEVER INVENT. The following facts about the user are non-negotiable; every output must be consistent with them and you must not add facts beyond them. Treat them as CONTEXT, not a checklist: reference only the fact(s) actually relevant to the specific piece you're writing — do NOT force them all in. But never present a partial subset of a set in a way that misrepresents it — e.g., if the creator has three children, never phrase things so it sounds like there are two; name the specific one(s) relevant to the piece, or refer to the group without a count. If a topic can't be handled without violating these facts, omit the topic rather than guess. FACTS: "
       + facts
     );
   }
@@ -664,39 +727,14 @@ function buildSystemPrompt(profile, role, vaultPatterns, personalDenylist) {
     if (perUser) perUser += " ";
     perUser += "CREATOR PROFILE (follow every rule strictly): " + ctx;
   }
-  // [VAULT-EXEMPLARS] Few-shot voice references — concrete examples of
-  // posts the creator has saved or shipped, with the strongest signals
-  // (saved + posted, performed well) listed first. Sits between the
-  // profile description and the voice anchor: profile tells the model
-  // WHO the creator is in the abstract, exemplars show HOW they sound
-  // in practice, anchor reinforces the imperative. Empty string when
-  // there are no usable exemplars so the concat is a clean no-op.
-  const exemplarsBlock = buildVaultExemplarsBlock(vaultPatterns);
-  if (exemplarsBlock) {
+  // [VOICE-STACK] Unified voice blocks — the creator's own words, saved/
+  // shipped exemplars, stylometric fingerprint, and mined denylist, in that
+  // priority order. Shared verbatim with buildPlan via buildVoiceBlocks so
+  // the two composers can't drift. Each block is empty-string-safe so a
+  // brand-new account simply gets fewer of them.
+  for (const block of buildVoiceBlocks(profile, vaultPatterns, personalDenylist)) {
     if (perUser) perUser += "\n\n";
-    perUser += exemplarsBlock;
-  }
-  // [VOICE-FINGERPRINT] Stylometric anchors derived from the user's own
-  // sampleCaption + voiceSamples. Concrete categorical labels + numeric
-  // per-100-word rates ("Heavy contractions ~6/100. Short sentences avg
-  // 7 words.") give the model explicit targets that the qualitative
-  // "sample caption: ..." block can't. Empty string for profiles
-  // without enough authored voice reference (< 20 words combined).
-  const fingerprintBlock = buildVoiceFingerprintBlock(profile);
-  if (fingerprintBlock) {
-    if (perUser) perUser += "\n\n";
-    perUser += fingerprintBlock;
-  }
-  // [PERSONAL-DENYLIST] Self-tuning per-creator banned vocabulary,
-  // mined from the user's own edit history. Sits next to the
-  // fingerprint because both are "this is the creator's voice"
-  // signal — the fingerprint says what TO sound like, the denylist
-  // says what NOT to. Empty string when the user has fewer than a
-  // handful of edits or no repeated removal patterns.
-  const denylistBlock = formatDenylistForPrompt(personalDenylist);
-  if (denylistBlock) {
-    if (perUser) perUser += "\n\n";
-    perUser += denylistBlock;
+    perUser += block;
   }
   // [VOICE-ANCHOR] Append only when there's actual creator context to
   // anchor to — anchoring to "THIS creator" with no profile would be
@@ -852,11 +890,9 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     }
     vaultCtx += " Weight similar styles higher in this week's plan.";
   }
-  // [VAULT-EXEMPLARS] Few-shot voice references — up to 5 actual items the
-  // creator saved or posted, with the strongest signals (saved + posted,
-  // performed well) first. Empty string when no exemplars are available so
-  // the concat below is a no-op.
-  const vaultExemplarsBlock = buildVaultExemplarsBlock(vaultPatterns);
+  // [VOICE-STACK] Vault exemplars, fingerprint, denylist, and the creator's
+  // own writing are now assembled below via buildVoiceBlocks (shared with
+  // every other surface), so they're no longer built inline here.
 
   const profileCtx = buildProfileCtx(profile);
   // [INTEL 3] Industry-specific format mix is keyed off the user's niche.
@@ -887,6 +923,12 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + "Always return valid JSON only — no markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
     + LOCALE_LINE + " "
+    // [VOICE-STACK] Anti-AI-tells style guard (em-dash discipline, banned
+    // AI-tell phrasings, human voice register). This was historically only
+    // in the composeSystemPrompt path, so Plan cards — the highest-volume
+    // surface — were generated WITHOUT it. Shared across all plan users, so
+    // it stays in the cacheable tier.
+    + STYLE_GUARD + " "
     // [INTEL 3] Format diversity rules + the fixed format vocabulary land
     // in the systemPrompt because they are constraints on every plan, not
     // per-request data.
@@ -938,37 +980,23 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // profileCtx — without a profile the model has nothing creator-specific
   // to anchor to, so the line would land as noise. Anchors apply to the
   // ~12 active users today and every paid user post-launch.
-  let perUserSystemPrompt = "\n\n"
-    + (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
+  // [VOICE-STACK] Critical personal facts (kids, the never-assume list, the
+  // natural-touchpoints list) lead the per-user block — historically these
+  // were ONLY on the composeSystemPrompt path, so Plan never saw them.
+  // Treated as relevance-gated context inside buildCriticalFactsBlock (use
+  // what fits this piece; never a partial subset of a set), not a
+  // "mention-everything" rule.
+  const criticalFactsBlock = buildCriticalFactsBlock(profile);
+  let perUserSystemPrompt = "\n\n";
+  if (criticalFactsBlock) perUserSystemPrompt += criticalFactsBlock + "\n\n";
+  perUserSystemPrompt += (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
     + vaultCtx;
-  // [VAULT-EXEMPLARS] Concrete voice references go AFTER the summary stats
-  // but BEFORE the voice anchor — exemplars give the model material to
-  // anchor to, then the anchor reinforces the imperative ("every word
-  // should sound like THIS creator"). Block is empty for users with no
-  // saves or logged results, keeping the prompt clean for new accounts.
-  if (vaultExemplarsBlock) {
-    perUserSystemPrompt += "\n\n" + vaultExemplarsBlock;
+  // [VOICE-STACK] Same unified voice blocks as every other surface (own
+  // words → exemplars → fingerprint → denylist), via buildVoiceBlocks.
+  for (const block of buildVoiceBlocks(profile, vaultPatterns, personalDenylist)) {
+    perUserSystemPrompt += "\n\n" + block;
   }
-  // [VOICE-FINGERPRINT] Stylometric anchors from the user's authored
-  // voice reference (sampleCaption + voiceSamples). Goes between the
-  // exemplars and the voice anchor: exemplars show the model what to
-  // sound like, fingerprint tells it which specific axes matter most
-  // for this creator. Empty for new profiles without enough reference
-  // text.
-  const fingerprintBlock = buildVoiceFingerprintBlock(profile);
-  if (fingerprintBlock) {
-    perUserSystemPrompt += "\n\n" + fingerprintBlock;
-  }
-  // [PERSONAL-DENYLIST] Per-creator banned vocabulary mined from the
-  // user's own edits. Sits next to the fingerprint — both are "this
-  // is the voice of THIS creator" signal, just opposite sides of the
-  // same coin (fingerprint says what TO sound like, denylist says
-  // what NOT to). Empty for users with no repeated removal patterns.
-  const denylistBlock = formatDenylistForPrompt(personalDenylist);
-  if (denylistBlock) {
-    perUserSystemPrompt += "\n\n" + denylistBlock;
-  }
-  if (profileCtx) {
+  if (profileCtx || criticalFactsBlock) {
     perUserSystemPrompt += "\n\n" + VOICE_ANCHOR;
   }
 
