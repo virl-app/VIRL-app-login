@@ -2463,6 +2463,94 @@ const Spinner = ({text}) => (
   </div>
 );
 
+// [WAIT-UX] Generation waits feel shorter when the app narrates the actual
+// work it's doing (operational transparency) instead of showing a static
+// spinner. These per-surface lines mix that narration — which also quietly
+// covers the voice-drift gate's occasional corrective retry ("Making sure it
+// sounds like you…") — with a few high-value craft tips so the wait delivers
+// value rather than just passing time. Kept short; ~3s each.
+const WAIT_MESSAGES = {
+  plan: [
+    "Reading your voice fingerprint…",
+    "Pulling this week's trends for your platforms…",
+    "Mapping ideas to your best posting days…",
+    "Drafting each post in your voice…",
+    "Balancing formats so your week isn't all one thing…",
+    "A strong first line is what stops the scroll — every card leads with one.",
+    "Tip: save posts you love to your Vault — VIRL learns your taste from them.",
+    "Almost there — lining up your week…",
+  ],
+  post: [
+    "Re-reading how you actually write…",
+    "Shaping the hook before the 'see more' fold…",
+    "Drafting in your voice, not generic AI…",
+    "Making sure it sounds like you…",
+    "Tip: the first line does most of the work on social — earn the next one.",
+    "Tightening it so every line pulls its weight…",
+  ],
+  scan: [
+    "Looking at what's actually in your shot…",
+    "Scoring it against what's performing right now…",
+    "Picking the platform that rewards this most…",
+    "Writing a caption in your voice…",
+    "Tip: posts that show a face tend to out-perform ones that don't.",
+  ],
+  caption: [
+    "Re-reading your voice…",
+    "Trying a few angles on the hook…",
+    "Drafting options in your style…",
+    "Making sure it sounds like you…",
+    "Tip: one clear idea beats three crammed into one caption.",
+  ],
+  script: [
+    "Shaping the hook for the first 1.5 seconds…",
+    "Structuring the beats…",
+    "Writing it the way you'd actually say it…",
+    "Tip: the first 3 seconds decide whether they keep watching.",
+  ],
+};
+
+// Drop-in replacement for <Spinner/> that rotates through WAIT_MESSAGES[kind]
+// every ~3s with a soft fade. `bare` renders just the rotating line (no card
+// / spinner icon) for embedding under an existing spinner. `text` pins a
+// static line and disables rotation (back-compat with Spinner's text prop).
+function RotatingStatus({kind, text, bare}) {
+  var lines = WAIT_MESSAGES[kind] || WAIT_MESSAGES.post;
+  const [idx,setIdx] = useState(0);
+  const [vis,setVis] = useState(true);
+  useEffect(function(){
+    if (text) return; // static mode — nothing to rotate
+    var alive = true;
+    var fadeTimer = null;
+    var iv = setInterval(function(){
+      setVis(false);
+      fadeTimer = setTimeout(function(){
+        if (!alive) return;
+        setIdx(function(p){ return (p + 1) % lines.length; });
+        setVis(true);
+      }, 350);
+    }, 3000);
+    return function(){ alive = false; clearInterval(iv); if (fadeTimer) clearTimeout(fadeTimer); };
+  }, [lines.length, text]);
+  var msg = text || lines[idx];
+  var line = (
+    <span style={{opacity:vis?1:0, transition:"opacity .35s ease"}}>{msg}</span>
+  );
+  if (bare) {
+    return (
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.5,marginTop:6}}>
+        {line}
+      </div>
+    );
+  }
+  return (
+    <div style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",padding:"18px 20px",fontFamily:"'Jost',sans-serif",fontSize:13,fontStyle:"italic",color:B.muted,marginTop:12,display:"flex",alignItems:"center",gap:12}}>
+      <svg className="spin" width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={B.blue} strokeWidth={2}><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+      {line}
+    </div>
+  );
+}
+
 // [TASK 10] Extract platform/format patterns from the Vault so VIRL can weight
 // similar styles in future plans. Only counts plan-type saves (captions have
 // no platform/format metadata). Format is optional on legacy items, so the
@@ -2722,7 +2810,7 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
           </button>
         </div>
         <div style={{padding:"22px"}}>
-          {loading&&<Spinner text="Writing your script..."/>}
+          {loading&&<RotatingStatus kind="script"/>}
           <ErrBox msg={error}/>
           {error&&(
             <button onClick={generate}
@@ -4307,7 +4395,7 @@ function RemixCaption({text,onSelect,profile,userToken,onCreditsUsed}) {
         <button onClick={function(){setOpen(false);}}
           style={{background:"none",border:"none",color:B.muted,cursor:"pointer",fontSize:16,padding:0}}>{"×"}</button>
       </div>
-      {loading&&<Spinner text="Writing variations..."/>}
+      {loading&&<RotatingStatus kind="caption"/>}
       <ErrBox msg={error}/>
       {variants&&Object.values(variants).map(function(v,i){return (
         <div key={i} style={{background:B.card,borderRadius:10,padding:"12px 14px",marginBottom:8,cursor:"pointer"}}
@@ -4559,7 +4647,7 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLe
         {loading?"Writing captions...":"Generate captions & hook"}
       </GenBtn>
       <ErrBox msg={error}/>
-      {loading&&!result&&<Spinner/>}
+      {loading&&!result&&<RotatingStatus kind="caption"/>}
       {result && usedFreshTrends && !isPaid && (
         <FreshTrendsBanner kind="caption" daysUntilReset={daysUntilReset} onUpgrade={onUpgrade}/>
       )}
@@ -4962,7 +5050,7 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
           : (mode === "blog" ? "Write the blog post" : "Write the LinkedIn post")}
       </GenBtn>
       <ErrBox msg={error}/>
-      {loading && !post && <Spinner/>}
+      {loading && !post && <RotatingStatus kind="post"/>}
 
       {/* Result rendering — branches per mode */}
       {post && !editing && mode === "linkedin" && (
@@ -5535,13 +5623,13 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
 
       {scanning&&(
         <div style={{background:B.card,borderRadius:14,padding:"24px",textAlign:"center",marginBottom:8}}>
-          <Spinner/>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted,marginTop:12}}>
-            {"Analyzing "+(total>1?"file "+current+" of "+total:"your file")+" - about 30-60 seconds..."}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,marginBottom:4}}>
+            <svg className="spin" width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={B.blue} strokeWidth={2}><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            <span style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted}}>
+              {"Analyzing "+(total>1?"file "+current+" of "+total:"your file")+" — about 30–60 seconds…"}
+            </span>
           </div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:4,fontStyle:"italic"}}>
-            Sit tight while VIRL checks the viral potential.
-          </div>
+          <RotatingStatus kind="scan" bare/>
         </div>
       )}
 
@@ -11181,7 +11269,7 @@ return (
               {loading?"Strategizing...":"Generate my 7-day plan"}
             </GenBtn>
             <ErrBox msg={error}/>
-            {loading&&!cards&&<Spinner/>}
+            {loading&&!cards&&<RotatingStatus kind="plan"/>}
             {cards && planUsedFreshTrends && !isPaid && (
               <FreshTrendsBanner
                 kind="plan"
