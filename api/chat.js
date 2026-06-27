@@ -19,7 +19,7 @@ import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
 import { sendLoopsEvent, sendLoopsEventOnce } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
-import { computeVoiceDrift, extractVoiceText } from "./_lib/voice-drift.js";
+import { computeVoiceDrift, extractVoiceText, FEATURE_NORMS } from "./_lib/voice-drift.js";
 import { selectVaultExemplars, exemplarsAsVoiceText } from "./_lib/vault-exemplars.js";
 import { computeOptimalDays } from "./_lib/optimal-days.js";
 
@@ -31,6 +31,47 @@ const EMAIL_VIA_LOOPS = process.env.EMAIL_VIA_LOOPS === "true";
 // Free trial length in days. Mirrored in index.html — keep in sync.
 const TRIAL_DAYS = 14;
 const PAID_PLANS = ['founding', 'pro', 'standard'];
+
+// [VOICE-DRIFT-GATE] Composite drift score (0 identical … 100 maximally
+// drifted; see voice-drift.js) at or above which a non-streaming generation
+// gets ONE corrective retry. Deliberately conservative — the score is a
+// relative signal, so we only act on clear drift to keep the extra model
+// call rare. Tune from the virl_voice_drift_retry telemetry.
+const DRIFT_RETRY_THRESHOLD = 55;
+
+// Human-readable correction for each CONTROLLABLE stylometric axis. Used to
+// turn a drift result into a targeted retry instruction instead of a vague
+// "sound more like them." Only axes the model can actually steer at write
+// time are listed; norms come from voice-drift.js (single source of truth).
+const DRIFT_AXIS_HINTS = {
+  emdashRate:   "use far fewer em-dashes (—) — this creator rarely uses them",
+  avgSentLen:   "match the creator's sentence length (shorter, varied sentences if theirs are short)",
+  contractRate: "use contractions at the creator's rate — don't read more formal than they do",
+  exclamRate:   "match how often the creator uses exclamation points",
+  questionRate: "match how often the creator asks questions",
+  emojiRate:    "match the creator's emoji usage — don't add emoji they wouldn't",
+  allcapsRate:  "match the creator's use of ALL-CAPS emphasis",
+};
+// Build a targeted voice-correction instruction from a drift result: rank the
+// controllable axes by how far past their norm they drifted, keep the worst
+// few, and phrase them as concrete directions. Returns "" when nothing stands
+// out (caller still retries on the composite score, just without specifics).
+function voiceCorrectionInstruction(drift) {
+  let hints = [];
+  if (drift && drift.deltas) {
+    hints = Object.keys(DRIFT_AXIS_HINTS)
+      .map(function (axis) { return { axis: axis, over: (drift.deltas[axis] || 0) / (FEATURE_NORMS[axis] || 1) }; })
+      .filter(function (x) { return x.over >= 1; })
+      .sort(function (a, b) { return b.over - a.over; })
+      .slice(0, 3)
+      .map(function (x) { return DRIFT_AXIS_HINTS[x.axis]; });
+  }
+  let instr = "IMPORTANT — VOICE CORRECTION. Your previous draft drifted from how this creator actually writes. "
+    + "Regenerate the SAME content — same topic, structure, and exact JSON shape — but match the creator's own writing samples (shown in the system prompt) much more closely in rhythm, vocabulary, and punctuation.";
+  if (hints.length) instr += " Specifically: " + hints.join("; ") + ".";
+  instr += " Return only the corrected JSON — do not mention this instruction.";
+  return instr;
+}
 
 // Gen types that can be backed by inline fresh-trends research and the
 // `credits` column that gates each one for free-trial users. Paid users
@@ -1521,6 +1562,70 @@ export default async function handler(req, res) {
       }
     }
 
+    // [VOICE-DRIFT-GATE] One corrective retry when the draft drifts too far
+    // from the creator's voice. Non-streaming path only (we have the full
+    // text in hand; the streaming plan path can't un-send cards). We score
+    // stylometric drift against the user's reference and, if it's over the
+    // threshold, regenerate ONCE with a targeted correction (the drifted
+    // attempt + the specific axes to fix), then keep whichever attempt scored
+    // lower — a retry can never make voice worse. Tokens fold into the
+    // accumulators above so usage/billing stays accurate. No-ops when the
+    // user has no voice reference, when the draft is too short/garbled to
+    // score, or when the first draft was truncated (handled above).
+    // [VOICE-DRIFT] Reference is reused by the telemetry block further down.
+    const voiceReference = buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars);
+    let driftRetried = false;
+    let driftBefore  = null;
+    let driftAfter   = null;
+    if (voiceReference && !truncated) {
+      try {
+        const firstText  = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+        const firstDrift = computeVoiceDrift(extractVoiceText(JSON.parse(firstText)), voiceReference);
+        if (firstDrift && firstDrift.score >= DRIFT_RETRY_THRESHOLD) {
+          driftBefore = firstDrift.score;
+          const correctedPayload = {
+            ...payload,
+            messages: [
+              ...payload.messages,
+              { role: 'assistant', content: firstText },
+              { role: 'user',      content: voiceCorrectionInstruction(firstDrift) },
+            ],
+          };
+          const driftRes = await callAnthropic(correctedPayload);
+          if (driftRes.ok) {
+            const driftData = await driftRes.json();
+            // Anthropic billed for this call regardless of whether we keep it.
+            inputTokensAcc  += (driftData.usage && driftData.usage.input_tokens)              || 0;
+            outputTokensAcc += (driftData.usage && driftData.usage.output_tokens)             || 0;
+            cacheReadAcc    += (driftData.usage && driftData.usage.cache_read_input_tokens)     || 0;
+            cacheWriteAcc   += (driftData.usage && driftData.usage.cache_creation_input_tokens) || 0;
+            driftRetried = true;
+            try {
+              const retryText  = driftData.content.filter(b => b.type === 'text').map(b => b.text).join('');
+              const retryDrift = computeVoiceDrift(extractVoiceText(JSON.parse(retryText)), voiceReference);
+              driftAfter = retryDrift ? retryDrift.score : null;
+              // Keep the retry ONLY if it parsed, isn't truncated, and scored
+              // strictly better. Otherwise the original draft stands.
+              if (retryDrift && driftData.stop_reason !== 'max_tokens' && retryDrift.score < firstDrift.score) {
+                data       = driftData;
+                stopReason = driftData.stop_reason || null;
+                truncated  = stopReason === 'max_tokens';
+              }
+            } catch (e) { /* retry unparseable — keep original draft */ }
+          }
+        }
+      } catch (e) { /* original unparseable / featurize failed — skip the gate */ }
+      if (driftRetried) {
+        console.log('virl_voice_drift_retry', JSON.stringify({
+          generationType,
+          model:        selectedModel,
+          score_before: driftBefore,
+          score_after:  driftAfter,
+          kept:         (driftAfter != null && driftBefore != null && driftAfter < driftBefore) ? 'retry' : 'original',
+        }));
+      }
+    }
+
     let clientUsage = null;
     if (data.usage) {
       // [NO-TRUNCATION] Use the accumulated tokens (which include the
@@ -1593,8 +1698,9 @@ export default async function handler(req, res) {
     // [VOICE-DRIFT] Mirrors the streaming-path block. Independent parse so a
     // compliance-disabled niche still gets telemetry, and a malformed JSON
     // payload here stays silent (the original `text` is returned untouched
-    // and the client's extractJSON deals with recovery).
-    const voiceReference = buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars);
+    // and the client's extractJSON deals with recovery). `voiceReference` was
+    // computed above for the drift gate; this logs the FINAL (possibly
+    // corrected) draft's score so trend lines reflect what the user received.
     if (voiceReference && text) {
       try {
         const parsedForDrift = JSON.parse(text);
