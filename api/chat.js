@@ -160,6 +160,11 @@ async function recordUsageEvent(userId, usage) {
         // (e.g. "pause_turn", "refusal") show up without a code change.
         truncated:          !!usage.truncated,
         stop_reason:        usage.stop_reason || null,
+        // [VOICE-DRIFT-GATE] Null on plan/streaming + every non-retry row.
+        drift_retried:        usage.drift_retried || false,
+        drift_score_before:   usage.drift_score_before  != null ? usage.drift_score_before  : null,
+        drift_score_after:    usage.drift_score_after   != null ? usage.drift_score_after   : null,
+        drift_retry_cost_usd: usage.drift_retry_cost_usd != null ? usage.drift_retry_cost_usd : null,
       }),
     });
     if (!res.ok) {
@@ -1574,9 +1579,10 @@ export default async function handler(req, res) {
     // score, or when the first draft was truncated (handled above).
     // [VOICE-DRIFT] Reference is reused by the telemetry block further down.
     const voiceReference = buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars);
-    let driftRetried = false;
-    let driftBefore  = null;
-    let driftAfter   = null;
+    let driftRetried  = false;
+    let driftBefore   = null;
+    let driftAfter    = null;
+    let driftRetryCost = null; // marginal est. USD of the extra retry call
     if (voiceReference && !truncated) {
       try {
         const firstText  = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
@@ -1599,6 +1605,15 @@ export default async function handler(req, res) {
             outputTokensAcc += (driftData.usage && driftData.usage.output_tokens)             || 0;
             cacheReadAcc    += (driftData.usage && driftData.usage.cache_read_input_tokens)     || 0;
             cacheWriteAcc   += (driftData.usage && driftData.usage.cache_creation_input_tokens) || 0;
+            // Marginal cost of the retry call alone (for dashboard
+            // attribution) — billed whether or not we keep the result.
+            driftRetryCost = estimateCostUSD({
+              model:              selectedModel,
+              input_tokens:       (driftData.usage && driftData.usage.input_tokens)              || 0,
+              output_tokens:      (driftData.usage && driftData.usage.output_tokens)             || 0,
+              cache_read_tokens:  (driftData.usage && driftData.usage.cache_read_input_tokens)     || 0,
+              cache_write_tokens: (driftData.usage && driftData.usage.cache_creation_input_tokens) || 0,
+            });
             driftRetried = true;
             try {
               const retryText  = driftData.content.filter(b => b.type === 'text').map(b => b.text).join('');
@@ -1640,6 +1655,12 @@ export default async function handler(req, res) {
         cache_write_tokens:  cacheWriteAcc,
         truncated,
         stop_reason:         stopReason,
+        // [VOICE-DRIFT-GATE] Per-generation drift-gate outcome for the admin
+        // tracker. drift_retried false on the vast majority of rows.
+        drift_retried:       driftRetried,
+        drift_score_before:  driftBefore,
+        drift_score_after:   driftAfter,
+        drift_retry_cost_usd: driftRetryCost,
       };
       console.log('virl_usage', JSON.stringify(usage));
       // [STABILITY] Awaited (was fire-and-forget) so the milestone email

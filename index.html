@@ -12318,6 +12318,40 @@ return (
                   <UsageKPI label="Avg cost / call" value={"$" + (usageStats.last_30d.count > 0 ? (usageStats.last_30d.cost / usageStats.last_30d.count).toFixed(4) : "0.0000")} sub="last 30 days" color={B.muted}/>
                 </div>
 
+                {/* [VOICE-DRIFT-GATE] How often the corrective retry fires,
+                    whether it improves voice, and what it costs. */}
+                {usageStats.drift_30d && (function(){
+                  var d = usageStats.drift_30d;
+                  var totalCost = usageStats.last_30d.cost || 0;
+                  var extraPct = totalCost > 0 ? Math.round((d.extra_cost_usd / totalCost) * 100) : 0;
+                  return (
+                    <div style={{background:B.card,borderRadius:14,padding:"16px 18px",marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted}}>Voice-drift gate · last 30 days</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,color:B.muted,fontStyle:"italic"}}>non-streaming gens only</div>
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:12}}>
+                        <UsageKPI label="Retry rate"
+                          value={Math.round((d.retry_rate || 0) * 100) + "%"}
+                          sub={(d.retries || 0) + " of " + (d.eligible_calls || 0) + " eligible calls"}
+                          color={B.navy}/>
+                        <UsageKPI label="Avg improvement"
+                          value={d.retries > 0 && d.avg_improvement != null ? ("−" + d.avg_improvement + " pts") : "—"}
+                          sub={d.retries > 0 ? (d.avg_score_before + " → " + d.avg_score_after + " drift score") : "no retries yet"}
+                          color={B.green}/>
+                        <UsageKPI label="Kept rate"
+                          value={d.retries > 0 ? (Math.round((d.kept_rate || 0) * 100) + "%") : "—"}
+                          sub="retries that improved voice"
+                          color={B.blue}/>
+                        <UsageKPI label="Extra spend"
+                          value={"$" + (d.extra_cost_usd || 0).toFixed(2)}
+                          sub={extraPct + "% of 30d cost"}
+                          color={B.muted}/>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* 14-day daily sparkline */}
                 {Array.isArray(usageStats.daily_sparkline) && usageStats.daily_sparkline.length > 0 && (() => {
                   const max = Math.max.apply(null, usageStats.daily_sparkline.map(b => b.cost || 0).concat([0.000001]));
