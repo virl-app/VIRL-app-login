@@ -4,7 +4,10 @@
   "private": true,
   "description": "VIRL app — single-page React frontend (index.html via Babel standalone) plus Vercel serverless API functions in /api.",
   "scripts": {
-    "check:index": "node scripts/check-index-syntax.mjs"
+    "check:index": "node scripts/check-index-syntax.mjs",
+    "check:compliance": "node scripts/check-compliance.mjs",
+    "check:voice": "node scripts/check-voice.mjs",
+    "check": "npm run check:index && npm run check:compliance && npm run check:voice"
   },
   "dependencies": {
     "resend": "^4.0.0",
