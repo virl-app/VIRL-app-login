@@ -73,7 +73,7 @@ async function recordResendId(userId, template, dedupeKey, resendId) {
 // Look up a marketing-opt-out preference. Defaults to opt-IN (false) so a
 // missing row never blocks a send. Always returns false for transactional
 // templates regardless of preference.
-async function isMarketingOptedOut(userId) {
+export async function isMarketingOptedOut(userId) {
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/email_preferences?user_id=eq.${userId}&select=marketing_opt_out`,
@@ -87,6 +87,29 @@ async function isMarketingOptedOut(userId) {
     if (!res.ok) return false;
     const rows = await res.json();
     return !!(rows[0] && rows[0].marketing_opt_out);
+  } catch (e) {
+    return false;
+  }
+}
+
+// [CREDIT-NUDGE] Pure read of email_sends — did (user, template, dedupeKey)
+// already fire? Unlike claimSend it does NOT insert, so it can be used to
+// *test* a prior send without consuming its dedupe slot (e.g. "did the
+// exhausted nudge already go out this cycle, so suppress the low one?").
+// Fail-open to false: a read blip just means we don't suppress, which is the
+// safer direction for a one-shot nudge (worst case a redundant check, not a
+// missed send).
+export async function hasSent(userId, template, dedupeKey) {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/email_sends?user_id=eq.${userId}`
+      + `&template=eq.${encodeURIComponent(template)}`
+      + `&dedupe_key=eq.${encodeURIComponent(dedupeKey)}&select=user_id&limit=1`,
+      { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    if (!res.ok) return false;
+    const rows = await res.json();
+    return Array.isArray(rows) && rows.length > 0;
   } catch (e) {
     return false;
   }
