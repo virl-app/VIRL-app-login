@@ -17,7 +17,7 @@ import { sendEmail }                 from "./_lib/email-send.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
-import { sendLoopsEvent, sendLoopsEventOnce } from "./_lib/loops.js";
+import { sendLoopsEvent, sendLoopsEventOnce, fireCreditNudge } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
 import { computeVoiceDrift, extractVoiceText, FEATURE_NORMS } from "./_lib/voice-drift.js";
 import { selectVaultExemplars, exemplarsAsVoiceText } from "./_lib/vault-exemplars.js";
@@ -942,7 +942,7 @@ export default async function handler(req, res) {
   const token = authHeader || bodyToken;
   if (!token) return res.status(401).json({ error: 'Sign in required.' });
 
-  let userId, createdAt;
+  let userId, createdAt, email;
   try {
     const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
       headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_SERVICE_KEY },
@@ -951,6 +951,7 @@ export default async function handler(req, res) {
     const userJson = await userRes.json();
     userId    = userJson.id;
     createdAt = userJson.created_at;
+    email     = userJson.email || null; // [CREDIT-NUDGE] for the Loops credit nudges
   } catch (e) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
@@ -983,6 +984,13 @@ export default async function handler(req, res) {
   let isPaid = false;
   let currentCredits = 0;
   let freshTrends = { plan: 0, scan: 0, caption: 0 };
+  // [CREDIT-NUDGE] Hoisted out of the read-block try below so the post-
+  // deduction Loops nudge can see the comp state + the effective reset_at
+  // (the cycle key). compActive gates nudges off comped users; resetAt is the
+  // current cycle boundary (post lazy-reset when one fired this request).
+  let compActive = false;
+  let compAllowance = null;
+  let resetAt = null;
   try {
     const credRes = await fetch(
       `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`
@@ -996,6 +1004,7 @@ export default async function handler(req, res) {
     plan           = row.plan;
     isPaid         = PAID_PLANS.includes(plan);
     currentCredits = row.credits;
+    resetAt        = row.reset_at || null; // [CREDIT-NUDGE] effective unless the lazy reset below moves it
 
     // [COMP] Tester comp — a time-boxed per-user weekly-allowance override that
     // is independent of plan/tier/Stripe (see migrations/012). While live, the
@@ -1003,10 +1012,10 @@ export default async function handler(req, res) {
     // It self-reverts: once comp_expires_at passes, the refill below and the
     // trial gate fall back to the normal plan-derived behavior with no cleanup.
     const compExpiresMs = row.comp_expires_at ? Date.parse(row.comp_expires_at) : NaN;
-    const compActive    = !Number.isNaN(compExpiresMs)
+    compActive    = !Number.isNaN(compExpiresMs)
       && compExpiresMs > Date.now()
       && row.comp_weekly_credits != null;
-    const compAllowance = compActive ? row.comp_weekly_credits : null;
+    compAllowance = compActive ? row.comp_weekly_credits : null;
     // Columns default to 1 in the migration; coalesce here for the
     // pre-migration window where they may be null on existing rows.
     freshTrends = {
@@ -1043,6 +1052,7 @@ export default async function handler(req, res) {
       });
       currentCredits = newCredits;
       freshTrends = { plan: 1, scan: 1, caption: 1 };
+      resetAt = newResetAt; // [CREDIT-NUDGE] this request opened a new cycle
     }
 
     // Trial enforcement: free users get TRIAL_DAYS from signup. The client
@@ -1341,6 +1351,31 @@ export default async function handler(req, res) {
       const newBalance = await rpcRes.json().catch(() => null);
       if (strict && newBalance === null) {
         return res.status(402).json({ error: 'Not enough credits this week.' });
+      }
+
+      // [CREDIT-NUDGE] After a successful deduction, nudge free/trial users who
+      // just crossed a weekly-credit threshold so Loops sends the matching
+      // email. Free/trial ONLY — never paid or comped (the Loops workflows
+      // have no audience filter, so this server guard is the source of truth).
+      // Deduped once-per-cycle inside fireCreditNudge via email_sends (keyed on
+      // reset_at's date). Fire-and-forget: it never throws and completes during
+      // the model call below, so it adds no latency and can't fail the response.
+      if (!isPaid && !compActive && typeof newBalance === 'number') {
+        const weeklyAllowance = compActive ? compAllowance : (isPaid ? 150 : 20);
+        const cycleKey  = (resetAt || '').slice(0, 10);
+        const nudgeCtx  = {
+          userId, email,
+          name:            (profile && profile.name) || '',
+          plan,
+          newBalance,
+          weeklyAllowance,
+          resetAt,
+        };
+        if (newBalance <= 0) {
+          fireCreditNudge({ eventName: 'creditsExhausted', template: 'credits_exhausted', cycleKey, ctx: nudgeCtx }).catch(() => {});
+        } else if (newBalance <= Math.floor(0.2 * weeklyAllowance)) {
+          fireCreditNudge({ eventName: 'creditsLow', template: 'credits_low', cycleKey, ctx: nudgeCtx }).catch(() => {});
+        }
       }
     }
     // Decrement the fresh-trends counter for free users that just

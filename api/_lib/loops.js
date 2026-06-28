@@ -5,7 +5,7 @@
 // degradation. If LOOPS_API_KEY is unset, every helper logs and
 // resolves with { ok: false, note: "not configured" } — never throws.
 
-import { claimSend } from "./email-send.js";
+import { claimSend, hasSent } from "./email-send.js";
 
 const LOOPS_API_BASE = "https://app.loops.so/api/v1";
 
@@ -112,6 +112,53 @@ export async function updateLoopsContact({ userId, email, properties }) {
   } catch (e) {
     console.error("[loops] contact update threw:", e.message);
     return { ok: false, error: e.message };
+  }
+}
+
+// [CREDIT-NUDGE] Fire a weekly-credit Loops nudge (creditsExhausted /
+// creditsLow) for free/trial users, deduped to once per credit cycle via the
+// shared email_sends table. The Loops `credits_out` / `credits_low` workflows
+// have NO audience filter, so the server is the source of truth — the caller
+// (api/chat.js) is responsible for the free/trial-only guard before calling.
+//
+// Suppression: the "low" nudge is skipped if the "exhausted" nudge already
+// fired this cycle (hasSent is a pure read, so testing it doesn't consume
+// exhausted's own dedupe slot). Within a cycle a free user's balance only
+// decreases, so the normal order is low → exhausted; this guard is the belt-
+// and-braces against any future mid-cycle top-up path.
+//
+// Fully self-contained + fail-open: never throws, so a Loops/Supabase hiccup
+// can't break the generation the caller is mid-flight on. Call WITHOUT await
+// (fire-and-forget) so it never adds latency to the response.
+//
+//   eventName: Loops event ("creditsExhausted" | "creditsLow")
+//   template:  email_sends dedupe slug ("credits_exhausted" | "credits_low")
+//   cycleKey:  reset_at's YYYY-MM-DD (same key family weekly_reset uses)
+//   ctx:       { userId, email, name, plan, newBalance, weeklyAllowance, resetAt }
+export async function fireCreditNudge({ eventName, template, cycleKey, ctx }) {
+  try {
+    if (!ctx || !ctx.userId) return;
+    // Suppress "low" if "exhausted" already went out this cycle.
+    if (template === "credits_low") {
+      const already = await hasSent(ctx.userId, "credits_exhausted", "credits_exhausted_" + cycleKey);
+      if (already) return;
+    }
+    const fresh = await claimSend(ctx.userId, template, template + "_" + cycleKey);
+    if (!fresh) return; // already fired this cycle (or claim conflict) → skip
+    await sendLoopsEvent({
+      userId: ctx.userId,
+      email:  ctx.email || undefined,
+      eventName,
+      properties: {
+        firstName:        ctx.name || "",
+        plan:             ctx.plan,
+        creditsRemaining: ctx.newBalance,
+        weeklyAllowance:  ctx.weeklyAllowance,
+        resetAt:          ctx.resetAt || undefined,
+      },
+    });
+  } catch (e) {
+    console.warn("[loops] fireCreditNudge " + eventName + " failed:", e && e.message);
   }
 }
 
