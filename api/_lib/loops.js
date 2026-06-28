@@ -5,7 +5,7 @@
 // degradation. If LOOPS_API_KEY is unset, every helper logs and
 // resolves with { ok: false, note: "not configured" } — never throws.
 
-import { claimSend, hasSent } from "./email-send.js";
+import { claimSend, hasSent, isMarketingOptedOut } from "./email-send.js";
 
 const LOOPS_API_BASE = "https://app.loops.so/api/v1";
 
@@ -138,6 +138,16 @@ export async function updateLoopsContact({ userId, email, properties }) {
 export async function fireCreditNudge({ eventName, template, cycleKey, ctx }) {
   try {
     if (!ctx || !ctx.userId) return;
+    // [CREDIT-NUDGE] Server-side marketing opt-out guard. Both nudges are
+    // treated as marketing, so respect the creator's opt-out from OUR source
+    // of truth (email_preferences.marketing_opt_out, same check the cron's
+    // marketing sends use) rather than relying only on Loops' marketingSubscribed
+    // suppression — this closes the gap if that sync ever drifts, and never
+    // emits the event for an opted-out user. Checked BEFORE claimSend so a
+    // user who opts back in mid-cycle hasn't had their dedupe slot consumed.
+    // Fail-open: isMarketingOptedOut returns false on a read blip, so a
+    // transient error sends rather than silently drops a nudge.
+    if (await isMarketingOptedOut(ctx.userId)) return;
     // Suppress "low" if "exhausted" already went out this cycle.
     if (template === "credits_low") {
       const already = await hasSent(ctx.userId, "credits_exhausted", "credits_exhausted_" + cycleKey);

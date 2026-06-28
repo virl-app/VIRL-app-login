@@ -73,7 +73,7 @@ async function recordResendId(userId, template, dedupeKey, resendId) {
 // Look up a marketing-opt-out preference. Defaults to opt-IN (false) so a
 // missing row never blocks a send. Always returns false for transactional
 // templates regardless of preference.
-async function isMarketingOptedOut(userId) {
+export async function isMarketingOptedOut(userId) {
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/email_preferences?user_id=eq.${userId}&select=marketing_opt_out`,
