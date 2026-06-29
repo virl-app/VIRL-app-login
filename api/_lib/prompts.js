@@ -992,11 +992,17 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   perUserSystemPrompt += (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
     + vaultCtx;
   // [VOICE-STACK] Same unified voice blocks as every other surface (own
-  // words → exemplars → fingerprint → denylist), via buildVoiceBlocks.
+  // words → exemplars → fingerprint → denylist), via buildVoiceBlocks. Track
+  // whether any voice block actually emitted so the anchor gate matches the
+  // non-plan composer (buildSystemPrompt): both anchor when ANY voice/ctx/
+  // facts content is present, so a profile with only voice samples (no
+  // profileCtx, no facts) still gets the anchor on the plan path.
+  let anyVoiceBlock = false;
   for (const block of buildVoiceBlocks(profile, vaultPatterns, personalDenylist)) {
     perUserSystemPrompt += "\n\n" + block;
+    anyVoiceBlock = true;
   }
-  if (profileCtx || criticalFactsBlock) {
+  if (profileCtx || criticalFactsBlock || anyVoiceBlock) {
     perUserSystemPrompt += "\n\n" + VOICE_ANCHOR;
   }
 

@@ -162,8 +162,9 @@ async function recordUsageEvent(userId, usage) {
         stop_reason:        usage.stop_reason || null,
         // [VOICE-DRIFT-GATE] Null on plan/streaming + every non-retry row.
         drift_retried:        usage.drift_retried || false,
-        drift_score_before:   usage.drift_score_before  != null ? usage.drift_score_before  : null,
-        drift_score_after:    usage.drift_score_after   != null ? usage.drift_score_after   : null,
+        drift_kept:           usage.drift_kept           != null ? usage.drift_kept           : null,
+        drift_score_before:   usage.drift_score_before   != null ? usage.drift_score_before   : null,
+        drift_score_after:    usage.drift_score_after    != null ? usage.drift_score_after    : null,
         drift_retry_cost_usd: usage.drift_retry_cost_usd != null ? usage.drift_retry_cost_usd : null,
       }),
     });
@@ -1576,6 +1577,13 @@ export default async function handler(req, res) {
     let outputTokensAcc       = (data.usage && data.usage.output_tokens)       || 0;
     let cacheReadAcc          = (data.usage && data.usage.cache_read_input_tokens)     || 0;
     let cacheWriteAcc         = (data.usage && data.usage.cache_creation_input_tokens) || 0;
+    // [VOICE-DRIFT-GATE] Track the max_tokens budget that actually produced
+    // the kept draft, so a subsequent voice-correction retry can reuse the
+    // same budget. Without this, the voice retry inherited payload.max_tokens
+    // (often 1000) and re-truncated on long-form gens — a discarded retry +
+    // a wasted model call. Bumped to 16000 below when the no-truncation
+    // retry fires; stays at the original otherwise.
+    let effectiveMaxTokens = payload.max_tokens || 1000;
     if (truncated && (payload.max_tokens || 0) < 16000) {
       const retryPayload = { ...payload, max_tokens: 16000 };
       const retryRes = await callAnthropic(retryPayload);
@@ -1591,6 +1599,7 @@ export default async function handler(req, res) {
         data       = retryData;
         stopReason = retryData.stop_reason || null;
         truncated  = stopReason === 'max_tokens';
+        effectiveMaxTokens = 16000;
       } else {
         // First call already succeeded; if the retry transport-fails
         // we keep the first (truncated) response. Client gets the
@@ -1615,6 +1624,7 @@ export default async function handler(req, res) {
     // [VOICE-DRIFT] Reference is reused by the telemetry block further down.
     const voiceReference = buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars);
     let driftRetried  = false;
+    let driftKept     = false; // [A1] honest record of whether the retry's draft was kept
     let driftBefore   = null;
     let driftAfter    = null;
     let driftRetryCost = null; // marginal est. USD of the extra retry call
@@ -1624,8 +1634,14 @@ export default async function handler(req, res) {
         const firstDrift = computeVoiceDrift(extractVoiceText(JSON.parse(firstText)), voiceReference);
         if (firstDrift && firstDrift.score >= DRIFT_RETRY_THRESHOLD) {
           driftBefore = firstDrift.score;
+          // [A2] Reuse the budget that actually produced the kept draft (16000
+          // if the no-truncation retry fired upstream). Without this, a long-
+          // form gen whose first attempt needed the bump would have its voice
+          // retry re-truncate at the original ~1000 cap and be discarded — a
+          // burned model call that can never be kept.
           const correctedPayload = {
             ...payload,
+            max_tokens: effectiveMaxTokens,
             messages: [
               ...payload.messages,
               { role: 'assistant', content: firstText },
@@ -1660,8 +1676,9 @@ export default async function handler(req, res) {
                 data       = driftData;
                 stopReason = driftData.stop_reason || null;
                 truncated  = stopReason === 'max_tokens';
+                driftKept  = true; // [A1]
               }
-            } catch (e) { /* retry unparseable — keep original draft */ }
+            } catch (e) { /* retry unparseable — keep original draft (driftKept stays false) */ }
           }
         }
       } catch (e) { /* original unparseable / featurize failed — skip the gate */ }
@@ -1671,7 +1688,7 @@ export default async function handler(req, res) {
           model:        selectedModel,
           score_before: driftBefore,
           score_after:  driftAfter,
-          kept:         (driftAfter != null && driftBefore != null && driftAfter < driftBefore) ? 'retry' : 'original',
+          kept:         driftKept ? 'retry' : 'original', // [A1] honest, matches the kept boolean we persist
         }));
       }
     }
@@ -1691,8 +1708,12 @@ export default async function handler(req, res) {
         truncated,
         stop_reason:         stopReason,
         // [VOICE-DRIFT-GATE] Per-generation drift-gate outcome for the admin
-        // tracker. drift_retried false on the vast majority of rows.
+        // tracker. drift_retried false on the vast majority of rows;
+        // drift_kept distinguishes "retry fired AND we used its draft" from
+        // "retry fired but truncated/worse, original stands" so the rollup
+        // doesn't have to guess.
         drift_retried:       driftRetried,
+        drift_kept:          driftRetried ? driftKept : null,
         drift_score_before:  driftBefore,
         drift_score_after:   driftAfter,
         drift_retry_cost_usd: driftRetryCost,
