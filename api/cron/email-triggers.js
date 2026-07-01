@@ -175,8 +175,11 @@ async function processUser(user, todayIsSunday, weekKey) {
   // [STABILITY] Was gated on !EMAIL_VIA_LOOPS — removed. Even after the
   // Loops cutover the cron safety-net stays useful: if Cowork's Loops
   // automation breaks (mis-configured, rate-limited, dashboard glitch),
-  // the cron's Resend send still arrives. email_sends dedupe prevents
-  // double-send in the happy path where Loops did send.
+  // the cron's Resend send still arrives.
+  // [CROSS-PATH-DEDUPE] The Loops inline path now pre-claims the same
+  // (template=welcome, dedupe_key=welcome) slot before firing the Loops
+  // event (see api/email/welcome.js), so the cron's claimSend here fails
+  // when Loops already delivered — no double welcome.
   if (days <= 7) {
     const tpl = T.welcome({ name });
     await sendEmail({

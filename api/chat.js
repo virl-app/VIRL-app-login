@@ -13,7 +13,7 @@ import { fetchRecentTrendStrings }   from "./_lib/recent-trends.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
 import { fetchEditsForMining, mineDenylistFromEdits } from "./_lib/personal-denylist.js";
-import { sendEmail }                 from "./_lib/email-send.js";
+import { sendEmail, hasSent }        from "./_lib/email-send.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
@@ -682,12 +682,16 @@ async function maybeSendFirstPlanEmail(userId) {
   // and the existing precedent in api/cron/email-triggers.js (which fires
   // `thirtyDayMilestone`). Cowork's `first_plan_celebrated` Loop in the
   // Loops dashboard is wired to listen for this exact name.
+  // [CROSS-PATH-DEDUPE] The Resend row lives at
+  // (template=first_plan_generated, dedupe_key=first_plan_generated) and the
+  // Loops row lives at (template=loops:firstPlanGenerated,
+  // dedupe_key=firstPlanGenerated). The unique index on
+  // (user_id, template, dedupe_key) does NOT collide across those two rows,
+  // so a user who received one path before EMAIL_VIA_LOOPS was flipped would
+  // otherwise receive the other path's copy on their next plan. Check the
+  // opposite path's slot before firing.
   if (EMAIL_VIA_LOOPS) {
-    // [LOOPS-DEDUPE] One-shot per user. Without dedupe, a user generating
-    // their 2nd plan (or any subsequent plan if the client-side flag was
-    // wiped) would re-fire firstPlanGenerated and Cowork's Loop would
-    // send the welcome again unless Loops dashboard dedupe is on. The
-    // email_sends claim makes this resilient to that config gap.
+    if (await hasSent(userId, "first_plan_generated", "first_plan_generated")) return;
     await sendLoopsEventOnce({
       userId,
       email:     ctx.email,
@@ -698,6 +702,7 @@ async function maybeSendFirstPlanEmail(userId) {
     return;
   }
 
+  if (await hasSent(userId, "loops:firstPlanGenerated", "firstPlanGenerated")) return;
   const tpl = firstPlanGenerated({ name: ctx.name });
   await sendEmail({
     userId,
