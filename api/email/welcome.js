@@ -21,7 +21,7 @@
 //      verified. No-double-send guarantee: only one of the two paths
 //      fires per request based on the flag.
 
-import { sendEmail, emailEnabled }              from "../_lib/email-send.js";
+import { sendEmail, emailEnabled, claimSend }   from "../_lib/email-send.js";
 import { welcome as welcomeTemplate }           from "../_lib/email-templates.js";
 import { sendLoopsEvent, updateLoopsContact, loopsPlanValue, computeDaysIntoTrial } from "../_lib/loops.js";
 
@@ -119,8 +119,20 @@ export default async function handler(req, res) {
   if (EMAIL_VIA_LOOPS) {
     // [EMAIL-CUTOVER] Loops path. The `signup_welcome` Loops automation
     // (built by Claude Cowork, enabled separately) owns the actual send.
-    // Loops dedupes per contact, so a second call from a token refresh
-    // or tab reload won't re-send.
+    //
+    // [CROSS-PATH-DEDUPE] The cron safety-net in api/cron/email-triggers.js
+    // fires the Resend `welcome` template UNCONDITIONALLY for days <= 7
+    // (comment there claims email_sends dedupe covers the Loops happy path,
+    // but that only holds if the inline Loops call claimed the shared
+    // (template=welcome, dedupe_key=welcome) slot — sendLoopsEvent alone
+    // does not). Pre-claim that slot here so the cron sees the inline
+    // Loops send and skips its Resend copy; a Loops-side failure still
+    // leaves the row in place (documented Loops failures don't retry via
+    // Resend), which matches every other inline→cron pair in the codebase.
+    const claimed = await claimSend(user.id, "welcome", "welcome");
+    if (!claimed) {
+      return res.status(200).json({ sent: false, deduped: true, via: "loops" });
+    }
     const out = await sendLoopsEvent({
       userId:    user.id,
       email:     user.email,
