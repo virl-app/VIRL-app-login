@@ -210,6 +210,18 @@ function captionPlaybookContext(playbook, platform) {
   return " " + platform.toUpperCase() + " PLAYBOOK: " + lines.join("; ") + ".";
 }
 
+function longPostPlaybookContext(playbook) {
+  const entry = playbook && playbook.LinkedIn;
+  if (!entry) return "";
+  const lines = [];
+  if (entry.hook_window)                 lines.push("Hook window: " + entry.hook_window);
+  if (arr(entry.top_signals).length)     lines.push("Optimise for these signals: " + entry.top_signals.join(", "));
+  if (arr(entry.format_priority).length) lines.push("Preferred formats: "          + entry.format_priority.join(", "));
+  if (entry.notes)                       lines.push("Notes: "                      + entry.notes);
+  if (!lines.length) return "";
+  return "\n\nLINKEDIN PLAYBOOK (current best practice from monthly research — treat these as authoritative when they conflict with generic long-form advice): " + lines.join(" | ") + ".";
+}
+
 function scanPlaybookContext(playbook) {
   if (!playbook) return "";
   const platforms = Object.keys(playbook);
@@ -1409,7 +1421,8 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
   const userPrompt = ""
     + "Write a complete LinkedIn long-form text post that builds on the seed below. "
     + "This is a STANDALONE LinkedIn post — no image, no video, narrative writing only. "
-    + "Target length: " + targetWords + " words. " + lengthHint + "\n\n"
+    + "Target length: " + targetWords + " words. " + lengthHint
+    + longPostPlaybookContext(playbook) + "\n\n"
     + seedBlock + guidanceBlock + "\n\n"
     + "FORMAT — LinkedIn-native long-form. The body is a single string with line breaks (\\n) between paragraphs and (occasionally) before a punch line. Do NOT use markdown headers, bold/italics, or bullet styling — LinkedIn strips most of it. White space between paragraphs IS the formatting.\n\n"
     + "Structure:\n"
