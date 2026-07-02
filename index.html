@@ -8242,7 +8242,12 @@ function App() {
   // "algo" removed from the whitelist along with the Algorithm tab —
   // strategic insights are moving inline. Add it back here if the tab
   // is ever restored.
-  const ALLOWED_TABS = ["profile","plan","caption","scan","vault","results","admin"];
+  // [NAV-5] "posts" and "circle" were missing from this allowlist, so a
+  // refresh on those tabs bounced the user; both included now. "vault" and
+  // "results" merged into "library" — legacy remembered values migrate
+  // below so an in-flight session doesn't lose its place.
+  const ALLOWED_TABS = ["profile","plan","caption","posts","scan","library","circle","admin"];
+  const LEGACY_TAB_MAP = { vault: "library", results: "library" };
   // [TAB-PERSIST FIX] Tracks whether the initial tab came from sessionStorage
   // (a real page refresh while the user was on a specific tab) vs a default
   // fallback (first sign-in, no remembered tab). The remote-plan loader below
@@ -8250,9 +8255,20 @@ function App() {
   // remembered, so refreshing while on the profile tab now stays on profile
   // instead of silently bouncing the user to the plan view.
   const tabFromSessionStorage = useRef(false);
+  // [NAV-5] Library sub-tab ("saved" = the old Vault view, "results" =
+  // the old Results view) and the avatar/account dropdown open state.
+  // A session refreshed while on the legacy "results" tab lands on the
+  // matching sub-tab (sessionStorage still holds the legacy value here;
+  // the persist effect only rewrites it after first render).
+  const [libTab,setLibTab] = useState(function(){
+    try { if (sessionStorage.getItem("virl_active_tab") === "results") return "results"; } catch(e) {}
+    return "saved";
+  });
+  const [acctMenuOpen,setAcctMenuOpen] = useState(false);
   const [tab,setTab] = useState(function() {
     try {
-      const remembered = sessionStorage.getItem("virl_active_tab");
+      let remembered = sessionStorage.getItem("virl_active_tab");
+      if (remembered && LEGACY_TAB_MAP[remembered]) remembered = LEGACY_TAB_MAP[remembered];
       if (remembered && ALLOWED_TABS.indexOf(remembered) >= 0) {
         tabFromSessionStorage.current = true;
         return remembered;
@@ -9249,29 +9265,34 @@ function App() {
   }, [vault, results, session, userDataHydrated]);
 
   const isAdmin = session&&session.user&&session.user.email==="laurenannedoty@gmail.com";
+  // [NAV-5] Primary nav is the five product surfaces. Vault + Results
+  // merged into Library (two sub-tabs, all functionality preserved);
+  // My Profile, Founder Circle, and the admin Dashboard live in the
+  // avatar/account menu rendered next to credits in both navs. The
+  // admin Dashboard stays double-gated: hidden here for non-admins and
+  // rejected server-side by verifyAdmin in every /api/admin/* endpoint.
   const TABS = [
-    {key:"profile", label:"My Profile"},
-    {key:"plan",    label:"VIRL Plan"},
-    {key:"caption", label:"VIRL Captions"},
+    {key:"plan",    label:"Plan"},
+    {key:"caption", label:"Captions"},
     // [VIRL-POSTS-TAB] Dedicated surface for long-form text content
-    // (LinkedIn long posts, blog posts). Sits between Captions and
-    // Scan so the writing surfaces cluster together. Built on the
-    // long_post + blog_post generation types — same prompt builders
-    // the Plan tab's "Write Full Post" action uses, just driven by
-    // a topic + supporting points instead of a plan card seed.
-    {key:"posts",   label:"VIRL Posts"},
-    {key:"scan",    label:"VIRL Scan"},
-    // Algorithm tab removed — strategic insights moving inline. Keep
-    // this commented for easy restoration:
-    // {key:"algo",    label:"Algorithm"},
-    {key:"vault",   label:"Vault ("+vault.length+")"},
-    {key:"results", label:"Results"},
-    // [PRICING 3] Founder Circle tab — only visible to members. Includes
-    // Office Hours date, direct email to founder@govirl.ai, and the user's
-    // Founder Position number.
+    // (LinkedIn long posts, blog posts). Built on the long_post +
+    // blog_post generation types — same prompt builders the Plan tab's
+    // "Write Full Post" action uses, just driven by a topic +
+    // supporting points instead of a plan card seed.
+    {key:"posts",   label:"Posts"},
+    {key:"scan",    label:"Scan"},
+    {key:"library", label:"Library"},
+  ];
+  // [NAV-5] Account menu entries. Founder Circle only for members
+  // ([PRICING 3] — Office Hours, direct line, position number);
+  // Dashboard only for the admin.
+  const ACCT_ITEMS = [
+    {key:"profile", label:"My Profile"},
     ...(isFounderCircle?[{key:"circle", label:"Founder Circle"}]:[]),
     ...(isAdmin?[{key:"admin", label:"Dashboard"}]:[]),
   ];
+  const acctName    = (profile&&profile.name) || (session&&session.user&&session.user.email) || "Account";
+  const acctInitial = String(acctName).trim().charAt(0).toUpperCase() || "V";
 
   // Vault patterns drive a small UI ("Based on your N saved posts...") and
   // are mirrored server-side from the user_data row to ground the plan
@@ -10627,8 +10648,7 @@ return (
             <button key={t.key} onClick={function(){setTab(t.key);}}
               style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:tab===t.key?600:400,padding:"10px 14px",background:tab===t.key?"rgba(255,255,255,0.12)":"transparent",color:tab===t.key?"white":"rgba(255,255,255,0.5)",border:"none",borderRadius:10,cursor:"pointer",textAlign:"left",transition:"all .15s",display:"flex",alignItems:"center",gap:8,position:"relative"}}>
               {t.label}
-              {t.key==="profile"&&!profileComplete&&<span style={{width:5,height:5,borderRadius:"50%",background:"#3B82F6",flexShrink:0}}/>}
-              {t.key==="vault"&&vault.length>0&&<span style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,background:"rgba(255,255,255,0.1)",color:"rgba(255,255,255,0.6)",padding:"1px 7px",borderRadius:99,marginLeft:"auto"}}>{vault.length}</span>}
+              {t.key==="library"&&vault.length>0&&<span style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,background:"rgba(255,255,255,0.1)",color:"rgba(255,255,255,0.6)",padding:"1px 7px",borderRadius:99,marginLeft:"auto"}}>{vault.length}</span>}
             </button>
           );})}
         </div>
@@ -10683,10 +10703,41 @@ return (
               </button>
             )}
           </div>
-          <button onClick={handleSignOut}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:"rgba(255,255,255,0.3)",background:"none",border:"none",cursor:"pointer",padding:0}}>
-            Sign out
-          </button>
+          {/* [NAV-5] Account menu — Profile / Founder Circle / Dashboard /
+               Sign out. The blue dot on the avatar mirrors the old
+               profile-tab incomplete indicator. Opens upward (sidebar
+               bottom). */}
+          <div style={{position:"relative"}}>
+            {acctMenuOpen&&(
+              <div onClick={function(){ setAcctMenuOpen(false); }}
+                style={{position:"fixed",inset:0,zIndex:120,background:"transparent"}}/>
+            )}
+            <button onClick={function(){ setAcctMenuOpen(function(v){ return !v; }); }}
+              aria-haspopup="true" aria-expanded={acctMenuOpen}
+              style={{display:"flex",alignItems:"center",gap:10,width:"100%",background:"transparent",border:"none",cursor:"pointer",padding:"6px 0"}}>
+              <div style={{width:28,height:28,borderRadius:"50%",background:"rgba(255,255,255,0.14)",color:B.white,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,flexShrink:0,position:"relative"}}>
+                {acctInitial}
+                {!profileComplete&&<span style={{position:"absolute",top:-1,right:-1,width:8,height:8,borderRadius:"50%",background:B.sky,border:"2px solid #1F3A8A"}}/>}
+              </div>
+              <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.6)",flex:1,textAlign:"left",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{acctName}</span>
+              <span aria-hidden="true" style={{color:"rgba(255,255,255,0.4)",fontSize:10}}>{acctMenuOpen?"▾":"▴"}</span>
+            </button>
+            {acctMenuOpen&&(
+              <div style={{position:"absolute",bottom:"calc(100% + 8px)",left:0,right:0,zIndex:121,background:B.card,borderRadius:12,boxShadow:"0 8px 30px rgba(15,23,42,0.25)",border:"1px solid "+B.border,overflow:"hidden"}}>
+                {ACCT_ITEMS.map(function(item){return (
+                  <button key={item.key} onClick={function(){ setTab(item.key); setAcctMenuOpen(false); }}
+                    style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"11px 14px",background:tab===item.key?B.navySoft:"transparent",border:"none",borderBottom:"1px solid "+B.divider,cursor:"pointer",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:tab===item.key?600:400,color:B.ink,textAlign:"left"}}>
+                    {item.label}
+                    {item.key==="profile"&&!profileComplete&&<span style={{width:5,height:5,borderRadius:"50%",background:B.sky,flexShrink:0}}/>}
+                  </button>
+                );})}
+                <button onClick={function(){ setAcctMenuOpen(false); handleSignOut(); }}
+                  style={{display:"block",width:"100%",padding:"11px 14px",background:"transparent",border:"none",cursor:"pointer",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,textAlign:"left"}}>
+                  Sign out
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -10746,12 +10797,37 @@ return (
                 </div>
               </div>
             )}
-            {/* Sign out as a text link, not a button. Translucent
-                white reads as a quiet utility against the navy. */}
-            <button onClick={function(){clearLocalUserData();supabaseClient.auth.signOut();}}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:500,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 2px",background:"transparent",color:"rgba(255,255,255,0.55)",border:"none",cursor:"pointer",lineHeight:1}}>
-              Sign out
-            </button>
+            {/* [NAV-5] Avatar account menu — Profile / Founder Circle /
+                 Dashboard / Sign out. Replaces the bare Sign out link
+                 (which also used a divergent inline handler; both navs
+                 now share handleSignOut). */}
+            <div style={{position:"relative"}}>
+              {acctMenuOpen&&(
+                <div onClick={function(){ setAcctMenuOpen(false); }}
+                  style={{position:"fixed",inset:0,zIndex:120,background:"transparent"}}/>
+              )}
+              <button onClick={function(){ setAcctMenuOpen(function(v){ return !v; }); }}
+                aria-haspopup="true" aria-expanded={acctMenuOpen} aria-label="Account menu"
+                style={{width:30,height:30,borderRadius:"50%",background:"rgba(255,255,255,0.16)",color:B.white,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,border:"1px solid rgba(255,255,255,0.32)",cursor:"pointer",position:"relative",padding:0}}>
+                {acctInitial}
+                {!profileComplete&&<span style={{position:"absolute",top:-2,right:-2,width:8,height:8,borderRadius:"50%",background:B.sky,border:"2px solid #1F3A8A"}}/>}
+              </button>
+              {acctMenuOpen&&(
+                <div style={{position:"absolute",top:"calc(100% + 8px)",right:0,minWidth:200,zIndex:121,background:B.card,borderRadius:12,boxShadow:"0 8px 30px rgba(15,23,42,0.25)",border:"1px solid "+B.border,overflow:"hidden"}}>
+                  {ACCT_ITEMS.map(function(item){return (
+                    <button key={item.key} onClick={function(){ setTab(item.key); setAcctMenuOpen(false); }}
+                      style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"11px 14px",background:tab===item.key?B.navySoft:"transparent",border:"none",borderBottom:"1px solid "+B.divider,cursor:"pointer",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:tab===item.key?600:400,color:B.ink,textAlign:"left"}}>
+                      {item.label}
+                      {item.key==="profile"&&!profileComplete&&<span style={{width:5,height:5,borderRadius:"50%",background:B.sky,flexShrink:0}}/>}
+                    </button>
+                  );})}
+                  <button onClick={function(){ setAcctMenuOpen(false); handleSignOut(); }}
+                    style={{display:"block",width:"100%",padding:"11px 14px",background:"transparent",border:"none",cursor:"pointer",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,textAlign:"left"}}>
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
         <div style={{display:"flex",gap:0,overflowX:"auto",WebkitOverflowScrolling:"touch",scrollbarWidth:"none",padding:"0 10px",borderBottom:brandHeroHairline}}>
@@ -10759,7 +10835,6 @@ return (
             <button key={t.key} onClick={function(){setTab(t.key);}}
               style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:tab===t.key?700:500,letterSpacing:"0.1em",textTransform:"uppercase",padding:"13px 12px",background:"transparent",color:tab===t.key?B.white:"rgba(255,255,255,0.5)",border:"none",borderBottom:tab===t.key?"2px solid "+B.sky:"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s",position:"relative"}}>
               {t.label}
-              {t.key==="profile"&&!profileComplete&&<span style={{position:"absolute",top:6,right:6,width:5,height:5,borderRadius:"50%",background:B.sky}}/>}
             </button>
           );})}
         </div>
@@ -12077,13 +12152,29 @@ return (
           </div>
         )}
 
-        {tab==="vault"&&(
+        {/* [NAV-5] Library — Vault ("Saved") and Results merged as two
+             sub-tabs of one section. Both bodies are the previous tab
+             views verbatim; only the header is shared. */}
+        {tab==="library"&&(
           <div>
             <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
-              <Eyebrow>Content Vault</Eyebrow>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
-                Your saved<br/><span style={{color:B.navy}}>content library.</span>
+              <Eyebrow>Library</Eyebrow>
+              {libTab==="saved"?(
+                <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+                  Your saved<br/><span style={{color:B.navy}}>content library.</span>
+                </div>
+              ):(
+                <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+                  See what's<br/><span style={{color:B.navy}}>actually working.</span>
+                </div>
+              )}
+              <div style={{display:"flex",gap:8,marginBottom:4}}>
+                <Chip active={libTab==="saved"} onClick={function(){setLibTab("saved");}}>{"Saved"+(vault.length?" ("+vault.length+")":"")}</Chip>
+                <Chip active={libTab==="results"} onClick={function(){setLibTab("results");}}>Results</Chip>
               </div>
+            </div>
+            {libTab==="saved"&&(
+            <div>
               <SherpaTip>Everything you've saved from your plans and captions lives here. Your Vault grows over time into a personal content library built around your voice.</SherpaTip>
               {!isFoundingOrPro&&vault.length>0&&(
                 <div style={{background:B.navySoft,borderRadius:10,padding:"12px 16px",marginTop:12,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
@@ -12097,8 +12188,41 @@ return (
                   </button>
                 </div>
               )}
+              <Vault vault={vault} onDelete={deleteFromVault} onRemix={handleVaultRemix}/>
             </div>
-            <Vault vault={vault} onDelete={deleteFromVault} onRemix={handleVaultRemix}/>
+            )}
+            {libTab==="results"&&(
+            <div>
+              {/* [RESULTS-OVERHAUL] Cycle-end batch-log nudge. Was Sunday-
+                  only; now fires when the user's personal credit cycle
+                  is one day from resetting (showSundayNudge is gated on
+                  cycleEndingSoon). Mirrors the Plan-tab single-slot
+                  banner so users see the prompt on both surfaces.
+                  Dismissal is per-session via sessionStorage. */}
+              {showSundayNudge&&(
+                <div style={{background:B.navySoft,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",gap:14,alignItems:"flex-start"}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontFamily:"'Italiana',serif",fontSize:19,color:B.navy,lineHeight:1.2,marginBottom:6}}>How did your posts perform this week?</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.navy,lineHeight:1.6,marginBottom:12}}>
+                      {"Your week resets " + (daysUntilReset === 0 ? "today" : "tomorrow") + ". " + unloggedCards.length + " post" + (unloggedCards.length===1?"":"s") + " still to log."}
+                    </div>
+                    <button onClick={function(){ setSundayLogModalOpen(true); }}
+                      style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+                      Log all at once
+                    </button>
+                  </div>
+                  <button onClick={function(){
+                      try { sessionStorage.setItem("virl_sunday_nudge_dismissed","1"); } catch(e) {}
+                      setSundayNudgeDismissed(true);
+                    }} aria-label="Dismiss"
+                    style={{background:"none",border:"none",color:B.navy,fontSize:20,cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0,opacity:0.7}}>
+                    {"×"}
+                  </button>
+                </div>
+              )}
+              <Results results={results} onPlanWithInsights={handlePlanWithInsights}/>
+            </div>
+            )}
           </div>
         )}
 
@@ -12176,44 +12300,7 @@ return (
         )}
         */}
 
-        {tab==="results"&&(
-          <div>
-            <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
-              <Eyebrow>Results</Eyebrow>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
-                See what's<br/><span style={{color:B.navy}}>actually working.</span>
-              </div>
-            </div>
-            {/* [RESULTS-OVERHAUL] Cycle-end batch-log nudge. Was Sunday-
-                only; now fires when the user's personal credit cycle
-                is one day from resetting (showSundayNudge is gated on
-                cycleEndingSoon). Mirrors the Plan-tab single-slot
-                banner so users see the prompt on both surfaces.
-                Dismissal is per-session via sessionStorage. */}
-            {showSundayNudge&&(
-              <div style={{background:B.navySoft,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",gap:14,alignItems:"flex-start"}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontFamily:"'Italiana',serif",fontSize:19,color:B.navy,lineHeight:1.2,marginBottom:6}}>How did your posts perform this week?</div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.navy,lineHeight:1.6,marginBottom:12}}>
-                    {"Your week resets " + (daysUntilReset === 0 ? "today" : "tomorrow") + ". " + unloggedCards.length + " post" + (unloggedCards.length===1?"":"s") + " still to log."}
-                  </div>
-                  <button onClick={function(){ setSundayLogModalOpen(true); }}
-                    style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-                    Log all at once
-                  </button>
-                </div>
-                <button onClick={function(){
-                    try { sessionStorage.setItem("virl_sunday_nudge_dismissed","1"); } catch(e) {}
-                    setSundayNudgeDismissed(true);
-                  }} aria-label="Dismiss"
-                  style={{background:"none",border:"none",color:B.navy,fontSize:20,cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0,opacity:0.7}}>
-                  {"×"}
-                </button>
-              </div>
-            )}
-            <Results results={results} onPlanWithInsights={handlePlanWithInsights}/>
-          </div>
-        )}
+        {/* [NAV-5] Results view merged into Library above (libTab==="results"). */}
 
         {/* [PRICING 3] Founder Circle tab — members-only. Surfaces the
             commitments from the brief: monthly Office Hours, the direct
