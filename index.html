@@ -255,11 +255,18 @@ async function loadCreditsFromSupabase(userId, accessToken) {
       // GETs to the Supabase REST API, so a refetch right after a server-side
       // credit deduction can return the stale pre-deduction row. Force a
       // network round-trip every time.
+      //
+      // [CREDITS-400] Cache-busting lives HERE (headers + cache:"no-store"),
+      // never as a query param: PostgREST parses any unknown query param as
+      // a column filter, so the old "&_=" + Date.now() suffix was read as a
+      // filter on a column named "_" and 400'd EVERY primary fetch since it
+      // shipped — the app silently ran on the /api/me-credits fallback (one
+      // extra serverless hop per credits refresh) the whole time.
       "Cache-Control": "no-cache",
       "Pragma": "no-cache",
     };
     const res = await fetch(
-      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,founding_tier,founding_position&user_id=eq." + userId + "&limit=1&_=" + Date.now(),
+      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,founding_tier,founding_position&user_id=eq." + userId + "&limit=1",
       { headers, cache: "no-store" }
     );
     if (res.ok) {
@@ -2507,6 +2514,9 @@ const Accordion = ({title, meta, defaultOpen, children}) => {
   const [open,setOpen] = useState(!!defaultOpen);
   return (
     <div style={{marginBottom:10}}>
+      {/* [HEADINGS] <h2><button/></h2> is the canonical accessible
+          accordion header — the h2 carries no styling of its own. */}
+      <h2 style={{margin:0,fontSize:"inherit",fontWeight:"inherit"}}>
       <button onClick={function(){ setOpen(function(v){ return !v; }); }} aria-expanded={open}
         style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"14px 18px",background:B.card,border:"1px solid "+B.border,borderRadius:14,cursor:"pointer",fontFamily:"'Jost',sans-serif",transition:"border-color .15s"}}>
         <span style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",textAlign:"left"}}>
@@ -2515,6 +2525,7 @@ const Accordion = ({title, meta, defaultOpen, children}) => {
         </span>
         <span aria-hidden="true" style={{fontSize:16,color:B.navy,fontWeight:700,marginLeft:8,flexShrink:0}}>{open ? "▴" : "▾"}</span>
       </button>
+      </h2>
       {open && <div style={{marginTop:10}}>{children}</div>}
     </div>
   );
@@ -11143,9 +11154,9 @@ return (
             )}
             <div style={{marginBottom:24,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
               <Eyebrow>Creator Profile</Eyebrow>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(32px,5vw,52px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+              <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(32px,5vw,52px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                 Make VIRL sound<br/><span style={{color:B.navy}}>like you.</span>
-              </div>
+              </h1>
               <div style={{fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75,maxWidth:480}}>
                 Fill this in once. Every plan and caption VIRL generates will sound authentically like you - not generic AI.
               </div>
@@ -11340,9 +11351,9 @@ return (
           <div>
             <div style={{marginBottom:24,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
               <Eyebrow>VIRL Plan</Eyebrow>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(32px,5vw,52px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+              <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(32px,5vw,52px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                 Your week,<br/><span style={{color:B.navy}}>planned in 60 seconds.*</span>
-              </div>
+              </h1>
               {profileComplete?(
                 <div style={{background:B.navySoft,borderRadius:10,padding:"10px 16px",fontFamily:"'Jost',sans-serif",fontSize:13,color:B.navy}}>
                   {"✦ Building around "+profile.name+"'s voice, audience, and content pillars."}
@@ -11641,7 +11652,7 @@ return (
                   );
                 })()}
                 <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
-                  <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink}}>Your <span style={{color:B.navy}}>week</span></div>
+                  <h2 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:26,color:B.ink}}>Your <span style={{color:B.navy}}>week</span></h2>
                   <div style={{flex:1,height:1,background:B.border}}/>
                 </div>
                 {/* Group cards into day-buckets so each day can be
@@ -12248,9 +12259,9 @@ return (
           <div>
             <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
               <Eyebrow>VIRL Captions</Eyebrow>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+              <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                 The right words,<br/><span style={{color:B.navy}}>in your voice.</span>
-              </div>
+              </h1>
               {/* [PREMIUM 1] Captions positioning copy. Acts as the tab's
                    "empty zone" voice since the tab opens with the form
                    and never has a true empty state. */}
@@ -12273,9 +12284,9 @@ return (
           <div>
             <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
               <Eyebrow>VIRL Posts</Eyebrow>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+              <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                 Long-form,<br/><span style={{color:B.navy}}>still in your voice.</span>
-              </div>
+              </h1>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.65,maxWidth:520,marginBottom:profileComplete?12:0}}>
                 For the LinkedIn post you've been meaning to write, or the blog post that's been sitting in your drafts. Give VIRL the topic and your supporting points — it does the rest in your voice.
               </div>
@@ -12296,9 +12307,9 @@ return (
           <div>
             <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
               <Eyebrow>VIRL Scan</Eyebrow>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+              <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                 Content you already<br/><span style={{color:B.navy}}>have.</span>
-              </div>
+              </h1>
               <div style={{fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75}}>
                 Upload a photo or video. VIRL scores it for viral potential out of 10, recommends the best platform, and writes a ready-to-post caption you can edit and save.
               </div>
@@ -12317,13 +12328,13 @@ return (
             <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
               <Eyebrow>Library</Eyebrow>
               {libTab==="saved"?(
-                <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+                <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                   Your saved<br/><span style={{color:B.navy}}>content library.</span>
-                </div>
+                </h1>
               ):(
-                <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+                <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                   See what's<br/><span style={{color:B.navy}}>actually working.</span>
-                </div>
+                </h1>
               )}
               <div style={{display:"flex",gap:8,marginBottom:4}}>
                 <Chip active={libTab==="saved"} onClick={function(){setLibTab("saved");}}>{"Saved"+(vault.length?" ("+vault.length+")":"")}</Chip>
@@ -12466,9 +12477,9 @@ return (
           <div>
             <div style={{marginBottom:24,paddingBottom:24,borderBottom:"1px solid "+B.divider}}>
               <Eyebrow>Founder Circle</Eyebrow>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+              <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                 Welcome to<br/><span style={{color:B.navy}}>the Founder Circle.</span>
-              </div>
+              </h1>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.65,maxWidth:560}}>
                 You said yes before the proof existed. Your $20/month pricing is locked for as long as you stay with VIRL — forever.
               </div>
@@ -12585,9 +12596,9 @@ return (
           <div>
             <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
               <Eyebrow>Admin</Eyebrow>
-              <div style={{fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+              <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
                 VIRL<br/><span style={{color:B.navy}}>Dashboard.</span>
-              </div>
+              </h1>
               <button onClick={loadAdminData} disabled={adminLoading}
                 style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:adminLoading?B.muted:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",transition:"all .2s"}}>
                 {adminLoading?"Loading...":"Refresh data"}
