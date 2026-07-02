@@ -2437,6 +2437,27 @@ const Eyebrow = ({children}) => (
   </div>
 );
 
+/* [PLAN-STATE] Generic collapsible section. Same visual grammar as the
+   "Last week's plan" trigger (full-width card button + chevron) so the
+   Plan page's collapsed Strategy / Projections / Trends sections read
+   as one family. Collapsed by default unless defaultOpen. */
+const Accordion = ({title, meta, defaultOpen, children}) => {
+  const [open,setOpen] = useState(!!defaultOpen);
+  return (
+    <div style={{marginBottom:10}}>
+      <button onClick={function(){ setOpen(function(v){ return !v; }); }} aria-expanded={open}
+        style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"14px 18px",background:B.card,border:"1px solid "+B.border,borderRadius:14,cursor:"pointer",fontFamily:"'Jost',sans-serif",transition:"border-color .15s"}}>
+        <span style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",textAlign:"left"}}>
+          <span style={{fontSize:11,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.navy}}>{title}</span>
+          {meta && <span style={{fontSize:11,fontWeight:400,color:B.muted}}>{meta}</span>}
+        </span>
+        <span aria-hidden="true" style={{fontSize:16,color:B.navy,fontWeight:700,marginLeft:8,flexShrink:0}}>{open ? "▴" : "▾"}</span>
+      </button>
+      {open && <div style={{marginTop:10}}>{children}</div>}
+    </div>
+  );
+};
+
 const Sel = ({value,onChange,children}) => (
   <select value={value} onChange={onChange}
     style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:500,padding:"10px 12px",appearance:"none",cursor:"pointer"}}>
@@ -8337,6 +8358,12 @@ function App() {
   // user's weekly fresh-trends allowance (or fired Perplexity inline for
   // a paid user). Drives the post-action banner above the plan.
   const [planUsedFreshTrends,setPlanUsedFreshTrends] = useState(false);
+  // [PLAN-STATE] With an active plan, the setup flow hides behind the
+  // "Edit setup & regenerate" action; without one it's the whole page.
+  // setupStep drives the 3-step wizard (0 platforms+niche, 1 goal+
+  // formats+followers, 2 week context + trends + generate).
+  const [showSetup,setShowSetup] = useState(false);
+  const [setupStep,setSetupStep] = useState(0);
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
   const [results,setResults] = useState(stored.results||[]);
@@ -11148,21 +11175,55 @@ return (
                 </button>
               </div>
             )}
+            {/* [PLAN-STATE] Setup flow renders only when there's no active
+                 plan, or the user explicitly asked for it via "Edit setup
+                 & regenerate". Hidden while a generation streams so the
+                 wizard doesn't flash back when generate() clears cards. */}
+            {(!cards || showSetup) && !loading && (
+            <div>
+            {cards && (
+              <button onClick={function(){ setShowSetup(false); }}
+                style={{background:"transparent",border:"none",padding:0,marginBottom:14,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.blue,cursor:"pointer"}}>
+                {"← Back to this week's plan"}
+              </button>
+            )}
             <SherpaTip>Tell VIRL your setup and it builds your week across your platforms — every post with timing, trend angles, and the strategic reason behind it. Number of posts comes from your posting cadence × platform count, so a "daily" creator gets a fuller week than a "few times a week" creator. Tap Write Script on any card to go even deeper.</SherpaTip>
+            {/* [PLAN-STATE] 3-step wizard progress. Same state, same rows —
+                 just staged so the first screen asks two questions, not
+                 seven. */}
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+              {["Platforms & niche","Goal & formats","This week"].map(function(lbl,i){
+                var active = setupStep===i, done = setupStep>i;
+                return (
+                  <div key={lbl} style={{display:"flex",alignItems:"center",gap:8,flex:i<2?1:"none",minWidth:0}}>
+                    <button onClick={function(){ if (i<setupStep) setSetupStep(i); }}
+                      aria-label={"Step "+(i+1)+": "+lbl}
+                      style={{width:22,height:22,borderRadius:"50%",background:(active||done)?B.navy:B.divider,color:(active||done)?B.white:B.muted,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,flexShrink:0,border:"none",cursor:done?"pointer":"default",padding:0}}>
+                      {done?"✓":(i+1)}
+                    </button>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:active?600:400,color:active?B.navy:B.muted,letterSpacing:"0.04em",whiteSpace:"nowrap"}}>{lbl}</div>
+                    {i<2 && <div style={{flex:1,height:1,background:B.border,minWidth:12}}/>}
+                  </div>
+                );
+              })}
+            </div>
             <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
-              {[
+              {(setupStep===0?[
                 {lbl:"Your platforms",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={platforms.includes(p)} onClick={function(){setPlatforms(tog(platforms,p));}}>{p}</Chip>;})}</div>},
                 {lbl:"Your niche",el:<Sel value={niche} onChange={function(e){setNiche(e.target.value);}}>{NICHES.map(function(n){return <option key={n}>{n}</option>;})}</Sel>},
+              ]:setupStep===1?[
                 {lbl:"Primary goal",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{GOALS.map(function(g){return <Chip key={g} active={goal===g} onClick={function(){setGoal(g);}}>{g}</Chip>;})}</div>},
                 {lbl:"Content you can make",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{FORMATS.map(function(f){return <Chip key={f} active={formats.includes(f)} onClick={function(){setFormats(tog(formats,f));}}>{f}</Chip>;})}</div>},
                 {lbl:"Current followers",el:<Sel value={followers} onChange={function(e){setFollowers(e.target.value);}}>{FOLLOWERS.map(function(f){return <option key={f}>{f}</option>;})}</Sel>},
-              ].map(function(row,i,arr){return (
+              ]:[]).map(function(row,i,arr){return (
                 <div key={row.lbl} style={{padding:"18px 22px",borderBottom:i<arr.length-1?"1px solid "+B.divider:"none"}}>
                   <Label>{row.lbl}</Label>
                   {row.el}
                 </div>
               );})}
-              <div style={{padding:"18px 22px",borderTop:"1px solid "+B.divider}}>
+              {setupStep===2 && (
+              <React.Fragment>
+              <div style={{padding:"18px 22px"}}>
                 <Label>Anything specific to lean into? (optional)</Label>
                 <textarea value={context} onChange={function(e){setContext(e.target.value);}}
                   placeholder="e.g. unposted videos from last week, a trend you want to ride, a topic your audience keeps asking about..."
@@ -11189,7 +11250,26 @@ return (
                   </button>
                 )}
               </div>
+              </React.Fragment>
+              )}
             </div>
+            {setupStep<2 && (
+              <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:8}}>
+                {setupStep>0 && (
+                  <button onClick={function(){ setSetupStep(setupStep-1); }}
+                    style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 22px",background:B.card,color:B.sub,border:"1px solid "+B.border,borderRadius:14,cursor:"pointer"}}>
+                    Back
+                  </button>
+                )}
+                <button onClick={function(){ setSetupStep(setupStep+1); }}
+                  disabled={setupStep===0?!platforms.length:!formats.length}
+                  style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 24px",background:(setupStep===0?!platforms.length:!formats.length)?B.muted:B.blue,color:B.white,border:"none",borderRadius:14,cursor:(setupStep===0?!platforms.length:!formats.length)?"default":"pointer",boxShadow:(setupStep===0?!platforms.length:!formats.length)?"none":"0 4px 14px rgba(37,99,235,0.3)"}}>
+                  {setupStep===0 ? (platforms.length ? "Next: goal & formats" : "Pick at least one platform") : (formats.length ? "Next: this week" : "Pick at least one format")}
+                </button>
+              </div>
+            )}
+            {setupStep===2 && (
+            <React.Fragment>
             <FreshTrendsChip
               kind="plan"
               remaining={freshTrendsPlanLeft}
@@ -11265,162 +11345,49 @@ return (
                 </div>
               );
             })()}
-            <GenBtn onClick={generate} loading={loading} disabled={!platforms.length||!formats.length}>
-              {loading?"Strategizing...":"Generate my 7-day plan"}
-            </GenBtn>
+            <div style={{display:"flex",gap:10,alignItems:"stretch",marginBottom:8}}>
+              <button onClick={function(){ setSetupStep(1); }}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 22px",background:B.card,color:B.sub,border:"1px solid "+B.border,borderRadius:14,cursor:"pointer",flexShrink:0}}>
+                Back
+              </button>
+              <div style={{flex:1}}>
+                <GenBtn onClick={function(){ setShowSetup(false); generate(); }} loading={loading} disabled={!platforms.length||!formats.length}>
+                  {loading?"Strategizing...":"Generate my 7-day plan"}
+                </GenBtn>
+              </div>
+            </div>
+            </React.Fragment>
+            )}
+            </div>
+            )}
             <ErrBox msg={error}/>
             {loading&&!cards&&<RotatingStatus kind="plan"/>}
-            {cards && planUsedFreshTrends && !isPaid && (
-              <FreshTrendsBanner
-                kind="plan"
-                daysUntilReset={daysUntilReset}
-                onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
-            )}
-
-            {stats&&(
-              <div style={{marginTop:20}}>
-                <Eyebrow>This week's projections</Eyebrow>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
-                  {[{l:"Weekly reach",v:stats.reach,c:B.navy},{l:"Engagement",v:stats.engagement,c:B.blue},{l:"Per post est.",v:stats.earnings,c:B.navy}].map(function(s,i){return (
-                    <div key={i} style={{padding:"14px",background:i%2===0?B.navySoft:B.card,borderRadius:12}}>
-                      <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:s.c,lineHeight:1,marginBottom:4}}>{s.v}</div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted}}>{s.l}</div>
-                    </div>
-                  );})}
-                </div>
-                <div style={{background:B.bg,borderRadius:10,padding:"12px 16px",marginBottom:16}}>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>About these estimates</div>
-                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.75}}>
-                    AI-generated estimates based on your niche, follower tier, and platforms. Use as directional benchmarks, not guarantees.
-                  </div>
-                </div>
-              </div>
-            )}
 
             {cards&&(
               <div>
-                {/* [CHANGE 2b] Inline post-plan upgrade nudge. Renders above
-                    the result cards. Hidden for paid users + expired trials,
-                    and once dismissed (state) or shown earlier this session
-                    (sessionStorage). */}
-                {!isFoundingOrPro&&!trialExpired&&!planNudgeDismissed&&(
-                  <div style={{background:B.navySoft,borderLeft:"3px solid "+B.blue,borderRadius:12,padding:"16px 20px",marginBottom:16}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                        <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy,lineHeight:1.2}}>{"✦ Loving this plan?"}</div>
-                        {foundingAvailable&&(
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founder Circle</div>
-                        )}
-                      </div>
-                      <button onClick={function(){ setPlanNudgeDismissed(true); }} aria-label="Dismiss"
-                        style={{background:"none",border:"none",color:B.muted,fontSize:18,cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0}}>
-                        {"×"}
-                      </button>
-                    </div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,marginTop:6,lineHeight:1.55}}>
-                      {foundingAvailable
-                        ? "Lock in $20/month for life as a Founder Circle member — 150 credits every week. Plans, captions, scans, and scripts."
-                        : "Upgrade to Standard — 150 credits every week. Plans, captions, scans, and scripts, every single week."}
-                    </div>
-                    {foundingAvailable&&foundingCount!==null&&(
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",color:B.blue,marginTop:6}}>
-                        {(FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " Founder Circle spots left"}
-                      </div>
-                    )}
-                    <div style={{display:"flex",alignItems:"center",gap:14,marginTop:12,flexWrap:"wrap"}}>
-                      <button onClick={function(){
-                          setUpgradeReason("post-plan");
-                          setShowUpgrade(true);
-                        }}
-                        style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-                        {foundingAvailable?"Upgrade for $215/yr →":"Upgrade for $249/yr →"}
-                      </button>
-                      <button onClick={function(){ setPlanNudgeDismissed(true); }}
-                        style={{background:"none",border:"none",color:B.muted,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,cursor:"pointer",padding:0}}>
-                        Maybe later
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {!hasSeenExplainer&&(
-                  <div style={{background:B.navySoft,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",gap:14,alignItems:"flex-start"}}>
-                    <div style={{fontSize:20,flexShrink:0}}>{"✦"}</div>
-                    <div style={{flex:1}}>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.navy,marginBottom:4}}>This plan was built around you.</div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.6}}>
-                        {profileComplete?"Every post uses "+profile.name+"'s voice, audience, and pillars. Each card shows the strategic reason it will work for your specific audience.":"Fill in your Creator Profile to make every plan sound like you - not generic AI."}
-                      </div>
-                    </div>
-                    <button onClick={dismissExplainer}
-                      style={{background:"none",border:"none",color:B.muted,fontSize:18,cursor:"pointer",flexShrink:0,padding:0,lineHeight:1}}>
-                      {"×"}
-                    </button>
-                  </div>
-                )}
-                {/* [TASK 10] "Based on your Vault" banner — signals that VIRL
-                    is learning from saved posts. Renders only when the vault
-                    has 3+ plan-type items with a discernible pattern. */}
-                {vaultPatterns.count>=3&&(vaultPatterns.topFormat||vaultPatterns.topPlatform)&&(
-                  <div style={{background:B.navySoft,borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",gap:12,alignItems:"flex-start"}}>
-                    <div style={{fontSize:16,flexShrink:0,color:B.navy,marginTop:1}}>{"✦"}</div>
-                    <div style={{flex:1}}>
-                      <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.navy,lineHeight:1.2,marginBottom:4}}>Learning from your Vault.</div>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.navy,lineHeight:1.55}}>
-                        {"Based on your "+vaultPatterns.count+" saved post"+(vaultPatterns.count===1?"":"s")+", VIRL is weighing "+(vaultPatterns.topFormat||vaultPatterns.topPlatform)+" content higher this week."}
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {/* [TASK 9] Generic AI vs VIRL comparison — fires exactly once,
-                    the first time the user ever sees a generated plan. Shows
-                    hardcoded generic-AI copy next to the first plan card's
-                    description so the "wow, VIRL actually sounds like me"
-                    moment lands without them having to read 10 plan cards. */}
-                {!firstPlanShown&&cards[0]&&(
-                  <div style={{background:B.card,borderRadius:14,padding:"20px 22px",marginBottom:16,boxShadow:"0 2px 8px rgba(0,0,0,0.06)",border:"1px solid "+B.divider}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:14}}>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.coral,marginBottom:6}}>See the difference</div>
-                        <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.2}}>{"Here's what a generic AI would have written."}</div>
-                      </div>
-                      <button onClick={function(){
-                          try { localStorage.setItem("virl_first_plan_shown","1"); } catch(e) {}
-                          setFirstPlanShown(true);
-                        }} aria-label="Dismiss"
-                        style={{background:"none",border:"none",color:B.muted,fontSize:20,cursor:"pointer",padding:"2px 4px",lineHeight:1,flexShrink:0}}>
-                        {"×"}
-                      </button>
-                    </div>
-                    <div className="virl-compare-grid" style={{marginBottom:12}}>
-                      <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",opacity:0.65}}>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>Generic AI</div>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.55,fontStyle:"italic"}}>
-                          {"Loving this morning routine ✨ Start your day right! 🌅 #morningvibes #selfcare #inspiration"}
-                        </div>
-                      </div>
-                      <div style={{background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:10,padding:"12px 14px"}}>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.coral,marginBottom:8}}>VIRL</div>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.ink,lineHeight:1.55}}>
-                          {cards[0].description||cards[0].title}
-                        </div>
-                      </div>
-                    </div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:12}}>
-                      {"Every post in your plan is written like this – built on your voice, audience, and goals."}
-                    </div>
-                    <div style={{display:"flex",justifyContent:"flex-end"}}>
-                      <CopyBtn label="Copy comparison"
-                        text={"Generic AI:\n\"Loving this morning routine ✨ Start your day right! 🌅 #morningvibes #selfcare #inspiration\"\n\nVIRL:\n\""+(cards[0].description||cards[0].title)+"\"\n\nEvery post in my VIRL plan is built on my voice, audience, and goals."}/>
-                    </div>
-                  </div>
-                )}
                 {(function() {
                   const pc = {};
                   cards.forEach(function(card){ pc[card.platform]=(pc[card.platform]||0)+1; });
                   const entries = Object.keys(pc);
                   const colors = [B.navy,B.blue,B.sky,"#8B5CF6",B.green,B.amber,"#EC4899"];
+                  var wkLabels = deriveAllDayLabels(cards);
+                  var wkStart  = parseDayName(wkLabels[0]||"");
+                  var wkEnd    = parseDayName(wkLabels[wkLabels.length-1]||"");
                   return (
-                    <div style={{background:B.card,borderRadius:12,padding:"14px 18px",marginBottom:16,boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
+                    <div style={{background:B.card,borderRadius:12,padding:"16px 18px",marginBottom:16,boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
+                      {/* [PLAN-STATE] Compact week header — the returning
+                          user's landing view. Date range + volume + expiry
+                          at a glance, cards directly below. */}
+                      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:10,flexWrap:"wrap",marginBottom:8}}>
+                        <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.1}}>
+                          {(wkStart&&wkEnd&&wkStart!==wkEnd)?(wkStart+" – "+wkEnd):"This week"}
+                        </div>
+                        {typeof daysUntilReset==="number"&&daysUntilReset>=0&&(
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy,background:B.navySoft,padding:"3px 10px",borderRadius:99}}>
+                            {daysUntilReset===0?"Plan resets today":"Plan resets in "+daysUntilReset+" day"+(daysUntilReset===1?"":"s")}
+                          </div>
+                        )}
+                      </div>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>
                         {cards.length+" posts across "+entries.length+" platform"+(entries.length>1?"s":"")}
                       </div>
@@ -11440,90 +11407,6 @@ return (
                     </div>
                   );
                 })()}
-                {/* [S2] Strategy hero card — editorial hierarchy, not a
-                    flat grid. The previous version gave thesis / the_bet /
-                    optimizing_for / audience_read / success_metric equal
-                    weight as four boxes in a grid, which read as a wall of
-                    text. The new layout ranks them: thesis as the headline,
-                    success_metric as a row of stat tiles (the scoreboard),
-                    optimizing_for + audience_read side-by-side as the
-                    supporting reads, the_bet as the closing strategist note
-                    with a sky-blue accent rule.
-
-                    success_metric arrives as an ARRAY of {value, label}
-                    from the new prompt shape. Legacy plans stored the
-                    field as a free-form string; those render as a single
-                    full-width tile so old plans still look intentional
-                    until the user regenerates. */}
-                {strategy && (strategy.thesis || strategy.the_bet) && (function(){
-                  var smRaw = strategy.success_metric;
-                  var smTiles = [];
-                  var smLegacy = false;
-                  if (Array.isArray(smRaw)) {
-                    smTiles = smRaw.filter(function(m){ return m && (m.value || m.label); }).slice(0, 4);
-                  } else if (typeof smRaw === "string" && smRaw.trim()) {
-                    smTiles = [{ value: "", label: smRaw.trim() }];
-                    smLegacy = true;
-                  }
-                  var hasSidePair = !!(strategy.optimizing_for || strategy.audience_read);
-                  var hasTiles    = smTiles.length > 0;
-                  var hasBet      = !!strategy.the_bet;
-                  return (
-                    <div style={{background:B.navy,borderRadius:16,padding:"24px 26px",marginBottom:16,boxShadow:"0 4px 20px rgba(31,58,138,0.18)"}}>
-                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:14,flexWrap:"wrap"}}>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.sky}}>This week's strategy</div>
-                        <button onClick={regenerateStrategy} disabled={strategyRegenLoading}
-                          title="Re-frame this same plan with a different angle"
-                          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"7px 14px",background:strategyRegenLoading?"rgba(255,255,255,0.06)":"rgba(255,255,255,0.14)",color:B.white,border:"1px solid rgba(255,255,255,0.32)",cursor:strategyRegenLoading?"default":"pointer",borderRadius:99,opacity:strategyRegenLoading?0.55:1,transition:"all .15s"}}>
-                          {strategyRegenLoading ? "Reframing…" : "Try a different angle"}
-                        </button>
-                      </div>
-                      {strategy.thesis && (
-                        <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.25,marginBottom:(hasTiles || hasSidePair || hasBet) ? 20 : 0,opacity:strategyRegenLoading?0.55:1}}>{strategy.thesis}</div>
-                      )}
-                      {hasTiles && (
-                        <div style={{display:"grid",gridTemplateColumns:smLegacy ? "1fr" : "repeat(auto-fit, minmax(120px, 1fr))",gap:10,marginBottom:(hasSidePair || hasBet) ? 18 : 0}}>
-                          {smTiles.map(function(tile, i){
-                            return (
-                              <div key={i} style={{background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,padding:"12px 14px"}}>
-                                {tile.value && (
-                                  <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,lineHeight:1.05,marginBottom:4}}>{tile.value}</div>
-                                )}
-                                {!tile.value && smLegacy && (
-                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>Success looks like</div>
-                                )}
-                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:smLegacy?13:10,fontWeight:smLegacy?400:600,letterSpacing:smLegacy?"0":"0.06em",textTransform:smLegacy?"none":"uppercase",color:smLegacy?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.6)",lineHeight:smLegacy?1.55:1.4}}>{tile.label}</div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      {hasSidePair && (
-                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))",gap:18,marginBottom:hasBet ? 18 : 0}}>
-                          {strategy.optimizing_for && (
-                            <div>
-                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Optimizing for</div>
-                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.optimizing_for}</div>
-                            </div>
-                          )}
-                          {strategy.audience_read && (
-                            <div>
-                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Audience read</div>
-                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.audience_read}</div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {hasBet && (
-                        <div style={{borderLeft:"2px solid "+B.sky,paddingLeft:14}}>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>The bet</div>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontStyle:"italic",fontWeight:300,color:B.white,lineHeight:1.55}}>{strategy.the_bet}</div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-
                 <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.ink}}>Your <span style={{color:B.navy}}>week</span></div>
                   <div style={{flex:1,height:1,background:B.border}}/>
@@ -11668,6 +11551,144 @@ return (
                     );
                   });
                 })()}
+                {/* [PLAN-STATE] Supporting context lives below the cards in
+                    collapsed sections — the cards are the product; strategy,
+                    projections, and trend inputs are reference material. */}
+                {strategy && (strategy.thesis || strategy.the_bet) && (
+                  <Accordion title="This week's strategy">
+                    {/* [S2] Strategy hero card — editorial hierarchy, not a
+                        flat grid. The previous version gave thesis / the_bet /
+                        optimizing_for / audience_read / success_metric equal
+                        weight as four boxes in a grid, which read as a wall of
+                        text. The new layout ranks them: thesis as the headline,
+                        success_metric as a row of stat tiles (the scoreboard),
+                        optimizing_for + audience_read side-by-side as the
+                        supporting reads, the_bet as the closing strategist note
+                        with a sky-blue accent rule.
+
+                        success_metric arrives as an ARRAY of {value, label}
+                        from the new prompt shape. Legacy plans stored the
+                        field as a free-form string; those render as a single
+                        full-width tile so old plans still look intentional
+                        until the user regenerates. */}
+                    {strategy && (strategy.thesis || strategy.the_bet) && (function(){
+                      var smRaw = strategy.success_metric;
+                      var smTiles = [];
+                      var smLegacy = false;
+                      if (Array.isArray(smRaw)) {
+                        smTiles = smRaw.filter(function(m){ return m && (m.value || m.label); }).slice(0, 4);
+                      } else if (typeof smRaw === "string" && smRaw.trim()) {
+                        smTiles = [{ value: "", label: smRaw.trim() }];
+                        smLegacy = true;
+                      }
+                      var hasSidePair = !!(strategy.optimizing_for || strategy.audience_read);
+                      var hasTiles    = smTiles.length > 0;
+                      var hasBet      = !!strategy.the_bet;
+                      return (
+                        <div style={{background:B.navy,borderRadius:16,padding:"24px 26px",marginBottom:16,boxShadow:"0 4px 20px rgba(31,58,138,0.18)"}}>
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.sky}}>This week's strategy</div>
+                            <button onClick={regenerateStrategy} disabled={strategyRegenLoading}
+                              title="Re-frame this same plan with a different angle"
+                              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"7px 14px",background:strategyRegenLoading?"rgba(255,255,255,0.06)":"rgba(255,255,255,0.14)",color:B.white,border:"1px solid rgba(255,255,255,0.32)",cursor:strategyRegenLoading?"default":"pointer",borderRadius:99,opacity:strategyRegenLoading?0.55:1,transition:"all .15s"}}>
+                              {strategyRegenLoading ? "Reframing…" : "Try a different angle"}
+                            </button>
+                          </div>
+                          {strategy.thesis && (
+                            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.25,marginBottom:(hasTiles || hasSidePair || hasBet) ? 20 : 0,opacity:strategyRegenLoading?0.55:1}}>{strategy.thesis}</div>
+                          )}
+                          {hasTiles && (
+                            <div style={{display:"grid",gridTemplateColumns:smLegacy ? "1fr" : "repeat(auto-fit, minmax(120px, 1fr))",gap:10,marginBottom:(hasSidePair || hasBet) ? 18 : 0}}>
+                              {smTiles.map(function(tile, i){
+                                return (
+                                  <div key={i} style={{background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,padding:"12px 14px"}}>
+                                    {tile.value && (
+                                      <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,lineHeight:1.05,marginBottom:4}}>{tile.value}</div>
+                                    )}
+                                    {!tile.value && smLegacy && (
+                                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>Success looks like</div>
+                                    )}
+                                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:smLegacy?13:10,fontWeight:smLegacy?400:600,letterSpacing:smLegacy?"0":"0.06em",textTransform:smLegacy?"none":"uppercase",color:smLegacy?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.6)",lineHeight:smLegacy?1.55:1.4}}>{tile.label}</div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {hasSidePair && (
+                            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))",gap:18,marginBottom:hasBet ? 18 : 0}}>
+                              {strategy.optimizing_for && (
+                                <div>
+                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Optimizing for</div>
+                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.optimizing_for}</div>
+                                </div>
+                              )}
+                              {strategy.audience_read && (
+                                <div>
+                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Audience read</div>
+                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.audience_read}</div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {hasBet && (
+                            <div style={{borderLeft:"2px solid "+B.sky,paddingLeft:14}}>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>The bet</div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontStyle:"italic",fontWeight:300,color:B.white,lineHeight:1.55}}>{strategy.the_bet}</div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </Accordion>
+                )}
+                {stats&&(
+                  <Accordion title="This week's projections">
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
+                      {[{l:"Weekly reach",v:stats.reach,c:B.navy},{l:"Engagement",v:stats.engagement,c:B.blue},{l:"Per post est.",v:stats.earnings,c:B.navy}].map(function(s,i){return (
+                        <div key={i} style={{padding:"14px",background:i%2===0?B.navySoft:B.card,borderRadius:12}}>
+                          <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:s.c,lineHeight:1,marginBottom:4}}>{s.v}</div>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted}}>{s.l}</div>
+                        </div>
+                      );})}
+                    </div>
+                    <div style={{background:B.bg,borderRadius:10,padding:"12px 16px"}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>About these estimates</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.75}}>
+                        AI-generated estimates based on your niche, follower tier, and platforms. Use as directional benchmarks, not guarantees.
+                      </div>
+                    </div>
+                  </Accordion>
+                )}
+                {(planTrendsSnapshot || (planUsedFreshTrends && !isPaid)) && (
+                  <Accordion title="Trends considered">
+                    {planUsedFreshTrends && !isPaid && (
+                      <FreshTrendsBanner
+                        kind="plan"
+                        daysUntilReset={daysUntilReset}
+                        onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
+                    )}
+                    {planTrendsSnapshot && Object.keys(planTrendsSnapshot).map(function(plt){
+                      var t = planTrendsSnapshot[plt] || {};
+                      var titems = Array.isArray(t.items) ? t.items.slice(0,4) : [];
+                      if (!t.summary && !titems.length) return null;
+                      return (
+                        <div key={plt} style={{background:B.card,borderRadius:12,padding:"14px 18px",marginBottom:8,boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>{plt}</div>
+                          {t.summary ? (
+                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6,marginBottom:titems.length?8:0}}>{t.summary}</div>
+                          ) : null}
+                          {titems.map(function(it,i){
+                            var txt = typeof it === "string" ? it : ((it && (it.title || it.name || it.summary)) || "");
+                            if (!txt) return null;
+                            return (
+                              <div key={i} style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>{"\u2022 "+txt}</div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </Accordion>
+                )}
                 <div style={{background:B.navy,borderRadius:16,padding:"20px 24px",marginTop:8,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
                   <div>
                     <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,marginBottom:4}}>
@@ -11725,14 +11746,134 @@ return (
                           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:"rgba(255,255,255,0.12)",color:B.white,border:"1px solid rgba(255,255,255,0.2)",cursor:"pointer",borderRadius:99}}>
                           Edit plan
                         </button>
-                        <button onClick={generate}
+                        <button onClick={function(){
+                            setSetupStep(0);
+                            setShowSetup(true);
+                            try { window.scrollTo({top:0,behavior:"smooth"}); } catch(e) {}
+                          }}
                           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 20px",background:B.sky,color:B.white,border:"none",cursor:"pointer",borderRadius:99}}>
-                          Regenerate
+                          {"Edit setup & regenerate"}
                         </button>
                       </React.Fragment>
                     )}
                   </div>
                 </div>
+                {/* [CHANGE 2b] Inline post-plan upgrade nudge. Moved below
+                    the cards + action row ([PLAN-STATE]) so the first card
+                    stays above the fold. Hidden for paid users + expired
+                    trials, and once dismissed (state) or shown earlier this
+                    session (sessionStorage). */}
+                {!isFoundingOrPro&&!trialExpired&&!planNudgeDismissed&&(
+                  <div style={{background:B.navySoft,borderLeft:"3px solid "+B.blue,borderRadius:12,padding:"16px 20px",marginBottom:16}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.navy,lineHeight:1.2}}>{"✦ Loving this plan?"}</div>
+                        {foundingAvailable&&(
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",padding:"3px 9px",background:B.navy,color:B.white,borderRadius:99}}>Founder Circle</div>
+                        )}
+                      </div>
+                      <button onClick={function(){ setPlanNudgeDismissed(true); }} aria-label="Dismiss"
+                        style={{background:"none",border:"none",color:B.muted,fontSize:18,cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0}}>
+                        {"×"}
+                      </button>
+                    </div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,marginTop:6,lineHeight:1.55}}>
+                      {foundingAvailable
+                        ? "Lock in $20/month for life as a Founder Circle member — 150 credits every week. Plans, captions, scans, and scripts."
+                        : "Upgrade to Standard — 150 credits every week. Plans, captions, scans, and scripts, every single week."}
+                    </div>
+                    {foundingAvailable&&foundingCount!==null&&(
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",color:B.blue,marginTop:6}}>
+                        {(FOUNDING_CAP - foundingCount) + " of " + FOUNDING_CAP + " Founder Circle spots left"}
+                      </div>
+                    )}
+                    <div style={{display:"flex",alignItems:"center",gap:14,marginTop:12,flexWrap:"wrap"}}>
+                      <button onClick={function(){
+                          setUpgradeReason("post-plan");
+                          setShowUpgrade(true);
+                        }}
+                        style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+                        {foundingAvailable?"Upgrade for $215/yr →":"Upgrade for $249/yr →"}
+                      </button>
+                      <button onClick={function(){ setPlanNudgeDismissed(true); }}
+                        style={{background:"none",border:"none",color:B.muted,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400,cursor:"pointer",padding:0}}>
+                        Maybe later
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {!hasSeenExplainer&&(
+                  <div style={{background:B.navySoft,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",gap:14,alignItems:"flex-start"}}>
+                    <div style={{fontSize:20,flexShrink:0}}>{"✦"}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.navy,marginBottom:4}}>This plan was built around you.</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.6}}>
+                        {profileComplete?"Every post uses "+profile.name+"'s voice, audience, and pillars. Each card shows the strategic reason it will work for your specific audience.":"Fill in your Creator Profile to make every plan sound like you - not generic AI."}
+                      </div>
+                    </div>
+                    <button onClick={dismissExplainer}
+                      style={{background:"none",border:"none",color:B.muted,fontSize:18,cursor:"pointer",flexShrink:0,padding:0,lineHeight:1}}>
+                      {"×"}
+                    </button>
+                  </div>
+                )}
+                {/* [TASK 10] "Based on your Vault" banner — signals that VIRL
+                    is learning from saved posts. Renders only when the vault
+                    has 3+ plan-type items with a discernible pattern. */}
+                {vaultPatterns.count>=3&&(vaultPatterns.topFormat||vaultPatterns.topPlatform)&&(
+                  <div style={{background:B.navySoft,borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",gap:12,alignItems:"flex-start"}}>
+                    <div style={{fontSize:16,flexShrink:0,color:B.navy,marginTop:1}}>{"✦"}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.navy,lineHeight:1.2,marginBottom:4}}>Learning from your Vault.</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.navy,lineHeight:1.55}}>
+                        {"Based on your "+vaultPatterns.count+" saved post"+(vaultPatterns.count===1?"":"s")+", VIRL is weighing "+(vaultPatterns.topFormat||vaultPatterns.topPlatform)+" content higher this week."}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {/* [TASK 9] Generic AI vs VIRL comparison — fires exactly once,
+                    the first time the user ever sees a generated plan. Shows
+                    hardcoded generic-AI copy next to the first plan card's
+                    description so the "wow, VIRL actually sounds like me"
+                    moment lands without them having to read 10 plan cards. */}
+                {!firstPlanShown&&cards[0]&&(
+                  <div style={{background:B.card,borderRadius:14,padding:"20px 22px",marginBottom:16,boxShadow:"0 2px 8px rgba(0,0,0,0.06)",border:"1px solid "+B.divider}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:14}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.coral,marginBottom:6}}>See the difference</div>
+                        <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.2}}>{"Here's what a generic AI would have written."}</div>
+                      </div>
+                      <button onClick={function(){
+                          try { localStorage.setItem("virl_first_plan_shown","1"); } catch(e) {}
+                          setFirstPlanShown(true);
+                        }} aria-label="Dismiss"
+                        style={{background:"none",border:"none",color:B.muted,fontSize:20,cursor:"pointer",padding:"2px 4px",lineHeight:1,flexShrink:0}}>
+                        {"×"}
+                      </button>
+                    </div>
+                    <div className="virl-compare-grid" style={{marginBottom:12}}>
+                      <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",opacity:0.65}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>Generic AI</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.55,fontStyle:"italic"}}>
+                          {"Loving this morning routine ✨ Start your day right! 🌅 #morningvibes #selfcare #inspiration"}
+                        </div>
+                      </div>
+                      <div style={{background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:10,padding:"12px 14px"}}>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.coral,marginBottom:8}}>VIRL</div>
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.ink,lineHeight:1.55}}>
+                          {cards[0].description||cards[0].title}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:12}}>
+                      {"Every post in your plan is written like this – built on your voice, audience, and goals."}
+                    </div>
+                    <div style={{display:"flex",justifyContent:"flex-end"}}>
+                      <CopyBtn label="Copy comparison"
+                        text={"Generic AI:\n\"Loving this morning routine ✨ Start your day right! 🌅 #morningvibes #selfcare #inspiration\"\n\nVIRL:\n\""+(cards[0].description||cards[0].title)+"\"\n\nEvery post in my VIRL plan is built on my voice, audience, and goals."}/>
+                    </div>
+                  </div>
+                )}
                 {!isFoundingOrPro&&!trialExpired&&(
                   <div style={{background:"linear-gradient(135deg,"+B.navy+" 0%,"+B.blue+" 100%)",borderRadius:16,padding:"22px 24px",marginTop:8,marginBottom:4}}>
                     <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
