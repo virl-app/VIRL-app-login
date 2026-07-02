@@ -5611,6 +5611,21 @@ function ShareScoreCard({score,platform,hook}) {
   );
 }
 
+// [SCAN-FORMAT] Labeled detail row for the post-type-specific scan fields
+// (on-screen text, sticker idea, audio idea). Renders nothing unless the
+// field is a non-empty string, so a Feed-post result doesn't show empty
+// Story rows. Type-guarded — never renders a raw object even if the model
+// drifts (the ErrorBoundary is the backstop, this is the front line).
+function ScanExtra({label, value}) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return (
+    <div style={{display:"flex",gap:12,alignItems:"flex-start",background:B.bg,borderRadius:10,padding:"10px 14px",marginBottom:8}}>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:B.muted,flexShrink:0,marginTop:2,width:82}}>{label}</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.sub,lineHeight:1.6,flex:1}}>{value}</div>
+    </div>
+  );
+}
+
 function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft,isPaid,daysUntilReset,onUpgrade}) {
   var [files,setFiles]       = useState([]);
   var [results,setResults]   = useState([]);
@@ -5908,19 +5923,63 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
               )}
               {r.url&&<img src={r.url} alt={r.name} style={{width:"100%",maxHeight:200,objectFit:"cover",marginBottom:14,borderRadius:10,display:"block"}}/>}
               {r.analysis&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.7,marginBottom:14,padding:"10px 14px",background:B.bg,borderRadius:10}}>{r.analysis}</div>}
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:r.why_format?8:14,gap:10,flexWrap:"wrap"}}>
                 <div>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>Viral potential</div>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:44,color:scoreColor(r.score),lineHeight:1}}>{r.score}</div>
                 </div>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,padding:"6px 16px",background:B.navySoft,color:B.navy,borderRadius:99}}>{"→ "+r.platform}</div>
+                {/* [SCAN-FORMAT] Recommendation badge — platform AND the best
+                    post type for this asset (Story / Reel / Feed post / …). */}
+                <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,padding:"6px 16px",background:B.navySoft,color:B.navy,borderRadius:99}}>{"→ "+r.platform}</div>
+                  {typeof r.post_type==="string"&&r.post_type.trim()&&(
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"5px 14px",background:B.coralSoft,color:B.coral,borderRadius:99}}>{"Post as: "+r.post_type}</div>
+                  )}
+                </div>
               </div>
+              {typeof r.why_format==="string"&&r.why_format.trim()&&(
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:14}}>{r.why_format}</div>
+              )}
               <EditableHook
                 value={r.hook}
                 fontSize={18}
                 onSave={function(next){ updateResultAt(idx, {hook: next}); }}/>
-              <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
+              {/* [SCAN-FORMAT] Post-type-specific direction — only the fields
+                  that apply to the recommended format render. */}
+              <ScanExtra label="On screen" value={r.overlay_text}/>
+              <ScanExtra label="Sticker" value={r.sticker_idea}/>
+              <ScanExtra label="Audio" value={r.audio_idea}/>
+              {Array.isArray(r.slides)&&r.slides.filter(function(s){return typeof s==="string"&&s.trim();}).length>0&&(
+                <div style={{background:B.bg,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>Carousel slides</div>
+                  {r.slides.filter(function(s){return typeof s==="string"&&s.trim();}).map(function(s,si){return (
+                    <div key={si} style={{display:"flex",gap:8,marginBottom:5}}>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,color:B.blue,flexShrink:0}}>{(si+1)+"."}</span>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.sub,lineHeight:1.5}}>{s}</span>
+                    </div>
+                  );})}
+                </div>
+              )}
+              {typeof r.caption==="string"&&r.caption.trim()&&(
+                <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
+              )}
               <HashtagRow hashtags={r.hashtags}/>
+              {/* [SCAN-FORMAT] "Also works as" — the other ways to use this
+                  same asset, one line each. Recommendation only, no full
+                  content (keeps the scan to one credit / one call). */}
+              {Array.isArray(r.alt_formats)&&r.alt_formats.filter(function(a){return a&&typeof a.post_type==="string"&&a.post_type.trim();}).length>0&&(
+                <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid "+B.divider}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.16em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>Also works as</div>
+                  {r.alt_formats.filter(function(a){return a&&typeof a.post_type==="string"&&a.post_type.trim();}).map(function(a,ai){return (
+                    <div key={ai} style={{marginBottom:8}}>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,color:B.navy}}>{a.post_type}</span>
+                      {typeof a.note==="string"&&a.note.trim()&&(
+                        <span style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>{" — "+a.note}</span>
+                      )}
+                    </div>
+                  );})}
+                </div>
+              )}
               {r.tip&&<div style={{background:B.blueSoft,borderRadius:10,padding:"10px 14px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.blue,lineHeight:1.6,marginTop:8}}>{"✦ "+r.tip}</div>}
               <ShareScoreCard score={r.score} platform={r.platform} hook={r.hook||""}/>
             </div>

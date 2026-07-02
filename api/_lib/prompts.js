@@ -1625,27 +1625,56 @@ function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _
   };
 }
 
+// [SCAN-FORMAT] Post-type-aware scan output. The scan no longer emits one
+// generic paragraph caption regardless of how the asset should be posted.
+// It picks the single best POST TYPE (Story / Reel / Feed post / Carousel /
+// Video / LinkedIn post) for the asset on the best platform, then generates
+// content SIZED to that type — a Story never gets a 3-paragraph caption —
+// plus a short "also works as" list so the creator sees the other ways to
+// use the same asset without paying for full content on each. Shared by the
+// image and video-frame builders (they differ only in the noun and the
+// video-only thumbnailNote field).
+const SCAN_POST_TYPE_GUIDE =
+  "\n\nPOST-TYPE SIZING — pick ONE best post_type for this asset on the chosen platform, then size every field to it:\n"
+  + "- Story (IG/FB): ephemeral, vertical. overlay_text = a few words max to put ON the visual; sticker_idea = one poll/question/quiz prompt; caption = ONE short line or empty; hashtags 0-3. NEVER a paragraph.\n"
+  + "- Reel / Video / Short (IG/TikTok/YouTube): hook = the first-2-seconds on-screen line; overlay_text = optional short on-screen beat; audio_idea = a trending-sound or audio direction; caption = 1-2 lines; hashtags 3-6.\n"
+  + "- Feed post (IG/FB single image): caption = 2-4 sentences within the platform's caption_limit; hashtags 5-8. This is the only type that gets a fuller caption.\n"
+  + "- Carousel (IG/LinkedIn): slides = 3-5 short slide headlines; caption = 1-2 lines; hashtags 3-6.\n"
+  + "- LinkedIn post: hook + a short professional caption (2-3 sentences); hashtags 0-3.\n"
+  + "Omit any field that does not apply to the chosen post_type (e.g. no sticker_idea unless it's a Story).";
+
+function scanResultSchema(isVideo) {
+  return "\n\nReply ONLY with valid JSON (no markdown): {"
+    + "\"score\":\"X.X out of 10\","
+    + "\"platform\":\"best platform\","
+    + "\"post_type\":\"one of: Story | Reel | Feed post | Carousel | Video | LinkedIn post — the single best way to post THIS asset\","
+    + "\"why_format\":\"one sentence: why this asset suits that post type over the others\","
+    + "\"hook\":\"scroll-stopping opening line under 10 words\","
+    + "\"overlay_text\":\"OPTIONAL short on-screen text for Story/Reel — a few words; omit for Feed/Carousel\","
+    + "\"sticker_idea\":\"OPTIONAL Story only — one poll/question/quiz sticker prompt; omit otherwise\","
+    + "\"audio_idea\":\"OPTIONAL Reel/Video only — a trending-audio or sound direction; omit otherwise\","
+    + "\"slides\":[\"OPTIONAL Carousel only — 3-5 short slide headlines; omit otherwise\"],"
+    + "\"caption\":\"caption SIZED to post_type per the sizing rules above — never a 3-paragraph caption on a Story\","
+    + "\"hashtags\":[\"count sized to post_type; plain words, NO '#' prefix\"],"
+    + "\"alt_formats\":[{\"post_type\":\"another way to use this asset\",\"note\":\"one line on how to post it that way instead\"}],"
+    + "\"tip\":\"one specific tip to maximize this post on the chosen platform + post type\","
+    + "\"analysis\":\"2 sentences on why this will perform — cite the algorithmic signal\","
+    + (isVideo ? "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"," : "")
+    + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}";
+}
+
 function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
-  // Scan outputs a single ready-to-post caption, so the same Fair Housing /
-  // FDA rules apply — but per the v1 scope decision (Recommended), only the
-  // prompt-level block fires on scans; the post-generation scrub stays
-  // wired to plan / script / caption paths.
+  // Only the prompt-level block fires on scans; the post-generation scrub
+  // stays wired to plan / script / caption paths.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
   const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist);
-  const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
+  const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows — then recommend the single best POST TYPE for it and write content sized to that type."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
     + scanDetailsContext(params)
-    + "\n\nReply ONLY with valid JSON (no markdown): "
-    + "{\"score\":\"X.X out of 10\","
-    + "\"platform\":\"best platform\","
-    + "\"hook\":\"scroll-stopping opening line under 10 words\","
-    + "\"caption\":\"full ready-to-post caption sized to the platform's caption_limit\","
-    + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
-    + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
-    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\","
-    + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}"
+    + SCAN_POST_TYPE_GUIDE
+    + scanResultSchema(false)
     // [LEARN-FROM-EDITS] Voice signal — the hook + caption fields
     // this scan emits are the same field types the user routinely
     // edits on plan cards, so the diffs apply directly.
@@ -1654,39 +1683,28 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    maxTokens: 1500,
+    maxTokens: 2000,
     cost:      CREDIT_COSTS.scan,
   };
 }
 
 function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
-  // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
-  // Same v1 scope as buildScanImage — prompt-level block only, no scrub.
+  // [COMPLIANCE 1] Same scope as buildScanImage — prompt-level block only.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
   const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist);
-  const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
+  const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows — then recommend the single best POST TYPE for it and write content sized to that type."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
     + scanDetailsContext(params)
-    + "\n\nReply ONLY with valid JSON (no markdown): "
-    + "{\"score\":\"X.X out of 10\","
-    + "\"platform\":\"best platform\","
-    + "\"hook\":\"scroll-stopping opening line under 10 words\","
-    + "\"caption\":\"full ready-to-post caption sized to the platform's caption_limit\","
-    + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
-    + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
-    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\","
-    + "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\","
-    + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}"
-    // [LEARN-FROM-EDITS] Same rationale as buildScanImage — the
-    // hook/caption fields emitted here are exactly the ones the
-    // user edits on plan cards.
+    + SCAN_POST_TYPE_GUIDE
+    + scanResultSchema(true)
+    // [LEARN-FROM-EDITS] Same rationale as buildScanImage.
     + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    maxTokens: 1500,
+    maxTokens: 2000,
     cost:      CREDIT_COSTS.scan,
   };
 }
