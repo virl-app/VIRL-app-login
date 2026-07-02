@@ -1138,16 +1138,16 @@ async function loadPendingPlaybookDrafts(accessToken) {
 // Field metadata used by the Algo-tab renderer (and admin editor) so the
 // server schema and the UI labels stay in lockstep.
 const PLAYBOOK_FIELDS = [
-  { key: "cadence",         label: "Cadence",         icon: "📅", kind: "text"   },
-  { key: "peak_times",      label: "Peak times",      icon: "⏰", kind: "text"   },
-  { key: "duration",        label: "Duration",        icon: "📏", kind: "text"   },
-  { key: "hook_window",     label: "Hook window",     icon: "⚡", kind: "text"   },
+  { key: "cadence",         label: "Cadence",         icon: "calendar", kind: "text"   },
+  { key: "peak_times",      label: "Peak times",      icon: "clock", kind: "text"   },
+  { key: "duration",        label: "Duration",        icon: "ruler", kind: "text"   },
+  { key: "hook_window",     label: "Hook window",     icon: "zap", kind: "text"   },
   { key: "hashtag_count",   label: "Hashtags",        icon: "#",  kind: "text"   },
-  { key: "hashtag_mix",     label: "Hashtag mix",     icon: "✨", kind: "text"   },
-  { key: "caption_limit",   label: "Caption limit",   icon: "📝", kind: "number" },
-  { key: "top_signals",     label: "Top signals",     icon: "📊", kind: "list"   },
-  { key: "format_priority", label: "Format priority", icon: "🎬", kind: "list"   },
-  { key: "notes",           label: "Notes",           icon: "📋", kind: "text"   },
+  { key: "hashtag_mix",     label: "Hashtag mix",     icon: "sparkle", kind: "text"   },
+  { key: "caption_limit",   label: "Caption limit",   icon: "filetext", kind: "number" },
+  { key: "top_signals",     label: "Top signals",     icon: "chart", kind: "list"   },
+  { key: "format_priority", label: "Format priority", icon: "clapper", kind: "list"   },
+  { key: "notes",           label: "Notes",           icon: "clipboard", kind: "text"   },
 ];
 
 // Helper: render a value as a human-readable string for the diff display.
@@ -1329,7 +1329,7 @@ function FeedbackWidget({sessionToken, activeContext, calendlyUrl}) {
           padding:"11px 18px", cursor:"pointer",
           boxShadow:"0 6px 20px rgba(31,58,138,0.35)",
         }}>
-        💬 Feedback
+        <Icon name="chat" size={13} style={{marginRight:7}}/>Feedback
       </button>
 
       {open && (
@@ -1586,7 +1586,7 @@ function PlaybookEditor({platform, entry, token, onSaved}) {
           return (
             <div key={f.key} style={{marginBottom:10}}>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>
-                {f.icon} {f.label}{f.kind === "list" ? " (comma-separated)" : ""}
+                <Icon name={f.icon} style={{marginRight:6}}/>{f.label}{f.kind === "list" ? " (comma-separated)" : ""}
               </div>
               {multiline
                 ? <textarea value={form[f.key]||""} onChange={function(e){update(f.key, e.target.value);}} rows={3} style={Object.assign({}, commonStyle, {resize:"vertical"})}/>
@@ -1674,7 +1674,7 @@ function PlaybookCard({platform, entry, blurred}) {
           var display = Array.isArray(v) ? v.join(", ") : (f.kind === "number" ? String(v) + " chars" : String(v));
           return (
             <div key={f.key} style={{display:"flex",gap:12,marginBottom:i<fields.length-1?14:0,paddingBottom:i<fields.length-1?14:0,borderBottom:i<fields.length-1?"1px solid "+B.divider:"none"}}>
-              <div style={{fontSize:18,flexShrink:0,marginTop:1}}>{f.icon}</div>
+              <div style={{flexShrink:0,marginTop:1,color:B.navy}}><Icon name={f.icon} size={16}/></div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:3}}>{f.label}</div>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65}}>{display}</div>
@@ -2423,6 +2423,68 @@ const SherpaTip = ({children}) => (
     <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.navy,lineHeight:1.65}}>{children}</div>
   </div>
 );
+
+/* [ICONS] Small inline stroke icons (lucide-style path data, hand-rolled
+   like the footer's social SVGs — no icon library dependency; the app has
+   no bundler so lucide-react isn't an option). currentColor throughout so
+   they inherit the text color of whatever chip/button they sit in.
+   Decorative ✦ sparkles are intentionally NOT icons — they stay text. */
+const ICON_PATHS = {
+  chat:       [["path","M7.9 20A9 9 0 1 0 4 16.1L2 22Z"]],
+  calendar:   [["rect",{x:3,y:4,width:18,height:18,rx:2}],["path","M16 2v4"],["path","M8 2v4"],["path","M3 10h18"]],
+  clock:      [["circle",{cx:12,cy:12,r:10}],["path","M12 6v6l4 2"]],
+  ruler:      [["path","M21.3 8.7 15.3 2.7a1 1 0 0 0-1.4 0L2.7 13.9a1 1 0 0 0 0 1.4l6 6a1 1 0 0 0 1.4 0L21.3 10a1 1 0 0 0 0-1.3Z"],["path","m7.5 10.5 2 2"],["path","m10.5 7.5 2 2"],["path","m13.5 4.5 2 2"]],
+  zap:        [["path","M13 2 3 14h9l-1 8 10-12h-9l1-8z"]],
+  sparkle:    [["path","M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3L12 3Z"]],
+  filetext:   [["path","M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"],["path","M14 2v4a2 2 0 0 0 2 2h4"],["path","M16 13H8"],["path","M16 17H8"],["path","M10 9H8"]],
+  chart:      [["path","M3 3v16a2 2 0 0 0 2 2h16"],["path","M18 17V9"],["path","M13 17V5"],["path","M8 17v-3"]],
+  clapper:    [["path","M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"],["path","m6.2 5.3 3.1 3.9"],["path","m12.4 3.4 3.1 4"],["path","M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"]],
+  clipboard:  [["rect",{x:8,y:2,width:8,height:4,rx:1}],["path","M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"]],
+  smartphone: [["rect",{x:5,y:2,width:14,height:20,rx:2}],["path","M12 18h.01"]],
+  camera:     [["path","M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"],["circle",{cx:12,cy:13,r:3}]],
+  image:      [["rect",{x:3,y:3,width:18,height:18,rx:2}],["circle",{cx:9,cy:9,r:2}],["path","m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"]],
+};
+function Icon({name,size,style}) {
+  var parts = ICON_PATHS[name];
+  if (!parts) return null;
+  return (
+    <svg width={size||13} height={size||13} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+      style={Object.assign({verticalAlign:"-2px",flexShrink:0},style||{})}>
+      {parts.map(function(p,i){
+        if (p[0]==="path")   return <path key={i} d={p[1]}/>;
+        if (p[0]==="rect")   return <rect key={i} {...p[1]}/>;
+        if (p[0]==="circle") return <circle key={i} {...p[1]}/>;
+        return null;
+      })}
+    </svg>
+  );
+}
+
+/* [VAULT-TITLES] Saved captions used to bake the generation label into
+   the stored title ("Option B: I'm on my way home…"). New saves store a
+   clean first line; this strips the prefix from pre-existing rows at
+   render time so no data migration is needed. */
+function vaultDisplayTitle(t) {
+  return String(t || "").replace(/^Option\s+[A-C]:\s*/i, "");
+}
+
+/* [DISCLAIMER] One-sentence legal line with the full text behind an
+   expandable link. Rendered once, in the global footer only. */
+const DISCLAIMER_FULL = "Content generated by VIRL is offered as a suggestion only. You are responsible for reviewing every piece of content before publishing and for ensuring it complies with platform terms, applicable law, and any professional license or employer obligations. Nothing VIRL produces is legal, medical, financial, or real-estate advice. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest.";
+function LegalDisclaimer() {
+  const [open,setOpen] = useState(false);
+  return (
+    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.65,maxWidth:480,textAlign:"center",marginTop:4}}>
+      {"Content generated by VIRL is a suggestion only — review everything before you publish. "}
+      <button onClick={function(){ setOpen(function(v){ return !v; }); }}
+        style={{background:"none",border:"none",padding:0,color:B.muted,textDecoration:"underline",cursor:"pointer",fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300}}>
+        {open ? "Hide full disclaimer" : "Full disclaimer"}
+      </button>
+      {open && <div style={{marginTop:6}}>{DISCLAIMER_FULL}</div>}
+    </div>
+  );
+}
 
 const Chip = ({active,onClick,children}) => (
   <button onClick={onClick}
@@ -4481,7 +4543,10 @@ function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUs
       } catch(e){}
     }
     onSave({
-      title:    caption.label+": "+topic.slice(0,40),
+      // [VAULT-TITLES] Title is the caption's first line, not the
+      // generation label — "Option B:" prefixes read as system noise
+      // in the Vault list.
+      title:    ((text.trim().split("\n")[0] || topic).slice(0, 60)),
       preview:  text.slice(0,100),
       text:     text,
     });
@@ -5606,7 +5671,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
 
   if (!consented) return (
     <div style={{background:B.card,borderRadius:16,padding:"32px 28px",textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}}>
-      <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.sky,marginBottom:12}}>{"📷"}</div>
+      <div style={{color:B.sky,marginBottom:12}}><Icon name="camera" size={32} strokeW={1.5}/></div>
       <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:12}}>Before you scan</div>
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75,marginBottom:24}}>
         When you upload a photo or video, it is sent to the Anthropic API for analysis and is not stored by VIRL beyond your session. By continuing you consent to this processing.
@@ -5623,7 +5688,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
       <SherpaTip>Drop a photo or video and VIRL scores it out of 10 for viral potential, recommends the best platform, and writes a ready-to-post caption you can edit and save to your Vault.</SherpaTip>
       <div style={{background:B.card,border:"2px dashed "+B.border,borderRadius:20,padding:"32px 24px",textAlign:"center",marginBottom:8,cursor:"pointer"}}
         onClick={function(){inputRef.current&&inputRef.current.click();}}>
-        <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.sky,marginBottom:8}}>{"📷"}</div>
+        <div style={{color:B.sky,marginBottom:8}}><Icon name="camera" size={32}/></div>
         <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,marginBottom:6}}>Select a photo or video</div>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.muted,marginBottom:16}}>VIRL scores it for viral potential, recommends the best platform, and writes a ready-to-post caption.</div>
         <div style={{display:"inline-block",fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"12px 28px",background:B.blue,color:B.white,cursor:"pointer",borderRadius:99}}>
@@ -5640,7 +5705,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:16}}>
             {files.map(function(f,idx){return (
               <div key={idx} style={{background:B.bg,borderRadius:99,padding:"5px 12px",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.sub}}>
-                {(f.type.startsWith("video/")?"🎬 ":"🖼 ")+f.name.slice(0,24)}
+                <Icon name={f.type.startsWith("video/")?"clapper":"image"} size={11} style={{marginRight:5}}/>{f.name.slice(0,24)}
               </div>
             );})}
           </div>
@@ -5711,7 +5776,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
             <div>
               {r.isVideo&&(
                 <div style={{background:B.navySoft,borderRadius:10,padding:"8px 12px",marginBottom:12,fontFamily:"'Jost',sans-serif",fontSize:12,color:B.navy}}>
-                  {"🎬 Video analyzed from best frame"+(r.duration?" ("+Math.round(r.duration)+"s)":"")+(r.thumbnailNote?" - "+r.thumbnailNote:"")}
+                  <Icon name="clapper" size={11} style={{marginRight:5}}/>{"Video analyzed from best frame"+(r.duration?" ("+Math.round(r.duration)+"s)":"")+(r.thumbnailNote?" - "+r.thumbnailNote:"")}
                 </div>
               )}
               {r.url&&<img src={r.url} alt={r.name} style={{width:"100%",maxHeight:200,objectFit:"cover",marginBottom:14,borderRadius:10,display:"block"}}/>}
@@ -5738,7 +5803,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
 
       {!files.length&&!results.length&&(
         <div style={{background:B.card,borderRadius:16,padding:"48px 32px",textAlign:"center",marginTop:8}}>
-          <div style={{fontFamily:"'Italiana',serif",fontSize:40,color:B.sky,marginBottom:12}}>{"📱"}</div>
+          <div style={{color:B.sky,marginBottom:12}}><Icon name="smartphone" size={36}/></div>
           <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.ink,marginBottom:8}}>Content waiting in your camera roll</div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.7}}>VIRL finds the photos and videos worth posting and tells you exactly what to do with them.</div>
         </div>
@@ -7093,7 +7158,7 @@ function VaultItemModal({item, onClose}) {
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:4}}>
               {(item.type==="plan"?"Saved post":"Saved caption")+" · "+(item.savedAt||"")}
             </div>
-            <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.white,lineHeight:1.2}}>{item.title}</div>
+            <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.white,lineHeight:1.2}}>{vaultDisplayTitle(item.title)}</div>
           </div>
           <button onClick={onClose}
             style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.15em",textTransform:"uppercase",padding:"7px 14px",background:"rgba(255,255,255,0.1)",color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
@@ -7106,8 +7171,8 @@ function VaultItemModal({item, onClose}) {
             <div>
               <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:16}}>
                 {item.day      && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.navySoft,color:B.navy,borderRadius:99}}>{item.day}</span>}
-                {item.platform && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.blueSoft,color:B.blue,borderRadius:99}}>{"📱 "+item.platform}</span>}
-                {item.postTime && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.divider,color:B.muted,borderRadius:99}}>{"🕐 "+item.postTime}</span>}
+                {item.platform && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.blueSoft,color:B.blue,borderRadius:99}}><Icon name="smartphone" size={11} style={{marginRight:4}}/>{item.platform}</span>}
+                {item.postTime && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.divider,color:B.muted,borderRadius:99}}><Icon name="clock" size={11} style={{marginRight:4}}/>{item.postTime}</span>}
                 {item.format   && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.divider,color:B.muted,borderRadius:99}}>{item.format}</span>}
               </div>
               {item.description && (
@@ -7159,7 +7224,7 @@ function VaultItemModal({item, onClose}) {
           {/* Caption detail */}
           {item.type==="caption" && (
             <div>
-              {item.platform && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.blueSoft,color:B.blue,borderRadius:99,display:"inline-block",marginBottom:14}}>{"📱 "+item.platform}</div>}
+              {item.platform && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.blueSoft,color:B.blue,borderRadius:99,display:"inline-block",marginBottom:14}}><Icon name="smartphone" size={11} style={{marginRight:4}}/>{item.platform}</div>}
               {item.hook && (
                 <div style={{background:B.navy,borderRadius:12,padding:"14px 16px",marginBottom:14}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:6}}>Hook</div>
@@ -7211,7 +7276,7 @@ function Vault({vault,onDelete,onRemix}) {
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>
                   {(item.type==="plan"?"Saved Post":"Caption")+" · "+item.savedAt+" · tap to view"}
                 </div>
-                <div style={{fontFamily:"'Italiana',serif",fontSize:19,color:B.ink}}>{item.title}</div>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:19,color:B.ink}}>{vaultDisplayTitle(item.title)}</div>
               </div>
               <button onClick={handleDelete}
                 style={{fontFamily:"'Jost',sans-serif",fontSize:9,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 10px",background:"none",border:"1px solid "+B.border,color:B.muted,cursor:"pointer",borderRadius:99,flexShrink:0}}>
@@ -7220,8 +7285,8 @@ function Vault({vault,onDelete,onRemix}) {
             </div>
             {item.type==="plan"&&(
               <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:6}}>
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,padding:"3px 10px",borderRadius:99,background:B.bg}}>{"📱 "+item.platform}</span>
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.blue,padding:"3px 10px",borderRadius:99,background:B.blueSoft}}>{"🕐 "+item.postTime}</span>
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,padding:"3px 10px",borderRadius:99,background:B.bg}}><Icon name="smartphone" size={11} style={{marginRight:4}}/>{item.platform}</span>
+                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.blue,padding:"3px 10px",borderRadius:99,background:B.blueSoft}}><Icon name="clock" size={11} style={{marginRight:4}}/>{item.postTime}</span>
               </div>
             )}
             {item.preview&&<div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.muted,marginTop:8,lineHeight:1.6}}>{item.preview+"..."}</div>}
@@ -8330,6 +8395,10 @@ function App() {
   // remembered, so refreshing while on the profile tab now stays on profile
   // instead of silently bouncing the user to the plan view.
   const tabFromSessionStorage = useRef(false);
+  // [CREDITS-TIP] The "~N plans, M captions, K scans" conversion moved
+  // from an always-visible sub-line into a hover/tap popover on the
+  // credits display (both navs share this state — only one is visible).
+  const [creditsTipOpen,setCreditsTipOpen] = useState(false);
   // [NAV-5] Library sub-tab ("saved" = the old Vault view, "results" =
   // the old Results view) and the avatar/account dropdown open state.
   // A session refreshed while on the legacy "results" tab lands on the
@@ -10743,7 +10812,17 @@ return (
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
                 <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?"#F43F5E":"#3B82F6"}}/>
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.5)"}}>{creditsLabel+" credit"+(credits===1?"":"s")}</span>
+                <span onClick={function(){ setCreditsTipOpen(function(v){ return !v; }); }}
+                  onMouseEnter={function(){ setCreditsTipOpen(true); }}
+                  onMouseLeave={function(){ setCreditsTipOpen(false); }}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:"rgba(255,255,255,0.5)",cursor:"default",position:"relative"}}>
+                  {creditsLabel+" credit"+(credits===1?"":"s")}
+                  {creditsTipOpen&&!isUnlimitedCredits&&credits>0&&(
+                    <span style={{position:"absolute",bottom:"calc(100% + 8px)",left:0,zIndex:130,background:B.card,color:B.sub,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,lineHeight:1.5,padding:"8px 12px",borderRadius:10,border:"1px solid "+B.border,boxShadow:"0 6px 20px rgba(15,23,42,0.2)",whiteSpace:"nowrap"}}>
+                      {"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans · "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions · "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
+                    </span>
+                  )}
+                </span>
               </div>
               {/* [PRICING 3] Founder Circle members get a distinct badge with
                   their position number. Standard paid users keep the existing
@@ -10762,11 +10841,9 @@ return (
                 the low-credit banner takes over. [PRICING credit-model] Only
                 Pro skips it now — Founder Circle is metered like Standard and
                 benefits from the same translation. */}
-            {!isUnlimitedCredits&&credits>=3&&credits<=150&&(
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:"rgba(255,255,255,0.35)",marginTop:4,marginLeft:11,lineHeight:1.35}}>
-                {"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans, "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions, "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
-              </div>
-            )}
+            {/* [CREDITS-TIP] Conversion breakdown moved into the popover on
+                the credits label above ([TASK 8] translation preserved,
+                just no longer permanent chrome). */}
             {/* [CHANGE 2c] Time-aware sidebar upgrade CTA. Copy escalates as
                 the trial winds down. The full CTA text needs more room than
                 the original "Upgrade" pill, so it's promoted to its own
@@ -10850,9 +10927,15 @@ return (
           <div style={{display:"flex",alignItems:"center",gap:14}}>
             {/* Credits as outline-only data on the navy field. Coral
                 outline + text when low so the urgency still registers. */}
-            <div style={{display:"flex",alignItems:"center",gap:7,background:"transparent",borderRadius:99,padding:"5px 12px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.55)":"rgba(255,255,255,0.32)")}}>
+            <div onClick={function(){ setCreditsTipOpen(function(v){ return !v; }); }}
+              style={{display:"flex",alignItems:"center",gap:7,background:"transparent",borderRadius:99,padding:"5px 12px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.55)":"rgba(255,255,255,0.32)"),position:"relative",cursor:"default"}}>
               <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.white}}/>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.04em",color:creditsLoaded&&credits<=5?B.coral:B.white}}>{creditsLabel+" credits"}</div>
+              {creditsTipOpen&&!isUnlimitedCredits&&credits>0&&(
+                <div style={{position:"absolute",top:"calc(100% + 8px)",left:0,zIndex:130,background:B.card,color:B.sub,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,lineHeight:1.5,padding:"8px 12px",borderRadius:10,border:"1px solid "+B.border,boxShadow:"0 6px 20px rgba(15,23,42,0.2)",whiteSpace:"nowrap"}}>
+                  {"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans · "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions · "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
+                </div>
+              )}
             </div>
             {/* [PRICING 3] Founder Circle pill in the mobile topnav. Position
                 number reads as a quiet point of pride next to the credits
@@ -12072,9 +12155,8 @@ return (
                     )}
                   </div>
                 )}
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.65,textAlign:"center",padding:"12px 4px"}}>
-                  {"Content generated by VIRL is offered as a suggestion only. You are responsible for reviewing every piece of content before publishing and for ensuring it complies with platform terms, applicable law, and any professional license or employer obligations. Nothing VIRL produces is legal, medical, financial, or real-estate advice. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest."}
-                </div>
+                {/* [DISCLAIMER] Inline copy removed — the global footer's
+                    LegalDisclaimer is the single per-page render. */}
                 {/* [PREMIUM 6] Quiet philosophical sign-off at the very
                      bottom of the Plan tab. Reinforces the brand's
                      worldview without taking visual real estate. Only
@@ -13318,9 +13400,7 @@ return (
               </React.Fragment>
             );})}
           </div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.65,maxWidth:480,textAlign:"center",marginTop:4}}>
-            {"Content generated by VIRL is offered as a suggestion only. You are responsible for reviewing every piece of content before publishing and for ensuring it complies with platform terms, applicable law, and any professional license or employer obligations. Nothing VIRL produces is legal, medical, financial, or real-estate advice. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest."}
-          </div>
+          <LegalDisclaimer/>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.6,maxWidth:400,textAlign:"center",marginTop:4}}>
             {"* Generation time is approximate and varies based on profile completeness, number of platforms selected, and network conditions. Most users experience plan generation in under 90 seconds."}
           </div>
