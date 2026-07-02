@@ -3148,27 +3148,24 @@ function humanizeFormat(raw) {
 }
 
 // One-line preview shown UNDER the headline on collapsed plan cards so
-// the user can scan a stacked week without expanding each one. Picks the
-// most representative opening line per format (video/long-form → hook,
-// carousel → first slide headline, image → photo direction, quote →
-// the quote, story → first frame). Falls back to description for legacy
-// cards that have no format-specific fields populated.
+// the user can scan a stacked week without expanding each one.
+// [CARD-PREVIEW] Priority is audience-facing content only: hook → first
+// caption line → the quote / first slide headline (a quote card's quote
+// and a carousel's lead headline ARE its hook) → description. Production
+// direction fields (photoDirection, designDirection, insight,
+// compositionTip) NEVER preview — a single_image card used to leak its
+// photoDirection here, which read as gibberish next to every other card.
 function cardPreview(card) {
   if (!card) return "";
-  var fmt = normalizeFormat(card.format);
   var preview = "";
-  if (fmt === "video" || fmt === "long_form_text") {
-    preview = card.hook && card.hook !== card.title ? card.hook : "";
-  } else if (fmt === "carousel") {
+  if (card.hook && card.hook !== card.title) preview = card.hook;
+  if (!preview && typeof card.caption === "string" && card.caption.trim()) {
+    preview = card.caption.trim().split("\n")[0];
+  }
+  if (!preview && card.quote) preview = "“" + card.quote + "”";
+  if (!preview) {
     var slides = Array.isArray(card.slides) ? card.slides : [];
-    preview = slides[0] && slides[0].headline ? slides[0].headline : "";
-  } else if (fmt === "single_image") {
-    preview = card.photoDirection || "";
-  } else if (fmt === "quote_graphic") {
-    preview = card.quote ? "“" + card.quote + "”" : "";
-  } else if (fmt === "story") {
-    var frames = Array.isArray(card.frames) ? card.frames : [];
-    preview = frames[0] && frames[0].content ? frames[0].content : "";
+    if (slides[0] && slides[0].headline) preview = slides[0].headline;
   }
   if (!preview && card.description) preview = card.description;
   return preview || "";
@@ -4038,6 +4035,26 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
     }
   }
   function toggleExpanded() { setExpanded(function(v){ return !v; }); }
+  // [CARD-CLICK] The whole collapsed card expands on click/tap; once
+  // expanded, the header region (role="button") collapses it — body
+  // clicks never collapse so text selection and copy buttons are safe.
+  // Keyboard: header is focusable, Enter/Space toggles. All disabled
+  // while the inline edit form is open.
+  function headerToggle(e) {
+    if (editing) return;
+    if (e && e.stopPropagation) e.stopPropagation();
+    toggleExpanded();
+  }
+  function headerKeyDown(e) {
+    if (editing) return;
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      toggleExpanded();
+    }
+  }
+  function rootClickExpand() {
+    if (!expanded && !editing && !editMode) setExpanded(true);
+  }
 
   // Edit-mode visuals: when the card is marked for replacement, swap the
   // left border to a dashed coral to make the state obvious at a glance.
@@ -4068,10 +4085,17 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
                         : isHighUnposted  ? "0 4px 14px rgba(31,58,138,0.09)"
                         : "0 1px 3px rgba(0,0,0,0.06)";
   return (
-    <div className="su" style={{background:cardBackground,borderRadius:12,boxShadow:cardShadow,borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity,transition:"background .15s, box-shadow .15s"}}>
+    <div className="su" onClick={rootClickExpand}
+      style={{background:cardBackground,borderRadius:12,boxShadow:cardShadow,borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity,transition:"background .15s, box-shadow .15s",cursor:(!expanded&&!editing&&!editMode)?"pointer":"default"}}>
       {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
       {showLongPost&&<LongFormPostGenerator card={card} onClose={function(){setShowLongPost(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveLongPost={onSaveLongPost ? function(p){ onSaveLongPost(idx, p); } : null}/>}
 
+      {/* [CARD-CLICK] Header + title + preview form the expand/collapse
+           control (replaces the old TAP TO EXPAND button — chevron in the
+           header right cluster is the affordance). */}
+      <div role="button" tabIndex={0} aria-expanded={expanded}
+        onClick={headerToggle} onKeyDown={headerKeyDown}
+        style={{cursor:editing?"default":"pointer",outline:"none"}}>
       {/* [UX-01 / P3] Header row. postTime leads at high contrast — it's
            the most actionable atom on the card and previously sat at 9px
            muted gray equal-weight with day/platform. Day + platform
@@ -4113,6 +4137,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
           ) : (
             <PBadge p={card.priority}/>
           )}
+          <span aria-hidden="true" style={{fontSize:13,color:B.muted,fontWeight:700,lineHeight:1,marginLeft:2}}>{expanded?"▴":"▾"}</span>
         </div>
       </div>
 
@@ -4138,6 +4163,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
       {preview && !editing && (
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.5,marginBottom:14,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{preview}</div>
       )}
+      </div>{/* [CARD-CLICK] end header/title/preview click target */}
       {/* Edit form body — replaces the read-view expanded body when in
            edit mode. Renders inputs/textareas for every top-level text
            field the model emits for this card's format. */}
@@ -4191,11 +4217,13 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
 
       {/* [RESULTS-OVERHAUL] Action row. Third slot is state-dependent:
            fresh card → "Mark as posted"; posted but unlogged →
-           "Log results" (expands + opens form); logged → passive
-           "Logged ✓" badge. Always 3 visible slots in collapsed mode,
-           never 4. In edit mode the entire row is swapped for a
-           Save / Cancel pair — every other action would be misleading
-           or destructive against an in-flight draft. */}
+           "Log results" (opens form); logged → passive "Logged ✓" badge.
+           [CARD-CLICK] The row renders in the EXPANDED state only — the
+           collapsed card is a single click target with zero buttons
+           (24 visible controls across 8 cards → 0). In edit mode the
+           row is swapped for a Save / Cancel pair — every other action
+           would be misleading or destructive against an in-flight
+           draft. */}
       {editing ? (
         <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginTop:6}}>
           <button onClick={saveEdit}
@@ -4207,12 +4235,8 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
             Cancel
           </button>
         </div>
-      ) : (
+      ) : expanded ? (
       <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-        <button onClick={toggleExpanded}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:expanded?B.bg:B.navySoft,color:expanded?B.sub:B.navy,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
-          {expanded?"Collapse":"Tap to expand"}
-        </button>
         <button onClick={handleSave}
           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:saved?B.navy:B.divider,color:saved?B.white:B.sub,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
           {saved?"Saved":"Save"}
@@ -4295,7 +4319,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
           <RatingButtons sessionToken={userToken} generationType="plan_card" targetRef={(card.title||"")+"|"+(card.day||"")} size="sm"/>
         )}
       </div>
-      )}
+      ) : null}
 
       {/* [MOVE-CARD] Day-picker popover. Opens below the action row when
            "Move to..." is tapped. Lists the full set of weekday labels;
