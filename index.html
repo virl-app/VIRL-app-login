@@ -546,8 +546,19 @@ function parseDayName(dayLabel) {
   const map   = { Sun:"Sunday", Mon:"Monday", Tue:"Tuesday", Wed:"Wednesday", Thu:"Thursday", Fri:"Friday", Sat:"Saturday" };
   return map[abbr] || abbr || dayLabel;
 }
+// [TODAY-FIX] Highlight the section matching the real current weekday, not
+// a hardcoded "Day 1". Card day labels are "Day N - Xxx" (3-letter weekday,
+// see WEEKDAYS in api/_lib/prompts.js); we match the abbreviation against
+// today's weekday. If today isn't in the plan (a rest day, or the plan
+// starts tomorrow), nothing gets the hero — which is correct, there's no
+// "up next today". Uses new Date() (browser runtime; the app already relies
+// on Date throughout).
+var WEEKDAY_ABBRS = ["sun","mon","tue","wed","thu","fri","sat"];
 function isTodayDayLabel(dayLabel) {
-  return typeof dayLabel === "string" && dayLabel.indexOf("Day 1") === 0;
+  if (typeof dayLabel !== "string") return false;
+  var parts = dayLabel.split(" - ");
+  var abbr  = (parts[1] || parts[0] || "").trim().slice(0, 3).toLowerCase();
+  return abbr === WEEKDAY_ABBRS[new Date().getDay()];
 }
 
 // [PRICING 3] Founder Circle cap — first 50 paying customers get $20/mo for
@@ -2476,6 +2487,92 @@ function vaultDisplayTitle(t) {
   return String(t || "").replace(/^Option\s+[A-C]:\s*/i, "");
 }
 
+/* [PLAN-STATE v2] Compact strategy hero — lives at the TOP of an active
+   plan (per creator feedback: strategy is the frame for the week, not a
+   footnote). Thesis + "the bet" are always visible; the success-metric
+   tiles and optimizing-for / audience-read detail tuck behind a "Full
+   strategy" expand so the block stays ~3-4 lines tall and the first plan
+   card still lands near the fold. Thesis keeps Italiana (it reads as a
+   section headline, which is where the serif belongs); everything else is
+   Jost. Owns its own expand state so App doesn't have to thread it. */
+function StrategyHero({strategy, onRegen, regenLoading}) {
+  const [open,setOpen] = useState(false);
+  if (!strategy || (!strategy.thesis && !strategy.the_bet)) return null;
+  var smRaw = strategy.success_metric;
+  var smTiles = [];
+  var smLegacy = false;
+  if (Array.isArray(smRaw)) {
+    smTiles = smRaw.filter(function(m){ return m && (m.value || m.label); }).slice(0, 4);
+  } else if (typeof smRaw === "string" && smRaw.trim()) {
+    smTiles = [{ value: "", label: smRaw.trim() }];
+    smLegacy = true;
+  }
+  var hasSidePair = !!(strategy.optimizing_for || strategy.audience_read);
+  var hasTiles    = smTiles.length > 0;
+  var hasDetail   = hasTiles || hasSidePair;
+  return (
+    <div style={{background:B.navy,borderRadius:16,padding:"22px 24px",marginBottom:16,boxShadow:"0 4px 20px rgba(31,58,138,0.18)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:12,flexWrap:"wrap"}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.sky}}>This week's strategy</div>
+        <button onClick={onRegen} disabled={regenLoading}
+          title="Re-frame this same plan with a different angle"
+          style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"7px 14px",background:regenLoading?"rgba(255,255,255,0.06)":"rgba(255,255,255,0.14)",color:B.white,border:"1px solid rgba(255,255,255,0.32)",cursor:regenLoading?"default":"pointer",borderRadius:99,opacity:regenLoading?0.55:1,transition:"all .15s"}}>
+          {regenLoading ? "Reframing…" : "Try a different angle"}
+        </button>
+      </div>
+      {strategy.thesis && (
+        <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.25,marginBottom:strategy.the_bet?14:(hasDetail?12:0),opacity:regenLoading?0.55:1}}>{strategy.thesis}</div>
+      )}
+      {strategy.the_bet && (
+        <div style={{borderLeft:"2px solid "+B.sky,paddingLeft:14,marginBottom:hasDetail?14:0}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>The bet</div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.92)",lineHeight:1.55}}>{strategy.the_bet}</div>
+        </div>
+      )}
+      {hasDetail && (
+        <button onClick={function(){ setOpen(function(v){ return !v; }); }} aria-expanded={open}
+          style={{background:"none",border:"none",padding:0,cursor:"pointer",fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.sky,display:"inline-flex",alignItems:"center",gap:6}}>
+          {open ? "Hide details" : "Full strategy"}
+          <span aria-hidden="true" style={{fontSize:12}}>{open ? "▴" : "▾"}</span>
+        </button>
+      )}
+      {open && hasTiles && (
+        <div style={{display:"grid",gridTemplateColumns:smLegacy ? "1fr" : "repeat(auto-fit, minmax(120px, 1fr))",gap:10,marginTop:14,marginBottom:hasSidePair?18:0}}>
+          {smTiles.map(function(tile, i){
+            return (
+              <div key={i} style={{background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,padding:"12px 14px"}}>
+                {tile.value && (
+                  <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,lineHeight:1.05,marginBottom:4}}>{tile.value}</div>
+                )}
+                {!tile.value && smLegacy && (
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>Success looks like</div>
+                )}
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:smLegacy?13:10,fontWeight:smLegacy?400:600,letterSpacing:smLegacy?"0":"0.06em",textTransform:smLegacy?"none":"uppercase",color:smLegacy?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.6)",lineHeight:smLegacy?1.55:1.4}}>{tile.label}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {open && hasSidePair && (
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))",gap:18,marginTop:hasTiles?0:14}}>
+          {strategy.optimizing_for && (
+            <div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Optimizing for</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.optimizing_for}</div>
+            </div>
+          )}
+          {strategy.audience_read && (
+            <div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Audience read</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.audience_read}</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* [DISCLAIMER] One-sentence legal line with the full text behind an
    expandable link. Rendered once, in the global footer only. */
 const DISCLAIMER_FULL = "Content generated by VIRL is offered as a suggestion only. You are responsible for reviewing every piece of content before publishing and for ensuring it complies with platform terms, applicable law, and any professional license or employer obligations. Nothing VIRL produces is legal, medical, financial, or real-estate advice. VIRL is not affiliated with or endorsed by TikTok, Instagram, Facebook, YouTube, LinkedIn, X, or Pinterest.";
@@ -4229,9 +4326,13 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
         <input value={draftCard ? (draftCard.title || "") : ""}
           onChange={function(e){ updateDraft("title", e.target.value); }}
           placeholder="Title"
-          style={{width:"100%",fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,background:B.bg,border:"1px solid "+B.border,borderRadius:8,padding:"8px 12px",marginBottom:12,outline:"none",boxSizing:"border-box"}}/>
+          style={{width:"100%",fontFamily:"'Jost',sans-serif",fontSize:16,fontWeight:600,lineHeight:1.3,color:B.ink,background:B.bg,border:"1px solid "+B.border,borderRadius:8,padding:"8px 12px",marginBottom:12,outline:"none",boxSizing:"border-box"}}/>
       ) : (
-        <div style={{fontFamily:"'Italiana',serif",fontSize:18,lineHeight:1.2,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
+        /* [CARD-TYPE] Card titles use Jost 600, not Italiana — the serif is
+           a single-weight display face that reads as decorative at content
+           size. Italiana stays on the page title, "Your week", and day
+           names; the content you scan is crisp sans-serif. */
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:16,fontWeight:600,lineHeight:1.3,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
       )}
       {/* [P1] Collapsed-only preview line — the format-specific opening
            (hook / first slide / photo direction / quote / first frame /
@@ -4239,7 +4340,10 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
            short; the full versions live in the expanded body. Hidden in
            edit mode (the user is editing the source fields themselves). */}
       {preview && !editing && (
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.5,marginBottom:14,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{preview}</div>
+        /* [CARD-TYPE] Preview was Jost 300 italic — the thinnest weight plus
+           italic, the least legible combo in the loaded stack. Now Jost 400
+           upright for clean scanning. */
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:B.sub,lineHeight:1.55,marginBottom:14,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{preview}</div>
       )}
       </div>{/* [CARD-CLICK] end header/title/preview click target */}
       {/* Edit form body — replaces the read-view expanded body when in
@@ -11609,6 +11713,10 @@ return (
 
             {cards&&(
               <div>
+                {/* [PLAN-STATE v2] Strategy is the frame for the week, so it
+                    leads — compact hero (thesis + the bet, details behind
+                    "Full strategy") above the week summary and cards. */}
+                <StrategyHero strategy={strategy} onRegen={regenerateStrategy} regenLoading={strategyRegenLoading}/>
                 {(function() {
                   const pc = {};
                   cards.forEach(function(card){ pc[card.platform]=(pc[card.platform]||0)+1; });
@@ -11795,96 +11903,12 @@ return (
                     );
                   });
                 })()}
-                {/* [PLAN-STATE] Supporting context lives below the cards in
-                    collapsed sections — the cards are the product; strategy,
-                    projections, and trend inputs are reference material. */}
-                {strategy && (strategy.thesis || strategy.the_bet) && (
-                  <Accordion title="This week's strategy">
-                    {/* [S2] Strategy hero card — editorial hierarchy, not a
-                        flat grid. The previous version gave thesis / the_bet /
-                        optimizing_for / audience_read / success_metric equal
-                        weight as four boxes in a grid, which read as a wall of
-                        text. The new layout ranks them: thesis as the headline,
-                        success_metric as a row of stat tiles (the scoreboard),
-                        optimizing_for + audience_read side-by-side as the
-                        supporting reads, the_bet as the closing strategist note
-                        with a sky-blue accent rule.
-
-                        success_metric arrives as an ARRAY of {value, label}
-                        from the new prompt shape. Legacy plans stored the
-                        field as a free-form string; those render as a single
-                        full-width tile so old plans still look intentional
-                        until the user regenerates. */}
-                    {strategy && (strategy.thesis || strategy.the_bet) && (function(){
-                      var smRaw = strategy.success_metric;
-                      var smTiles = [];
-                      var smLegacy = false;
-                      if (Array.isArray(smRaw)) {
-                        smTiles = smRaw.filter(function(m){ return m && (m.value || m.label); }).slice(0, 4);
-                      } else if (typeof smRaw === "string" && smRaw.trim()) {
-                        smTiles = [{ value: "", label: smRaw.trim() }];
-                        smLegacy = true;
-                      }
-                      var hasSidePair = !!(strategy.optimizing_for || strategy.audience_read);
-                      var hasTiles    = smTiles.length > 0;
-                      var hasBet      = !!strategy.the_bet;
-                      return (
-                        <div style={{background:B.navy,borderRadius:16,padding:"24px 26px",marginBottom:16,boxShadow:"0 4px 20px rgba(31,58,138,0.18)"}}>
-                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:14,flexWrap:"wrap"}}>
-                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.28em",textTransform:"uppercase",color:B.sky}}>This week's strategy</div>
-                            <button onClick={regenerateStrategy} disabled={strategyRegenLoading}
-                              title="Re-frame this same plan with a different angle"
-                              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",padding:"7px 14px",background:strategyRegenLoading?"rgba(255,255,255,0.06)":"rgba(255,255,255,0.14)",color:B.white,border:"1px solid rgba(255,255,255,0.32)",cursor:strategyRegenLoading?"default":"pointer",borderRadius:99,opacity:strategyRegenLoading?0.55:1,transition:"all .15s"}}>
-                              {strategyRegenLoading ? "Reframing…" : "Try a different angle"}
-                            </button>
-                          </div>
-                          {strategy.thesis && (
-                            <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.white,lineHeight:1.25,marginBottom:(hasTiles || hasSidePair || hasBet) ? 20 : 0,opacity:strategyRegenLoading?0.55:1}}>{strategy.thesis}</div>
-                          )}
-                          {hasTiles && (
-                            <div style={{display:"grid",gridTemplateColumns:smLegacy ? "1fr" : "repeat(auto-fit, minmax(120px, 1fr))",gap:10,marginBottom:(hasSidePair || hasBet) ? 18 : 0}}>
-                              {smTiles.map(function(tile, i){
-                                return (
-                                  <div key={i} style={{background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,padding:"12px 14px"}}>
-                                    {tile.value && (
-                                      <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.white,lineHeight:1.05,marginBottom:4}}>{tile.value}</div>
-                                    )}
-                                    {!tile.value && smLegacy && (
-                                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>Success looks like</div>
-                                    )}
-                                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:smLegacy?13:10,fontWeight:smLegacy?400:600,letterSpacing:smLegacy?"0":"0.06em",textTransform:smLegacy?"none":"uppercase",color:smLegacy?"rgba(255,255,255,0.92)":"rgba(255,255,255,0.6)",lineHeight:smLegacy?1.55:1.4}}>{tile.label}</div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          {hasSidePair && (
-                            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))",gap:18,marginBottom:hasBet ? 18 : 0}}>
-                              {strategy.optimizing_for && (
-                                <div>
-                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Optimizing for</div>
-                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.optimizing_for}</div>
-                                </div>
-                              )}
-                              {strategy.audience_read && (
-                                <div>
-                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:"rgba(255,255,255,0.45)",marginBottom:5}}>Audience read</div>
-                                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:400,color:"rgba(255,255,255,0.9)",lineHeight:1.5}}>{strategy.audience_read}</div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          {hasBet && (
-                            <div style={{borderLeft:"2px solid "+B.sky,paddingLeft:14}}>
-                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.sky,marginBottom:5}}>The bet</div>
-                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontStyle:"italic",fontWeight:300,color:B.white,lineHeight:1.55}}>{strategy.the_bet}</div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </Accordion>
-                )}
+                {/* [PLAN-STATE v2] Projections stays a collapsed accordion
+                    below the cards — it's directional estimate data, genuinely
+                    secondary. Strategy moved to the TOP (StrategyHero) and the
+                    "Trends considered" dropdown was removed per creator
+                    feedback: per-card trend context already lives in each
+                    expanded card (the ✦ trend tag + "why this works"). */}
                 {stats&&(
                   <Accordion title="This week's projections">
                     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
@@ -11903,35 +11927,17 @@ return (
                     </div>
                   </Accordion>
                 )}
-                {(planTrendsSnapshot || (planUsedFreshTrends && !isPaid)) && (
-                  <Accordion title="Trends considered">
-                    {planUsedFreshTrends && !isPaid && (
-                      <FreshTrendsBanner
-                        kind="plan"
-                        daysUntilReset={daysUntilReset}
-                        onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
-                    )}
-                    {planTrendsSnapshot && Object.keys(planTrendsSnapshot).map(function(plt){
-                      var t = planTrendsSnapshot[plt] || {};
-                      var titems = Array.isArray(t.items) ? t.items.slice(0,4) : [];
-                      if (!t.summary && !titems.length) return null;
-                      return (
-                        <div key={plt} style={{background:B.card,borderRadius:12,padding:"14px 18px",marginBottom:8,boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>{plt}</div>
-                          {t.summary ? (
-                            <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6,marginBottom:titems.length?8:0}}>{t.summary}</div>
-                          ) : null}
-                          {titems.map(function(it,i){
-                            var txt = typeof it === "string" ? it : ((it && (it.title || it.name || it.summary)) || "");
-                            if (!txt) return null;
-                            return (
-                              <div key={i} style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>{"\u2022 "+txt}</div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })}
-                  </Accordion>
+                {/* [PLAN-STATE v2] "Trends considered" accordion removed per
+                    creator feedback \u2014 per-card trend context already lives in
+                    each expanded card (the \u2726 trend tag + "why this works"),
+                    so the global trend dump was redundant. The fresh-trends
+                    upsell banner (a paid-conversion signal, not the trend
+                    dump) stays. */}
+                {planUsedFreshTrends && !isPaid && (
+                  <FreshTrendsBanner
+                    kind="plan"
+                    daysUntilReset={daysUntilReset}
+                    onUpgrade={function(){ setUpgradeReason("fresh_trends"); setShowUpgrade(true); }}/>
                 )}
                 <div style={{background:B.navy,borderRadius:16,padding:"20px 24px",marginTop:8,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
                   <div>
