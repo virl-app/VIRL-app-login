@@ -4629,13 +4629,25 @@ function RemixCaption({text,onSelect,profile,userToken,onCreditsUsed}) {
       </div>
       {loading&&<RotatingStatus kind="caption"/>}
       <ErrBox msg={error}/>
-      {variants&&Object.values(variants).map(function(v,i){return (
-        <div key={i} style={{background:B.card,borderRadius:10,padding:"12px 14px",marginBottom:8,cursor:"pointer"}}
-          onClick={function(){onSelect(v.text);setOpen(false);}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.blue,marginBottom:6}}>{v.label}</div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.7}}>{v.text}</div>
-        </div>
-      );})}
+      {/* [CRASH-GUARD] Render only the three known variant slots, and only
+          when their text is a non-empty STRING. The old code mapped
+          Object.values(variants), which (a) included the compliance_note
+          string as a blank pseudo-variant and (b) would hand a non-string
+          .text straight into onSelect → setText(object) → React renders an
+          object as a child → whole-app white screen. Now malformed shapes
+          are skipped, and onSelect always receives a string. */}
+      {variants && ["shorter","hook","story"].map(function(key){
+        var v = variants[key];
+        if (!v || typeof v.text !== "string" || !v.text.trim()) return null;
+        var label = (typeof v.label === "string" && v.label) ? v.label : key;
+        return (
+          <div key={key} style={{background:B.card,borderRadius:10,padding:"12px 14px",marginBottom:8,cursor:"pointer"}}
+            onClick={function(){ onSelect(v.text); setOpen(false); }}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.blue,marginBottom:6}}>{label}</div>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.7}}>{v.text}</div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -4691,7 +4703,7 @@ function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUs
       ):(
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-line"}}>{text}</div>
       )}
-      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(t);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>}
+      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(typeof t==="string"?t:"");}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>}
       {!editing && userToken && (
         <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid "+B.divider,display:"flex",justifyContent:"flex-end"}}>
           <RatingButtons sessionToken={userToken} generationType="caption" targetRef={"cap|"+(topic||"")+"|"+(caption.label||idx)} size="sm"/>
@@ -5424,7 +5436,7 @@ function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCr
       ):(
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-line"}}>{text}</div>
       )}
-      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(t);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>}
+      {!editing&&<RemixCaption text={text} onSelect={function(t){setText(typeof t==="string"?t:"");}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>}
       {!editing && userToken && (
         <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid "+B.divider,display:"flex",justifyContent:"flex-end"}}>
           <RatingButtons sessionToken={userToken} generationType="scan_result" targetRef={"scan|"+(platform||"")+"|"+(captionText||"").slice(0,40)} size="sm"/>
@@ -13452,7 +13464,47 @@ return (
 
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+// [CRASH-GUARD] App-wide error boundary. Before this, ANY render-phase
+// throw anywhere in the (single, giant) App component unmounted the whole
+// tree to a blank white screen with no way out but a manual reload — which
+// is exactly the "white screen" reported after a caption remix returned a
+// malformed variant. Now a render error shows a branded recovery card
+// (data is safe — plans/vault/results persist in Supabase + localStorage)
+// and a Reload button, and logs the error for telemetry. Error boundaries
+// must be class components; React 18 UMD supports this fine.
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err: err }; }
+  componentDidCatch(err, info) {
+    try {
+      console.error("[virl] render error:", err && err.message, info && info.componentStack);
+      logEvent(window.__virlUserId || null, "render_error", {
+        message: ((err && err.message) || "").slice(0, 300),
+      });
+    } catch (e) {}
+  }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{maxWidth:520,margin:"80px auto",padding:"0 24px",textAlign:"center",fontFamily:"'Jost',sans-serif"}}>
+          <div style={{fontFamily:"'Italiana',serif",fontSize:30,color:B.ink,marginBottom:12}}>Something glitched.</div>
+          <div style={{fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75,marginBottom:24}}>
+            VIRL hit an unexpected error and stopped rendering. Your profile, saved plans, vault, and results are safe — a reload usually clears it.
+          </div>
+          <button onClick={function(){ try { window.location.reload(); } catch(e){} }}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 32px",background:B.blue,color:B.white,border:"none",borderRadius:99,cursor:"pointer",boxShadow:"0 4px 14px rgba(37,99,235,0.3)"}}>
+            Reload VIRL
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  React.createElement(ErrorBoundary, null, React.createElement(App))
+);
 </script>
 </body>
 </html>
