@@ -22,6 +22,7 @@ import { fetchHandleResearch }       from "./_lib/handle-research.js";
 import { computeVoiceDrift, extractVoiceText } from "./_lib/voice-drift.js";
 import { selectVaultExemplars, exemplarsAsVoiceText } from "./_lib/vault-exemplars.js";
 import { computeOptimalDays } from "./_lib/optimal-days.js";
+import { computePerformanceInsights } from "./_lib/performance-insights.js";
 
 // [EMAIL-CUTOVER] Feature flag controlling whether milestone sends route
 // through Loops (new) or Resend (legacy). Flip to "true" in Vercel env
@@ -258,7 +259,7 @@ async function planJobError(userId, planJobId, errorMsg) {
 // the generation itself still streams normally.
 const PLAN_JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, usedFreshTrends, trendsSnapshot, complianceForNiche, voiceReference, planJobId }) {
+async function handleStreamingPlan({ res, payload, useCache, selectedModel, generationType, userId, creditCost, isPaid, usedFreshTrends, trendsSnapshot, complianceForNiche, voiceReference, planJobId }) {
   res.statusCode = 200;
   res.setHeader('Content-Type',  'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -399,6 +400,8 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
     if (validPlanJobId) {
       planJobError(userId, validPlanJobId, first.errorMsg || 'upstream stream errored').catch(() => {});
     }
+    // Credit was consumed before streaming began; refund free/trial users.
+    if (!isPaid) await refundCredit(userId, creditCost);
     res.end();
     return res;
   }
@@ -428,6 +431,8 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
       if (validPlanJobId) {
         planJobError(userId, validPlanJobId, second.errorMsg || 'retry stream errored').catch(() => {});
       }
+      // Both attempts failed with no usable plan delivered — refund free/trial.
+      if (!isPaid) await refundCredit(userId, creditCost);
       res.end();
       return res;
     }
@@ -728,7 +733,7 @@ function pickInlinePlatforms(generationType, params, profile) {
 // so the prompt doesn't include guidance for platforms the creator
 // isn't using this generation.
 async function fetchVaultPatterns(userId, targetPlatforms) {
-  const empty = { count: 0, topPlatform: null, topFormat: null, exemplars: [], optimalDays: {} };
+  const empty = { count: 0, topPlatform: null, topFormat: null, exemplars: [], optimalDays: {}, performanceInsights: null };
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/user_data?user_id=eq.${userId}&select=vault,results`,
@@ -750,13 +755,18 @@ async function fetchVaultPatterns(userId, targetPlatforms) {
     // otherwise. Scoped to targetPlatforms (this generation's selected
     // platforms) so the prompt stays relevant.
     const optimalDays = computeOptimalDays(vault, results, targetPlatforms);
+    // [PROVEN-FOR-YOU] "What content is working" — top format/platform by the
+    // creator's own logged engagement. Same vault+results source; null when
+    // signal is too thin to be honest. Gated at the prompt builder behind the
+    // learn_from_results opt-in.
+    const performanceInsights = computePerformanceInsights(vault, results);
 
     const planItems = vault.filter(v => v && v.type === "plan");
     if (!planItems.length) {
       // No plan-vault items, but exemplars may still exist if the user
       // logged results on plan cards without saving them. Surface those
       // for the few-shot path even though the patterns block stays empty.
-      return { count: 0, topPlatform: null, topFormat: null, exemplars, optimalDays };
+      return { count: 0, topPlatform: null, topFormat: null, exemplars, optimalDays, performanceInsights };
     }
     const platformCounts = {};
     const formatCounts   = {};
@@ -775,6 +785,7 @@ async function fetchVaultPatterns(userId, targetPlatforms) {
       topFormat:   top(formatCounts),
       exemplars,
       optimalDays,
+      performanceInsights,
     };
   } catch (e) {
     return empty;
@@ -858,6 +869,29 @@ async function fetchProfile(userId) {
   }
 }
 
+// [RELIABILITY] Hand a consumed credit back when the generation fails after
+// consume_credit already deducted it (Anthropic error, stream interruption).
+// Best-effort: a failed refund is logged but never blocks the error response
+// the user is already getting. Callers guard on `!isPaid` — only free/trial
+// (strict) users had an exact deduction; paid users float at 0 in lenient mode
+// where a refund could over-credit them.
+async function refundCredit(userId, amount) {
+  if (!userId || !amount || amount <= 0) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/rpc/refund_credit`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ p_user_id: userId, p_amount: amount }),
+    });
+  } catch (e) {
+    console.error('[chat] refund_credit failed for', userId, e && e.message);
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -882,6 +916,24 @@ export default async function handler(req, res) {
   }
   if (requiresImage(generationType) && !imageBase64) {
     return res.status(400).json({ error: 'This generation type requires an image.' });
+  }
+
+  // ── Request-shape guardrails ───────────────────────────────────────────────
+  // imageBase64 is echoed verbatim into the Anthropic payload (and billed as
+  // image-input tokens); params flows into prompt construction. Reject malformed
+  // or oversized inputs up front so a hostile/buggy body can't drive runaway
+  // model cost or in-memory blow-up. ~6M base64 chars comfortably covers the
+  // ~5 MB image ceiling Anthropic accepts; anything larger is not a real photo.
+  if (imageBase64 != null) {
+    if (typeof imageBase64 !== 'string' || imageBase64.length > 6_000_000) {
+      return res.status(413).json({ error: 'Image too large — please use a photo under 5 MB.' });
+    }
+  }
+  if (imageType != null && (typeof imageType !== 'string' || !/^image\/(png|jpe?g|webp|gif)$/i.test(imageType))) {
+    return res.status(400).json({ error: 'Unsupported image type.' });
+  }
+  if (params != null && (typeof params !== 'object' || Array.isArray(params))) {
+    return res.status(400).json({ error: 'Invalid params.' });
   }
 
   // ── Auth (fail closed) ────────────────────────────────────────────────────
@@ -1080,16 +1132,21 @@ export default async function handler(req, res) {
   let gatedVaultPatterns = vaultPatterns;
   if (profile && !profile.learnFromVault) {
     gatedVaultPatterns = null;
-  } else if (gatedVaultPatterns && Array.isArray(gatedVaultPatterns.exemplars) && !(profile && profile.learnFromResults)) {
+  } else if (gatedVaultPatterns && !(profile && profile.learnFromResults)) {
     gatedVaultPatterns = Object.assign({}, gatedVaultPatterns, {
-      exemplars: gatedVaultPatterns.exemplars
-        .filter(function(e){ return e && e.source !== "result"; })
-        .map(function(e){
-          return Object.assign({}, e, {
-            source:         e.source === "both" ? "vault" : e.source,
-            performanceTag: null,
-          });
-        }),
+      // [PROVEN-FOR-YOU] performanceInsights is entirely results-derived —
+      // strip it when the creator hasn't opted into learning from results.
+      performanceInsights: null,
+      exemplars: Array.isArray(gatedVaultPatterns.exemplars)
+        ? gatedVaultPatterns.exemplars
+            .filter(function(e){ return e && e.source !== "result"; })
+            .map(function(e){
+              return Object.assign({}, e, {
+                source:         e.source === "both" ? "vault" : e.source,
+                performanceTag: null,
+              });
+            })
+        : gatedVaultPatterns.exemplars,
     });
   }
 
@@ -1252,7 +1309,10 @@ export default async function handler(req, res) {
   }
 
   const selectedModel = ALLOWED_MODELS.includes(built.model) ? built.model : MODEL_SONNET;
-  const creditCost    = built.cost || 1;
+  // Respect an explicit cost of 0 (e.g. log_metrics — logging results is free);
+  // only fall back to 1 when a builder omits cost entirely. `|| 1` would wrongly
+  // bill 0-cost actions.
+  const creditCost    = (built.cost != null) ? built.cost : 1;
 
   // ── Credit cap + deduction (lazy reset already ran above) ────────────────
   try {
@@ -1268,7 +1328,7 @@ export default async function handler(req, res) {
     // users pay per-generation too. The strict path returns NULL when
     // insufficient → 402; lenient (paid non-Pro) always succeeds and
     // floors at 0.
-    if (plan !== 'pro') {
+    if (plan !== 'pro' && creditCost > 0) {
       const strict = !isPaid; // free + trial = hard balance check; paid non-Pro = floor at 0
       const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/consume_credit`, {
         method: 'POST',
@@ -1432,7 +1492,7 @@ export default async function handler(req, res) {
     if (generationType === 'plan' || generationType === 'plan_partial') {
       return await handleStreamingPlan({
         res, payload, useCache, selectedModel, generationType,
-        userId, creditCost,
+        userId, creditCost, isPaid,
         usedFreshTrends, trendsSnapshot: trendsSnapshotEcho,
         complianceForNiche,
         voiceReference: buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars),
@@ -1469,6 +1529,9 @@ export default async function handler(req, res) {
     if (!anthropicRes.ok) {
       const err = await anthropicRes.json().catch(() => ({}));
       console.error('Anthropic error:', anthropicRes.status, err);
+      // Charged before the call; hand the credit back to free/trial users since
+      // they got no result. Paid users float at 0 (lenient) — don't refund.
+      if (!isPaid) await refundCredit(userId, creditCost);
       return res.status(500).json({
         error: `AI error ${anthropicRes.status}: ${err.error?.message || 'Unknown'}`,
       });
@@ -1648,7 +1711,11 @@ export default async function handler(req, res) {
     });
 
   } catch (e) {
-    console.error('Generation error:', e.message);
-    return res.status(500).json({ error: e.message || 'Server error' });
+    console.error('Generation error:', e && e.stack ? e.stack : e && e.message);
+    // The credit was consumed before this block; a failure here means no
+    // usable result, so refund free/trial users. Best-effort, non-blocking.
+    if (!isPaid) await refundCredit(userId, creditCost);
+    // Don't leak internal error text (e.g. TypeErrors) to the client.
+    return res.status(500).json({ error: 'Something went wrong generating that. Please try again.' });
   }
 }

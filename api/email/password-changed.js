@@ -54,7 +54,8 @@ export default async function handler(req, res) {
     );
     if (profRes.ok) {
       const rows = await profRes.json();
-      if (rows[0] && rows[0].name) name = rows[0].name;
+      // Strip < > — name is user-controlled and lands raw in HTML email bodies.
+      if (rows[0] && rows[0].name) name = String(rows[0].name).replace(/[<>]/g, "").slice(0, 120);
     }
   } catch (e) { /* non-fatal */ }
 

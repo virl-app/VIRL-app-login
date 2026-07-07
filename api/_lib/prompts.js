@@ -6,6 +6,7 @@
 
 import { formatExemplarsForPrompt } from "./vault-exemplars.js";
 import { formatOptimalDaysForPrompt } from "./optimal-days.js";
+import { formatPerformanceForPrompt } from "./performance-insights.js";
 import { formatObservancesForPrompt } from "./holidays.js";
 import { computeVoiceFingerprint, formatFingerprintForPrompt } from "./voice-drift.js";
 import { formatDenylistForPrompt } from "./personal-denylist.js";
@@ -87,7 +88,7 @@ export const MODEL_HAIKU     = "claude-haiku-4-5-20251001";
 export const ALLOWED_MODELS  = [MODEL_SONNET, MODEL_HAIKU];
 
 // ── Credit costs (server is the source of truth) ──────────────────────────
-export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1, long_post: 2 };
+export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1, long_post: 2, log_metrics: 0 };
 
 // ── Playbook helpers ──────────────────────────────────────────────────────
 // `playbook` is a map keyed by platform: { TikTok: {cadence, peak_times, ...} }.
@@ -400,9 +401,13 @@ const CAPTION_LENGTH_GUIDE = {
 
 const GENERATION_TYPES = [
   "plan", "plan_partial", "plan_strategy", "script", "caption", "caption_remix", "scan_image", "scan_video_frame", "long_post", "blog_post",
+  // [LOG-METRICS] Screenshot → performance metrics. Not a content generation —
+  // a structured vision extraction that lets a creator log a post's results by
+  // snapping the platform's native insights panel instead of typing numbers.
+  "log_metrics",
 ];
 
-const IMAGE_REQUIRED_TYPES = new Set(["scan_image", "scan_video_frame"]);
+const IMAGE_REQUIRED_TYPES = new Set(["scan_image", "scan_video_frame", "log_metrics"]);
 
 // ── Profile context ────────────────────────────────────────────────────────
 function buildProfileCtx(profile) {
@@ -676,6 +681,17 @@ function buildSystemPrompt(profile, role, vaultPatterns, personalDenylist) {
     if (perUser) perUser += "\n\n";
     perUser += exemplarsBlock;
   }
+  // [PROVEN-FOR-YOU] Content-performance signal derived from the creator's own
+  // logged results (top format/platform by engagement). Sits right after the
+  // exemplars: exemplars show HOW they sound, this shows WHAT has actually
+  // worked. Empty string unless there's enough logged signal AND the creator
+  // opted into learn_from_results (gated upstream in chat.js, which nulls
+  // performanceInsights otherwise), so this concat is a clean no-op when off.
+  const performanceBlock = vaultPatterns ? formatPerformanceForPrompt(vaultPatterns.performanceInsights) : "";
+  if (performanceBlock) {
+    if (perUser) perUser += "\n\n";
+    perUser += performanceBlock;
+  }
   // [VOICE-FINGERPRINT] Stylometric anchors derived from the user's own
   // sampleCaption + voiceSamples. Concrete categorical labels + numeric
   // per-100-word rates ("Heavy contractions ~6/100. Short sentences avg
@@ -827,6 +843,12 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   const cardRange = computeCardRange(profile && profile.postFreq, platformsArr.length);
   const optimalDaysCtx = vaultPatterns && vaultPatterns.optimalDays
     ? formatOptimalDaysForPrompt(vaultPatterns.optimalDays)
+    : "";
+  // [PROVEN-FOR-YOU] "What content is working" for this creator (top
+  // format/platform by their own logged engagement). Empty string unless
+  // there's real signal and learn_from_results is on (gated in chat.js).
+  const performanceCtx = vaultPatterns
+    ? formatPerformanceForPrompt(vaultPatterns.performanceInsights)
     : "";
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
@@ -1047,6 +1069,9 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
         : "")
     + " Create " + cardRange.min + "-" + cardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
     + (optimalDaysCtx ? "\n\n" + optimalDaysCtx + "\n\nWhen distributing cards across the week, weight the optimal days above heavily — they're either the creator's own best-performing days (when 'performs best on' is shown) or industry rule-of-thumb for the platform (when 'general best days' is shown). The user-history signal is the stronger one when present." : "")
+    // [PROVEN-FOR-YOU] Bias this week's format/platform mix toward what has
+    // actually earned engagement for THIS creator (from their logged results).
+    + (performanceCtx ? "\n\n" + performanceCtx : "")
     // [REST-DAY-LLM] Generate one tip per day NOT receiving a card. Tips
     // must be PERSONAL to this creator (niche, goal, audience, last
     // week's wins / losses if any), not generic. Four type categories
@@ -1634,6 +1659,46 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, 
   };
 }
 
+// [LOG-METRICS] Screenshot → metrics extraction. Deliberately minimal: no
+// creator profile, voice, compliance, or vault context — this is structured
+// OCR, not content generation. A tiny purpose-built prompt on the cheap model
+// keeps it fast and effectively free, and the shared (profile-less) system
+// string caches across every user's log_metrics call. Costs the user 0 credits
+// on purpose — logging results is friction we want to REMOVE, not meter; the
+// per-call spend is a fraction of a cent and the /api/chat rate limiter still
+// bounds abuse. The client shows the extracted numbers for confirmation before
+// writing them to results, so an OCR slip is caught by the human, not trusted.
+function buildLogMetrics() {
+  const systemPrompt =
+    "You extract social-media post metrics from a screenshot of a platform's "
+    + "native insights/analytics panel (Instagram, TikTok, YouTube, LinkedIn, X, "
+    + "Facebook, Pinterest). Report ONLY numbers actually visible in the image. "
+    + "Never guess, estimate, or invent a value. Return ONLY valid JSON — no "
+    + "markdown, no prose.";
+  const userPrompt =
+    "Read this screenshot of a post's insights and extract its performance "
+    + "metrics. Normalize abbreviated numbers to plain integers (1.2K → 1200, "
+    + "3.4M → 3400000, 12,340 → 12340). If a metric is not visible in the "
+    + "image, use null — do NOT estimate. Map platform-specific labels to the "
+    + "closest field (e.g. 'plays'/'impressions'/'reach' → views; 'reposts'/"
+    + "'retweets' → shares; 'bookmarks' → saves).\n\n"
+    + "Reply ONLY with JSON: "
+    + "{\"platform\":\"the platform name if identifiable, else null\","
+    + "\"views\":<integer or null>,"
+    + "\"likes\":<integer or null>,"
+    + "\"comments\":<integer or null>,"
+    + "\"shares\":<integer or null>,"
+    + "\"saves\":<integer or null>,"
+    + "\"confidence\":\"high, medium, or low — how clearly the panel read\"}";
+  return {
+    systemPrompt,   // plain string → single cache breakpoint, shared across users
+    userPrompt,
+    model:     MODEL_HAIKU,
+    maxTokens: 300,
+    cost:      CREDIT_COSTS.log_metrics,
+  };
+}
+
 const BUILDERS = {
   plan:             buildPlan,
   plan_partial:     buildPlanPartial,
@@ -1645,6 +1710,7 @@ const BUILDERS = {
   scan_video_frame: buildScanVideoFrame,
   long_post:        buildLongPost,
   blog_post:        buildBlogPost,
+  log_metrics:      buildLogMetrics,
 };
 
 export function isValidGenerationType(t) {

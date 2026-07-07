@@ -35,6 +35,24 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Sign in required." });
   }
 
+  // Burst limit: a signed-in user can't flood the feedback table / admin inbox.
+  // Reuses the same service-role RPC chat.js uses; failures fail-open so a
+  // Supabase blip never blocks legitimate feedback.
+  try {
+    const rl = await fetch(`${SUPABASE_URL}/rest/v1/rpc/check_and_record_rate_limits`, {
+      method: "POST",
+      headers: {
+        apikey:        SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ p_user_id: user.id, p_endpoint: "feedback", p_minute_max: 3, p_hour_max: 20 }),
+    });
+    if (rl.ok && (await rl.json()) !== "ok") {
+      return res.status(429).json({ error: "You're sending feedback too quickly — please try again in a bit." });
+    }
+  } catch (e) { /* fail-open */ }
+
   const body = req.body || {};
   const message = (body.message || "").trim();
   if (!message) return res.status(400).json({ error: "Message is required." });
