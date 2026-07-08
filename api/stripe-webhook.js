@@ -55,7 +55,8 @@ async function fetchUserContext(userId) {
     );
     if (profRes.ok) {
       const rows = await profRes.json();
-      if (rows[0] && rows[0].name) out.name = rows[0].name;
+      // Strip < > — name is user-controlled and lands raw in HTML email bodies.
+      if (rows[0] && rows[0].name) out.name = String(rows[0].name).replace(/[<>]/g, "").slice(0, 120);
     }
   } catch (e) { /* non-fatal */ }
   return out;
@@ -326,6 +327,17 @@ export default async function handler(req, res) {
         // welcome and the annual-thank-you variants. Pulled from
         // checkout metadata where the client stamped it.
         const planType = (meta.planType === "annual") ? "annual" : "monthly";
+        // [PAYMENT-SAFETY] A completed Checkout session does not guarantee the
+        // first invoice was actually paid — an async/pending payment method can
+        // leave payment_status === "unpaid". Granting the plan + credits here
+        // would hand out paid access before any money cleared. Defer to the
+        // customer.subscription.* events (which gate on status active/trialing)
+        // when that happens. "paid" (immediate charge) and "no_payment_required"
+        // (subscription trial) both pass.
+        if (obj.payment_status === "unpaid") {
+          console.warn("[webhook] checkout.session.completed payment_status=unpaid — deferring plan grant to subscription.* for", userId);
+          break;
+        }
         if (userId) {
           // [PRICING 1] Atomically claim a founding_position for new
           // Founder Circle members. Returns null when all 50 slots are

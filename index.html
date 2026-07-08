@@ -4162,6 +4162,11 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
   const [views,setViews]       = useState((result&&result.views)||"");
   const [likes,setLikes]       = useState((result&&result.likes)||"");
   const [saves2,setSaves2]     = useState((result&&result.saves)||"");
+  // [LOG-METRICS] Screenshot → auto-filled results. Snap the post's native
+  // insights panel; a free (cost 0) Haiku vision pass reads views/likes/saves
+  // so the creator never retypes numbers from another app.
+  const [ocrBusy,setOcrBusy]   = useState(false);
+  const [ocrHint,setOcrHint]   = useState("");
   // [UX-01] Posted state mirrored to local React state so the checkmark
   // re-renders immediately after a click without forcing a parent
   // re-render. Initialized from localStorage on mount.
@@ -4175,6 +4180,29 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
   var preview = !expanded ? cardPreview(card) : "";
 
   function saveResults() { onLog(card,{views:views,likes:likes,saves:saves2}); setShowLog(false); }
+  // [LOG-METRICS] Read a screenshot of the post's insights panel and pre-fill
+  // the results form. The extracted numbers land in the inputs for the creator
+  // to eyeball before saving — an OCR slip is caught by a human, not trusted.
+  async function handleScreenshotLog(file) {
+    if (!file) return;
+    setOcrHint(""); setOcrBusy(true);
+    try {
+      const img  = await decodeAndResizeImage(file);
+      const data = await callAPI("log_metrics", {}, { token: userToken, imageBase64: img.b64, imageType: img.mediaType });
+      const m    = extractJSON(data.text) || {};
+      const got  = [];
+      if (m.views != null) { setViews(String(m.views)); got.push("views"); }
+      if (m.likes != null) { setLikes(String(m.likes)); got.push("likes"); }
+      if (m.saves != null) { setSaves2(String(m.saves)); got.push("saves"); }
+      setOcrHint(got.length
+        ? "Read " + got.join(", ") + " from your screenshot — double-check, then Save."
+        : "Couldn't find metrics in that image — enter them manually below.");
+    } catch (e) {
+      setOcrHint((e && e.message) || "Couldn't read that screenshot — enter metrics manually.");
+    } finally {
+      setOcrBusy(false);
+    }
+  }
   // [UX-01] Save handler — also writes the localStorage status flag so
   // the navy dot persists in the header after the parent re-renders.
   function handleSave() {
@@ -4552,6 +4580,16 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
               {"Even just views helps — it's the clearest read on what's landing. Skip and log later if you don't have numbers yet."}
             </div>
           )}
+          {/* [LOG-METRICS] Screenshot shortcut — snap the post's insights panel
+              and VIRL fills the fields below. Free; numbers stay editable. */}
+          <input id={"ocr-"+cardId} type="file" accept="image/*" style={{display:"none"}}
+            onChange={function(e){ var f=e.target.files&&e.target.files[0]; e.target.value=""; handleScreenshotLog(f); }}/>
+          <button type="button" disabled={ocrBusy}
+            onClick={function(){ var el=document.getElementById("ocr-"+cardId); if(el) el.click(); }}
+            style={{width:"100%",marginBottom:ocrHint?6:12,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.03em",padding:"10px 14px",background:B.card,color:B.navy,border:"1px dashed "+B.border,borderRadius:10,cursor:ocrBusy?"default":"pointer"}}>
+            {ocrBusy ? "Reading your screenshot…" : "📷 Auto-fill from a screenshot"}
+          </button>
+          {ocrHint && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,lineHeight:1.5,marginBottom:12}}>{ocrHint}</div>}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
             {[["Views",views,setViews],["Likes",likes,setLikes],["Saves",saves2,setSaves2]].map(function(item){
               var l=item[0],v=item[1],s=item[2];

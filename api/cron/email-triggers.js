@@ -82,7 +82,10 @@ async function fetchProfileName(userId) {
     );
     if (!res.ok) return "";
     const rows = await res.json();
-    return (rows[0] && rows[0].name) || "";
+    // Strip angle brackets: `name` is user-controlled and gets interpolated
+    // raw into HTML email bodies. Removing < > neutralizes tag injection
+    // while keeping the plaintext variants clean (no entity artifacts).
+    return ((rows[0] && rows[0].name) || "").replace(/[<>]/g, "").slice(0, 120);
   } catch (e) { return ""; }
 }
 
