@@ -7633,7 +7633,64 @@ function Vault({vault,onDelete,onRemix}) {
 // referencing the prior week's top performer and routes to the Plan
 // tab. onPlanWithInsights is supplied by App; missing handler hides
 // the button so the component renders standalone.
-function Results({results,onPlanWithInsights}) {
+// [PROVEN-FOR-YOU] Client-side twin of api/_lib/performance-insights.js —
+// derives the creator's best-performing format + platform from their own
+// logged results so the Results tab can SHOW what VIRL is already using to
+// shape generation. Same engagement weighting (views + likes×2 + saves×4) and
+// the same honesty thresholds (≥3 logged overall, ≥2 per bucket) so the card
+// never crowns a winner off n=1. Returns {thin:true,total} when there isn't
+// enough signal yet, so the UI can nudge the creator to log a couple more.
+function clientEngagementScore(res) {
+  function num(v) {
+    if (typeof v === "number" && isFinite(v)) return v;
+    if (typeof v === "string") {
+      var c = v.replace(/[,_\s]/g, "").toLowerCase();
+      var m = c.match(/^([\d.]+)([kmb])?$/);
+      if (!m) return 0;
+      var x = parseFloat(m[1]); if (!isFinite(x)) return 0;
+      return x * (m[2] === "k" ? 1e3 : m[2] === "m" ? 1e6 : m[2] === "b" ? 1e9 : 1);
+    }
+    return 0;
+  }
+  if (!res || typeof res !== "object") return 0;
+  return num(res.views) + num(res.likes) * 2 + num(res.saves) * 4;
+}
+function computeClientPerformance(results, vault) {
+  var safeR = Array.isArray(results) ? results : [];
+  var safeV = Array.isArray(vault) ? vault : [];
+  var vById = {}; safeV.forEach(function(v){ if (v && v.id != null) vById[v.id] = v; });
+  var byPlat = {}, byFmt = {}, total = 0;
+  safeR.forEach(function(r){
+    if (!r) return;
+    var score = clientEngagementScore(r.result);
+    if (score <= 0) return;
+    var match = vById[r.id];
+    var plat = r.platform || (match && match.platform) || null;
+    var fmt  = (match && match.format) || null;
+    total++;
+    if (plat) { byPlat[plat] = byPlat[plat] || {s:0,c:0}; byPlat[plat].s += score; byPlat[plat].c++; }
+    if (fmt)  { byFmt[fmt]  = byFmt[fmt]  || {s:0,c:0}; byFmt[fmt].s  += score; byFmt[fmt].c++; }
+  });
+  if (total < 3) return { thin: true, total: total };
+  function winner(acc, minC) {
+    var keys = Object.keys(acc).filter(function(k){ return acc[k].c >= minC; });
+    if (!keys.length) return null;
+    keys.sort(function(a,b){ return (acc[b].s/acc[b].c) - (acc[a].s/acc[a].c); });
+    var name = keys[0], wAvg = acc[name].s / acc[name].c;
+    var rest = Object.keys(acc).filter(function(k){ return k !== name; });
+    var mult = null;
+    if (rest.length) {
+      var rs = 0, rc = 0; rest.forEach(function(k){ rs += acc[k].s; rc += acc[k].c; });
+      var rAvg = rc ? rs / rc : 0; if (rAvg > 0) mult = wAvg / rAvg;
+    }
+    return { name: name, count: acc[name].c, multiple: mult };
+  }
+  var tp = winner(byPlat, 2), tf = winner(byFmt, 2);
+  if (!tp && !tf) return { thin: true, total: total };
+  return { thin: false, total: total, topPlatform: tp, topFormat: tf };
+}
+
+function Results({results,onPlanWithInsights,vault}) {
   if (!results.length) return (
     /* [RESULTS-LOOP] Empty state that explains the loop: mark posted →
        log a number → it shows up here and sharpens next week's plan. */
@@ -7674,6 +7731,42 @@ function Results({results,onPlanWithInsights}) {
           </button>
         </div>
       )}
+      {/* [PROVEN-FOR-YOU] Deliver on the SherpaTip's promise — show what VIRL
+          has learned from these results (best format + platform), or nudge the
+          creator to log a couple more when the signal is still thin. */}
+      {(function(){
+        var perf = computeClientPerformance(results, vault);
+        var fmtLine = null, platLine = null;
+        if (!perf.thin) {
+          if (perf.topFormat) {
+            fmtLine = (perf.topFormat.multiple && perf.topFormat.multiple >= 1.3)
+              ? "Your " + perf.topFormat.name + " posts earn ~" + perf.topFormat.multiple.toFixed(1) + "× the engagement of your other formats"
+              : "Best-performing format: " + perf.topFormat.name;
+            fmtLine += " (" + perf.topFormat.count + " logged)";
+          }
+          if (perf.topPlatform) {
+            platLine = "Strongest platform: " + perf.topPlatform.name + " (" + perf.topPlatform.count + " logged)";
+          }
+        }
+        return (
+          <div style={{background:B.skySoft,border:"1px solid rgba(59,130,246,0.18)",borderRadius:14,padding:"16px 18px",marginBottom:16}}>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.22em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>Proven for you</div>
+            {perf.thin ? (
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>
+                {perf.total < 3
+                  ? "Log " + (3 - perf.total) + " more post" + ((3 - perf.total) === 1 ? "" : "s") + " and VIRL will surface your best-performing format and platform here — and lean next week's plan into them."
+                  : "Keep logging — once a couple of posts share a format or platform, VIRL will call out what's winning and steer your plan into it."}
+              </div>
+            ) : (
+              <div>
+                {fmtLine && <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.ink,lineHeight:1.3,marginBottom:platLine?6:8}}>{fmtLine + "."}</div>}
+                {platLine && <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.ink,lineHeight:1.3,marginBottom:8}}>{platLine + "."}</div>}
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55}}>{"VIRL is already leaning your plans toward these."}</div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
       <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:16}}>
         {[["Views",tv.toLocaleString(),B.navy],["Likes",tl.toLocaleString(),B.blue],["Saves",ts.toLocaleString(),B.navy],["Engagement",eng+"%",B.blue]].map(function(item,i){return (
           <div key={item[0]} style={{padding:16,background:i%2===0?B.navySoft:B.card,borderRadius:12}}>
@@ -12640,7 +12733,7 @@ return (
                   </button>
                 </div>
               )}
-              <Results results={results} onPlanWithInsights={handlePlanWithInsights}/>
+              <Results results={results} onPlanWithInsights={handlePlanWithInsights} vault={vault}/>
             </div>
             )}
           </div>
