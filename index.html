@@ -8233,8 +8233,12 @@ function ReferralModal({milestone, userId, onDismiss}) {
 // [TASK 13] Sunday batch-log modal — shows a compact list of unlogged plan
 // cards with quick-entry inputs so the user can log the whole week in one
 // sitting instead of per-post. Only fires from the Sunday nudge banner.
-function SundayLogModal({unloggedCards, onLog, onClose}) {
+function SundayLogModal({unloggedCards, onLog, onClose, userToken}) {
   const [values,setValues] = useState({});
+  // [LOG-METRICS] Per-row screenshot OCR state: ocr[id] = {busy, hint}. Lets a
+  // creator fill each card's numbers by snapping its insights panel instead of
+  // typing the whole week by hand.
+  const [ocr,setOcr] = useState({});
 
   function cardId(c) { return c.title + c.day; }
   function updateField(id, field, value) {
@@ -8245,6 +8249,27 @@ function SundayLogModal({unloggedCards, onLog, onClose}) {
       next[id] = row;
       return next;
     });
+  }
+  function setRowOcr(id, patch) {
+    setOcr(function(o){ var n = Object.assign({}, o); n[id] = Object.assign({}, n[id], patch); return n; });
+  }
+  // Read a screenshot of this card's insights panel and fill its number
+  // fields. Numbers stay editable so the creator eyeballs them before saving.
+  async function handleRowScreenshot(id, file) {
+    if (!file) return;
+    setRowOcr(id, { busy: true, hint: "" });
+    try {
+      var img  = await decodeAndResizeImage(file);
+      var data = await callAPI("log_metrics", {}, { token: userToken, imageBase64: img.b64, imageType: img.mediaType });
+      var m    = extractJSON(data.text) || {};
+      var got  = [];
+      if (m.views != null) { updateField(id, "views", String(m.views)); got.push("views"); }
+      if (m.likes != null) { updateField(id, "likes", String(m.likes)); got.push("likes"); }
+      if (m.saves != null) { updateField(id, "saves", String(m.saves)); got.push("saves"); }
+      setRowOcr(id, { busy: false, hint: got.length ? "Read " + got.join(", ") + " — check & save." : "No metrics found — enter manually." });
+    } catch (e) {
+      setRowOcr(id, { busy: false, hint: (e && e.message) || "Couldn't read that screenshot." });
+    }
   }
   function saveAll() {
     unloggedCards.forEach(function(c){
@@ -8288,6 +8313,16 @@ function SundayLogModal({unloggedCards, onLog, onClose}) {
                   {c.day+" · "+c.platform}
                 </div>
                 <div style={{fontFamily:"'Italiana',serif",fontSize:16,color:B.ink,lineHeight:1.2,marginBottom:10}}>{c.title}</div>
+                {/* [LOG-METRICS] Per-card screenshot auto-fill — snap this post's
+                    insights panel and VIRL fills the three fields below. */}
+                <input id={"sun-ocr-"+i} type="file" accept="image/*" style={{display:"none"}}
+                  onChange={function(e){ var f=e.target.files&&e.target.files[0]; e.target.value=""; handleRowScreenshot(id, f); }}/>
+                <button type="button" disabled={(ocr[id]||{}).busy}
+                  onClick={function(){ var el=document.getElementById("sun-ocr-"+i); if(el) el.click(); }}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.03em",padding:"6px 10px",marginBottom:10,background:B.card,color:B.navy,border:"1px dashed "+B.border,borderRadius:8,cursor:(ocr[id]||{}).busy?"default":"pointer"}}>
+                  {(ocr[id]||{}).busy ? "Reading…" : "📷 Auto-fill from screenshot"}
+                </button>
+                {(ocr[id]||{}).hint && <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted,lineHeight:1.5,marginBottom:8}}>{(ocr[id]||{}).hint}</div>}
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
                   <div>
                     <div style={labelStyle}>Views</div>
@@ -10732,7 +10767,7 @@ return (
 
       {/* [TASK 13] Sunday batch-log modal — opened from the Sunday nudge banner. */}
       {sundayLogModalOpen&&(
-        <SundayLogModal unloggedCards={unloggedCards} onLog={logResult}
+        <SundayLogModal unloggedCards={unloggedCards} onLog={logResult} userToken={userToken}
           onClose={function(){ setSundayLogModalOpen(false); }}/>
       )}
 
