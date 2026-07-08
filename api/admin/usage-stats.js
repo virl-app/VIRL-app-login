@@ -31,7 +31,7 @@ async function fetchEvents(since) {
   // scale we won't approach that for 30 days; if we do, this becomes a
   // paginated loop.
   const url = `${SUPABASE_URL}/rest/v1/usage_events`
-    + `?select=user_id,generation_type,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,est_cost_usd,created_at`
+    + `?select=user_id,generation_type,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,est_cost_usd,created_at,drift_retried,drift_score_before,drift_score_after,drift_retry_cost_usd`
     + `&created_at=gte.${encodeURIComponent(since)}`
     + `&order=created_at.desc`
     + `&limit=10000`;
@@ -99,6 +99,37 @@ function dailySparkline(events, days) {
   return buckets;
 }
 
+// [VOICE-DRIFT-GATE] Roll up the corrective-retry outcomes. The denominator
+// is gate-ELIGIBLE calls (non-streaming gen types — plan/plan_partial stream
+// and are never gated), so retry_rate reads as "of the calls that could
+// retry, how many did." extra_cost_usd is the marginal spend of the retries
+// alone (already included in total cost; surfaced here for attribution).
+const STREAMING_GEN_TYPES = new Set(["plan", "plan_partial"]);
+function driftRollup(events) {
+  let eligible = 0, retries = 0, sumBefore = 0, sumAfter = 0, improved = 0, extraCost = 0;
+  for (const e of events) {
+    if (!STREAMING_GEN_TYPES.has(e.generation_type || "")) eligible++;
+    if (!e.drift_retried) continue;
+    retries++;
+    const before = e.drift_score_before != null ? parseFloat(e.drift_score_before) : null;
+    const after  = e.drift_score_after  != null ? parseFloat(e.drift_score_after)  : null;
+    if (before != null) sumBefore += before;
+    if (after  != null) sumAfter  += after;
+    if (before != null && after != null && after < before) improved++;
+    extraCost += parseFloat(e.drift_retry_cost_usd) || 0;
+  }
+  return {
+    eligible_calls:   eligible,
+    retries,
+    retry_rate:       eligible > 0 ? retries / eligible : 0,
+    avg_score_before: retries > 0 ? +(sumBefore / retries).toFixed(1) : null,
+    avg_score_after:  retries > 0 ? +(sumAfter  / retries).toFixed(1) : null,
+    avg_improvement:  retries > 0 ? +((sumBefore - sumAfter) / retries).toFixed(1) : null,
+    kept_rate:        retries > 0 ? improved / retries : 0,
+    extra_cost_usd:   +extraCost.toFixed(4),
+  };
+}
+
 function topUsers(events, n) {
   const byUser = {};
   for (const e of events) {
@@ -143,5 +174,7 @@ export default async function handler(req, res) {
     by_model:          groupBy(events, "model"),
     daily_sparkline:   dailySparkline(events, 14),
     top_users:         topUsersList,
+    drift_7d:          driftRollup(events7),
+    drift_30d:         driftRollup(events),
   });
 }

@@ -47,6 +47,77 @@ function buildVaultExemplarsBlock(vaultPatterns) {
     + rendered;
 }
 
+// [VOICE-SAMPLES] Render the creator's OWN words as labelled few-shot
+// examples: sampleCaption + voiceSamples (what they typed as voice reference)
+// + handlePostExcerpts (verbatim captions Perplexity pulled from their real
+// posts). Previously these only fed the numeric voice fingerprint + post-hoc
+// drift telemetry — the model never actually SAW them. They're the single
+// strongest "sounds like me" signal AND the only voice examples a brand-new
+// user has (empty vault → buildVaultExemplarsBlock returns ""), so showing
+// them directly is the main cold-start fix. Capped + truncated so the block
+// stays small and cache-friendly. Returns "" when there's nothing usable.
+const VOICE_SAMPLE_MAX = 4;
+const VOICE_SAMPLE_CHARS = 400;
+function buildVoiceSamplesBlock(profile) {
+  if (!profile) return "";
+  const raw = [];
+  if (typeof profile.sampleCaption === "string" && profile.sampleCaption.trim()) {
+    raw.push(profile.sampleCaption.trim());
+  }
+  if (Array.isArray(profile.voiceSamples)) {
+    for (const s of profile.voiceSamples) {
+      if (typeof s === "string" && s.trim()) raw.push(s.trim());
+    }
+  }
+  if (Array.isArray(profile.handlePostExcerpts)) {
+    for (const s of profile.handlePostExcerpts) {
+      if (typeof s === "string" && s.trim()) raw.push(s.trim());
+    }
+  }
+  const seen = new Set();
+  const picked = [];
+  for (const s of raw) {
+    const key = s.slice(0, 80).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    picked.push(s.length > VOICE_SAMPLE_CHARS ? s.slice(0, VOICE_SAMPLE_CHARS - 1) + "…" : s);
+    if (picked.length >= VOICE_SAMPLE_MAX) break;
+  }
+  if (!picked.length) return "";
+  return "THE CREATOR'S OWN WRITING — verbatim samples of how they actually sound. This is the single best guide to sounding like them: match their sentence rhythm, vocabulary, contraction level, and how much (or little) they lean on punctuation like em-dashes. Do NOT copy these — they are voice references, not templates:\n\n"
+    + picked.map(function (s, i) { return (i + 1) + ". " + s; }).join("\n\n");
+}
+
+// [VOICE-STACK] Single source of truth for the per-user voice blocks that
+// EVERY generation surface must include (plan, posts, captions, scan,
+// script). Both buildPlan and buildSystemPrompt assemble their per-user tier
+// from this, so a voice signal can never again be present on one surface and
+// silently missing on another — the bug that had left Plan with no style
+// guard and no personal facts. Returns the non-empty blocks in priority
+// order (creator's own words first, then saved/shipped exemplars, then the
+// stylometric fingerprint, then the mined denylist). Caller joins with
+// "\n\n" and supplies its own profile-context line + voice anchor.
+function buildVoiceBlocks(profile, vaultPatterns, personalDenylist) {
+  const blocks = [];
+  const samples     = buildVoiceSamplesBlock(profile);
+  const exemplars   = buildVaultExemplarsBlock(vaultPatterns);
+  // [PROVEN-FOR-YOU] Content-performance signal from the creator's own logged
+  // results (top format/platform by engagement). Sits right after exemplars:
+  // exemplars show HOW they sound, this shows WHAT has actually worked. Empty
+  // string unless there's enough logged signal AND learn_from_results is on
+  // (gated upstream in chat.js, which nulls performanceInsights otherwise).
+  // Lives here so both buildSystemPrompt and buildPlan pick it up identically.
+  const performance = vaultPatterns ? formatPerformanceForPrompt(vaultPatterns.performanceInsights) : "";
+  const fingerprint = buildVoiceFingerprintBlock(profile);
+  const denylist    = formatDenylistForPrompt(personalDenylist);
+  if (samples)     blocks.push(samples);
+  if (exemplars)   blocks.push(exemplars);
+  if (performance) blocks.push(performance);
+  if (fingerprint) blocks.push(fingerprint);
+  if (denylist)    blocks.push(denylist);
+  return blocks;
+}
+
 // [VOICE-FINGERPRINT] Derive the per-user voice fingerprint from the
 // creator's authored voice references — sampleCaption + voiceSamples.
 // Returns "" when there isn't enough text to produce stable per-100
@@ -146,6 +217,18 @@ function captionPlaybookContext(playbook, platform) {
   if (arr(entry.top_signals).length)   lines.push("optimise for " + entry.top_signals.join(", "));
   if (!lines.length) return "";
   return " " + platform.toUpperCase() + " PLAYBOOK: " + lines.join("; ") + ".";
+}
+
+function longPostPlaybookContext(playbook) {
+  const entry = playbook && playbook.LinkedIn;
+  if (!entry) return "";
+  const lines = [];
+  if (entry.hook_window)                 lines.push("Hook window: " + entry.hook_window);
+  if (arr(entry.top_signals).length)     lines.push("Optimise for these signals: " + entry.top_signals.join(", "));
+  if (arr(entry.format_priority).length) lines.push("Preferred formats: "          + entry.format_priority.join(", "));
+  if (entry.notes)                       lines.push("Notes: "                      + entry.notes);
+  if (!lines.length) return "";
+  return "\n\nLINKEDIN PLAYBOOK (current best practice from monthly research — treat these as authoritative when they conflict with generic long-form advice): " + lines.join(" | ") + ".";
 }
 
 function scanPlaybookContext(playbook) {
@@ -608,7 +691,7 @@ function buildCriticalFactsBlock(profile) {
 
   if (facts) {
     sections.push(
-      "CRITICAL PERSONAL FACTS — NEVER CONTRADICT. The following facts about the user are non-negotiable. Every output must be consistent with them. If you cannot incorporate a topic without violating these facts, omit the topic entirely rather than guess. FACTS: "
+      "CRITICAL PERSONAL FACTS — NEVER CONTRADICT, NEVER INVENT. The following facts about the user are non-negotiable; every output must be consistent with them and you must not add facts beyond them. Treat them as CONTEXT, not a checklist: reference only the fact(s) actually relevant to the specific piece you're writing — do NOT force them all in. But never present a partial subset of a set in a way that misrepresents it — e.g., if the creator has three children, never phrase things so it sounds like there are two; name the specific one(s) relevant to the piece, or refer to the group without a count. If a topic can't be handled without violating these facts, omit the topic rather than guess. FACTS: "
       + facts
     );
   }
@@ -669,50 +752,14 @@ function buildSystemPrompt(profile, role, vaultPatterns, personalDenylist) {
     if (perUser) perUser += " ";
     perUser += "CREATOR PROFILE (follow every rule strictly): " + ctx;
   }
-  // [VAULT-EXEMPLARS] Few-shot voice references — concrete examples of
-  // posts the creator has saved or shipped, with the strongest signals
-  // (saved + posted, performed well) listed first. Sits between the
-  // profile description and the voice anchor: profile tells the model
-  // WHO the creator is in the abstract, exemplars show HOW they sound
-  // in practice, anchor reinforces the imperative. Empty string when
-  // there are no usable exemplars so the concat is a clean no-op.
-  const exemplarsBlock = buildVaultExemplarsBlock(vaultPatterns);
-  if (exemplarsBlock) {
+  // [VOICE-STACK] Unified voice blocks — the creator's own words, saved/
+  // shipped exemplars, stylometric fingerprint, and mined denylist, in that
+  // priority order. Shared verbatim with buildPlan via buildVoiceBlocks so
+  // the two composers can't drift. Each block is empty-string-safe so a
+  // brand-new account simply gets fewer of them.
+  for (const block of buildVoiceBlocks(profile, vaultPatterns, personalDenylist)) {
     if (perUser) perUser += "\n\n";
-    perUser += exemplarsBlock;
-  }
-  // [PROVEN-FOR-YOU] Content-performance signal derived from the creator's own
-  // logged results (top format/platform by engagement). Sits right after the
-  // exemplars: exemplars show HOW they sound, this shows WHAT has actually
-  // worked. Empty string unless there's enough logged signal AND the creator
-  // opted into learn_from_results (gated upstream in chat.js, which nulls
-  // performanceInsights otherwise), so this concat is a clean no-op when off.
-  const performanceBlock = vaultPatterns ? formatPerformanceForPrompt(vaultPatterns.performanceInsights) : "";
-  if (performanceBlock) {
-    if (perUser) perUser += "\n\n";
-    perUser += performanceBlock;
-  }
-  // [VOICE-FINGERPRINT] Stylometric anchors derived from the user's own
-  // sampleCaption + voiceSamples. Concrete categorical labels + numeric
-  // per-100-word rates ("Heavy contractions ~6/100. Short sentences avg
-  // 7 words.") give the model explicit targets that the qualitative
-  // "sample caption: ..." block can't. Empty string for profiles
-  // without enough authored voice reference (< 20 words combined).
-  const fingerprintBlock = buildVoiceFingerprintBlock(profile);
-  if (fingerprintBlock) {
-    if (perUser) perUser += "\n\n";
-    perUser += fingerprintBlock;
-  }
-  // [PERSONAL-DENYLIST] Self-tuning per-creator banned vocabulary,
-  // mined from the user's own edit history. Sits next to the
-  // fingerprint because both are "this is the creator's voice"
-  // signal — the fingerprint says what TO sound like, the denylist
-  // says what NOT to. Empty string when the user has fewer than a
-  // handful of edits or no repeated removal patterns.
-  const denylistBlock = formatDenylistForPrompt(personalDenylist);
-  if (denylistBlock) {
-    if (perUser) perUser += "\n\n";
-    perUser += denylistBlock;
+    perUser += block;
   }
   // [VOICE-ANCHOR] Append only when there's actual creator context to
   // anchor to — anchoring to "THIS creator" with no profile would be
@@ -844,12 +891,6 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   const optimalDaysCtx = vaultPatterns && vaultPatterns.optimalDays
     ? formatOptimalDaysForPrompt(vaultPatterns.optimalDays)
     : "";
-  // [PROVEN-FOR-YOU] "What content is working" for this creator (top
-  // format/platform by their own logged engagement). Empty string unless
-  // there's real signal and learn_from_results is on (gated in chat.js).
-  const performanceCtx = vaultPatterns
-    ? formatPerformanceForPrompt(vaultPatterns.performanceInsights)
-    : "";
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
   const historyCtx  = planHistoryContext(history);
@@ -874,11 +915,9 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     }
     vaultCtx += " Weight similar styles higher in this week's plan.";
   }
-  // [VAULT-EXEMPLARS] Few-shot voice references — up to 5 actual items the
-  // creator saved or posted, with the strongest signals (saved + posted,
-  // performed well) first. Empty string when no exemplars are available so
-  // the concat below is a no-op.
-  const vaultExemplarsBlock = buildVaultExemplarsBlock(vaultPatterns);
+  // [VOICE-STACK] Vault exemplars, fingerprint, denylist, and the creator's
+  // own writing are now assembled below via buildVoiceBlocks (shared with
+  // every other surface), so they're no longer built inline here.
 
   const profileCtx = buildProfileCtx(profile);
   // [INTEL 3] Industry-specific format mix is keyed off the user's niche.
@@ -909,6 +948,12 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + "Always return valid JSON only — no markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
     + LOCALE_LINE + " "
+    // [VOICE-STACK] Anti-AI-tells style guard (em-dash discipline, banned
+    // AI-tell phrasings, human voice register). This was historically only
+    // in the composeSystemPrompt path, so Plan cards — the highest-volume
+    // surface — were generated WITHOUT it. Shared across all plan users, so
+    // it stays in the cacheable tier.
+    + STYLE_GUARD + " "
     // [INTEL 3] Format diversity rules + the fixed format vocabulary land
     // in the systemPrompt because they are constraints on every plan, not
     // per-request data.
@@ -960,37 +1005,23 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // profileCtx — without a profile the model has nothing creator-specific
   // to anchor to, so the line would land as noise. Anchors apply to the
   // ~12 active users today and every paid user post-launch.
-  let perUserSystemPrompt = "\n\n"
-    + (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
+  // [VOICE-STACK] Critical personal facts (kids, the never-assume list, the
+  // natural-touchpoints list) lead the per-user block — historically these
+  // were ONLY on the composeSystemPrompt path, so Plan never saw them.
+  // Treated as relevance-gated context inside buildCriticalFactsBlock (use
+  // what fits this piece; never a partial subset of a set), not a
+  // "mention-everything" rule.
+  const criticalFactsBlock = buildCriticalFactsBlock(profile);
+  let perUserSystemPrompt = "\n\n";
+  if (criticalFactsBlock) perUserSystemPrompt += criticalFactsBlock + "\n\n";
+  perUserSystemPrompt += (profileCtx ? "Creator context: " + profileCtx : "No creator profile set — generate a general plan.")
     + vaultCtx;
-  // [VAULT-EXEMPLARS] Concrete voice references go AFTER the summary stats
-  // but BEFORE the voice anchor — exemplars give the model material to
-  // anchor to, then the anchor reinforces the imperative ("every word
-  // should sound like THIS creator"). Block is empty for users with no
-  // saves or logged results, keeping the prompt clean for new accounts.
-  if (vaultExemplarsBlock) {
-    perUserSystemPrompt += "\n\n" + vaultExemplarsBlock;
+  // [VOICE-STACK] Same unified voice blocks as every other surface (own
+  // words → exemplars → fingerprint → denylist), via buildVoiceBlocks.
+  for (const block of buildVoiceBlocks(profile, vaultPatterns, personalDenylist)) {
+    perUserSystemPrompt += "\n\n" + block;
   }
-  // [VOICE-FINGERPRINT] Stylometric anchors from the user's authored
-  // voice reference (sampleCaption + voiceSamples). Goes between the
-  // exemplars and the voice anchor: exemplars show the model what to
-  // sound like, fingerprint tells it which specific axes matter most
-  // for this creator. Empty for new profiles without enough reference
-  // text.
-  const fingerprintBlock = buildVoiceFingerprintBlock(profile);
-  if (fingerprintBlock) {
-    perUserSystemPrompt += "\n\n" + fingerprintBlock;
-  }
-  // [PERSONAL-DENYLIST] Per-creator banned vocabulary mined from the
-  // user's own edits. Sits next to the fingerprint — both are "this
-  // is the voice of THIS creator" signal, just opposite sides of the
-  // same coin (fingerprint says what TO sound like, denylist says
-  // what NOT to). Empty for users with no repeated removal patterns.
-  const denylistBlock = formatDenylistForPrompt(personalDenylist);
-  if (denylistBlock) {
-    perUserSystemPrompt += "\n\n" + denylistBlock;
-  }
-  if (profileCtx) {
+  if (profileCtx || criticalFactsBlock) {
     perUserSystemPrompt += "\n\n" + VOICE_ANCHOR;
   }
 
@@ -1069,9 +1100,6 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
         : "")
     + " Create " + cardRange.min + "-" + cardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
     + (optimalDaysCtx ? "\n\n" + optimalDaysCtx + "\n\nWhen distributing cards across the week, weight the optimal days above heavily — they're either the creator's own best-performing days (when 'performs best on' is shown) or industry rule-of-thumb for the platform (when 'general best days' is shown). The user-history signal is the stronger one when present." : "")
-    // [PROVEN-FOR-YOU] Bias this week's format/platform mix toward what has
-    // actually earned engagement for THIS creator (from their logged results).
-    + (performanceCtx ? "\n\n" + performanceCtx : "")
     // [REST-DAY-LLM] Generate one tip per day NOT receiving a card. Tips
     // must be PERSONAL to this creator (niche, goal, audience, last
     // week's wins / losses if any), not generic. Four type categories
@@ -1370,6 +1398,15 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
     : [];
   const tone        = (params.tone && typeof params.tone === "string")
     ? params.tone.trim() : "";
+  // [POST-GUIDANCE] Optional free-text the creator types before generating —
+  // specific instructions for THIS post (angle to take, something to mention
+  // or avoid, audience to speak to). Clamped so a pasted essay can't blow the
+  // prompt budget. Rendered as a high-priority block below the seed.
+  const guidance    = (params.guidance && typeof params.guidance === "string")
+    ? params.guidance.trim().slice(0, 800) : "";
+  const guidanceBlock = guidance
+    ? "\n\n## SPECIFIC GUIDANCE FROM THE CREATOR (follow this closely for this post — it overrides generic defaults, but never the voice/compliance rules above)\n" + guidance
+    : "";
   // Pull whatever the planner already produced. The full plan flow
   // emits hook / body / closing on long_form_text cards; if the user
   // hits this from a non-plan flow we still want to work with
@@ -1397,8 +1434,9 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
   const userPrompt = ""
     + "Write a complete LinkedIn long-form text post that builds on the seed below. "
     + "This is a STANDALONE LinkedIn post — no image, no video, narrative writing only. "
-    + "Target length: " + targetWords + " words. " + lengthHint + "\n\n"
-    + seedBlock + "\n\n"
+    + "Target length: " + targetWords + " words. " + lengthHint
+    + longPostPlaybookContext(playbook) + "\n\n"
+    + seedBlock + guidanceBlock + "\n\n"
     + "FORMAT — LinkedIn-native long-form. The body is a single string with line breaks (\\n) between paragraphs and (occasionally) before a punch line. Do NOT use markdown headers, bold/italics, or bullet styling — LinkedIn strips most of it. White space between paragraphs IS the formatting.\n\n"
     + "Structure:\n"
     + "  - HOOK: 1-2 sentences. First line MUST land before LinkedIn's 'see more' fold (~210 characters). Pattern-interrupt the feed; specific over clever. No emoji-heavy openers, no \"in today's world\" framings (already banned in STYLE_GUARD).\n"
@@ -1454,6 +1492,13 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
     ? params.supportingPoints.map(s => String(s || "").trim()).filter(Boolean)
     : [];
   const tone = (params.tone && typeof params.tone === "string") ? params.tone.trim() : "";
+  // [POST-GUIDANCE] Optional per-post instructions from the creator (see
+  // buildLongPost). Clamped + rendered as a high-priority block below the seed.
+  const guidance = (params.guidance && typeof params.guidance === "string")
+    ? params.guidance.trim().slice(0, 800) : "";
+  const guidanceBlock = guidance
+    ? "\n\n## SPECIFIC GUIDANCE FROM THE CREATOR (follow this closely for this post — it overrides generic defaults, but never the voice/compliance rules above)\n" + guidance
+    : "";
   const lengthTarget = (params.length === "short" || params.length === "long")
     ? params.length
     : "medium";
@@ -1478,7 +1523,7 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
   const userPrompt = ""
     + "Write a complete blog post on the topic below in the creator's voice. "
     + "Target length: " + targetWords + " words. " + lengthHint + "\n\n"
-    + seedBlock + "\n\n"
+    + seedBlock + guidanceBlock + "\n\n"
     + "FORMAT — long-form blog post. Use clean structural elements: a punchy title, an opening intro paragraph that earns the click, 4-6 sections each with a short heading + 2-4 paragraphs of substance, and a closing conclusion that resolves the through-line. No markdown styling inside the body strings (no **bold** or *italic*) — the creator's CMS will handle styling. Paragraph breaks via \\n between paragraphs. Headings live in their own `heading` field per section, never inline.\n\n"
     + "Structure rules:\n"
     + "  - TITLE: 6-12 words. Specific over clever. Should make the click obvious from the topic alone.\n"
@@ -1593,27 +1638,56 @@ function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _
   };
 }
 
+// [SCAN-FORMAT] Post-type-aware scan output. The scan no longer emits one
+// generic paragraph caption regardless of how the asset should be posted.
+// It picks the single best POST TYPE (Story / Reel / Feed post / Carousel /
+// Video / LinkedIn post) for the asset on the best platform, then generates
+// content SIZED to that type — a Story never gets a 3-paragraph caption —
+// plus a short "also works as" list so the creator sees the other ways to
+// use the same asset without paying for full content on each. Shared by the
+// image and video-frame builders (they differ only in the noun and the
+// video-only thumbnailNote field).
+const SCAN_POST_TYPE_GUIDE =
+  "\n\nPOST-TYPE SIZING — pick ONE best post_type for this asset on the chosen platform, then size every field to it:\n"
+  + "- Story (IG/FB): ephemeral, vertical. overlay_text = a few words max to put ON the visual; sticker_idea = one poll/question/quiz prompt; caption = ONE short line or empty; hashtags 0-3. NEVER a paragraph.\n"
+  + "- Reel / Video / Short (IG/TikTok/YouTube): hook = the first-2-seconds on-screen line; overlay_text = optional short on-screen beat; audio_idea = a trending-sound or audio direction; caption = 1-2 lines; hashtags 3-6.\n"
+  + "- Feed post (IG/FB single image): caption = 2-4 sentences within the platform's caption_limit; hashtags 5-8. This is the only type that gets a fuller caption.\n"
+  + "- Carousel (IG/LinkedIn): slides = 3-5 short slide headlines; caption = 1-2 lines; hashtags 3-6.\n"
+  + "- LinkedIn post: hook + a short professional caption (2-3 sentences); hashtags 0-3.\n"
+  + "Omit any field that does not apply to the chosen post_type (e.g. no sticker_idea unless it's a Story).";
+
+function scanResultSchema(isVideo) {
+  return "\n\nReply ONLY with valid JSON (no markdown): {"
+    + "\"score\":\"X.X out of 10\","
+    + "\"platform\":\"best platform\","
+    + "\"post_type\":\"one of: Story | Reel | Feed post | Carousel | Video | LinkedIn post — the single best way to post THIS asset\","
+    + "\"why_format\":\"one sentence: why this asset suits that post type over the others\","
+    + "\"hook\":\"scroll-stopping opening line under 10 words\","
+    + "\"overlay_text\":\"OPTIONAL short on-screen text for Story/Reel — a few words; omit for Feed/Carousel\","
+    + "\"sticker_idea\":\"OPTIONAL Story only — one poll/question/quiz sticker prompt; omit otherwise\","
+    + "\"audio_idea\":\"OPTIONAL Reel/Video only — a trending-audio or sound direction; omit otherwise\","
+    + "\"slides\":[\"OPTIONAL Carousel only — 3-5 short slide headlines; omit otherwise\"],"
+    + "\"caption\":\"caption SIZED to post_type per the sizing rules above — never a 3-paragraph caption on a Story\","
+    + "\"hashtags\":[\"count sized to post_type; plain words, NO '#' prefix\"],"
+    + "\"alt_formats\":[{\"post_type\":\"another way to use this asset\",\"note\":\"one line on how to post it that way instead\"}],"
+    + "\"tip\":\"one specific tip to maximize this post on the chosen platform + post type\","
+    + "\"analysis\":\"2 sentences on why this will perform — cite the algorithmic signal\","
+    + (isVideo ? "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"," : "")
+    + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}";
+}
+
 function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
-  // Scan outputs a single ready-to-post caption, so the same Fair Housing /
-  // FDA rules apply — but per the v1 scope decision (Recommended), only the
-  // prompt-level block fires on scans; the post-generation scrub stays
-  // wired to plan / script / caption paths.
+  // Only the prompt-level block fires on scans; the post-generation scrub
+  // stays wired to plan / script / caption paths.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
   const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist);
-  const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows."
+  const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows — then recommend the single best POST TYPE for it and write content sized to that type."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
     + scanDetailsContext(params)
-    + "\n\nReply ONLY with valid JSON (no markdown): "
-    + "{\"score\":\"X.X out of 10\","
-    + "\"platform\":\"best platform\","
-    + "\"hook\":\"scroll-stopping opening line under 10 words\","
-    + "\"caption\":\"full ready-to-post caption sized to the platform's caption_limit\","
-    + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
-    + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
-    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\","
-    + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}"
+    + SCAN_POST_TYPE_GUIDE
+    + scanResultSchema(false)
     // [LEARN-FROM-EDITS] Voice signal — the hook + caption fields
     // this scan emits are the same field types the user routinely
     // edits on plan cards, so the diffs apply directly.
@@ -1622,39 +1696,28 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    maxTokens: 1500,
+    maxTokens: 2000,
     cost:      CREDIT_COSTS.scan,
   };
 }
 
 function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
-  // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
-  // Same v1 scope as buildScanImage — prompt-level block only, no scrub.
+  // [COMPLIANCE 1] Same scope as buildScanImage — prompt-level block only.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
   const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist);
-  const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows."
+  const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows — then recommend the single best POST TYPE for it and write content sized to that type."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
     + scanDetailsContext(params)
-    + "\n\nReply ONLY with valid JSON (no markdown): "
-    + "{\"score\":\"X.X out of 10\","
-    + "\"platform\":\"best platform\","
-    + "\"hook\":\"scroll-stopping opening line under 10 words\","
-    + "\"caption\":\"full ready-to-post caption sized to the platform's caption_limit\","
-    + "\"hashtags\":[\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"], (hashtag strings MUST NOT include the '#' prefix — plain words only)"
-    + "\"tip\":\"one specific tip to maximize this post on the chosen platform\","
-    + "\"analysis\":\"2 sentences on why this will perform on the chosen platform — cite the algorithmic signal\","
-    + "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\","
-    + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}"
-    // [LEARN-FROM-EDITS] Same rationale as buildScanImage — the
-    // hook/caption fields emitted here are exactly the ones the
-    // user edits on plan cards.
+    + SCAN_POST_TYPE_GUIDE
+    + scanResultSchema(true)
+    // [LEARN-FROM-EDITS] Same rationale as buildScanImage.
     + formatEditsForPrompt(recentEdits);
   return {
     systemPrompt,
     userPrompt,
     model:     MODEL_SONNET,
-    maxTokens: 1500,
+    maxTokens: 2000,
     cost:      CREDIT_COSTS.scan,
   };
 }

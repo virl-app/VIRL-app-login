@@ -1,0 +1,27 @@
+name: checks
+
+# Deterministic, no-network regression gates. Runs on every PR and on pushes
+# to main so a change can't silently break the app shell, the compliance
+# floor, or — the reason this workflow exists — the voice stack. None of these
+# call the LLM or need secrets, so they're fast and reproducible.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # check:index needs sucrase (devDependency); the others are pure Node.
+      - run: npm install --no-audit --no-fund
+      - name: index.html parses
+        run: npm run check:index
+      - name: compliance floor + scrubber
+        run: npm run check:compliance
+      - name: voice stack present on all surfaces + drift scorer sane
+        run: npm run check:voice

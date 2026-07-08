@@ -13,13 +13,13 @@ import { fetchRecentTrendStrings }   from "./_lib/recent-trends.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
 import { fetchEditsForMining, mineDenylistFromEdits } from "./_lib/personal-denylist.js";
-import { sendEmail }                 from "./_lib/email-send.js";
+import { sendEmail, hasSent }        from "./_lib/email-send.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
-import { sendLoopsEvent, sendLoopsEventOnce } from "./_lib/loops.js";
+import { sendLoopsEvent, sendLoopsEventOnce, fireCreditNudge } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
-import { computeVoiceDrift, extractVoiceText } from "./_lib/voice-drift.js";
+import { computeVoiceDrift, extractVoiceText, FEATURE_NORMS } from "./_lib/voice-drift.js";
 import { selectVaultExemplars, exemplarsAsVoiceText } from "./_lib/vault-exemplars.js";
 import { computeOptimalDays } from "./_lib/optimal-days.js";
 import { computePerformanceInsights } from "./_lib/performance-insights.js";
@@ -32,6 +32,47 @@ const EMAIL_VIA_LOOPS = process.env.EMAIL_VIA_LOOPS === "true";
 // Free trial length in days. Mirrored in index.html — keep in sync.
 const TRIAL_DAYS = 14;
 const PAID_PLANS = ['founding', 'pro', 'standard'];
+
+// [VOICE-DRIFT-GATE] Composite drift score (0 identical … 100 maximally
+// drifted; see voice-drift.js) at or above which a non-streaming generation
+// gets ONE corrective retry. Deliberately conservative — the score is a
+// relative signal, so we only act on clear drift to keep the extra model
+// call rare. Tune from the virl_voice_drift_retry telemetry.
+const DRIFT_RETRY_THRESHOLD = 55;
+
+// Human-readable correction for each CONTROLLABLE stylometric axis. Used to
+// turn a drift result into a targeted retry instruction instead of a vague
+// "sound more like them." Only axes the model can actually steer at write
+// time are listed; norms come from voice-drift.js (single source of truth).
+const DRIFT_AXIS_HINTS = {
+  emdashRate:   "use far fewer em-dashes (—) — this creator rarely uses them",
+  avgSentLen:   "match the creator's sentence length (shorter, varied sentences if theirs are short)",
+  contractRate: "use contractions at the creator's rate — don't read more formal than they do",
+  exclamRate:   "match how often the creator uses exclamation points",
+  questionRate: "match how often the creator asks questions",
+  emojiRate:    "match the creator's emoji usage — don't add emoji they wouldn't",
+  allcapsRate:  "match the creator's use of ALL-CAPS emphasis",
+};
+// Build a targeted voice-correction instruction from a drift result: rank the
+// controllable axes by how far past their norm they drifted, keep the worst
+// few, and phrase them as concrete directions. Returns "" when nothing stands
+// out (caller still retries on the composite score, just without specifics).
+function voiceCorrectionInstruction(drift) {
+  let hints = [];
+  if (drift && drift.deltas) {
+    hints = Object.keys(DRIFT_AXIS_HINTS)
+      .map(function (axis) { return { axis: axis, over: (drift.deltas[axis] || 0) / (FEATURE_NORMS[axis] || 1) }; })
+      .filter(function (x) { return x.over >= 1; })
+      .sort(function (a, b) { return b.over - a.over; })
+      .slice(0, 3)
+      .map(function (x) { return DRIFT_AXIS_HINTS[x.axis]; });
+  }
+  let instr = "IMPORTANT — VOICE CORRECTION. Your previous draft drifted from how this creator actually writes. "
+    + "Regenerate the SAME content — same topic, structure, and exact JSON shape — but match the creator's own writing samples (shown in the system prompt) much more closely in rhythm, vocabulary, and punctuation.";
+  if (hints.length) instr += " Specifically: " + hints.join("; ") + ".";
+  instr += " Return only the corrected JSON — do not mention this instruction.";
+  return instr;
+}
 
 // Gen types that can be backed by inline fresh-trends research and the
 // `credits` column that gates each one for free-trial users. Paid users
@@ -120,6 +161,11 @@ async function recordUsageEvent(userId, usage) {
         // (e.g. "pause_turn", "refusal") show up without a code change.
         truncated:          !!usage.truncated,
         stop_reason:        usage.stop_reason || null,
+        // [VOICE-DRIFT-GATE] Null on plan/streaming + every non-retry row.
+        drift_retried:        usage.drift_retried || false,
+        drift_score_before:   usage.drift_score_before  != null ? usage.drift_score_before  : null,
+        drift_score_after:    usage.drift_score_after   != null ? usage.drift_score_after   : null,
+        drift_retry_cost_usd: usage.drift_retry_cost_usd != null ? usage.drift_retry_cost_usd : null,
       }),
     });
     if (!res.ok) {
@@ -641,12 +687,16 @@ async function maybeSendFirstPlanEmail(userId) {
   // and the existing precedent in api/cron/email-triggers.js (which fires
   // `thirtyDayMilestone`). Cowork's `first_plan_celebrated` Loop in the
   // Loops dashboard is wired to listen for this exact name.
+  // [CROSS-PATH-DEDUPE] The Resend row lives at
+  // (template=first_plan_generated, dedupe_key=first_plan_generated) and the
+  // Loops row lives at (template=loops:firstPlanGenerated,
+  // dedupe_key=firstPlanGenerated). The unique index on
+  // (user_id, template, dedupe_key) does NOT collide across those two rows,
+  // so a user who received one path before EMAIL_VIA_LOOPS was flipped would
+  // otherwise receive the other path's copy on their next plan. Check the
+  // opposite path's slot before firing.
   if (EMAIL_VIA_LOOPS) {
-    // [LOOPS-DEDUPE] One-shot per user. Without dedupe, a user generating
-    // their 2nd plan (or any subsequent plan if the client-side flag was
-    // wiped) would re-fire firstPlanGenerated and Cowork's Loop would
-    // send the welcome again unless Loops dashboard dedupe is on. The
-    // email_sends claim makes this resilient to that config gap.
+    if (await hasSent(userId, "first_plan_generated", "first_plan_generated")) return;
     await sendLoopsEventOnce({
       userId,
       email:     ctx.email,
@@ -657,6 +707,7 @@ async function maybeSendFirstPlanEmail(userId) {
     return;
   }
 
+  if (await hasSent(userId, "loops:firstPlanGenerated", "firstPlanGenerated")) return;
   const tpl = firstPlanGenerated({ name: ctx.name });
   await sendEmail({
     userId,
@@ -948,7 +999,7 @@ export default async function handler(req, res) {
   const token = authHeader || bodyToken;
   if (!token) return res.status(401).json({ error: 'Sign in required.' });
 
-  let userId, createdAt;
+  let userId, createdAt, email;
   try {
     const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
       headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_SERVICE_KEY },
@@ -957,6 +1008,7 @@ export default async function handler(req, res) {
     const userJson = await userRes.json();
     userId    = userJson.id;
     createdAt = userJson.created_at;
+    email     = userJson.email || null; // [CREDIT-NUDGE] for the Loops credit nudges
   } catch (e) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
@@ -989,6 +1041,13 @@ export default async function handler(req, res) {
   let isPaid = false;
   let currentCredits = 0;
   let freshTrends = { plan: 0, scan: 0, caption: 0 };
+  // [CREDIT-NUDGE] Hoisted out of the read-block try below so the post-
+  // deduction Loops nudge can see the comp state + the effective reset_at
+  // (the cycle key). compActive gates nudges off comped users; resetAt is the
+  // current cycle boundary (post lazy-reset when one fired this request).
+  let compActive = false;
+  let compAllowance = null;
+  let resetAt = null;
   try {
     const credRes = await fetch(
       `${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`
@@ -1002,6 +1061,7 @@ export default async function handler(req, res) {
     plan           = row.plan;
     isPaid         = PAID_PLANS.includes(plan);
     currentCredits = row.credits;
+    resetAt        = row.reset_at || null; // [CREDIT-NUDGE] effective unless the lazy reset below moves it
 
     // [COMP] Tester comp — a time-boxed per-user weekly-allowance override that
     // is independent of plan/tier/Stripe (see migrations/012). While live, the
@@ -1009,10 +1069,10 @@ export default async function handler(req, res) {
     // It self-reverts: once comp_expires_at passes, the refill below and the
     // trial gate fall back to the normal plan-derived behavior with no cleanup.
     const compExpiresMs = row.comp_expires_at ? Date.parse(row.comp_expires_at) : NaN;
-    const compActive    = !Number.isNaN(compExpiresMs)
+    compActive    = !Number.isNaN(compExpiresMs)
       && compExpiresMs > Date.now()
       && row.comp_weekly_credits != null;
-    const compAllowance = compActive ? row.comp_weekly_credits : null;
+    compAllowance = compActive ? row.comp_weekly_credits : null;
     // Columns default to 1 in the migration; coalesce here for the
     // pre-migration window where they may be null on existing rows.
     freshTrends = {
@@ -1049,6 +1109,7 @@ export default async function handler(req, res) {
       });
       currentCredits = newCredits;
       freshTrends = { plan: 1, scan: 1, caption: 1 };
+      resetAt = newResetAt; // [CREDIT-NUDGE] this request opened a new cycle
     }
 
     // Trial enforcement: free users get TRIAL_DAYS from signup. The client
@@ -1356,6 +1417,31 @@ export default async function handler(req, res) {
       if (strict && newBalance === null) {
         return res.status(402).json({ error: 'Not enough credits this week.' });
       }
+
+      // [CREDIT-NUDGE] After a successful deduction, nudge free/trial users who
+      // just crossed a weekly-credit threshold so Loops sends the matching
+      // email. Free/trial ONLY — never paid or comped (the Loops workflows
+      // have no audience filter, so this server guard is the source of truth).
+      // Deduped once-per-cycle inside fireCreditNudge via email_sends (keyed on
+      // reset_at's date). Fire-and-forget: it never throws and completes during
+      // the model call below, so it adds no latency and can't fail the response.
+      if (!isPaid && !compActive && typeof newBalance === 'number') {
+        const weeklyAllowance = compActive ? compAllowance : (isPaid ? 150 : 20);
+        const cycleKey  = (resetAt || '').slice(0, 10);
+        const nudgeCtx  = {
+          userId, email,
+          name:            (profile && profile.name) || '',
+          plan,
+          newBalance,
+          weeklyAllowance,
+          resetAt,
+        };
+        if (newBalance <= 0) {
+          fireCreditNudge({ eventName: 'creditsExhausted', template: 'credits_exhausted', cycleKey, ctx: nudgeCtx }).catch(() => {});
+        } else if (newBalance <= Math.floor(0.2 * weeklyAllowance)) {
+          fireCreditNudge({ eventName: 'creditsLow', template: 'credits_low', cycleKey, ctx: nudgeCtx }).catch(() => {});
+        }
+      }
     }
     // Decrement the fresh-trends counter for free users that just
     // consumed their freebie. Paid users skip — they have no cap.
@@ -1584,6 +1670,80 @@ export default async function handler(req, res) {
       }
     }
 
+    // [VOICE-DRIFT-GATE] One corrective retry when the draft drifts too far
+    // from the creator's voice. Non-streaming path only (we have the full
+    // text in hand; the streaming plan path can't un-send cards). We score
+    // stylometric drift against the user's reference and, if it's over the
+    // threshold, regenerate ONCE with a targeted correction (the drifted
+    // attempt + the specific axes to fix), then keep whichever attempt scored
+    // lower — a retry can never make voice worse. Tokens fold into the
+    // accumulators above so usage/billing stays accurate. No-ops when the
+    // user has no voice reference, when the draft is too short/garbled to
+    // score, or when the first draft was truncated (handled above).
+    // [VOICE-DRIFT] Reference is reused by the telemetry block further down.
+    const voiceReference = buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars);
+    let driftRetried  = false;
+    let driftBefore   = null;
+    let driftAfter    = null;
+    let driftRetryCost = null; // marginal est. USD of the extra retry call
+    if (voiceReference && !truncated) {
+      try {
+        const firstText  = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+        const firstDrift = computeVoiceDrift(extractVoiceText(JSON.parse(firstText)), voiceReference);
+        if (firstDrift && firstDrift.score >= DRIFT_RETRY_THRESHOLD) {
+          driftBefore = firstDrift.score;
+          const correctedPayload = {
+            ...payload,
+            messages: [
+              ...payload.messages,
+              { role: 'assistant', content: firstText },
+              { role: 'user',      content: voiceCorrectionInstruction(firstDrift) },
+            ],
+          };
+          const driftRes = await callAnthropic(correctedPayload);
+          if (driftRes.ok) {
+            const driftData = await driftRes.json();
+            // Anthropic billed for this call regardless of whether we keep it.
+            inputTokensAcc  += (driftData.usage && driftData.usage.input_tokens)              || 0;
+            outputTokensAcc += (driftData.usage && driftData.usage.output_tokens)             || 0;
+            cacheReadAcc    += (driftData.usage && driftData.usage.cache_read_input_tokens)     || 0;
+            cacheWriteAcc   += (driftData.usage && driftData.usage.cache_creation_input_tokens) || 0;
+            // Marginal cost of the retry call alone (for dashboard
+            // attribution) — billed whether or not we keep the result.
+            driftRetryCost = estimateCostUSD({
+              model:              selectedModel,
+              input_tokens:       (driftData.usage && driftData.usage.input_tokens)              || 0,
+              output_tokens:      (driftData.usage && driftData.usage.output_tokens)             || 0,
+              cache_read_tokens:  (driftData.usage && driftData.usage.cache_read_input_tokens)     || 0,
+              cache_write_tokens: (driftData.usage && driftData.usage.cache_creation_input_tokens) || 0,
+            });
+            driftRetried = true;
+            try {
+              const retryText  = driftData.content.filter(b => b.type === 'text').map(b => b.text).join('');
+              const retryDrift = computeVoiceDrift(extractVoiceText(JSON.parse(retryText)), voiceReference);
+              driftAfter = retryDrift ? retryDrift.score : null;
+              // Keep the retry ONLY if it parsed, isn't truncated, and scored
+              // strictly better. Otherwise the original draft stands.
+              if (retryDrift && driftData.stop_reason !== 'max_tokens' && retryDrift.score < firstDrift.score) {
+                data       = driftData;
+                stopReason = driftData.stop_reason || null;
+                truncated  = stopReason === 'max_tokens';
+              }
+            } catch (e) { /* retry unparseable — keep original draft */ }
+          }
+        }
+      } catch (e) { /* original unparseable / featurize failed — skip the gate */ }
+      if (driftRetried) {
+        console.log('virl_voice_drift_retry', JSON.stringify({
+          generationType,
+          model:        selectedModel,
+          score_before: driftBefore,
+          score_after:  driftAfter,
+          kept:         (driftAfter != null && driftBefore != null && driftAfter < driftBefore) ? 'retry' : 'original',
+        }));
+      }
+    }
+
     let clientUsage = null;
     if (data.usage) {
       // [NO-TRUNCATION] Use the accumulated tokens (which include the
@@ -1598,6 +1758,12 @@ export default async function handler(req, res) {
         cache_write_tokens:  cacheWriteAcc,
         truncated,
         stop_reason:         stopReason,
+        // [VOICE-DRIFT-GATE] Per-generation drift-gate outcome for the admin
+        // tracker. drift_retried false on the vast majority of rows.
+        drift_retried:       driftRetried,
+        drift_score_before:  driftBefore,
+        drift_score_after:   driftAfter,
+        drift_retry_cost_usd: driftRetryCost,
       };
       console.log('virl_usage', JSON.stringify(usage));
       // [STABILITY] Awaited (was fire-and-forget) so the milestone email
@@ -1656,8 +1822,9 @@ export default async function handler(req, res) {
     // [VOICE-DRIFT] Mirrors the streaming-path block. Independent parse so a
     // compliance-disabled niche still gets telemetry, and a malformed JSON
     // payload here stays silent (the original `text` is returned untouched
-    // and the client's extractJSON deals with recovery).
-    const voiceReference = buildVoiceReference(profile, gatedVaultPatterns && gatedVaultPatterns.exemplars);
+    // and the client's extractJSON deals with recovery). `voiceReference` was
+    // computed above for the drift gate; this logs the FINAL (possibly
+    // corrected) draft's score so trend lines reflect what the user received.
     if (voiceReference && text) {
       try {
         const parsedForDrift = JSON.parse(text);

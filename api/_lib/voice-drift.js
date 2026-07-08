@@ -104,7 +104,7 @@ function featurize(text) {
 // as "this axis drifted." Each feature's contribution to the score saturates
 // at its norm, so no single outlier dominates. Tuned by hand; revisit once
 // we have a week of production data.
-const FEATURE_NORMS = {
+export const FEATURE_NORMS = {
   avgSentLen:   8,
   avgWordLen:   1.5,
   contractRate: 5,
