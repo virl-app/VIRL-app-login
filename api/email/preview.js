@@ -33,6 +33,10 @@ const TEMPLATES = {
   first_plan_generated:   (uid) => T.firstPlanGenerated({ name: "Lauren" }),
   inactive_7d:            (uid) => T.inactive7Day({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   sunday_log:             (uid) => T.sundayLogNudge({ name: "Lauren", unloggedCount: 4, unsubscribeToken: makeUnsubToken(uid) }),
+  posting_reminder:       (uid) => T.postingReminder({ name: "Lauren", cards: [
+    { title: "3 morning habits that changed my routine", platform: "Instagram", postTime: "7:00 PM" },
+    { title: "Behind the scenes of my workspace", platform: "TikTok", postTime: "6:00 PM" },
+  ], unsubscribeToken: makeUnsubToken(uid) }),
   trial_day_7:            (uid) => T.trialDay7({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   inactive_30d:           (uid) => T.inactive30Day({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   renewal_upcoming:       (uid) => T.renewalUpcoming({ name: "Lauren", plan: "founding", amountUsd: 225, renewalDate: new Date(Date.now() + 7 * 86400000).toISOString() }),

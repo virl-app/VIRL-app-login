@@ -36,6 +36,15 @@ const COLOR = {
 // emails read distinctly VIRL even when forwarded.
 const BRAND_TAGLINE = "Finally, a strategy that sounds like you.";
 
+// HTML-escape untrusted values (e.g. AI-generated plan-card fields) before
+// interpolating them into an email body. Names are sanitized at their fetch
+// sites; this covers content that isn't.
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function unsubscribeFooter(unsubscribeToken) {
   // Branded footer block. Always shows the navy tagline + small VIRL
   // mark; unsubscribe link only renders for marketing sends. Account &
@@ -348,6 +357,35 @@ export function sundayLogNudge({ name, unloggedCount, unsubscribeToken }) {
     subject: `Log this week's ${noun} — ${unloggedCount} pending`,
     html:    layout({ eyebrow: "Weekly wrap", headline, body, primaryCta: { href: APP_URL + "/?tab=results", label: "Log results" }, unsubscribeToken }),
     text:    `${headline}\n\nYou have ${unloggedCount} ${noun} from this week's plan that need results logged. Takes 90 seconds.\n\nVIRL learns what's working for your audience from these numbers.\n\n${APP_URL}/?tab=results${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
+// 13b. Daily posting reminder — today's scheduled posts from the creator's
+// active plan. Fired by the daily cron ONLY on days that actually have cards
+// (rest days send nothing). Marketing/opt-out-able with an unsubscribe footer.
+// Card fields (title/platform/time) are AI-generated, so they're esc()'d.
+export function postingReminder({ name, cards, unsubscribeToken }) {
+  const list  = Array.isArray(cards) ? cards.filter(c => c && c.title) : [];
+  const count = list.length;
+  const headline = count === 1 ? "One post on deck today." : `${count} posts on deck today.`;
+  const items = list.map(c => {
+    const meta = [c.platform, c.postTime].filter(Boolean).map(esc).join(" &middot; ");
+    return `<tr><td style="padding:12px 14px;border:1px solid ${COLOR.border};border-radius:10px;background:${COLOR.bg}">`
+      + (meta ? `<div style="font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${COLOR.navy};margin-bottom:4px">${meta}</div>` : "")
+      + `<div style="font-family:Georgia,'Times New Roman',serif;font-size:16px;color:${COLOR.ink};line-height:1.3">${esc(c.title)}</div>`
+      + `</td></tr>`;
+  }).join(`<tr><td style="height:8px;line-height:8px;font-size:8px">&nbsp;</td></tr>`);
+  const body = `
+    <p style="margin:0 0 14px">${name ? name + ", here" : "Here"}'s what's on your VIRL plan for today. Post at the times below to catch your audience when they're most active.</p>
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 8px">${items}</table>`;
+  const textLines = list.map(c => {
+    const meta = [c.platform, c.postTime].filter(Boolean).join(" · ");
+    return "  • " + (meta ? meta + " — " : "") + c.title;
+  }).join("\n");
+  return {
+    subject: count === 1 ? "Today's post is ready to go" : `Today's ${count} posts are ready to go`,
+    html:    layout({ eyebrow: "Today", accent: "coral", headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Open today's plan" }, unsubscribeToken }),
+    text:    `${headline}\n\nHere's what's on your VIRL plan for today:\n\n${textLines}\n\n${APP_URL}/?tab=plan${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 

@@ -137,6 +137,33 @@ async function fetchUnloggedCount(userId) {
   } catch (e) { return 0; }
 }
 
+// Today's scheduled cards from the user's active (non-expired) plan. Matches
+// each card's weekday label ("Day N - Thu") against today's weekday. The cron
+// runs at 14:00 UTC, when every US timezone is already on the same calendar
+// day as UTC, so getUTCDay() is the correct "today" for US users. Returns []
+// when there's no active plan or nothing scheduled today.
+const WEEKDAY_ABBRS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+async function fetchTodaysCards(userId) {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/plans?user_id=eq.${userId}&select=cards,expires_at`,
+      { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    if (!res.ok) return [];
+    const rows = await res.json();
+    const plan = rows[0];
+    if (!plan || !Array.isArray(plan.cards)) return [];
+    if (plan.expires_at && Date.parse(plan.expires_at) <= Date.now()) return [];
+    const todayAbbr = WEEKDAY_ABBRS[new Date().getUTCDay()];
+    return plan.cards.filter(function (c) {
+      if (!c || !c.title) return false;
+      const parts = String(c.day || "").split(" - ");
+      const abbr  = (parts[1] || parts[0] || "").trim().slice(0, 3).toLowerCase();
+      return abbr === todayAbbr;
+    });
+  } catch (e) { return []; }
+}
+
 // Per-user dispatch — figures out which (if any) trigger applies today.
 async function processUser(user, todayIsSunday, weekKey) {
   const userId   = user.id;
@@ -309,6 +336,21 @@ async function processUser(user, todayIsSunday, weekKey) {
     const tpl = T.inactive30Day({ name, unsubscribeToken: unsubToken });
     await sendEmail({
       userId, to: email, template: "inactive_30d", dedupeKey: `inactive_30d_${monthKey}`,
+      subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
+    });
+  }
+
+  // Daily posting reminder — today's scheduled posts from the user's active
+  // plan, so a creator opens the app to post at the right time (the core
+  // engagement/retention loop). Fires ONLY on days that actually have cards;
+  // rest days send nothing. Deduped per calendar day so a cron re-run doesn't
+  // double-send. Marketing/opt-out-able like the other re-engagement emails.
+  const todaysCards = await fetchTodaysCards(userId);
+  if (todaysCards.length > 0) {
+    const dayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const tpl = T.postingReminder({ name, cards: todaysCards, unsubscribeToken: unsubToken });
+    await sendEmail({
+      userId, to: email, template: "posting_reminder", dedupeKey: `posting_reminder_${dayKey}`,
       subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
     });
   }
