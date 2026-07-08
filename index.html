@@ -561,6 +561,101 @@ function isTodayDayLabel(dayLabel) {
   return abbr === WEEKDAY_ABBRS[new Date().getDay()];
 }
 
+// [CALENDAR-EXPORT] Turn the active plan's cards into a downloadable .ics
+// calendar file — one timed event per post at its recommended day/time, each
+// with a 30-minute "time to post" reminder. Client-side only: no backend, no
+// account linking. Imports into Apple Calendar, Google Calendar, and Outlook.
+// This is the bridge from "here's your plan" to actually posting it.
+var ICS_WEEKDAY = { sun:0, mon:1, tue:2, wed:3, thu:4, fri:5, sat:6 };
+function icsEscape(s) {
+  return String(s == null ? "" : s)
+    .replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+}
+function icsPad(n) { return (n < 10 ? "0" : "") + n; }
+function icsStamp(d) {
+  return d.getFullYear() + icsPad(d.getMonth()+1) + icsPad(d.getDate())
+    + "T" + icsPad(d.getHours()) + icsPad(d.getMinutes()) + "00";
+}
+// Next occurrence of a weekday (0=Sun..6=Sat) on or after today, so a plan
+// never schedules a post in the past — a weekday already gone this week rolls
+// to next week. Floating local time (calendar apps read it in the user's tz).
+function nextDateForWeekday(targetDow, h, m) {
+  var now = new Date();
+  var d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  d.setDate(d.getDate() + ((targetDow - d.getDay() + 7) % 7));
+  d.setHours(h == null ? 9 : h, m || 0, 0, 0);
+  return d;
+}
+// Lenient postTime parse — handles "7pm", "7:30 PM", "18:00", "6-8pm"
+// (window start), and vague words ("morning"/"evening"). Falls back to 9am.
+function parsePostTimeHM(pt) {
+  var s = String(pt == null ? "" : pt).toLowerCase();
+  var num = s.match(/(\d{1,2})(?::(\d{2}))?/);
+  if (num) {
+    var h = parseInt(num[1], 10); if (isNaN(h)) h = 9;
+    var mn = num[2] ? parseInt(num[2], 10) : 0;
+    if (/pm/.test(s) && h < 12) h += 12;
+    if (/am/.test(s) && h === 12) h = 0;
+    if (h > 23 || h < 0) h = 9;
+    if (mn > 59 || mn < 0) mn = 0;
+    return { h: h, m: mn };
+  }
+  if (/morning/.test(s))       return { h: 9,  m: 0 };
+  if (/noon|lunch/.test(s))    return { h: 12, m: 0 };
+  if (/afternoon/.test(s))     return { h: 14, m: 0 };
+  if (/evening|night/.test(s)) return { h: 19, m: 0 };
+  return { h: 9, m: 0 };
+}
+function buildPlanICS(cards) {
+  var lines = ["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//VIRL//Content Plan//EN","CALSCALE:GREGORIAN","METHOD:PUBLISH"];
+  var stamp = icsStamp(new Date());
+  var count = 0;
+  (Array.isArray(cards) ? cards : []).forEach(function(card, i) {
+    if (!card || typeof card !== "object" || !card.title) return;
+    var dow = ICS_WEEKDAY[String(parseDayName(card.day)).slice(0, 3).toLowerCase()];
+    if (dow == null) return; // rest-day / unparseable weekday → skip
+    var t     = parsePostTimeHM(card.postTime);
+    var start = nextDateForWeekday(dow, t.h, t.m);
+    var end   = new Date(start.getTime() + 30 * 60000);
+    var desc  = [];
+    if (card.format)  desc.push("Format: " + card.format);
+    if (card.hook)    desc.push("Hook: " + card.hook);
+    if (card.caption) desc.push(String(card.caption).slice(0, 500));
+    desc.push("— Planned with VIRL");
+    count++;
+    lines.push(
+      "BEGIN:VEVENT",
+      "UID:virl-" + stamp + "-" + i + "@govirl.ai",
+      "DTSTAMP:" + stamp,
+      "DTSTART:" + icsStamp(start),
+      "DTEND:" + icsStamp(end),
+      "SUMMARY:" + icsEscape((card.platform || "Social") + ": " + card.title),
+      "DESCRIPTION:" + icsEscape(desc.join("\n")),
+      "BEGIN:VALARM",
+      "ACTION:DISPLAY",
+      "DESCRIPTION:" + icsEscape("Time to post: " + card.title),
+      "TRIGGER:-PT30M",
+      "END:VALARM",
+      "END:VEVENT"
+    );
+  });
+  lines.push("END:VCALENDAR");
+  return { ics: lines.join("\r\n"), count: count };
+}
+function downloadPlanICS(cards) {
+  var built = buildPlanICS(cards);
+  if (!built.count) return;
+  try {
+    var blob = new Blob([built.ics], { type: "text/calendar;charset=utf-8" });
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement("a");
+    a.href = url; a.download = "virl-content-plan.ics";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    try { logEvent(window.__virlUserId || null, "plan_calendar_exported", { count: built.count }); } catch (e) {}
+  } catch (e) { /* download unsupported on this device — silent, non-blocking */ }
+}
+
 // [PRICING 3] Founder Circle cap — first 50 paying customers get $20/mo for
 // life. After 50 are filled, all new signups land on Standard pricing.
 // Server-side enforcement is in api/create-checkout.js + api/stripe-webhook.js
@@ -11900,6 +11995,13 @@ return (
                           </div>
                         );})}
                       </div>
+                      {/* [CALENDAR-EXPORT] Drop the week's posts onto the
+                          creator's calendar at their recommended times, each
+                          with a 30-min "time to post" reminder. */}
+                      <button onClick={function(){ downloadPlanICS(cards); }}
+                        style={{marginTop:14,width:"100%",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",padding:"11px 14px",background:B.bg,color:B.navy,border:"1px solid "+B.border,borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                        <span aria-hidden="true">📅</span> Add this week to your calendar
+                      </button>
                     </div>
                   );
                 })()}
