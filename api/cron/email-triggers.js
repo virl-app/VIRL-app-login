@@ -137,31 +137,62 @@ async function fetchUnloggedCount(userId) {
   } catch (e) { return 0; }
 }
 
-// Today's scheduled cards from the user's active (non-expired) plan. Matches
-// each card's weekday label ("Day N - Thu") against today's weekday. The cron
-// runs at 14:00 UTC, when every US timezone is already on the same calendar
-// day as UTC, so getUTCDay() is the correct "today" for US users. Returns []
-// when there's no active plan or nothing scheduled today.
+// Tomorrow's scheduled cards from the user's active plan, for the
+// evening-before reminder. Matches each card's weekday label
+// ("Day N - Thu") against TOMORROW's weekday.
+//
+// Timezone note: the reminder cron runs 23:30 UTC, when every US zone is
+// still on the same calendar date as UTC (6:30 PM CT / 4:30 PM PT /
+// 7:30 PM ET), so getUTCDay()+1 is tomorrow for all US users. Known
+// cliff: a UK/EU user is already past midnight at 23:30 UTC, so their
+// "tomorrow" email describes a day that has started — revisit before
+// opening international signups.
+//
+// Returns { cards, hasPlan }: hasPlan is false when there is no plan row
+// or the plan expires before tomorrow — the Sunday reset email uses that
+// to switch to the build-your-week variant.
 const WEEKDAY_ABBRS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-async function fetchTodaysCards(userId) {
+async function fetchTomorrowsCards(userId) {
+  const empty = { cards: [], hasPlan: false };
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/plans?user_id=eq.${userId}&select=cards,expires_at`,
       { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
     );
-    if (!res.ok) return [];
+    if (!res.ok) return empty;
     const rows = await res.json();
     const plan = rows[0];
-    if (!plan || !Array.isArray(plan.cards)) return [];
-    if (plan.expires_at && Date.parse(plan.expires_at) <= Date.now()) return [];
-    const todayAbbr = WEEKDAY_ABBRS[new Date().getUTCDay()];
-    return plan.cards.filter(function (c) {
-      if (!c || !c.title) return false;
-      const parts = String(c.day || "").split(" - ");
+    if (!plan || !Array.isArray(plan.cards)) return empty;
+    // Plan must still be active TOMORROW, not just now — a plan expiring
+    // overnight has nothing valid to remind about.
+    const tomorrowStart = new Date(); tomorrowStart.setUTCHours(24, 0, 0, 0);
+    if (plan.expires_at && Date.parse(plan.expires_at) <= tomorrowStart.getTime()) return empty;
+    const tomorrowAbbr = WEEKDAY_ABBRS[(new Date().getUTCDay() + 1) % 7];
+    const cards = plan.cards.filter(function (co) {
+      if (!co || !co.title) return false;
+      const parts = String(co.day || "").split(" - ");
       const abbr  = (parts[1] || parts[0] || "").trim().slice(0, 3).toLowerCase();
-      return abbr === todayAbbr;
+      return abbr === tomorrowAbbr;
     });
-  } catch (e) { return []; }
+    return { cards, hasPlan: true };
+  } catch (e) { return empty; }
+}
+
+// True when the user already received any OTHER lifecycle email today
+// (trial sequence, welcome, inactivity, etc). The evening reminder yields
+// to those — one conversion-critical email a day beats two nudges.
+async function userGotOtherEmailToday(userId) {
+  try {
+    const todayISO = new Date().toISOString().slice(0, 10);
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/email_sends?user_id=eq.${userId}&sent_at=gte.${todayISO}T00:00:00Z&select=template&limit=10`,
+      { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    if (!res.ok) return false; // fail open: a fetch blip shouldn't kill the reminder
+    const rows = await res.json();
+    return Array.isArray(rows) && rows.some(r => r && r.template &&
+      r.template !== "posting_reminder" && r.template !== "sunday_reset");
+  } catch (e) { return false; }
 }
 
 // Per-user dispatch — figures out which (if any) trigger applies today.
@@ -340,34 +371,57 @@ async function processUser(user, todayIsSunday, weekKey) {
     });
   }
 
-  // Daily posting reminder — today's scheduled posts from the user's active
-  // plan, so a creator opens the app to post at the right time (the core
-  // engagement/retention loop). Fires ONLY on days that actually have cards;
-  // rest days send nothing. Deduped per calendar day so a cron re-run doesn't
-  // double-send. Marketing/opt-out-able like the other re-engagement emails.
-  const todaysCards = await fetchTodaysCards(userId);
-  if (todaysCards.length > 0) {
-    const dayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const tpl = T.postingReminder({ name, cards: todaysCards, unsubscribeToken: unsubToken });
-    await sendEmail({
-      userId, to: email, template: "posting_reminder", dedupeKey: `posting_reminder_${dayKey}`,
-      subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
-    });
-  }
+  // NOTE: the posting reminder and Sunday log nudge moved to the evening
+  // pass (processReminderUser, job=reminders cron at 23:30 UTC). The
+  // Sunday-morning log nudge is retired — its content folded into the
+  // Sunday-evening reset email.
+}
 
-  // Tier 2 — Sunday batch-log nudge. Today is Sunday, the user has a
-  // current plan, and at least one card hasn't been logged. Weekly dedupe
-  // so a re-run on the same Sunday is a no-op.
+// Evening pass (23:30 UTC ≈ 6:30 PM CT) — the ONLY thing the
+// job=reminders cron invocation runs. Two emails, mutually exclusive:
+//
+//   Mon–Sat: "tomorrow's posts" reminder, only when tomorrow has cards.
+//   Sunday:  the Sunday reset — closes last week (unlogged results) and
+//            opens next week (Monday's cards, or build-your-week when no
+//            active plan covers next week).
+//
+// Guardrails (see rollout plan): yields to any other lifecycle email sent
+// the same day; deduped on the TARGET date (a re-run can't double-send);
+// rest days send nothing; marketing/opt-out-able.
+// Success metric: post_marked events within 24h of a send — join
+// email_sends (template posting_reminder / sunday_reset) to events.
+async function processReminderUser(user, todayIsSunday, weekKey) {
+  const userId = user.id;
+  const email  = user.email;
+  if (!email) return;
+
+  const { cards: tomorrowCards, hasPlan } = await fetchTomorrowsCards(userId);
+  const unlogged = todayIsSunday ? await fetchUnloggedCount(userId) : 0;
+
   if (todayIsSunday) {
-    const unlogged = await fetchUnloggedCount(userId);
-    if (unlogged > 0) {
-      const tpl = T.sundayLogNudge({ name, unloggedCount: unlogged, unsubscribeToken: unsubToken });
+    // Sunday reset sends unless there is truly nothing to say: a plan
+    // exists, Monday is a rest day, and nothing needs logging.
+    if (!hasPlan || tomorrowCards.length > 0 || unlogged > 0) {
+      if (await userGotOtherEmailToday(userId)) return;
+      const name = await fetchProfileName(userId);
+      const tpl = T.sundayReset({ name, unloggedCount: unlogged, cards: tomorrowCards, hasPlan, unsubscribeToken: makeUnsubToken(userId) });
       await sendEmail({
-        userId, to: email, template: "sunday_log", dedupeKey: `sunday_log_${weekKey}`,
+        userId, to: email, template: "sunday_reset", dedupeKey: `sunday_reset_${weekKey}`,
         subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
       });
     }
+    return;
   }
+
+  if (tomorrowCards.length === 0) return; // rest day or no plan: silence
+  if (await userGotOtherEmailToday(userId)) return;
+  const name = await fetchProfileName(userId);
+  const targetDate = new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const tpl = T.postingReminder({ name, cards: tomorrowCards, unsubscribeToken: makeUnsubToken(userId) });
+  await sendEmail({
+    userId, to: email, template: "posting_reminder", dedupeKey: `posting_reminder_${targetDate}`,
+    subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
+  });
 }
 
 export default async function handler(req, res) {
@@ -387,6 +441,14 @@ export default async function handler(req, res) {
   const todayIsMonday = now.getUTCDay() === 1;
   const todayIsSunday = now.getUTCDay() === 0;
   const weekKey       = isoYearWeek(now);
+  // Two cron entries hit this endpoint (vercel.json):
+  //   14:00 UTC (no query)      → full lifecycle pass (everything but reminders)
+  //   23:30 UTC ?job=reminders  → evening reminder pass ONLY
+  // The gate is load-bearing: without it the evening cron would re-run
+  // every lifecycle trigger and lean on each one's dedupe to not
+  // double-send. Never run both passes in one invocation.
+  const job = (req.query && req.query.job) || "";
+  const remindersOnly = job === "reminders";
   let processed = 0, errors = 0;
   let page = 1;
   const perPage = 200;
@@ -396,7 +458,11 @@ export default async function handler(req, res) {
       const batch = await fetchUsersBatch(page, perPage);
       if (!batch.length) break;
       for (const u of batch) {
-        try { await processUser(u, todayIsSunday, weekKey); processed++; }
+        try {
+          if (remindersOnly) await processReminderUser(u, todayIsSunday, weekKey);
+          else await processUser(u, todayIsSunday, weekKey);
+          processed++;
+        }
         catch (e) { errors++; console.error("[cron/email] user error", u.id, e.message); }
       }
       if (batch.length < perPage) break;
@@ -404,8 +470,8 @@ export default async function handler(req, res) {
     }
   } catch (e) {
     console.error("[cron/email] fatal", e.message);
-    return res.status(500).json({ ok: false, error: e.message, processed, errors });
+    return res.status(500).json({ ok: false, error: e.message, processed, errors, job });
   }
 
-  return res.status(200).json({ ok: true, processed, errors, todayIsMonday, todayIsSunday });
+  return res.status(200).json({ ok: true, processed, errors, todayIsMonday, todayIsSunday, job: job || "lifecycle" });
 }
