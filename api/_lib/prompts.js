@@ -888,6 +888,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // flat "10-14 cards" instruction; optimalDaysCtx is empty string
   // when no platforms were passed (the formatter is null-safe).
   const cardRange = computeCardRange(profile && profile.postFreq, platformsArr.length);
+  // [LIGHT-WEEK] Generation-time override from the Plan tab toggle.
+  // Untrusted client input — anything other than the exact string
+  // "light" falls through to the profile-derived cadence range.
+  const isLightWeek = !!(params && params.weekIntensity === "light");
+  const effectiveCardRange = isLightWeek ? { min: 3, max: 5 } : cardRange;
   const optimalDaysCtx = vaultPatterns && vaultPatterns.optimalDays
     ? formatOptimalDaysForPrompt(vaultPatterns.optimalDays)
     : "";
@@ -1098,7 +1103,9 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + (Array.isArray(params.formats) && params.formats.indexOf("Long-form post") >= 0
         ? " The user explicitly selected 'Long-form post' as one of their preferred formats — include AT LEAST 1-2 cards with format='long_form_text' this week, anchored to LinkedIn if LinkedIn is in their platforms (Facebook as fallback). The long_form_text cards are the user's path to thought-leadership content; do not silently skip them."
         : "")
-    + " Create " + cardRange.min + "-" + cardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + " Create " + effectiveCardRange.min + "-" + effectiveCardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + (isLightWeek ? " LIGHT WEEK: The creator deliberately chose a light week. Treat 3-5 posts as the COMPLETE strategy, not a reduced one — never apologize for volume or suggest they should post more. Choose only the highest-leverage ideas, spread them across the week with intentional rest days, and make each post carry more strategic weight. If Stories are among the selected formats, prefer 1-2 low-effort Story prompts inside the range over additional feed posts."
+    : "")
     + (optimalDaysCtx ? "\n\n" + optimalDaysCtx + "\n\nWhen distributing cards across the week, weight the optimal days above heavily — they're either the creator's own best-performing days (when 'performs best on' is shown) or industry rule-of-thumb for the platform (when 'general best days' is shown). The user-history signal is the stronger one when present." : "")
     // [REST-DAY-LLM] Generate one tip per day NOT receiving a card. Tips
     // must be PERSONAL to this creator (niche, goal, audience, last

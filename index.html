@@ -8846,6 +8846,31 @@ function App() {
   // from an always-visible sub-line into a hover/tap popover on the
   // credits display (both navs share this state — only one is visible).
   const [creditsTipOpen,setCreditsTipOpen] = useState(false);
+  // [LIGHT-WEEK] Generation-time override: a deliberately small week
+  // (3-5 posts) that the prompt frames as a complete strategy, not a
+  // reduced one. Off by default; resets with each generation setup.
+  const [lightWeek,setLightWeek] = useState(false);
+  // [UPDATE-NUDGE] Stale-client detector. There is no service worker, so
+  // long-lived tabs / iOS home-screen sessions keep running an old bundle
+  // after a deploy (seen in prod as the pre-fix credits 400s). Baseline
+  // the deployment sha on load via /api/version, re-check when the tab
+  // becomes visible and every 30 min, and show a refresh nudge on change.
+  const [updateAvailable,setUpdateAvailable] = useState(false);
+  useEffect(function(){
+    var baseline = null; var stopped = false;
+    function check(){
+      fetch("/api/version",{cache:"no-store"}).then(function(r){ return r.ok ? r.json() : null; }).then(function(j){
+        if (stopped || !j || !j.sha) return;
+        if (baseline === null) { baseline = j.sha; return; }
+        if (j.sha !== baseline) setUpdateAvailable(true);
+      }).catch(function(){});
+    }
+    check();
+    var iv = setInterval(check, 30*60*1000);
+    function onVis(){ if (document.visibilityState === "visible") check(); }
+    document.addEventListener("visibilitychange", onVis);
+    return function(){ stopped = true; clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
+  },[]);
   // [NAV-5] Library sub-tab ("saved" = the old Vault view, "results" =
   // the old Results view) and the avatar/account dropdown open state.
   // A session refreshed while on the legacy "results" tab lands on the
@@ -9398,6 +9423,11 @@ function App() {
   var creditsLabel = creditsLoaded
     ? (isUnlimitedCredits ? "Unlimited" : String(credits))
     : "—";
+  // [CREDITS-SOFT] Weekly allowance for the progress-bar rendering of the
+  // credits pill. Free trials reset to 20/week; every metered paid tier
+  // (standard + founder circle) is 150/week. Null = unlimited (Pro).
+  var weeklyCreditMax = isUnlimitedCredits ? null : (sbPlan === "free" ? WEEKLY_CREDITS : 150);
+  var creditsFrac = (creditsLoaded && weeklyCreditMax) ? Math.max(0, Math.min(1, credits / weeklyCreditMax)) : 0;
   // [FRESH-TRENDS] Single source of truth for "this user has a paid
   // subscription" — mirrors PAID_PLANS in api/chat.js. Distinct from
   // isFoundingOrPro (which is used for in-product gating of *credits-
@@ -10337,6 +10367,9 @@ function App() {
       // builder appends a dedicated section so the LLM treats this as
       // a hard constraint, not generic flavour.
       weekContext:  weekContext || "",
+      // [LIGHT-WEEK] Server maps "light" to a 3-5 card target and adds
+      // complete-strategy framing to the prompt.
+      weekIntensity: lightWeek ? "light" : "standard",
       isRegen:      !!cards,
       // Same Monday-of-this-week key the client uses when upserting
       // plan_history. The server uses it to exclude this row from the
@@ -11259,6 +11292,11 @@ return (
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
                 <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?"#F43F5E":"#3B82F6"}}/>
+                {creditsLoaded&&!isUnlimitedCredits&&weeklyCreditMax&&(
+                  <span aria-hidden="true" style={{display:"inline-block",width:34,height:4,borderRadius:99,background:"rgba(255,255,255,0.15)",overflow:"hidden"}}>
+                    <span style={{display:"block",height:"100%",width:Math.max(3,Math.round(34*creditsFrac))+"px",borderRadius:99,background:credits<=Math.ceil(weeklyCreditMax*0.25)?"#F43F5E":"#3B82F6"}}/>
+                  </span>
+                )}
                 <span onClick={function(){ setCreditsTipOpen(function(v){ return !v; }); }}
                   onMouseEnter={function(){ setCreditsTipOpen(true); }}
                   onMouseLeave={function(){ setCreditsTipOpen(false); }}
@@ -11266,7 +11304,7 @@ return (
                   {creditsLabel+" credit"+(credits===1?"":"s")}
                   {creditsTipOpen&&!isUnlimitedCredits&&credits>0&&(
                     <span style={{position:"absolute",bottom:"calc(100% + 8px)",left:0,zIndex:130,background:B.card,color:B.sub,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,lineHeight:1.5,padding:"8px 12px",borderRadius:10,border:"1px solid "+B.border,boxShadow:"0 6px 20px rgba(15,23,42,0.2)",whiteSpace:"nowrap"}}>
-                      {"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans · "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions · "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
+                      {(weeklyCreditMax?credits+" of "+weeklyCreditMax+" this week · ":"")+"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans · "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions · "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
                     </span>
                   )}
                 </span>
@@ -11366,6 +11404,16 @@ return (
            lighter by contrast. Wordmark white, refined letterspacing
            kept. Active tab underline switches to sky for legibility
            against navy. */}
+      {/* [UPDATE-NUDGE] Fixed refresh toast when a newer deploy is live. */}
+      {updateAvailable&&(
+        <div style={{position:"fixed",bottom:18,left:"50%",transform:"translateX(-50%)",zIndex:300,background:B.navy,color:B.white,borderRadius:14,padding:"12px 18px",display:"flex",alignItems:"center",gap:14,boxShadow:"0 8px 24px rgba(15,23,42,0.35)",maxWidth:"92vw"}}>
+          <span style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:400}}>VIRL just got an update.</span>
+          <button onClick={function(){ try { window.location.reload(); } catch(e) {} }}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"7px 14px",background:B.white,color:B.navy,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
+            Refresh
+          </button>
+        </div>
+      )}
       <nav id="virl-topnav" style={{...brandHeroSurface,position:"sticky",top:0,zIndex:100}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 18px",height:60,borderBottom:brandHeroHairline}}>
           <a href="/" style={{textDecoration:"none",display:"flex",alignItems:"center"}}>
@@ -11377,10 +11425,15 @@ return (
             <div onClick={function(){ setCreditsTipOpen(function(v){ return !v; }); }}
               style={{display:"flex",alignItems:"center",gap:7,background:"transparent",borderRadius:99,padding:"5px 12px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.55)":"rgba(255,255,255,0.32)"),position:"relative",cursor:"default"}}>
               <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.white}}/>
+              {creditsLoaded&&!isUnlimitedCredits&&weeklyCreditMax&&(
+                <span aria-hidden="true" style={{display:"inline-block",width:30,height:4,borderRadius:99,background:"rgba(255,255,255,0.22)",overflow:"hidden"}}>
+                  <span style={{display:"block",height:"100%",width:Math.max(3,Math.round(30*creditsFrac))+"px",borderRadius:99,background:credits<=Math.ceil(weeklyCreditMax*0.25)?B.coral:B.white}}/>
+                </span>
+              )}
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.04em",color:creditsLoaded&&credits<=5?B.coral:B.white}}>{creditsLabel+" credits"}</div>
               {creditsTipOpen&&!isUnlimitedCredits&&credits>0&&(
                 <div style={{position:"absolute",top:"calc(100% + 8px)",left:0,zIndex:130,background:B.card,color:B.sub,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,lineHeight:1.5,padding:"8px 12px",borderRadius:10,border:"1px solid "+B.border,boxShadow:"0 6px 20px rgba(15,23,42,0.2)",whiteSpace:"nowrap"}}>
-                  {"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans · "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions · "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
+                  {(weeklyCreditMax?credits+" of "+weeklyCreditMax+" this week · ":"")+"~"+Math.floor(credits/CREDIT_COSTS.plan)+" plans · "+Math.min(20,Math.floor(credits/CREDIT_COSTS.caption))+" captions · "+Math.floor(credits/CREDIT_COSTS.scan)+" scans"}
                 </div>
               )}
             </div>
@@ -11929,6 +11982,19 @@ return (
                     Use last week's context
                   </button>
                 )}
+              </div>
+              {/* [LIGHT-WEEK] Opt-in small week. Framed as a strategy
+                   choice, not a lesser plan — kills overwhelm-guilt-churn
+                   for time-starved weeks. */}
+              <div style={{padding:"14px 22px",borderTop:"1px solid "+B.divider,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+                <div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.ink}}>Light week</div>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.sub,marginTop:2}}>3–5 high-leverage posts instead of a full slate. Still a complete strategy.</div>
+                </div>
+                <button onClick={function(){ setLightWeek(!lightWeek); }} aria-pressed={lightWeek}
+                  style={{width:40,height:22,borderRadius:99,border:"1px solid "+(lightWeek?B.blue:B.border),background:lightWeek?B.blue:B.bg,position:"relative",cursor:"pointer",flexShrink:0,padding:0}}>
+                  <span style={{position:"absolute",top:2,left:lightWeek?20:2,width:16,height:16,borderRadius:"50%",background:B.white,boxShadow:"0 1px 3px rgba(15,23,42,0.25)",transition:"left 0.15s ease"}}/>
+                </button>
               </div>
               </React.Fragment>
               )}
