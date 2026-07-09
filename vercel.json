@@ -5,6 +5,10 @@
       "schedule": "0 14 * * *"
     },
     {
+      "path": "/api/cron/email-triggers?job=reminders",
+      "schedule": "30 23 * * *"
+    },
+    {
       "path": "/api/cron/cleanup-rate-limits",
       "schedule": "30 4 * * *"
     },

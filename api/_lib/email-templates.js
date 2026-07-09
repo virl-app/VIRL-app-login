@@ -36,6 +36,15 @@ const COLOR = {
 // emails read distinctly VIRL even when forwarded.
 const BRAND_TAGLINE = "Finally, a strategy that sounds like you.";
 
+// HTML-escape untrusted values (e.g. AI-generated plan-card fields) before
+// interpolating them into an email body. Names are sanitized at their fetch
+// sites; this covers content that isn't.
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function unsubscribeFooter(unsubscribeToken) {
   // Branded footer block. Always shows the navy tagline + small VIRL
   // mark; unsubscribe link only renders for marketing sends. Account &
@@ -348,6 +357,82 @@ export function sundayLogNudge({ name, unloggedCount, unsubscribeToken }) {
     subject: `Log this week's ${noun} — ${unloggedCount} pending`,
     html:    layout({ eyebrow: "Weekly wrap", headline, body, primaryCta: { href: APP_URL + "/?tab=results", label: "Log results" }, unsubscribeToken }),
     text:    `${headline}\n\nYou have ${unloggedCount} ${noun} from this week's plan that need results logged. Takes 90 seconds.\n\nVIRL learns what's working for your audience from these numbers.\n\n${APP_URL}/?tab=results${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
+// 13b. Daily posting reminder — today's scheduled posts from the creator's
+// active plan. Fired by the daily cron ONLY on days that actually have cards
+// (rest days send nothing). Marketing/opt-out-able with an unsubscribe footer.
+// Card fields (title/platform/time) are AI-generated, so they're esc()'d.
+// Renders the shared "card row" list used by postingReminder and
+// sundayReset — identical markup so the two emails feel like one family.
+function reminderCardRows(list) {
+  return list.map(c => {
+    const meta = [c.platform, c.postTime].filter(Boolean).map(esc).join(" &middot; ");
+    return `<tr><td style="padding:12px 14px;border:1px solid ${COLOR.border};border-radius:10px;background:${COLOR.bg}">`
+      + (meta ? `<div style="font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${COLOR.navy};margin-bottom:4px">${meta}</div>` : "")
+      + `<div style="font-family:Georgia,'Times New Roman',serif;font-size:16px;color:${COLOR.ink};line-height:1.3">${esc(c.title)}</div>`
+      + `</td></tr>`;
+  }).join(`<tr><td style="height:8px;line-height:8px;font-size:8px">&nbsp;</td></tr>`);
+}
+
+// Evening-before reminder: sent ~6:30 PM CT listing TOMORROW's scheduled
+// posts, so the creator can prep tonight (film, write, batch) instead of
+// learning about a 7 AM slot at 9 AM. The moment-of alerts are the
+// calendar export's job; this email's job is the night-before prep.
+export function postingReminder({ name, cards, unsubscribeToken }) {
+  const list  = Array.isArray(cards) ? cards.filter(c => c && c.title) : [];
+  const count = list.length;
+  const headline = count === 1 ? "One post on deck tomorrow." : `${count} posts on deck tomorrow.`;
+  const items = reminderCardRows(list);
+  const body = `
+    <p style="margin:0 0 14px">${name ? name + ", here" : "Here"}'s what's on your VIRL plan for tomorrow. Tonight's the easy window to prep — the times below are when your audience is most active.</p>
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 8px">${items}</table>`;
+  const textLines = list.map(c => {
+    const meta = [c.platform, c.postTime].filter(Boolean).join(" · ");
+    return "  • " + (meta ? meta + " — " : "") + c.title;
+  }).join("\n");
+  return {
+    subject: count === 1 ? "Tomorrow's post is ready to go" : `Tomorrow's ${count} posts are ready to go`,
+    html:    layout({ eyebrow: "Tomorrow", accent: "coral", headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Open tomorrow's plan" }, unsubscribeToken }),
+    text:    `${headline}\n\nHere's what's on your VIRL plan for tomorrow:\n\n${textLines}\n\n${APP_URL}/?tab=plan${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
+// Sunday-evening reset — replaces the standalone Sunday-morning log nudge.
+// One email that closes last week (unlogged results) and opens next week
+// (Monday's posts if a plan exists, or a build-your-week nudge if not).
+// Same layout/CTA family as postingReminder.
+export function sundayReset({ name, unloggedCount, cards, hasPlan, unsubscribeToken }) {
+  const list  = Array.isArray(cards) ? cards.filter(c => c && c.title) : [];
+  const logged   = Number(unloggedCount) > 0;
+  const headline = hasPlan
+    ? (list.length ? "Your week starts tomorrow." : "Fresh week, tomorrow's a rest day.")
+    : "Next week isn't planned yet.";
+  let body = `<p style="margin:0 0 14px">${name ? name + ", a" : "A"} two-minute Sunday reset:</p>`;
+  if (logged) {
+    body += `<p style="margin:0 0 14px"><strong>Close out last week.</strong> ${unloggedCount} post${Number(unloggedCount) === 1 ? "" : "s"} still need${Number(unloggedCount) === 1 ? "s" : ""} results logged — that's how next week's plan gets sharper.</p>`;
+  }
+  if (hasPlan && list.length) {
+    body += `<p style="margin:0 0 10px"><strong>Open next week.</strong> Here's Monday:</p>
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 8px">${reminderCardRows(list)}</table>`;
+  } else if (!hasPlan) {
+    body += `<p style="margin:0 0 14px"><strong>Open next week.</strong> Your strategy for the week takes about 60 seconds to build — do it tonight and Monday runs itself.</p>`;
+  }
+  const cta = hasPlan
+    ? { href: APP_URL + "/?tab=plan", label: "Open your plan" }
+    : { href: APP_URL + "/?tab=plan", label: "Build next week's plan" };
+  const textParts = [];
+  if (logged) textParts.push(`Close out last week: ${unloggedCount} post(s) still need results logged.`);
+  if (hasPlan && list.length) textParts.push("Monday:\n" + list.map(c => {
+    const meta = [c.platform, c.postTime].filter(Boolean).join(" · ");
+    return "  • " + (meta ? meta + " — " : "") + c.title;
+  }).join("\n"));
+  if (!hasPlan) textParts.push("Next week isn't planned yet — it takes about 60 seconds to build.");
+  return {
+    subject: hasPlan ? "Sunday reset: close last week, open next week" : "60 seconds tonight sets up your whole week",
+    html:    layout({ eyebrow: "Sunday reset", accent: "coral", headline, body, primaryCta: cta, unsubscribeToken }),
+    text:    `${headline}\n\n${textParts.join("\n\n")}\n\n${APP_URL}/?tab=plan${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
