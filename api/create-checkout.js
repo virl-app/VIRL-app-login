@@ -25,6 +25,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Stripe from "stripe";
+import { claimReferralIfAny, getPendingReferralForReferred, getBankedRewardForReferrer, ensureReferralCoupon } from "./_lib/referrals.js";
 
 const FOUNDER_CIRCLE_CAP = 50;
 
@@ -199,6 +200,30 @@ export default async function handler(req, res) {
   try {
     const stripe = Stripe(stripeSecretKey);
 
+    // [REFERRAL] Two possible $25-once discounts, mutually exclusive:
+    //   1. The user was referred ("get a month" for the friend) — their
+    //      pending referral applies the coupon to this first checkout.
+    //   2. The user is a referrer redeeming a banked reward ("give a
+    //      month") — earned while they weren't a paying customer yet.
+    // The webhook finalizes state transitions; abandoning this checkout
+    // burns nothing. All lookups fail-open to a normal full-price session.
+    let discounts;
+    let referralBankRowId = null;
+    try {
+      await claimReferralIfAny(userId);
+      const pendingReferred = await getPendingReferralForReferred(userId);
+      const banked = pendingReferred ? null : await getBankedRewardForReferrer(userId);
+      if (pendingReferred || banked) {
+        const couponId = await ensureReferralCoupon(stripe);
+        if (couponId) {
+          discounts = [{ coupon: couponId }];
+          if (banked) referralBankRowId = String(banked.id);
+        }
+      }
+    } catch (e) {
+      console.warn("[create-checkout] referral discount skipped:", e.message);
+    }
+
     // [PRICING 1] Stamp metadata at BOTH session and subscription levels
     // so the webhook can read it from either kind of event. `foundingTier`
     // is the canonical key; `isFoundingMember` stays for back-compat with
@@ -209,12 +234,16 @@ export default async function handler(req, res) {
       foundingTier:     tier,
       isFoundingMember: tier === "founder_circle" ? "true" : "false",
     };
+    // [REFERRAL] Bank-redemption marker: webhook flips this row to
+    // referrer_rewarded only after the discounted checkout completes.
+    if (referralBankRowId) metadata.referralBankRow = referralBankRowId;
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       payment_method_types: ["card"],
       customer_email: email,
       line_items: [{ price: priceId, quantity: 1 }],
+      discounts: discounts,
       metadata: metadata,
       subscription_data: { metadata: metadata },
       success_url: appUrl + "?upgraded=true&session_id={CHECKOUT_SESSION_ID}",
