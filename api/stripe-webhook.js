@@ -18,7 +18,9 @@ import {
   paymentFailed,
   subscriptionCancelled,
   renewalUpcoming,
+  referralRewarded,
 } from "./_lib/email-templates.js";
+import { getPendingReferralForReferred, updateReferral, REFERRAL_REWARD_CAP_PER_YEAR, referralMonthCents } from "./_lib/referrals.js";
 // [PREMIUM 7] Loops lifecycle event triggers (subscriptionStarted /
 // subscriptionCancelled) + contact-property sync so Loops can drive
 // plan-state-aware emails inside its own dashboard.
@@ -392,6 +394,82 @@ export default async function handler(req, res) {
           // missing (lazy-provisioned users who upgrade before generating).
           await writeUserPlan(userId, patchFields, existing != null);
           console.log("[webhook] User " + userId + " upgraded to " + plan + " (" + foundingTier + ")");
+
+          // [REFERRAL] Referral state transitions ride the same event.
+          // Both are best-effort — a failure logs and never blocks the
+          // plan grant above.
+          try {
+            // (a) Bank redemption: this payer is a REFERRER who checked
+            // out with a banked-reward coupon (metadata stamped by
+            // create-checkout). Flip that row now that payment landed.
+            if (meta.referralBankRow) {
+              await updateReferral(meta.referralBankRow, {
+                status: "referrer_rewarded",
+                rewarded_at: new Date().toISOString(),
+              });
+              console.log("[webhook] referral bank redeemed:", meta.referralBankRow);
+            }
+            // (b) Conversion: this payer was REFERRED. Mark converted and
+            // reward the referrer — balance credit if they're already a
+            // Stripe customer, otherwise leave 'converted' banked for
+            // their own checkout.
+            const referral = await getPendingReferralForReferred(userId);
+            if (referral) {
+              await updateReferral(referral.id, {
+                status: "converted",
+                converted_at: new Date().toISOString(),
+              });
+              const sbUrl = process.env.SUPABASE_URL;
+              const sbKey = process.env.SUPABASE_SERVICE_KEY;
+              const sbHdrs = { apikey: sbKey, Authorization: "Bearer " + sbKey };
+              const custRes = await fetch(
+                sbUrl + "/rest/v1/credits?user_id=eq." + encodeURIComponent(referral.referrer_user_id)
+                  + "&select=stripe_customer_id,founding_tier",
+                { headers: sbHdrs }
+              );
+              const custRows = custRes.ok ? await custRes.json() : [];
+              const referrerCustomer = custRows[0] && custRows[0].stripe_customer_id;
+              // The referrer's month at the price THEY pay: $20 for
+              // Founder Circle members, $25 for Standard.
+              const rewardCents = referralMonthCents(custRows[0] && custRows[0].founding_tier);
+              // Yearly cap: count already-rewarded rows this calendar year.
+              const yearStart = new Date(new Date().getUTCFullYear(), 0, 1).toISOString();
+              const capRes = await fetch(
+                sbUrl + "/rest/v1/referrals?referrer_user_id=eq." + referral.referrer_user_id
+                  + "&status=eq.referrer_rewarded&rewarded_at=gte." + yearStart + "&select=id",
+                { headers: sbHdrs }
+              );
+              const rewardedThisYear = capRes.ok ? (await capRes.json()).length : 0;
+              if (referrerCustomer && rewardedThisYear < REFERRAL_REWARD_CAP_PER_YEAR) {
+                await stripe.customers.createBalanceTransaction(referrerCustomer, {
+                  amount: -rewardCents,
+                  currency: "usd",
+                  description: "VIRL referral reward — one month on us",
+                });
+                await updateReferral(referral.id, {
+                  status: "referrer_rewarded",
+                  rewarded_at: new Date().toISOString(),
+                });
+                const refCtx = await fetchUserContext(referral.referrer_user_id);
+                if (refCtx.email) {
+                  const tpl = referralRewarded({ name: refCtx.name });
+                  await sendEmail({
+                    userId: referral.referrer_user_id, to: refCtx.email,
+                    template: "referral_rewarded",
+                    dedupeKey: "referral_rewarded_" + referral.id,
+                    subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
+                  });
+                }
+                console.log("[webhook] referral reward granted to", referral.referrer_user_id);
+              } else {
+                // Banked (referrer not paying yet) or capped — row stays
+                // 'converted'; create-checkout redeems banked rows.
+                console.log("[webhook] referral converted, reward banked/capped for", referral.referrer_user_id);
+              }
+            }
+          } catch (e) {
+            console.warn("[webhook] referral handling failed (non-fatal):", e.message);
+          }
           // Subscription welcome — dedupe by stripe subscription id so a
           // resubscribe creates a new send, but a webhook replay does not.
           const ctx   = await fetchUserContext(userId);

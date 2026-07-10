@@ -14,6 +14,7 @@ import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
 import { fetchEditsForMining, mineDenylistFromEdits } from "./_lib/personal-denylist.js";
 import { sendEmail, hasSent }        from "./_lib/email-send.js";
+import { fetchListingContext }       from "./_lib/listing-research.js";
 import { firstPlanGenerated, referralMilestone } from "./_lib/email-templates.js";
 import { makeUnsubToken }            from "./_lib/unsub-token.js";
 import { estimateCostUSD }           from "./_lib/pricing.js";
@@ -1163,7 +1164,7 @@ export default async function handler(req, res) {
   const targetPlatforms = (generationType === "plan" || generationType === "plan_partial")
     ? (Array.isArray(params && params.platforms) ? params.platforms : [])
     : (generationType === "caption" && params && params.platform ? [params.platform] : []);
-  const [profile, vaultPatterns, playbook, cachedTrends, history, complianceRules] = await Promise.all([
+  const [profile, vaultPatterns, playbook, cachedTrends, history, complianceRules, listingResearch] = await Promise.all([
     fetchProfile(userId),
     VOICE_GEN_TYPES.has(generationType) ? fetchVaultPatterns(userId, targetPlatforms)                         : Promise.resolve(null),
     loadPlaybook(),
@@ -1173,7 +1174,18 @@ export default async function handler(req, res) {
     // v1). Loader returns {} on any infra failure so the get-for-niche
     // call below falls through to the hardcoded safe-defaults floor.
     loadComplianceRules(),
+    // [LISTING-INTAKE] Server-side fetch of the creator's pasted link
+    // (plan generation only). Fail-open null — a dead link never blocks
+    // the plan; the UI told the user it's best-effort.
+    (generationType === "plan" && params && params.listingUrl)
+      ? fetchListingContext(params.listingUrl)
+      : Promise.resolve(null),
   ]);
+  // Inject the SERVER-fetched text (never client-supplied) for buildPlan.
+  if (params && params.listingContext) delete params.listingContext;
+  if (listingResearch && listingResearch.text && params) {
+    params.listingContext = listingResearch.text;
+  }
 
   // [LEARNING-CONSENT] Apply consent gates AFTER vault data is fetched so
   // we can post-process without restructuring the parallel fetch. The

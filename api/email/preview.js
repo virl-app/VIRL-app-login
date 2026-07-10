@@ -41,6 +41,7 @@ const TEMPLATES = {
     { title: "Rich In Life Because...", platform: "TikTok", postTime: "7:00 AM" },
   ], unsubscribeToken: makeUnsubToken(uid) }),
   sunday_reset_no_plan:   (uid) => T.sundayReset({ name: "Lauren", unloggedCount: 2, hasPlan: false, cards: [], unsubscribeToken: makeUnsubToken(uid) }),
+  referral_rewarded:      (uid) => T.referralRewarded({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   trial_day_7:            (uid) => T.trialDay7({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   inactive_30d:           (uid) => T.inactive30Day({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   renewal_upcoming:       (uid) => T.renewalUpcoming({ name: "Lauren", plan: "founding", amountUsd: 225, renewalDate: new Date(Date.now() + 7 * 86400000).toISOString() }),

@@ -874,6 +874,10 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // this week (events, launches, milestones). Trimmed + length-capped
   // server-side as defense against accidental novel-length pastes.
   const weekContext = String(params.weekContext || "").trim().slice(0, 1200);
+  // [LISTING-INTAKE] Server-fetched context from the creator's pasted
+  // link (listing / product / event page). Set by chat.js AFTER the
+  // server did the fetch — never trusted directly from the client body.
+  const listingContext = String(params.listingContext || "").trim().slice(0, 4000);
   const isRegen   = !!params.isRegen;
   // [HOLIDAY-PICKER] Observance ids the user opted IN to via the picker
   // on the Plan tab. The picker defaults all observances to OFF; only
@@ -1074,6 +1078,15 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
         ? "\n\n## WHAT IS HAPPENING IN THE USER BUSINESS THIS WEEK\n"
         + weekContext
         + "\n\nIMPORTANT: At least 2 posts in the plan must reference, build on, or directly support what is happening this week. Do not make the plan generic when specific context is provided."
+        : "")
+    // [LISTING-INTAKE] Featured link (listing / product / event). Facts
+    // were fetched server-side; treat as a hard constraint like the
+    // week-context block above. Fair-housing note: describe the property
+    // or product itself — never the kind of person who should want it.
+    + (listingContext
+        ? "\n\n## FEATURED THIS WEEK (from the creator's link)\n"
+        + listingContext
+        + "\n\nIMPORTANT: Build 2-4 posts of this week's plan around this feature — e.g. a spotlight/tour hook, a standout-detail post, a neighborhood or use-case angle, and a time-sensitive push if any date appears above. Describe the property/product/event itself; NEVER describe or imply who should buy or attend (no demographic, family-status, religion, disability, or lifestyle targeting language)."
         : "")
     + historyCtx
     + " The week starts TODAY (" + startWeekday + "). When you assign a `day` to a card, use one of these exact day labels: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday. You do NOT have to use all 7 labels — the card count below tells you how many posts to actually produce, and the remaining days are rest days."
