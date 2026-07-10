@@ -6,3 +6,5 @@ node_modules/
 
 # Local Claude preview/config — never commit
 .claude/
+scripts/voice-eval-profiles.json
+scripts/voice-eval-history.jsonl

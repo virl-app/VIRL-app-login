@@ -7,7 +7,7 @@ import {
 } from "./_lib/prompts.js";
 import { loadPlaybook }              from "./_lib/playbook.js";
 import { loadLatestTrends }          from "./_lib/trends.js";
-import { loadComplianceRules, getComplianceForNiche, scrubCompliance } from "./_lib/compliance.js";
+import { loadComplianceRules, getComplianceForNiche, scrubCompliance, detectHealthcareProvider, attachWatchoutNotes } from "./_lib/compliance.js";
 import { fetchInlineTrends, isValidTrendsSnapshot } from "./_lib/fresh-trends-inline.js";
 import { fetchRecentTrendStrings }   from "./_lib/recent-trends.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
@@ -494,6 +494,19 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
 
   const truncated = stopReason === 'max_tokens';
 
+  // [DRIFT-RECORD] Record the observed drift score on EVERY streamed
+  // generation, not just retries — previously scores lived only in console
+  // logs, so all production usage rows had null drift columns and voice
+  // fidelity was unmeasurable. Same computation as the telemetry block
+  // below; fail-open.
+  let streamDriftScore = null;
+  if (voiceReference && finalText && !truncated) {
+    try {
+      const d = computeVoiceDrift(extractVoiceText(JSON.parse(finalText)), voiceReference);
+      if (d) streamDriftScore = d.score;
+    } catch (e) { /* unparseable output — client error UI handles it */ }
+  }
+
   // [COST 1] Tokens are summed across both attempts so usage_events records
   // what Anthropic actually billed, not just the final attempt.
   const usage = {
@@ -505,6 +518,7 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
     cache_write_tokens: cacheWriteTokens,
     truncated,
     stop_reason:        stopReason,
+    drift_score_after:  streamDriftScore,
   };
   console.log('virl_usage', JSON.stringify(usage));
   // [STABILITY] Await recordUsageEvent so the milestone email's
@@ -547,6 +561,9 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
       const parsed = finalText ? JSON.parse(finalText) : null;
       if (parsed) {
         const { scrubbed, flags } = scrubCompliance(complianceForNiche, parsed);
+        // [WATCHOUT-UI] Per-card review notes ride the existing card
+        // compliance_note UI (flags carry cards.N paths).
+        attachWatchoutNotes(scrubbed, flags);
         if (flags.length > 0) {
           console.log('virl_compliance', JSON.stringify({
             generationType,
@@ -1103,13 +1120,13 @@ export default async function handler(req, res) {
         body: JSON.stringify({
           credits:                            newCredits,
           reset_at:                           newResetAt,
-          fresh_trends_plan_remaining:        1,
+          fresh_trends_plan_remaining:        2, // [TRIAL-TRENDS] 2 live-trends plans/week for free users — generosity signal
           fresh_trends_scan_remaining:        1,
           fresh_trends_caption_remaining:     1,
         }),
       });
       currentCredits = newCredits;
-      freshTrends = { plan: 1, scan: 1, caption: 1 };
+      freshTrends = { plan: 2, scan: 1, caption: 1 };
       resetAt = newResetAt; // [CREDIT-NUDGE] this request opened a new cycle
     }
 
@@ -1228,7 +1245,14 @@ export default async function handler(req, res) {
   // for other gen types the client injects it from localStorage — see the
   // patches to callAPI / consumePlanStream in index.html). Locale defaults
   // to "US" until a per-user country field ships; non-US locales no-op.
-  const complianceForNiche = getComplianceForNiche(complianceRules, params && params.niche, "US");
+  // [HEALTHCARE 1] Belt-and-braces routing: the explicit niche wins, but a
+  // profile that reads like a licensed practice (chiro/dental/PT/med-spa
+  // signals in their own business description) gets the healthcare floor
+  // even if they picked "Small Business" or "Wellness" in the picker.
+  const effectiveNiche = detectHealthcareProvider(profile)
+    ? "Healthcare & Medical"
+    : (params && params.niche);
+  const complianceForNiche = getComplianceForNiche(complianceRules, effectiveNiche, "US");
 
   // [LEARN-FROM-EDITS] Fetch the user's recent edit diffs as voice
   // examples — but only when they're opted in (profile.learnFromEdits).
@@ -1702,6 +1726,12 @@ export default async function handler(req, res) {
       try {
         const firstText  = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
         const firstDrift = computeVoiceDrift(extractVoiceText(JSON.parse(firstText)), voiceReference);
+        // [DRIFT-RECORD] Persist the observed score even when it's under the
+        // retry threshold — sub-threshold rows previously wrote null, making
+        // voice fidelity unmeasurable across the fleet.
+        if (firstDrift && firstDrift.score < DRIFT_RETRY_THRESHOLD) {
+          driftAfter = firstDrift.score;
+        }
         if (firstDrift && firstDrift.score >= DRIFT_RETRY_THRESHOLD) {
           driftBefore = firstDrift.score;
           const correctedPayload = {
@@ -1814,6 +1844,9 @@ export default async function handler(req, res) {
         const parsedOutput = JSON.parse(text);
         const { scrubbed, flags } = scrubCompliance(complianceForNiche, parsedOutput);
         complianceFlags = flags;
+        // [WATCHOUT-UI] Flag-only hits become visible review notes via the
+        // existing compliance_note render path (assistive, never a verdict).
+        attachWatchoutNotes(scrubbed, flags);
         if (flags.length > 0) {
           console.log('virl_compliance', JSON.stringify({
             generationType,
