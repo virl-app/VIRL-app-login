@@ -472,7 +472,7 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
   // is comfortably within bounds for the heaviest carousel/long_form plans.
   if (stopReason === 'max_tokens') {
     sendEvent('reset', {});
-    const retryPayload = { ...payload, max_tokens: 16000 };
+    const retryPayload = { ...payload, max_tokens: 20000 };
     const second = await streamAnthropicOnce(retryPayload);
     if (second.errored) {
       if (validPlanJobId) {
@@ -1681,7 +1681,7 @@ export default async function handler(req, res) {
     let cacheReadAcc          = (data.usage && data.usage.cache_read_input_tokens)     || 0;
     let cacheWriteAcc         = (data.usage && data.usage.cache_creation_input_tokens) || 0;
     if (truncated && (payload.max_tokens || 0) < 16000) {
-      const retryPayload = { ...payload, max_tokens: 16000 };
+      const retryPayload = { ...payload, max_tokens: 20000 };
       const retryRes = await callAnthropic(retryPayload);
       if (retryRes.ok) {
         const retryData = await retryRes.json();
