@@ -10435,6 +10435,16 @@ function App() {
     var parser = createStreamingPlanParser();
     var progressiveCards = [];
 
+    // [PLAN-PLATFORM-FIX] Client-side backstop behind the server prompt's
+    // ALLOWED PLATFORMS constraint: never render or persist a card whose
+    // platform isn't in this generation's selection. Cards without a
+    // platform field pass through (the renderer tolerates them).
+    function onSelectedPlatform(card) {
+      if (!card || !card.platform) return true;
+      var p = String(card.platform).trim().toLowerCase();
+      return platforms.some(function (sel) { return String(sel).trim().toLowerCase() === p; });
+    }
+
     // [PLAN-JOB-RECOVERY] Shared render-and-persist path. Streaming
     // success uses parser.finalize().parsed; recovery uses
     // JSON.parse(result_text). Both reach the same state-setting +
@@ -10449,6 +10459,16 @@ function App() {
 
       var data = { text: finalText, cost: meta.cost, usage: meta.usage };
       var parsedCards    = parsed && Array.isArray(parsed.cards) ? parsed.cards : null;
+      // [PLAN-PLATFORM-FIX] Drop off-platform cards from the canonical
+      // parse too, so persistence (Supabase, plan_history, localStorage)
+      // matches what the progressive filter rendered. If filtering would
+      // empty a non-empty plan (model went fully off-list — should be
+      // impossible with the prompt constraint), keep the originals rather
+      // than surface a false "cut off mid-thought" error.
+      if (parsedCards && parsedCards.length > 0) {
+        var onListCards = parsedCards.filter(onSelectedPlatform);
+        if (onListCards.length > 0) parsedCards = onListCards;
+      }
       var parsedStrategy = parsed && parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
       var parsedStats    = parsed && parsed.stats    && typeof parsed.stats    === "object" ? parsed.stats    : null;
       var parsedTips     = parsed && Array.isArray(parsed.restDayTips) ? parsed.restDayTips : null;
@@ -10564,6 +10584,14 @@ function App() {
       // complete-strategy framing to the prompt.
       weekIntensity: lightWeek ? "light" : "standard",
       isRegen:      !!cards,
+      // [REGEN-AWARE] The plan being replaced. Without this the regen
+      // prompt was byte-identical to the original generation (the current
+      // week is excluded from plan_history on purpose), so "Generate
+      // again" reliably returned a near-identical plan. Titles + hooks
+      // only — the server caps and truncates as untrusted input.
+      rejectedCards: cards ? cards.slice(0, 20).map(function (c) {
+        return { title: (c && c.title) || "", hook: (c && c.hook) || "" };
+      }) : undefined,
       // Same Monday-of-this-week key the client uses when upserting
       // plan_history. The server uses it to exclude this row from the
       // history it loads, so a same-week regenerate is treated as
@@ -10588,6 +10616,9 @@ function App() {
         parser.push(delta, {
           onStrategy: function (s) { setStrategy(s); },
           onCard:     function (card) {
+            // [PLAN-PLATFORM-FIX] Off-platform cards never render, even
+            // mid-stream — the finalize pass applies the same filter.
+            if (!onSelectedPlatform(card)) return;
             progressiveCards.push(card);
             // New array reference so React re-renders the list.
             setCards(progressiveCards.slice());

@@ -43,7 +43,7 @@ function buildVaultExemplarsBlock(vaultPatterns) {
   }
   const rendered = formatExemplarsForPrompt(vaultPatterns.exemplars);
   if (!rendered) return "";
-  return "Recent posts the creator saved or shipped (align with this energy in tone, rhythm, and structure — these tell you what 'sounds right' for THIS creator better than any abstract voice description; do NOT copy them, they are voice references, not templates):\n\n"
+  return "Recent posts the creator saved or shipped (align with this energy in tone, rhythm, and structure — these tell you what 'sounds right' for THIS creator better than any abstract voice description). STRICT: these are voice references, NOT content to reuse — never produce a new piece that retells one of these stories or reuses one of these hooks or titles; the creator has already posted or saved them and will recognize a re-run instantly. Match how they sound, not what these specific posts said:\n\n"
     + rendered;
 }
 
@@ -410,6 +410,18 @@ function planHistoryContext(history) {
     } else {
       lines.push("    Top performer: (nothing logged this week)");
     }
+    // [PRIOR-ART] Render EVERY card title from the week, not just the top
+    // performer. plan-history.js has always condensed the full card list;
+    // only strategy + top performer were rendered — so the model was asked
+    // to "extend series" and "avoid repeats" against cards it literally
+    // could not see, and week N+1 reliably re-generated week N's posts.
+    if (Array.isArray(w.cards) && w.cards.length) {
+      lines.push("    Cards that week:");
+      for (const c of w.cards.slice(0, 14)) {
+        if (!c) continue;
+        lines.push("      - \"" + (c.title || "untitled") + "\" (" + (c.platform || "?") + ", " + (c.format || "?") + (c.logged ? ", posted" : "") + ")");
+      }
+    }
     if (typeof w.unlogged === "number" && w.unlogged > 0) {
       lines.push("    Unlogged cards: " + w.unlogged);
     }
@@ -418,10 +430,11 @@ function planHistoryContext(history) {
   if (!blocks.length) return "";
   return "\n\nPRIOR WEEKS (most recent first):\n" + blocks.join("\n\n")
     + "\n\nUse this history to:"
-    + "\n  - Build narratively — extend successful threads, continue series the creator started."
-    + "\n  - Double down on formats / platforms / topics that drove the top performer."
+    + "\n  - Build narratively — extend successful threads, continue series the creator started (the card lists above show exactly what already ran)."
+    + "\n  - Double down on the formats / platforms / themes behind each top performer — at the THEME level: a fresh angle on what won, never a re-run of the winning post."
     + "\n  - Avoid repeating themes that didn't land or that the creator never logged."
-    + "\n  - Reference the prior week explicitly in strategy.the_bet when relevant.";
+    + "\n  - Reference the prior week explicitly in strategy.the_bet when relevant."
+    + "\n\nPRIOR ART — STRICT: every card title listed above was already delivered to this creator, and the ones marked 'posted' are live on their feed. Do NOT generate a card that repeats any of them — same story, same hook, or a retitled variant all count as repeats. A continuation of a series is welcome; a re-run is not.";
 }
 
 function scanTrendsContext(trends) {
@@ -1074,9 +1087,46 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   }
   const dayLabelsLine = dayLabels.join(", ");
 
+  // [PLAN-PLATFORM-FIX] Hard allow-list for FULL plan generation. The
+  // partial-regen builder gained this constraint in [REGEN-PLATFORM-FIX]
+  // after cards drifted to LinkedIn long_form_text, but buildPlan itself
+  // only ever stated "platforms=X,Y" as a settings line — soft enough that
+  // profile context (LinkedIn handles / audiences / formats), prior-week
+  // top performers, and the long-form guidance could pull cards onto
+  // platforms the creator did NOT select this week. The escape valve keeps
+  // the strategic signal: off-list platform advice may live in strategy
+  // text, never as a card.
+  const allowedPlatformsCtx = platformsArr.length
+    ? "\n\nALLOWED PLATFORMS — every card's `platform` field MUST be exactly one of: " + platforms + "."
+      + " NEVER output a card for a platform outside this list, even if the creator's profile, prior weeks, vault, or top performers mention other platforms (in particular, do NOT use LinkedIn unless it appears in the list above)."
+      + " If a platform outside this list genuinely deserves the creator's attention, recommend it in strategy.the_bet or a card's `insight` as advice — never as a card."
+    : "";
+
+  // [REGEN-AWARE] Full-regen context. isRegen previously changed ONLY the
+  // credit cost — the prompt was byte-identical to the first generation
+  // (the current week's row is deliberately excluded from plan_history so
+  // week numbering stays stable), so tapping Generate again reliably
+  // produced a near-identical plan. The client now sends the visible
+  // plan's card titles + hooks; we inject them as rejected ideas.
+  // Untrusted client input: capped at 20 items, strings trimmed + sliced.
+  let rejectedCtx = "";
+  if (isRegen && Array.isArray(params.rejectedCards) && params.rejectedCards.length) {
+    const rejectedLines = params.rejectedCards.slice(0, 20).map(function (c) {
+      const t = String((c && c.title) || "").trim().slice(0, 120);
+      const h = String((c && c.hook)  || "").trim().slice(0, 160);
+      if (!t && !h) return null;
+      return "  - \"" + (t || "untitled") + "\"" + (h ? " — hook: \"" + h + "\"" : "");
+    }).filter(Boolean);
+    if (rejectedLines.length) {
+      rejectedCtx = "\n\nREGENERATION — the creator just saw a plan containing the cards below and asked for a DIFFERENT one. Treat every one of them as a rejected idea: do NOT reproduce it as the same topic, the same hook, or a lightly reworded variant. Keep what the strategy got right about this creator, but every card in the new plan must be a genuinely different idea:\n"
+        + rejectedLines.join("\n");
+    }
+  }
+
   const userPrompt = "This is week " + weekNumber + " of an ongoing plan. Generate this week's content plan with these settings: "
     + "platforms=" + platforms + " niche=" + niche + " goal=" + goal
     + " formats=" + formats + " followers=" + followers
+    + allowedPlatformsCtx
     + (context  ? " Extra context: " + context : "")
     // [AUDIENCE 1] Week-of business context as a hard constraint, not
     // generic flavor. The creator told us what is happening in their
@@ -1099,6 +1149,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
         + "\n\nIMPORTANT: Build 2-4 posts of this week's plan around this feature — e.g. a spotlight/tour hook, a standout-detail post, a neighborhood or use-case angle, and a time-sensitive push if any date appears above. Describe the property/product/event itself; NEVER describe or imply who should buy or attend (no demographic, family-status, religion, disability, or lifestyle targeting language)."
         : "")
     + historyCtx
+    + rejectedCtx
     + " The week starts TODAY (" + startWeekday + "). When you assign a `day` to a card, use one of these exact day labels: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday. You do NOT have to use all 7 labels — the card count below tells you how many posts to actually produce, and the remaining days are rest days."
     // [DAY-NAME-GUARD] The model occasionally names a weekday inside the
     // card copy that doesn't match the card's scheduled day — e.g. a
@@ -1120,11 +1171,25 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // [LONG-FORM-PILL] When the user has selected "Long-form post" in
     // their preferred-formats chip palette, map it to the long_form_text
     // card format and bias the plan toward at least 1-2 long-form text
-    // cards per week (LinkedIn especially — Facebook secondary). Without
-    // this mapping the model can interpret the chip as generic "longer
-    // copy" and pick caption or carousel formats instead.
+    // cards per week. Without this mapping the model can interpret the
+    // chip as generic "longer copy" and pick caption or carousel formats
+    // instead.
+    // [PLAN-PLATFORM-FIX] The anchor platform is resolved HERE in JS, not
+    // left as an "if LinkedIn is in their platforms" conditional for the
+    // model — the model reliably fumbled that conditional and put the
+    // long-form card on LinkedIn even when LinkedIn wasn't selected this
+    // week. LinkedIn if selected → Facebook if selected → otherwise the
+    // instruction explicitly forbids adding an unselected platform.
     + (Array.isArray(params.formats) && params.formats.indexOf("Long-form post") >= 0
-        ? " The user explicitly selected 'Long-form post' as one of their preferred formats — include AT LEAST 1-2 cards with format='long_form_text' this week, anchored to LinkedIn if LinkedIn is in their platforms (Facebook as fallback). The long_form_text cards are the user's path to thought-leadership content; do not silently skip them."
+        ? (function () {
+            const anchor = platformsArr.indexOf("LinkedIn") >= 0 ? "LinkedIn"
+                         : platformsArr.indexOf("Facebook") >= 0 ? "Facebook"
+                         : null;
+            const base = " The user explicitly selected 'Long-form post' as one of their preferred formats — include AT LEAST 1-2 cards with format='long_form_text' this week. The long_form_text cards are the user's path to thought-leadership content; do not silently skip them.";
+            return anchor
+              ? base + " Anchor them to " + anchor + "."
+              : base + " None of the platforms selected THIS week is a long-form-native channel, so place them on whichever SELECTED platform best carries narrative text (e.g. a caption-led Instagram post) — do NOT add LinkedIn or Facebook to satisfy this.";
+          })()
         : "")
     + " Create " + effectiveCardRange.min + "-" + effectiveCardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
     + (isLightWeek ? " LIGHT WEEK: The creator deliberately chose a light week. Treat 3-5 posts as the COMPLETE strategy, not a reduced one — never apologize for volume or suggest they should post more. Choose only the highest-leverage ideas, spread them across the week with intentional rest days, and make each post carry more strategic weight. If Stories are among the selected formats, prefer 1-2 low-effort Story prompts inside the range over additional feed posts."
