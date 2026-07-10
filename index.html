@@ -2979,6 +2979,8 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
       cta:          (draftScript.cta  || "").trim(),
       duration:     (draftScript.duration || "").trim(),
       audioSuggestion: (draftScript.audioSuggestion || "").trim(),
+      // [SHOT-LIST] Read-only in v1 — pass through so an edit-save doesn't drop it.
+      shotList:     Array.isArray(draftScript.shotList) ? draftScript.shotList : [],
       onScreenText: nextOst,
       sections: (draftScript.sections || []).map(function(s){
         return {
@@ -3056,6 +3058,7 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
       +"\n---\n\n"
       +"HOOK: "+script.hook+"\n\n"
       +sections+"\n\n"
+      +(script.shotList&&script.shotList.length?"SHOT LIST:\n"+script.shotList.map(function(sh,i){return "  "+(i+1)+". "+sh;}).join("\n")+"\n\n":"")
       +"CTA: "+script.cta
       +(script.onScreenText&&script.onScreenText.length?"\n\nON-SCREEN TEXT: "+script.onScreenText.join(" | "):"");
   }
@@ -3168,6 +3171,19 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
                     </div>
                   );})
               }
+              {/* [SHOT-LIST] What to film before the talking parts — the
+                   capture direction video outputs were missing. */}
+              {!editing && script.shotList && script.shotList.length > 0 && (
+                <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:12,padding:"12px 14px",marginBottom:16}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.navy,marginBottom:8}}>Shot list — film these first</div>
+                  {script.shotList.map(function(shot,i){ return (
+                    <div key={"shot-"+i} style={{display:"flex",gap:8,alignItems:"flex-start",marginBottom:6}}>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.navy,flexShrink:0,marginTop:1}}>{(i+1)+"."}</span>
+                      <span style={{fontFamily:"'Jost',sans-serif",fontSize:12.5,fontWeight:300,color:B.ink,lineHeight:1.6}}>{shot}</span>
+                    </div>
+                  );})}
+                </div>
+              )}
               {!editing ? (
                 <div style={{background:B.blueSoft,borderRadius:12,padding:"12px 14px",marginBottom:16}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.blue,marginBottom:6}}>Closing CTA</div>
