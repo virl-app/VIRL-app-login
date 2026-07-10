@@ -1002,6 +1002,12 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + " format=story → include `frames` (array of 3-5 Story frames; each frame is an object with: `frameNumber` (1-indexed), `content` (what the frame shows), `textOverlay` (suggested overlay text), `interactiveElement` (poll question, slider, question sticker, tap-through link, countdown, etc.))."
     + " format=long_form_text → include `hook` (the opening line), `body` (the full post body, formatted with line breaks for LinkedIn readability — use \\n for line breaks inside the JSON string), `closing` (the final line / CTA)."
     + " Always include `format`, `platform`, and `day` on every card. If you cannot produce a meaningful format-specific field for a card, omit just that field (do not invent placeholder content)."
+    // [REPURPOSE 1] Every asset should ship more than once. Two rules:
+    // a universal per-card `repurpose` line, and a film-once planning
+    // rule so multi-platform weeks reuse assets instead of multiplying
+    // creation work.
+    + " REPURPOSING — every card must include `repurpose`: ONE sentence naming where this exact asset goes after posting and what to tweak (e.g. 'Share to your IG Story with a poll sticker an hour after posting' / 'Same clip posts to TikTok as-is — swap to 3 niche hashtags' / 'Pull the best line as a quote graphic later this month'). Match suggestions to the creator's selected platforms only."
+    + " FILM ONCE, SHIP EVERYWHERE: when the creator selected 2+ platforms that suit the same content, do NOT author two separate creation tasks. Make ONE primary card, and make the second platform's card an explicit repost: title it 'Repost: [primary title]', set its `description` to what changes ('same video — new caption below, TikTok-native hashtags'), and give it its own platform-tuned `caption`. Reposts still count toward the card range — the point is the creator films/designs once."
     // [COMPLIANCE 1] Per-niche guardrails. Empty string when the user's
     // niche / locale isn't covered. Per-niche but shared across all users
     // of that niche → belongs in the shared cache tier.

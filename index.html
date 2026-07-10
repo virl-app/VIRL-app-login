@@ -3601,15 +3601,32 @@ function LongFormCardBody({card}) {
 // (old plans) renders the existing description-only layout cleanly.
 function FormatSpecificBody({card}) {
   var fmt = normalizeFormat(card.format);
+  // [REPURPOSE 1] Universal line rendered after the format body via the
+  // wrapper below — defined here so every format shares it.
   switch (fmt) {
-    case "single_image":   return <ImageCardBody card={card}/>;
-    case "carousel":       return <CarouselCardBody card={card}/>;
-    case "quote_graphic":  return <QuoteCardBody card={card}/>;
-    case "story":          return <StoryCardBody card={card}/>;
-    case "long_form_text": return <LongFormCardBody card={card}/>;
+    case "single_image":   return <RepurposeWrap card={card}><ImageCardBody card={card}/></RepurposeWrap>;
+    case "carousel":       return <RepurposeWrap card={card}><CarouselCardBody card={card}/></RepurposeWrap>;
+    case "quote_graphic":  return <RepurposeWrap card={card}><QuoteCardBody card={card}/></RepurposeWrap>;
+    case "story":          return <RepurposeWrap card={card}><StoryCardBody card={card}/></RepurposeWrap>;
+    case "long_form_text": return <RepurposeWrap card={card}><LongFormCardBody card={card}/></RepurposeWrap>;
     case "video":
-    default:               return <VideoCardBody card={card}/>;
+    default:               return <RepurposeWrap card={card}><VideoCardBody card={card}/></RepurposeWrap>;
   }
+}
+
+// [REPURPOSE 1] Universal "where this asset goes next" line under every
+// format body. Old cards without the field render children unchanged.
+function RepurposeWrap({card, children}) {
+  return (
+    <React.Fragment>
+      {children}
+      {card.repurpose && (
+        <div style={{marginBottom:14,marginTop:-6}}>
+          <FormatBodyDetail label="Repurpose" value={card.repurpose}/>
+        </div>
+      )}
+    </React.Fragment>
+  );
 }
 
 // In-card edit form. VIRL writes the cards but users often need to revise
@@ -3660,15 +3677,16 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
   // VIRL produced as part of the card's strategy and should NOT be
   // user-editable.
   var perFormatLocked = {
-    video:          [{key:"audioRecommendation", label:"Audio direction"}],
+    video:          [{key:"audioRecommendation", label:"Audio direction"}, {key:"repurpose", label:"Repurpose"}],
     single_image:   [
       {key:"photoDirection", label:"Photo direction"},
       {key:"compositionTip", label:"Composition tip"},
+      {key:"repurpose", label:"Repurpose"},
     ],
-    carousel:       [],
-    quote_graphic:  [{key:"designDirection", label:"Design direction"}],
-    story:          [],
-    long_form_text: [],
+    carousel:       [{key:"repurpose", label:"Repurpose"}],
+    quote_graphic:  [{key:"designDirection", label:"Design direction"}, {key:"repurpose", label:"Repurpose"}],
+    story:          [{key:"repurpose", label:"Repurpose"}],
+    long_form_text: [{key:"repurpose", label:"Repurpose"}],
   };
   // [EDIT-LOCKDOWN] Top-level editable fields. `insight` ("Why this
   // works") was previously editable here — removed because it's the
