@@ -1011,6 +1011,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // creation work.
     + " REPURPOSING — every card must include `repurpose`: ONE sentence naming where this exact asset goes after posting and what to tweak (e.g. 'Share to your IG Story with a poll sticker an hour after posting' / 'Same clip posts to TikTok as-is — swap to 3 niche hashtags' / 'Pull the best line as a quote graphic later this month'). Match suggestions to the creator's selected platforms only."
     + " FILM ONCE, SHIP EVERYWHERE: when the creator selected 2+ platforms that suit the same content, do NOT author two separate creation tasks. Make ONE primary card, and make the second platform's card an explicit repost: title it 'Repost: [primary title]', set its `description` to what changes ('same video — new caption below, TikTok-native hashtags'), and give it its own platform-tuned `caption`. Reposts still count toward the card range — the point is the creator films/designs once."
+    + " FINAL CHECK before emitting JSON — verify every card against this list and fix misses: (1) every card includes `repurpose`; (2) every format=video card's `description` ends with 'Film: ' + 2-3 concrete clips; (3) every format=single_image card includes `photoDirection`. A card missing these is incomplete."
     // [COMPLIANCE 1] Per-niche guardrails. Empty string when the user's
     // niche / locale isn't covered. Per-niche but shared across all users
     // of that niche → belongs in the shared cache tier.
@@ -1172,7 +1173,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // exceeded 6000 and surfaced the "cut off mid-thought" error to users.
     // Sonnet 4.6 supports up to 64K; handleStreamingPlan retries once at a
     // larger budget when this still truncates.
-    maxTokens: 10000,
+    maxTokens: 14000,
     cost:      isRegen ? CREDIT_COSTS.regen : CREDIT_COSTS.plan,
   };
 }
