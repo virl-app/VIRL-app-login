@@ -113,7 +113,83 @@ const FLOOR_RULES = {
         + "Individual results may vary.",
     },
   },
+  // [HEALTHCARE 1] Licensed provider offices (chiropractic, dental, PT,
+  // med spa, clinics). Everything here is assistive flagging — VIRL never
+  // certifies compliance; every note points the practitioner to their own
+  // counsel/state board. Deliberately federal-generic: 50 states have 50
+  // advertising rules, so notes say "per your state board" rather than
+  // encoding any of them.
+  healthcare_provider: {
+    US: {
+      rule_text:
+        "You are writing for a licensed US healthcare practice (e.g. chiropractic, dental, physical therapy, med spa). Follow these constraints in every post:\n"
+        + "  1. PATIENT PRIVACY (HIPAA): NEVER invent or include patient stories with identifying details — no names, photos, ages, or conditions tied to a recognizable person. If the creator's input references a specific patient, generalize it ('many patients with lower-back pain…'). Any post built around a real patient result must carry a compliance_note: 'Requires written patient authorization (HIPAA) before posting.'\n"
+        + "  2. NO CONDITION-TREATMENT CLAIMS: Never claim treatment cures, fixes, or treats specific medical conditions ('adjustments fix scoliosis', 'treats colic/asthma/ear infections/ADHD'). Use experience phrasing: 'many patients report relief', 'may help with everyday back discomfort'.\n"
+        + "  3. NOT A SUBSTITUTE FOR MEDICAL CARE: Never suggest skipping medication, avoiding doctors, or replacing medical treatment.\n"
+        + "  4. NO SUPERIORITY CLAIMS: Never write 'best chiropractor/dentist/clinic in [place]' or unverifiable superlatives — state boards prohibit them in provider advertising. Use verifiable framing: 'serving [city] since [year]'.\n"
+        + "  5. RESULTS VARY: Any outcome story gets a compliance_note: 'Individual results vary. Review against your state board's advertising rules.'",
+      denylist: [
+        // Condition-treatment claims — flag-only (rewrites would fabricate new claims).
+        { pattern: "\\b(?:treats?|cures?|fixe?s|heals?|resolves?)\\s+(?:colic|asthma|allergies|ear infections?|adhd|autism|scoliosis|sciatica|migraines?|arthritis)\\b", flags: "gi", replacement: null },
+        { pattern: "\\badjustments?\\s+(?:cure|fix|heal|treat)\\b",                            flags: "gi", replacement: null },
+        // Medical-substitute language — flag-only.
+        { pattern: "\\b(?:skip|ditch|throw away|stop taking)\\s+(?:the\\s+)?(?:meds|medication|pills|prescriptions?)\\b", flags: "gi", replacement: null },
+        { pattern: "\\binstead of (?:your|a|the) doctor\\b",                                   flags: "gi", replacement: null },
+        { pattern: "\\bcancel (?:your|the) surgery\\b",                                        flags: "gi", replacement: null },
+        // Superiority claims — flag-only.
+        { pattern: "\\b(?:best|top|#1)\\s+(?:chiropractor|dentist|doctor|clinic|practice|therapist)\\b", flags: "gi", replacement: null },
+        // Guarantee language — flag-only.
+        { pattern: "\\b(?:guaranteed|pain[- ]free) (?:results?|relief|outcome)\\b",            flags: "gi", replacement: null },
+      ],
+      compliance_note:
+        "Individual results vary. Obtain written patient authorization (HIPAA) before featuring any patient story or image. "
+        + "Review claims against your state board's advertising rules. Not medical or legal advice.",
+    },
+  },
 };
+
+// [WATCHOUT-UI] Attach flag-only scrub results to the output's own
+// compliance_note fields so they surface through the EXISTING "Suggested
+// disclosure" render path — no new client UI, no certification language.
+// Framing is deliberately assistive ("review before posting"), never a
+// pass/fail verdict: absence of a note asserts nothing.
+export function attachWatchoutNotes(scrubbed, flags) {
+  if (!scrubbed || typeof scrubbed !== "object") return scrubbed;
+  const flagged = (flags || []).filter(f => f && !f.rewritten && f.original);
+  if (!flagged.length) return scrubbed;
+  const byCard = new Map(); // card index (or -1 for top level) → Set of phrases
+  for (const f of flagged) {
+    const m = /^cards\.(\d+)\./.exec(f.path || "");
+    const key = m ? Number(m[1]) : -1;
+    if (!byCard.has(key)) byCard.set(key, new Set());
+    byCard.get(key).add(f.original);
+  }
+  const noteFor = (phrases) =>
+    "Review before posting — flagged phrasing: “" + [...phrases].slice(0, 3).join("”, “")
+    + "”. Assistive flag only; verify against your board/broker policy.";
+  for (const [key, phrases] of byCard) {
+    const target = key >= 0 && Array.isArray(scrubbed.cards) && scrubbed.cards[key]
+      ? scrubbed.cards[key] : scrubbed;
+    if (target && typeof target === "object") {
+      target.compliance_note = (target.compliance_note ? target.compliance_note + " " : "") + noteFor(phrases);
+    }
+  }
+  return scrubbed;
+}
+
+// [HEALTHCARE 1] Soft routing net: healthcare offices often self-select
+// "Small Business" or "Wellness" in the niche picker. The picker gained a
+// "Healthcare & Medical" option, but existing profiles predate it (and the
+// production chiropractic-office profile matched NO keyword search — brittle
+// by nature, hence belt AND braces: explicit niche option + this fallback).
+// False-positive cost is low: the floor only adds caution.
+const HEALTHCARE_SIGNAL = /\b(chiropract\w*|dentist\w*|dental (?:office|practice|clinic)|orthodont\w*|physical therap\w*|physiotherap\w*|med[- ]?spa|acupunctur\w*|optometr\w*|dermatolog\w*|pediatric (?:office|practice|clinic)|our patients|my patients|patient care)\b/i;
+export function detectHealthcareProvider(profile) {
+  if (!profile) return false;
+  const hay = [profile.offerings, profile.knownFor, profile.topics, profile.audience, profile.purpose, profile.journey, profile.businessWebsite]
+    .filter(s => typeof s === "string").join(" | ");
+  return HEALTHCARE_SIGNAL.test(hay);
+}
 
 // US is the only locale with coverage in v1. The block / scrub no-op for
 // any other locale string. When a per-user country field ships, pass it

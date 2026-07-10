@@ -156,7 +156,9 @@ import { buildComplianceBlock } from "./compliance.js";
 // ── Models ─────────────────────────────────────────────────────────────────
 export const MODEL_SONNET    = "claude-sonnet-4-6";
 export const MODEL_HAIKU     = "claude-haiku-4-5-20251001";
-export const ALLOWED_MODELS  = [MODEL_SONNET, MODEL_HAIKU];
+export const MODEL_OPUS      = process.env.PLAN_MODEL_OVERRIDE || "";   // e.g. "claude-opus-4-8" — [OPUS-FLAG]
+export const PLAN_MODEL       = MODEL_OPUS || MODEL_SONNET;
+export const ALLOWED_MODELS  = [MODEL_SONNET, MODEL_HAIKU, PLAN_MODEL].filter((v, i, a) => v && a.indexOf(v) === i);
 
 // ── Credit costs (server is the source of truth) ──────────────────────────
 export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1, long_post: 2, log_metrics: 0 };
@@ -813,6 +815,7 @@ export function nicheCategory(niche) {
     case "Finance":        return "coach_consultant";
     case "Fitness":        return "fitness_pro";
     case "Sports":         return "fitness_pro";
+    case "Healthcare & Medical": return "healthcare_provider";
     case "Wellness":       return "wellness";
     case "Food & Recipes": return "wellness";
     case "Beauty":         return "retail_product";
@@ -1158,7 +1161,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   return {
     systemPrompt,
     userPrompt,
-    model:     MODEL_SONNET,
+    model:     PLAN_MODEL, // [OPUS-FLAG] env-switchable for A/B; defaults to Sonnet
     // Heavy plans (carousel-rich, long_form_text, story-heavy) routinely
     // exceeded 6000 and surfaced the "cut off mid-thought" error to users.
     // Sonnet 4.6 supports up to 64K; handleStreamingPlan retries once at a
@@ -1330,7 +1333,7 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
   return {
     systemPrompt,
     userPrompt,
-    model:     MODEL_SONNET,
+    model:     PLAN_MODEL, // [OPUS-FLAG] strategy regen follows the plan model
     // Strategy output is ~5 short fields. 800 is plenty of headroom; no
     // retry path needed because non-streaming generations don't run
     // through handleStreamingPlan.
@@ -1627,8 +1630,8 @@ function buildCaption(params, profile, vaultPatterns, playbook, trends, _history
   return {
     systemPrompt,
     userPrompt,
-    model:     MODEL_HAIKU,
-    maxTokens: captionMaxTokens(platform, length),
+    model:     MODEL_SONNET, // [CAPTION-QUALITY] captions are the most-published artifact; Haiku was the only down-rated surface
+    maxTokens: Math.max(captionMaxTokens(platform, length), 1200), // [CAPTION-QUALITY] kill the truncation class
     cost:      CREDIT_COSTS.caption,
   };
 }
@@ -1652,8 +1655,8 @@ function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _
   return {
     systemPrompt,
     userPrompt,
-    model:     MODEL_HAIKU,
-    maxTokens: 800,
+    model:     MODEL_SONNET, // [CAPTION-QUALITY] remix ships to feeds too
+    maxTokens: 1200,
     cost:      CREDIT_COSTS.regen,
   };
 }

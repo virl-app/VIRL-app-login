@@ -1,0 +1,13 @@
+[
+  {
+    "name": "example-agent",
+    "niche": "Real Estate",
+    "evalTopic": "a new listing hitting the market this weekend",
+    "sampleCaption": "y'all. THIS kitchen. i've sold 40 homes in franklin and i still gasped.",
+    "voiceSamples": [
+      "hot take: the best time to list isn't spring. it's when your agent actually has a plan.",
+      "just left a closing where the sellers cried happy tears. this job, man."
+    ],
+    "handlePostExcerpts": []
+  }
+]

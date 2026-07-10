@@ -742,7 +742,7 @@ function getFormatsForPlatform(platform) {
       return [{ value:"post", label:"Standard Posts" }];
   }
 }
-const NICHES = ["Lifestyle","Fitness","Food & Recipes","Finance","Beauty","Travel","Education","Parenting","Home & Family","Wellness","Small Business","Real Estate","Gaming","Tech","Sports","Fashion"];
+const NICHES = ["Lifestyle","Fitness","Food & Recipes","Finance","Beauty","Travel","Education","Parenting","Home & Family","Wellness","Healthcare & Medical","Small Business","Real Estate","Gaming","Tech","Sports","Fashion"];
 // [PROFILE-SALES-FIELDS] GOALS expanded with conversion-focused
 // options for the service-business audience (agents, coaches,
 // dental practices, small biz). Original five all preserved so
@@ -1333,6 +1333,43 @@ function FirstPlanCelebration({onDismiss}) {
 // we don't fetch existing ratings on mount (most items are short-lived
 // per session anyway). The unique-constraint on (user_id, type, ref) in
 // Supabase means a second click on the same target just flips the row.
+// [VOICE-FEED] Suggests verbatim public-post excerpts (from handle
+// research) as voice samples. Keeping one appends it to the profile's
+// voiceSamples — converting passive research into authored-grade ground
+// truth with one tap.
+function VoiceExcerptSuggestions({voiceSamples, onKeep}) {
+  const [excerpts,setExcerpts] = useState(null);
+  useEffect(function(){
+    var token = window.__virlUserToken;
+    if (!token) { setExcerpts([]); return; }
+    fetch("/api/voice-excerpts", { headers: { Authorization: "Bearer " + token } })
+      .then(function(r){ return r.ok ? r.json() : { excerpts: [] }; })
+      .then(function(j){ setExcerpts((j && j.excerpts) || []); })
+      .catch(function(){ setExcerpts([]); });
+  },[]);
+  if (!excerpts || !excerpts.length) return null;
+  var kept = new Set((voiceSamples||[]).map(function(v){ return String(v||"").trim(); }));
+  var candidates = excerpts.filter(function(e){ return !kept.has(String(e).trim()); }).slice(0,4);
+  if (!candidates.length) return null;
+  return (
+    <div style={{marginBottom:16,border:"1px solid "+B.border,borderRadius:12,background:B.bg,padding:"12px 14px"}}>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:4}}>From your public posts</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.sub,lineHeight:1.5,marginBottom:10}}>
+        VIRL found these on your accounts. Keep the ones that sound like you — each one sharpens every future generation.
+      </div>
+      {candidates.map(function(e,i){ return (
+        <div key={"vx-"+i} style={{display:"flex",gap:8,alignItems:"flex-start",marginBottom:8}}>
+          <div style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11.5,fontWeight:300,color:B.ink,lineHeight:1.5,fontStyle:"italic"}}>{"\u201C"+e+"\u201D"}</div>
+          <button type="button" onClick={function(){ onKeep(e); }}
+            style={{fontFamily:"'Jost',sans-serif",fontSize:9.5,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 10px",background:B.blue,color:B.white,border:"none",borderRadius:8,cursor:"pointer",flexShrink:0}}>
+            Keep
+          </button>
+        </div>
+      );})}
+    </div>
+  );
+}
+
 function RatingButtons({sessionToken, generationType, targetRef, size}) {
   const [rating,setRating]   = useState(null);    // "up" | "down" | null
   const [working,setWorking] = useState(false);
@@ -1358,6 +1395,20 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
 
   function onUp()   { send(rating === "up"   ? null : "up");   }
   function onDown() { send(rating === "down" ? null : "down"); }
+  // [VOICE-FEED] One-tap "what was off" after a thumbs-down. Routed to
+  // /api/feedback with a voice: context so the themes are minable; chips
+  // disappear after one tap or dismiss.
+  const [chipSent,setChipSent] = useState(false);
+  function sendChip(label) {
+    setChipSent(true);
+    try {
+      fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type":"application/json", "Authorization":"Bearer "+sessionToken },
+        body: JSON.stringify({ message: label, sentiment: "negative", context: ("voice:"+generationType).slice(0,100) }),
+      }).catch(function(){});
+    } catch(e) {}
+  }
 
   return (
     <div style={{display:"inline-flex",alignItems:"center",gap:6}}>
@@ -1371,6 +1422,19 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
         }}>
         {"👍"}
       </button>
+      {rating==="down"&&!chipSent&&(
+        <span style={{display:"inline-flex",gap:4,alignItems:"center"}}>
+          {["Too formal","Not my words","Wrong energy"].map(function(c){ return (
+            <button key={c} onClick={function(){ sendChip(c); }}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,padding:"4px 8px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer",lineHeight:1}}>
+              {c}
+            </button>
+          );})}
+        </span>
+      )}
+      {rating==="down"&&chipSent&&(
+        <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,color:B.muted}}>Noted — VIRL learns from this</span>
+      )}
       <button onClick={onDown} disabled={working} aria-label="Thumbs down"
         style={{
           fontFamily:"'Jost',sans-serif",fontSize:btnSize,padding:btnPad,
@@ -6872,6 +6936,12 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
             </div>
             {/* [VOICE-REFERENCE] Additional caption samples — optional. */}
             <div id="vp-voiceSamples" style={{marginBottom:20}}>
+              {/* [VOICE-FEED] One-tap confirmation of handle-research
+                   excerpts as authored voice samples. Shows only when
+                   research found public posts not already kept. */}
+              <VoiceExcerptSuggestions voiceSamples={voiceSamples} onKeep={function(t){
+                setVoiceSamples(function(prev){ return prev.concat([t]); });
+              }}/>
               <Label>More voice samples (optional)</Label>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:10}}>
                 Each one gives VIRL another reference for how you sound. The more captions you add, the closer your generations land.
@@ -12037,6 +12107,14 @@ return (
                   onChange={function(e){ setWeekContext(e.target.value); }}
                   placeholder="Example: Hosting an open house Saturday, launching new fall menu, my teacher Sarah's last day..."
                   style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:13,fontWeight:300,fontStyle:"italic",padding:"10px 14px",resize:"vertical",minHeight:60,lineHeight:1.6}}/>
+                {/* [HEALTHCARE 1] PHI intake posture: VIRL is not a HIPAA
+                     business associate; discourage patient details at the
+                     door. Shown only for healthcare profiles. */}
+                {storedNiche() === "Healthcare & Medical" && (
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10.5,fontWeight:300,color:B.coral,marginTop:6,lineHeight:1.5}}>
+                    {"Please don't include patient names, photos, or identifiable details — VIRL isn't a place for patient information."}
+                  </div>
+                )}
                 {/* [AUDIENCE 1] One-tap recall of the previous week's
                      context. Hidden once the field already matches it so
                      the link doesn't sit there as dead UI after recall. */}
@@ -12239,6 +12317,13 @@ return (
                         style={{marginTop:14,width:"100%",fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.04em",padding:"11px 14px",background:B.bg,color:B.navy,border:"1px solid "+B.border,borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
                         <span aria-hidden="true">📅</span> Add this week to your calendar
                       </button>
+                      {/* [TRIAL-TRENDS] Make the live-trends value visible —
+                          trial users were receiving it without knowing. */}
+                      {planTrendsSnapshot && (
+                        <div style={{marginTop:10,display:"flex",alignItems:"center",gap:7,fontFamily:"'Jost',sans-serif",fontSize:10.5,fontWeight:600,letterSpacing:"0.04em",color:B.navy}}>
+                          <span aria-hidden="true">⚡</span> Built on live trend data pulled for this plan
+                        </div>
+                      )}
                       {/* [REFERRAL] Share moment right where the plan pays
                           off — the strongest ask is next to the value. */}
                       <ReferralCard token={userToken}/>
