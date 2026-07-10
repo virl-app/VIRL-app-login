@@ -530,13 +530,13 @@ export function accountDeleted({ name }) {
 export function referralRewarded({ name, unsubscribeToken }) {
   const headline = "You just earned a free month.";
   const body = `
-    <p style="margin:0 0 12px">${name ? name + ", someone" : "Someone"} you sent to VIRL just became a paying member — so your next month is on us. A $25 credit has been applied to your billing and will cover your next invoice automatically. Nothing to do.</p>
+    <p style="margin:0 0 12px">${name ? name + ", someone" : "Someone"} you sent to VIRL just became a paying member — so your next month is on us. A credit for one month at your rate has been applied to your billing and will cover your next invoice automatically. Nothing to do.</p>
     <p style="margin:0 0 12px">There's no limit on gratitude, and a generous cap on months — share your link any time from the plan page.</p>
     <p style="margin:0">Thank you for building VIRL with us. Referrals from real members are the whole growth plan.</p>`;
   return {
     subject: "Your referral just paid for your month",
     html:    layout({ eyebrow: "Referral reward", accent: "coral", headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Open VIRL" }, unsubscribeToken }),
-    text:    `${headline}\n\nSomeone you referred became a paying VIRL member. A $25 credit now sits on your billing and covers your next invoice automatically.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nSomeone you referred became a paying VIRL member. A one-month credit now sits on your billing and covers your next invoice automatically.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 

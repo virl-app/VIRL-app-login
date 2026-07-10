@@ -165,25 +165,30 @@ export async function updateReferral(id, patch) {
   } catch (e) { return false; }
 }
 
-// Ensures the shared $25-off-once coupon exists in Stripe. Idempotent by
-// fixed id; safe to call on every checkout.
-export const REFERRAL_COUPON_ID = "virl-referral-month";
-export async function ensureReferralCoupon(stripe) {
+// A "free month" matches what the person actually pays: Founder Circle
+// months are $20, Standard months are $25. One idempotent coupon per
+// amount; created on first use — no Stripe dashboard setup required.
+export function referralMonthCents(foundingTier) {
+  return foundingTier === "founder_circle" ? 2000 : 2500;
+}
+export async function ensureReferralCoupon(stripe, amountCents) {
+  const cents = amountCents === 2000 ? 2000 : 2500;
+  const id = `virl-referral-month-${cents}`;
   try {
-    await stripe.coupons.retrieve(REFERRAL_COUPON_ID);
-    return REFERRAL_COUPON_ID;
+    await stripe.coupons.retrieve(id);
+    return id;
   } catch (e) {
     try {
       await stripe.coupons.create({
-        id: REFERRAL_COUPON_ID,
-        amount_off: 2500,
+        id,
+        amount_off: cents,
         currency: "usd",
         duration: "once",
-        name: "VIRL referral — one month on us",
+        name: `VIRL referral — one month on us ($${cents / 100})`,
       });
-      return REFERRAL_COUPON_ID;
+      return id;
     } catch (e2) {
-      if (e2 && e2.code === "resource_already_exists") return REFERRAL_COUPON_ID;
+      if (e2 && e2.code === "resource_already_exists") return id;
       console.warn("[referral] coupon ensure failed:", e2.message);
       return null;
     }

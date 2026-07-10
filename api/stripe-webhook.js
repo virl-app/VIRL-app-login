@@ -20,7 +20,7 @@ import {
   renewalUpcoming,
   referralRewarded,
 } from "./_lib/email-templates.js";
-import { getPendingReferralForReferred, updateReferral, REFERRAL_REWARD_CAP_PER_YEAR } from "./_lib/referrals.js";
+import { getPendingReferralForReferred, updateReferral, REFERRAL_REWARD_CAP_PER_YEAR, referralMonthCents } from "./_lib/referrals.js";
 // [PREMIUM 7] Loops lifecycle event triggers (subscriptionStarted /
 // subscriptionCancelled) + contact-property sync so Loops can drive
 // plan-state-aware emails inside its own dashboard.
@@ -424,11 +424,14 @@ export default async function handler(req, res) {
               const sbHdrs = { apikey: sbKey, Authorization: "Bearer " + sbKey };
               const custRes = await fetch(
                 sbUrl + "/rest/v1/credits?user_id=eq." + encodeURIComponent(referral.referrer_user_id)
-                  + "&select=stripe_customer_id",
+                  + "&select=stripe_customer_id,founding_tier",
                 { headers: sbHdrs }
               );
               const custRows = custRes.ok ? await custRes.json() : [];
               const referrerCustomer = custRows[0] && custRows[0].stripe_customer_id;
+              // The referrer's month at the price THEY pay: $20 for
+              // Founder Circle members, $25 for Standard.
+              const rewardCents = referralMonthCents(custRows[0] && custRows[0].founding_tier);
               // Yearly cap: count already-rewarded rows this calendar year.
               const yearStart = new Date(new Date().getUTCFullYear(), 0, 1).toISOString();
               const capRes = await fetch(
@@ -439,7 +442,7 @@ export default async function handler(req, res) {
               const rewardedThisYear = capRes.ok ? (await capRes.json()).length : 0;
               if (referrerCustomer && rewardedThisYear < REFERRAL_REWARD_CAP_PER_YEAR) {
                 await stripe.customers.createBalanceTransaction(referrerCustomer, {
-                  amount: -2500,
+                  amount: -rewardCents,
                   currency: "usd",
                   description: "VIRL referral reward — one month on us",
                 });

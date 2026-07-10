@@ -25,7 +25,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Stripe from "stripe";
-import { claimReferralIfAny, getPendingReferralForReferred, getBankedRewardForReferrer, ensureReferralCoupon } from "./_lib/referrals.js";
+import { claimReferralIfAny, getPendingReferralForReferred, getBankedRewardForReferrer, ensureReferralCoupon, referralMonthCents } from "./_lib/referrals.js";
 
 const FOUNDER_CIRCLE_CAP = 50;
 
@@ -214,7 +214,10 @@ export default async function handler(req, res) {
       const pendingReferred = await getPendingReferralForReferred(userId);
       const banked = pendingReferred ? null : await getBankedRewardForReferrer(userId);
       if (pendingReferred || banked) {
-        const couponId = await ensureReferralCoupon(stripe);
+        // The free month matches the plan being bought at THIS checkout:
+        // $20 while Founder Circle spots remain (tier carries that), $25
+        // for Standard. Same rule for a banked referrer redemption.
+        const couponId = await ensureReferralCoupon(stripe, referralMonthCents(tier));
         if (couponId) {
           discounts = [{ coupon: couponId }];
           if (banked) referralBankRowId = String(banked.id);
