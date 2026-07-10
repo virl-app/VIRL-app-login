@@ -3541,7 +3541,7 @@ function VideoCardBody({card}) {
   // the model emitted a hook AND it's distinct from the title.
   var hook = card.hook && card.hook !== card.title ? card.hook : "";
   var onScreen = Array.isArray(card.onScreenText) ? card.onScreenText.filter(Boolean) : [];
-  if (!hook && !card.caption && onScreen.length === 0 && !card.audioRecommendation) return null;
+  if (!hook && !card.caption && onScreen.length === 0 && !card.audioRecommendation && !card.filmDirection) return null;
   return (
     <div style={{marginBottom:14}}>
       <FormatBodyDetail label="Hook" value={hook}/>
@@ -3557,6 +3557,26 @@ function VideoCardBody({card}) {
         </div>
       )}
       <FormatBodyDetail label="Audio" value={card.audioRecommendation}/>
+      {/* [FILM-DIRECTION] First-class capture direction — same treatment
+           as photoDirection on image cards. Semicolon-separated clips
+           render as a numbered list for scannability. */}
+      {card.filmDirection && (
+        <div style={{marginBottom:10}}>
+          <FormatBodyEyebrow>Film direction</FormatBodyEyebrow>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {String(card.filmDirection).split(";").map(function(clip,i){
+              var t = clip.trim();
+              if (!t) return null;
+              return (
+                <div key={"fd-"+i} style={{display:"flex",gap:7,alignItems:"flex-start"}}>
+                  <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:B.navy,flexShrink:0,marginTop:2}}>{(i+1)+"."}</span>
+                  <span style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,lineHeight:1.55}}>{t}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3742,7 +3762,7 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
   // VIRL produced as part of the card's strategy and should NOT be
   // user-editable.
   var perFormatLocked = {
-    video:          [{key:"audioRecommendation", label:"Audio direction"}, {key:"repurpose", label:"Repurpose"}],
+    video:          [{key:"audioRecommendation", label:"Audio direction"}, {key:"filmDirection", label:"Film direction"}, {key:"repurpose", label:"Repurpose"}],
     single_image:   [
       {key:"photoDirection", label:"Photo direction"},
       {key:"compositionTip", label:"Composition tip"},
