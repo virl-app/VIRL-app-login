@@ -9838,7 +9838,7 @@ function App() {
         setAdminLoading(false);
         return;
       }
-      const {credits:creditsRaw, events:eventsRaw} = await res.json();
+      const {credits:creditsRaw, events:eventsRaw, events_window_days:eventsWindowDays} = await res.json();
       const credits = Array.isArray(creditsRaw) ? creditsRaw : [];
       const events = Array.isArray(eventsRaw) ? eventsRaw : [];
 
@@ -9881,7 +9881,7 @@ function App() {
         topPlatforms: topPlatforms,
       };
 
-      setAdminData({credits, total, paid, free, mrr, eventStats});
+      setAdminData({credits, total, paid, free, mrr, eventStats, eventsWindowDays});
     } catch(e) {
       console.error("Admin load error:", e);
     }
@@ -13919,9 +13919,13 @@ return (
                 })()}
 
                 {/* ── Feature usage ── */}
+                {/* [DASH-ACCURACY] Counts are a server-windowed slice (7 days
+                    by default, echoed as events_window_days) instead of the
+                    old "most recent 500 events of any type" — the label
+                    carries the window so the tiles read as what they are. */}
                 {adminData.eventStats&&(
                   <div style={{marginBottom:20}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>Feature usage</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>{"Feature usage · last "+(adminData.eventsWindowDays||7)+" days"}</div>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:12}}>
                       {[
                         {label:"Plans generated",   value:adminData.eventStats.plans,       sub:adminData.eventStats.plansUsers+" users"},
@@ -13978,14 +13982,23 @@ return (
                           )}
                         </div>
                         <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:row.plan==="standard"||row.plan==="founding"?B.green:B.muted,textTransform:"capitalize"}}>{row.plan}</div>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.ink}}>{row.credits}</div>
+                        {/* [DASH-ACCURACY] effective_credits mirrors the lazy
+                            weekly refill chat.js applies on the user's next
+                            generation; the stored row.credits is stale for
+                            anyone who hasn't generated since reset_at passed.
+                            Falls back to row.credits if the API predates the
+                            field. The * marks a refill that is due but not
+                            yet written. */}
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:row.refill_pending?B.muted:B.ink}}>
+                          {(row.effective_credits!=null?row.effective_credits:row.credits)}{row.refill_pending?" *":""}
+                        </div>
                       </div>
                     );
                   })}
                 </div>
 
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:12,textAlign:"center"}}>
-                  {"Est. MRR assumes $25/mo per Standard user, $20/mo per Founder Circle member (locked for life). Data from Supabase credits table only."}
+                  {"Est. MRR assumes $25/mo per Standard user, $20/mo per Founder Circle member (locked for life). Data from Supabase credits table only. * = weekly refill due — shows the balance their wallet refills to on their next generation."}
                 </div>
               </div>
             )}
