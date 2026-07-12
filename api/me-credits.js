@@ -1,19 +1,19 @@
 // /api/me-credits.js
 // ─────────────────────────────────────────────────────────────────────────────
-// [CX-FIX 6] Server-side credits-row fetch — fallback for the client's direct
-// PostgREST fetch. Some accounts (Lauren's, for one — bug present for months)
+// [CX-FIX 6] Server-side credits-row fetch – fallback for the client's direct
+// PostgREST fetch. Some accounts (Lauren's, for one – bug present for months)
 // can't load their credits row through PostgREST + the user's JWT. The client
-// gets null silently and the HUD shows "—" forever. This endpoint bypasses
+// gets null silently and the HUD shows "–" forever. This endpoint bypasses
 // whatever's wrong on the RLS / token path by reading with the service key.
 //
 // Auth: bearer token verified against Supabase. The user_id comes from the
-// verified token — never trust a client-supplied id here.
+// verified token – never trust a client-supplied id here.
 //
 // Returns:
-//   200 { credits: row }      — the user's credits row
-//   200 { credits: null }     — no row exists for this user (lazy-provisioned)
-//   401 { error }             — invalid / missing token
-//   500 { error }             — server config issue
+//   200 { credits: row }      – the user's credits row
+//   200 { credits: null }     – no row exists for this user (lazy-provisioned)
+//   401 { error }             – invalid / missing token
+//   500 { error }             – server config issue
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;

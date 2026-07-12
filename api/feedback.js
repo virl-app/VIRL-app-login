@@ -1,5 +1,5 @@
 // User-facing feedback submit endpoint. Auth-required (so we know who
-// sent it) but writes via service-role so it bypasses RLS — there are no
+// sent it) but writes via service-role so it bypasses RLS – there are no
 // client-readable policies on public.feedback.
 //
 // POST body: {
@@ -23,7 +23,7 @@ export default async function handler(req, res) {
   if (!auth) return res.status(401).json({ error: "Sign in required." });
 
   // Verify the bearer token belongs to a real Supabase user. Same pattern
-  // as chat.js — never trust a client-supplied user_id.
+  // as chat.js – never trust a client-supplied user_id.
   let user;
   try {
     const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
@@ -49,7 +49,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({ p_user_id: user.id, p_endpoint: "feedback", p_minute_max: 3, p_hour_max: 20 }),
     });
     if (rl.ok && (await rl.json()) !== "ok") {
-      return res.status(429).json({ error: "You're sending feedback too quickly — please try again in a bit." });
+      return res.status(429).json({ error: "You're sending feedback too quickly – please try again in a bit." });
     }
   } catch (e) { /* fail-open */ }
 

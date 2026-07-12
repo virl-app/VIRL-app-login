@@ -1,6 +1,6 @@
 // Inline welcome email. Fired by the client on first SIGNED_IN. Idempotent
 // thanks to either Resend's email_sends unique constraint (legacy path) OR
-// Loops's per-contact event dedupe (new path) — a second call from a token
+// Loops's per-contact event dedupe (new path) – a second call from a token
 // refresh, a different tab, or the cron safety-net is a no-op.
 //
 // [EMAIL-CUTOVER] Two responsibilities now:
@@ -39,7 +39,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Server misconfigured." });
   }
 
-  // Verify the bearer token against Supabase auth — same pattern as chat.js.
+  // Verify the bearer token against Supabase auth – same pattern as chat.js.
   let user;
   try {
     const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
@@ -61,7 +61,7 @@ export default async function handler(req, res) {
     );
     if (profRes.ok) {
       const rows = await profRes.json();
-      // Strip < > — name is user-controlled and lands raw in HTML email bodies.
+      // Strip < > – name is user-controlled and lands raw in HTML email bodies.
       if (rows[0] && rows[0].name) firstName = String(rows[0].name).replace(/[<>]/g, "").slice(0, 120);
     }
   } catch (e) { /* non-fatal */ }
@@ -92,14 +92,14 @@ export default async function handler(req, res) {
       const rows = await credRes.json();
       if (rows[0] && rows[0].plan != null) supabasePlan = rows[0].plan;
     }
-  } catch (e) { /* non-fatal — defaults to "free" */ }
+  } catch (e) { /* non-fatal – defaults to "free" */ }
   const signupAt = user.created_at || new Date().toISOString();
 
   // [EMAIL-CUTOVER] Always-on: sync contact properties to Loops. This is
-  // §9 audit fix #4 — Loops's contact data now mirrors the Supabase
+  // §9 audit fix #4 – Loops's contact data now mirrors the Supabase
   // source of truth, so audience filters can suppress marketing sends to
   // opted-out users and use signupAt for trial-day-N targeting.
-  // Fire-and-forget — Loops downtime never blocks the welcome flow.
+  // Fire-and-forget – Loops downtime never blocks the welcome flow.
   updateLoopsContact({
     userId: user.id,
     email:  user.email,
@@ -125,7 +125,7 @@ export default async function handler(req, res) {
     // fires the Resend `welcome` template UNCONDITIONALLY for days <= 7
     // (comment there claims email_sends dedupe covers the Loops happy path,
     // but that only holds if the inline Loops call claimed the shared
-    // (template=welcome, dedupe_key=welcome) slot — sendLoopsEvent alone
+    // (template=welcome, dedupe_key=welcome) slot – sendLoopsEvent alone
     // does not). Pre-claim that slot here so the cron sees the inline
     // Loops send and skips its Resend copy; a Loops-side failure still
     // leaves the row in place (documented Loops failures don't retry via

@@ -3,7 +3,7 @@
 // returns a Map<userId, { name, email, signup_at }> the caller uses
 // to enrich anonymous user_id columns into something glanceable.
 //
-// Both fetches fail-soft — if profiles is missing or auth admin is
+// Both fetches fail-soft – if profiles is missing or auth admin is
 // rate-limited the directory still returns whatever it could get,
 // so the dashboard never goes blank when one side hiccups.
 

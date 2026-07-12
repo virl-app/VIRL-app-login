@@ -2,18 +2,18 @@
 // saveProfileToSupabase the moment a profile save with handles succeeds,
 // so the Perplexity research call happens BEFORE the user's first plan
 // generation instead of adding ~3s of latency to it. Idempotent against
-// fetchHandleResearch's cache — repeated calls with unchanged handles
+// fetchHandleResearch's cache – repeated calls with unchanged handles
 // are zero-cost no-ops.
 //
 // Auth: same Bearer-token pattern as /api/email/welcome, /api/loops-event.
 // The endpoint only ever reads / writes research for the *authenticated*
-// user_id — handles are server-fetched from auth.users via the token, not
-// trusted from request body — so a malicious caller can't pre-warm someone
+// user_id – handles are server-fetched from auth.users via the token, not
+// trusted from request body – so a malicious caller can't pre-warm someone
 // else's cache or burn another user's Perplexity budget.
 //
 // Failure semantics: always returns 200 with { refreshed, reason } so the
 // client's fire-and-forget never sees an error. The actual Perplexity call
-// is fail-open inside fetchHandleResearch — if Perplexity is down, we
+// is fail-open inside fetchHandleResearch – if Perplexity is down, we
 // return { refreshed: false, reason: "no_research" } and the next plan
 // generation just runs without the research block.
 
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
   if (!userId) return res.status(401).json({ error: "Sign in required." });
 
   // Read handles + inspiration + learn_from_public_posts from the profiles
-  // table — NEVER trust the request body, since that would let a caller
+  // table – NEVER trust the request body, since that would let a caller
   // pre-warm research against fabricated handles / aspirations and force
   // the cache to misrepresent the authenticated user. Inspiration is
   // included in the cache key (handles_hash), so it has to come from the
@@ -67,14 +67,14 @@ export default async function handler(req, res) {
       inspiration          = (rows[0] && typeof rows[0].inspiration === "string") ? rows[0].inspiration : "";
       // [BUSINESS-WEBSITE] Read the URL alongside handles so Perplexity
       // can incorporate it. Pre-migration-015 rows return undefined for
-      // this column — the || "" falls through cleanly.
+      // this column – the || "" falls through cleanly.
       businessWebsite      = (rows[0] && typeof rows[0].business_website === "string") ? rows[0].business_website : "";
       learnFromPublicPosts = !!(rows[0] && rows[0].learn_from_public_posts);
     }
   } catch (e) { /* fail-open below */ }
 
   // [BUSINESS-WEBSITE] Pre-warming proceeds when there's anything to
-  // research — either at least one social handle OR a business website.
+  // research – either at least one social handle OR a business website.
   // Creators who set up handles first, website later (or vice versa) get
   // research either way.
   const hasHandle  = handles && Object.keys(handles).some(k => handles[k]);
@@ -85,7 +85,7 @@ export default async function handler(req, res) {
 
   // [LEARNING-CONSENT] Skip the Perplexity research call entirely when the
   // user has not opted in to learn_from_public_posts. Mirrors the gate in
-  // chat.js — no third-party network request fires without consent. This
+  // chat.js – no third-party network request fires without consent. This
   // gate covers the business website too: reading the public site is the
   // same kind of public-data-research the toggle authorizes.
   if (!learnFromPublicPosts) {

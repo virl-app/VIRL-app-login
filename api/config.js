@@ -2,7 +2,7 @@
 // browser legitimately needs at runtime (e.g. founder Calendly URL for the
 // feedback widget). Everything sensitive stays server-side.
 //
-// No auth — these values are public-by-design. Only add fields here that
+// No auth – these values are public-by-design. Only add fields here that
 // are safe to expose to anyone hitting the page.
 
 export default async function handler(req, res) {

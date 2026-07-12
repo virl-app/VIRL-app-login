@@ -6,7 +6,7 @@
 //   - index.html upgrade modal (decides whether to show Founder Circle option)
 //   - govirl.ai landing page live counter (read by the marketing site via CORS)
 //
-// Public — no auth required. The count is non-sensitive information that we
+// Public – no auth required. The count is non-sensitive information that we
 // want to surface widely as social proof / scarcity signal.
 //
 // Returns: { filled, remaining, isFull, cap }
@@ -35,7 +35,7 @@ export default async function handler(req, res) {
   const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !supabaseKey) {
-    // Fail open as "available" — better to show the offer than hide it
+    // Fail open as "available" – better to show the offer than hide it
     // because of an env config blip. Matches the philosophy in index.html.
     return res.status(200).json({
       filled: 0,

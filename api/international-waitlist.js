@@ -1,21 +1,21 @@
 // [GEO-GATE] Public endpoint that receives email + marketing-consent
 // submissions from the non-US-visitor waitlist page (served by
 // middleware.js). Inserts into public.international_waitlist with the
-// caller's country header. Unauthenticated by design — the form is
+// caller's country header. Unauthenticated by design – the form is
 // shown to anyone who hits the geo gate, including visitors who'll
 // never have a VIRL account.
 //
 // Defenses:
 //   - Email validated against a basic regex + length cap (no enforced
-//     server-side deliverability check — overkill for a waitlist)
+//     server-side deliverability check – overkill for a waitlist)
 //   - Marketing consent stored as the explicit boolean from the form,
-//     defaulting to FALSE (GDPR-safe — opt-in is an affirmative tick)
+//     defaulting to FALSE (GDPR-safe – opt-in is an affirmative tick)
 //   - IP captured as a salted sha256 hash so abuse patterns are
 //     visible without storing PII in the clear
-//   - ON CONFLICT DO NOTHING via Prefer header — re-submissions for an
+//   - ON CONFLICT DO NOTHING via Prefer header – re-submissions for an
 //     existing email silently no-op. Acceptable: first interest stands.
 //   - Always returns 200 to the client (or 400 for malformed input).
-//     Even on Supabase failure, we don't surface the error — better to
+//     Even on Supabase failure, we don't surface the error – better to
 //     drop a waitlist entry than to give a probing client an error oracle.
 
 import crypto from "node:crypto";
@@ -27,7 +27,7 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // production env vars.
 const IP_SALT              = process.env.WAITLIST_IP_SALT || "virl-waitlist-default-salt";
 
-// Conservative email format check — RFC-strict regexes are too aggressive
+// Conservative email format check – RFC-strict regexes are too aggressive
 // for this surface. Goal: reject obvious garbage, not policy-perfect
 // addresses. The actual deliverability check happens when we eventually
 // try to mail them.
@@ -58,9 +58,9 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-    // Misconfigured — return 200 so the client's submit handler doesn't
+    // Misconfigured – return 200 so the client's submit handler doesn't
     // show a noisy error. Log loudly so it shows up in Vercel logs.
-    console.error("[waitlist] Supabase env not configured — dropping submission");
+    console.error("[waitlist] Supabase env not configured – dropping submission");
     return res.status(200).json({ ok: true });
   }
 
@@ -84,7 +84,7 @@ export default async function handler(req, res) {
         apikey:           SUPABASE_SERVICE_KEY,
         Authorization:    `Bearer ${SUPABASE_SERVICE_KEY}`,
         "Content-Type":   "application/json",
-        // ON CONFLICT DO NOTHING semantics — duplicate emails are silent
+        // ON CONFLICT DO NOTHING semantics – duplicate emails are silent
         // no-ops. We don't surface the dup to the client because the UX
         // is identical (show the "thanks" screen either way).
         Prefer:           "resolution=ignore-duplicates,return=minimal",
@@ -98,7 +98,7 @@ export default async function handler(req, res) {
     });
   } catch (e) {
     console.error("[waitlist] insert failed:", e.message);
-    // Still return 200 — don't give the client an error oracle.
+    // Still return 200 – don't give the client an error oracle.
   }
 
   return res.status(200).json({ ok: true });

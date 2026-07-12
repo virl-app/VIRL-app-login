@@ -2,7 +2,7 @@
 // looks at the trailing hour, so anything older than 24 hours is dead
 // weight. Keeps the table from growing unbounded over months.
 //
-// Auth: same CRON_SECRET pattern as /api/cron/email-triggers — Vercel
+// Auth: same CRON_SECRET pattern as /api/cron/email-triggers – Vercel
 // sends `Authorization: Bearer ${CRON_SECRET}` on scheduled invocations.
 
 import { cronAuthorized } from "../_lib/cron-auth.js";

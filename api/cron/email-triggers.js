@@ -1,4 +1,4 @@
-// Daily Vercel cron — handles every time-based email trigger (trial day
+// Daily Vercel cron – handles every time-based email trigger (trial day
 // 11/13/14, weekly Monday reset, welcome safety-net). Inline / state-change
 // triggers (welcome on sign-in, billing emails) live elsewhere; this job
 // only covers triggers that key off "today is day N" or "today is Monday".
@@ -26,7 +26,7 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // trial day 7/11/13/expired Resend sends. Both are now handled by Loops
 // (welcome via the `signup_welcome` event from /api/email/welcome; the
 // trial sequence via Loops audience filters keyed on the contact's
-// signupAt property — see migrations/003-email-preferences-schema.sql and
+// signupAt property – see migrations/003-email-preferences-schema.sql and
 // Claude Cowork's Loops setup). Other cron sends (weekly_reset,
 // phase1_no_plan_24h, inactive_7d, etc.) are NOT yet migrated and continue
 // to fire via Resend regardless of this flag.
@@ -41,7 +41,7 @@ function daysSince(isoDate) {
   return Math.floor((Date.now() - t) / DAY_MS);
 }
 
-// ISO 8601 week number — used as the weekly_reset dedupe suffix so re-runs
+// ISO 8601 week number – used as the weekly_reset dedupe suffix so re-runs
 // within the same Monday are no-ops but the next Monday gets a fresh slot.
 function isoYearWeek(d) {
   const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
@@ -145,11 +145,11 @@ async function fetchUnloggedCount(userId) {
 // still on the same calendar date as UTC (6:30 PM CT / 4:30 PM PT /
 // 7:30 PM ET), so getUTCDay()+1 is tomorrow for all US users. Known
 // cliff: a UK/EU user is already past midnight at 23:30 UTC, so their
-// "tomorrow" email describes a day that has started — revisit before
+// "tomorrow" email describes a day that has started – revisit before
 // opening international signups.
 //
 // Returns { cards, hasPlan }: hasPlan is false when there is no plan row
-// or the plan expires before tomorrow — the Sunday reset email uses that
+// or the plan expires before tomorrow – the Sunday reset email uses that
 // to switch to the build-your-week variant.
 const WEEKDAY_ABBRS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 async function fetchTomorrowsCards(userId) {
@@ -163,7 +163,7 @@ async function fetchTomorrowsCards(userId) {
     const rows = await res.json();
     const plan = rows[0];
     if (!plan || !Array.isArray(plan.cards)) return empty;
-    // Plan must still be active TOMORROW, not just now — a plan expiring
+    // Plan must still be active TOMORROW, not just now – a plan expiring
     // overnight has nothing valid to remind about.
     const tomorrowStart = new Date(); tomorrowStart.setUTCHours(24, 0, 0, 0);
     if (plan.expires_at && Date.parse(plan.expires_at) <= tomorrowStart.getTime()) return empty;
@@ -180,7 +180,7 @@ async function fetchTomorrowsCards(userId) {
 
 // True when the user already received any OTHER lifecycle email today
 // (trial sequence, welcome, inactivity, etc). The evening reminder yields
-// to those — one conversion-critical email a day beats two nudges.
+// to those – one conversion-critical email a day beats two nudges.
 async function userGotOtherEmailToday(userId) {
   try {
     const todayISO = new Date().toISOString().slice(0, 10);
@@ -195,7 +195,7 @@ async function userGotOtherEmailToday(userId) {
   } catch (e) { return false; }
 }
 
-// Per-user dispatch — figures out which (if any) trigger applies today.
+// Per-user dispatch – figures out which (if any) trigger applies today.
 async function processUser(user, todayIsSunday, weekKey) {
   const userId   = user.id;
   const email    = user.email;
@@ -211,12 +211,12 @@ async function processUser(user, todayIsSunday, weekKey) {
   const lastSignInDays = daysSince(user.last_sign_in_at);
 
   // [LOOPS-PLAN] Periodic contact-property sync. Two jobs here:
-  //   1. Keep `plan` non-blank and current — free/trial users (whose plan
+  //   1. Keep `plan` non-blank and current – free/trial users (whose plan
   //      was never pushed at signup before this change, or who downgraded
   //      back to free) land at "free"; paid/cancelled tiers pass through.
   //   2. Recompute `daysIntoTrial` daily so the trial audience guard
   //      advances over time instead of freezing at the signup-day value.
-  // Loops stores a static number, so only a re-PUT moves it — this daily
+  // Loops stores a static number, so only a re-PUT moves it – this daily
   // cron is that re-PUT. Awaited (paces us under Loops's rate ceiling) but
   // failure-tolerant: updateLoopsContact logs and swallows its own errors
   // and never throws, so a Loops blip can't abort the user's email
@@ -233,14 +233,14 @@ async function processUser(user, todayIsSunday, weekKey) {
   // Welcome safety-net: catches anyone the inline /api/email/welcome call
   // missed (network errors, function cold-start timeouts, etc).
   // The email_sends unique constraint makes the inline + cron pair safe.
-  // [STABILITY] Was gated on !EMAIL_VIA_LOOPS — removed. Even after the
+  // [STABILITY] Was gated on !EMAIL_VIA_LOOPS – removed. Even after the
   // Loops cutover the cron safety-net stays useful: if Cowork's Loops
   // automation breaks (mis-configured, rate-limited, dashboard glitch),
   // the cron's Resend send still arrives.
   // [CROSS-PATH-DEDUPE] The Loops inline path now pre-claims the same
   // (template=welcome, dedupe_key=welcome) slot before firing the Loops
   // event (see api/email/welcome.js), so the cron's claimSend here fails
-  // when Loops already delivered — no double welcome.
+  // when Loops already delivered – no double welcome.
   if (days <= 7) {
     const tpl = T.welcome({ name });
     await sendEmail({
@@ -253,7 +253,7 @@ async function processUser(user, todayIsSunday, weekKey) {
   // [EMAIL-CUTOVER] When EMAIL_VIA_LOOPS=true, the entire trial sequence is
   // skipped here. Loops handles trial day 7/11/13/expired via audience
   // filters keyed on `signupAt` (set during /api/email/welcome's
-  // updateLoopsContact call) — no backend cron event needed.
+  // updateLoopsContact call) – no backend cron event needed.
   // [STABILITY] days bounds changed from === to >= so a missed cron day
   // self-heals on the next run. email_sends dedupe (per template+key)
   // prevents resends for users who already got the email at the right
@@ -289,13 +289,13 @@ async function processUser(user, todayIsSunday, weekKey) {
     }
   }
 
-  // Weekly credit-reset reminder — marketing, opt-out-able. Anchored to the
+  // Weekly credit-reset reminder – marketing, opt-out-able. Anchored to the
   // user's OWN reset cycle (credits.reset_at), NOT a global Monday.
   //
   // Source of truth: credits reset on a per-user 7-day window stored in
   // credits.reset_at. handle_new_user seeds the first window, and the lazy
   // reset in api/chat.js re-anchors reset_at to now()+7d on the first
-  // generation after the window expires — so an active user's reset day
+  // generation after the window expires – so an active user's reset day
   // drifts to whatever day/time they generate, and is almost never a
   // calendar Monday. Gating on Mondays therefore fired the reminder on the
   // wrong day (a day early, every week) for anyone off the Monday cadence.
@@ -320,11 +320,11 @@ async function processUser(user, todayIsSunday, weekKey) {
   // Email content + property merging happen in Loops; we just trip the
   // event with the firstName so the template can address them.
   // [LOOPS-DEDUPE] Audit finding #12. Previously relied on the comment
-  // "Loops dedupes a contact's events" — that's only true if Cowork
+  // "Loops dedupes a contact's events" – that's only true if Cowork
   // configured per-contact dedupe in the dashboard, which we can't
   // verify from here. Adding email_sends-side claim is belt-and-braces;
   // also lets the gate change from days === 30 to days >= 30 self-heal
-  // (a missed cron day no longer skips the milestone — claim prevents
+  // (a missed cron day no longer skips the milestone – claim prevents
   // a second fire).
   if (isPaid && days >= 30) {
     await sendLoopsEventOnce({
@@ -334,7 +334,7 @@ async function processUser(user, todayIsSunday, weekKey) {
     });
   }
 
-  // Tier 2 — Phase 1 saved but no plan after 24h. Account is between
+  // Tier 2 – Phase 1 saved but no plan after 24h. Account is between
   // 1 and 7 days old, profile name is set (Phase 1 done), and no plans
   // row exists. One-time per user (dedupeKey: phase1_no_plan_24h).
   if (days >= 1 && days <= 7 && name) {
@@ -348,7 +348,7 @@ async function processUser(user, todayIsSunday, weekKey) {
     }
   }
 
-  // Tier 2 — 7-day inactivity re-engagement. Last sign-in was 7-30 days
+  // Tier 2 – 7-day inactivity re-engagement. Last sign-in was 7-30 days
   // ago and the account is past the trial-warning windows. Weekly dedupe
   // so we don't send daily.
   if (lastSignInDays !== null && lastSignInDays >= 7 && lastSignInDays <= 30 && days >= 14) {
@@ -359,7 +359,7 @@ async function processUser(user, todayIsSunday, weekKey) {
     });
   }
 
-  // Tier 3 — 30-day inactivity (deeper churn). Last sign-in 30+ days ago.
+  // Tier 3 – 30-day inactivity (deeper churn). Last sign-in 30+ days ago.
   // Monthly dedupe key (year-month) so a long-dormant user gets at most
   // one of these per month rather than weekly noise.
   if (lastSignInDays !== null && lastSignInDays >= 30) {
@@ -373,22 +373,22 @@ async function processUser(user, todayIsSunday, weekKey) {
 
   // NOTE: the posting reminder and Sunday log nudge moved to the evening
   // pass (processReminderUser, job=reminders cron at 23:30 UTC). The
-  // Sunday-morning log nudge is retired — its content folded into the
+  // Sunday-morning log nudge is retired – its content folded into the
   // Sunday-evening reset email.
 }
 
-// Evening pass (23:30 UTC ≈ 6:30 PM CT) — the ONLY thing the
+// Evening pass (23:30 UTC ≈ 6:30 PM CT) – the ONLY thing the
 // job=reminders cron invocation runs. Two emails, mutually exclusive:
 //
 //   Mon–Sat: "tomorrow's posts" reminder, only when tomorrow has cards.
-//   Sunday:  the Sunday reset — closes last week (unlogged results) and
+//   Sunday:  the Sunday reset – closes last week (unlogged results) and
 //            opens next week (Monday's cards, or build-your-week when no
 //            active plan covers next week).
 //
 // Guardrails (see rollout plan): yields to any other lifecycle email sent
 // the same day; deduped on the TARGET date (a re-run can't double-send);
 // rest days send nothing; marketing/opt-out-able.
-// Success metric: post_marked events within 24h of a send — join
+// Success metric: post_marked events within 24h of a send – join
 // email_sends (template posting_reminder / sunday_reset) to events.
 async function processReminderUser(user, todayIsSunday, weekKey) {
   const userId = user.id;

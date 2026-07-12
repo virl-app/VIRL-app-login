@@ -37,7 +37,7 @@ async function fetchEmailBeforeDelete(userId) {
 // Last-email-ever send. Bypasses the email_sends dedupe table because the
 // row gets cascaded away with the user_id; instead we send via Resend
 // directly with the captured email. Failure is logged but never blocks
-// the deletion flow — the account being closed is what the user asked for.
+// the deletion flow – the account being closed is what the user asked for.
 async function sendDeletionConfirmation(email, name) {
   if (!RESEND_API_KEY || !email) return;
   try {
@@ -66,7 +66,7 @@ export default async function handler(req, res) {
   }
 
   // [SECURITY] Verify the caller via Supabase Bearer token and derive the
-  // userId from the verified token — NEVER trust a userId from the request
+  // userId from the verified token – NEVER trust a userId from the request
   // body. Without this gate any anonymous caller could POST another user's
   // UUID and delete that account (the endpoint uses SUPABASE_SERVICE_KEY,
   // which bypasses RLS). Same auth pattern as /api/chat, /api/email/welcome,
@@ -93,7 +93,7 @@ export default async function handler(req, res) {
     'Content-Type': 'application/json',
   };
 
-  // Capture contact info BEFORE deletion — once auth row is gone we can't
+  // Capture contact info BEFORE deletion – once auth row is gone we can't
   // look it up anymore.
   const ctx = await fetchEmailBeforeDelete(userId);
 
@@ -103,7 +103,7 @@ export default async function handler(req, res) {
       method: 'DELETE', headers,
     });
 
-    // 2. Delete the auth user — cascades user_data, plans, plan_history,
+    // 2. Delete the auth user – cascades user_data, plans, plan_history,
     //    feedback, usage_events via foreign keys.
     const deleteRes = await fetch(
       `${SUPABASE_URL}/auth/v1/admin/users/${userId}`,
@@ -113,7 +113,7 @@ export default async function handler(req, res) {
     if (!deleteRes.ok) {
       const err = await deleteRes.json().catch(() => ({}));
       console.error('Auth delete error:', err);
-      // Still return 200 — credits deleted, auth may already be gone.
+      // Still return 200 – credits deleted, auth may already be gone.
     }
 
     // 3. Send the closure email last so it's the final thing the address

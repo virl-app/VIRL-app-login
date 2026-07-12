@@ -87,7 +87,7 @@ function indexPage(token) {
       <div style="font-family:Georgia,'Times New Roman',serif;font-size:24px;line-height:1.25;margin-top:6px">Email preview</div>
     </div>
     <div style="padding:18px 32px;font-size:13px;color:#334155;line-height:1.6">
-      <p style="margin:0 0 6px"><strong>Preview HTML</strong> renders the template in a new tab — no email is sent.</p>
+      <p style="margin:0 0 6px"><strong>Preview HTML</strong> renders the template in a new tab – no email is sent.</p>
       <p style="margin:0 0 6px"><strong>Send to me</strong> fires a real Resend send to ${escapeHtml(ADMIN_EMAIL)}, bypassing the dedupe gate. Subject is prefixed with <code>[TEST]</code>.</p>
     </div>
     <table style="width:100%;border-collapse:collapse">${rows}</table>

@@ -44,8 +44,8 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'Not authorized' });
     }
 
-    // Caller is verified admin — fetch credits + events with service key.
-    // Don't reference updated_at on credits — that column isn't in the
+    // Caller is verified admin – fetch credits + events with service key.
+    // Don't reference updated_at on credits – that column isn't in the
     // table and PostgREST returns 400, which our previous code silently
     // swallowed into an empty list. Sort by user_id for stable order.
     //
@@ -90,13 +90,13 @@ export default async function handler(req, res) {
     const creditsRaw = credRes.ok ? await credRes.json() : [];
     const events     = evRes.ok   ? await evRes.json()   : [];
 
-    // [DASH-ACCURACY] The weekly credit refill is LAZY — it runs inside
+    // [DASH-ACCURACY] The weekly credit refill is LAZY – it runs inside
     // /api/chat on the user's next generation (see the lazy-reset block in
     // chat.js), so the stored `credits` value for anyone who hasn't
     // generated since their reset_at passed is a stale leftover from their
     // last active week. Mirror the refill computation here so the dashboard
     // shows the balance the wallet would hold the moment they generate:
-    // comp allowance while a comp is live, else 150 paid / 20 free — the
+    // comp allowance while a comp is live, else 150 paid / 20 free – the
     // same constants chat.js uses. refill_pending tells the client to mark
     // the value as "due, applies on their next generation" rather than a
     // balance that has already been written to the row.
@@ -115,7 +115,7 @@ export default async function handler(req, res) {
 
     // Enrich credits rows with creator name + email so the All-users
     // table can show humans instead of UUID slices. Directory fetch is
-    // fail-soft — credits still returns even if profiles or auth admin
+    // fail-soft – credits still returns even if profiles or auth admin
     // hiccups; rows just fall back to anonymous.
     const directory = await fetchUserDirectory(SUPABASE_URL, SUPABASE_SERVICE_KEY);
     const credits = creditsRaw.map(c => {

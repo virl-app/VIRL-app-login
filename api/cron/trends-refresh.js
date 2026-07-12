@@ -1,4 +1,4 @@
-// Weekly trends refresh. Auto-publishes — no admin approval. Each row in
+// Weekly trends refresh. Auto-publishes – no admin approval. Each row in
 // public.trends is dated and lists the URLs the model cited; users see the
 // freshness on the Algo tab and can form their own judgment. Plan / scan /
 // caption prompts pull the latest row per platform and weave the items in.
@@ -60,7 +60,7 @@ export default async function handler(req, res) {
     }
     if (!result) { errored++; continue; }
     // Always insert a row (even with zero items) so the Algo tab shows the
-    // freshness — "we checked, nothing notable" is information too.
+    // freshness – "we checked, nothing notable" is information too.
     const ok = await insertTrend(platform, result.summary, result.items, result.sources);
     if (ok) { published++; }
     else    { errored++;   }

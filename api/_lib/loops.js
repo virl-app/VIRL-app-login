@@ -3,7 +3,7 @@
 // webhooks, cron jobs) route through these so we have one place
 // handling the Loops bearer token, response shape, and graceful
 // degradation. If LOOPS_API_KEY is unset, every helper logs and
-// resolves with { ok: false, note: "not configured" } — never throws.
+// resolves with { ok: false, note: "not configured" } – never throws.
 
 import { claimSend, hasSent, isMarketingOptedOut } from "./email-send.js";
 
@@ -16,7 +16,7 @@ function loopsApiKey() {
 // [LOOPS-PLAN] Map the app's internal Supabase `credits.plan` value to the
 // `plan` contact property Loops audience filters key off. The trial-
 // conversion workflows filter on `plan == "free"`, so a free/trial user
-// must NEVER arrive blank — that's the bug this normalizer closes. Paid
+// must NEVER arrive blank – that's the bug this normalizer closes. Paid
 // tiers pass through unchanged; cancelled / past_due are preserved so the
 // reactivation + dunning segments still match; everything else (the string
 // "free", "trial", null, "", or an unknown value) collapses to "free".
@@ -118,7 +118,7 @@ export async function updateLoopsContact({ userId, email, properties }) {
 // [CREDIT-NUDGE] Fire a weekly-credit Loops nudge (creditsExhausted /
 // creditsLow) for free/trial users, deduped to once per credit cycle via the
 // shared email_sends table. The Loops `credits_out` / `credits_low` workflows
-// have NO audience filter, so the server is the source of truth — the caller
+// have NO audience filter, so the server is the source of truth – the caller
 // (api/chat.js) is responsible for the free/trial-only guard before calling.
 //
 // Suppression: the "low" nudge is skipped if the "exhausted" nudge already
@@ -142,7 +142,7 @@ export async function fireCreditNudge({ eventName, template, cycleKey, ctx }) {
     // treated as marketing, so respect the creator's opt-out from OUR source
     // of truth (email_preferences.marketing_opt_out, same check the cron's
     // marketing sends use) rather than relying only on Loops' marketingSubscribed
-    // suppression — this closes the gap if that sync ever drifts, and never
+    // suppression – this closes the gap if that sync ever drifts, and never
     // emits the event for an opted-out user. Checked BEFORE claimSend so a
     // user who opts back in mid-cycle hasn't had their dedupe slot consumed.
     // Fail-open: isMarketingOptedOut returns false on a read blip, so a
@@ -173,7 +173,7 @@ export async function fireCreditNudge({ eventName, template, cycleKey, ctx }) {
 }
 
 // [LOOPS-DEDUPE] Audit finding #12. Fires a Loops event but only once per
-// (userId, eventName, dedupeKey) tuple — protects against Cowork's Loops
+// (userId, eventName, dedupeKey) tuple – protects against Cowork's Loops
 // automations being configured WITHOUT per-contact event dedupe, which
 // would otherwise let a duplicate fire (e.g. firstPlanGenerated on the
 // 2nd plan if some flag got reset, subscriptionStarted on a Stripe-event
@@ -192,7 +192,7 @@ export async function fireCreditNudge({ eventName, template, cycleKey, ctx }) {
 //     (per-plan-generated, per-caption-generated, repeated milestones)
 //
 // Fail-open: if claimSend errors (Supabase down), the event still fires
-// — duplicate-risk is preferable to missed-event-on-infra-blip.
+// – duplicate-risk is preferable to missed-event-on-infra-blip.
 export async function sendLoopsEventOnce({ userId, email, eventName, properties, dedupeKey }) {
   if (!eventName) return { ok: false, note: "eventName required" };
   if (!userId)    return { ok: false, note: "userId required for dedupe" };
@@ -204,7 +204,7 @@ export async function sendLoopsEventOnce({ userId, email, eventName, properties,
     console.warn("[loops] claimSend threw, firing anyway:", e.message);
   }
   if (!claimed) {
-    console.log("[loops] event " + eventName + " skipped — already fired for", dedupeKey);
+    console.log("[loops] event " + eventName + " skipped – already fired for", dedupeKey);
     return { ok: true, deduped: true };
   }
   return sendLoopsEvent({ userId, email, eventName, properties });

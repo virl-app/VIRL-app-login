@@ -1,8 +1,8 @@
 // /api/create-portal-session.js
 // ─────────────────────────────────────────────────────────────────────────────
 // [CX-FIX 2] Creates a Stripe Customer Portal session and returns the hosted
-// URL. The user is redirected there to manage their subscription themselves —
-// update card, view invoices, cancel — without emailing support.
+// URL. The user is redirected there to manage their subscription themselves –
+// update card, view invoices, cancel – without emailing support.
 //
 // POST body: { userId }     // userId taken from req.body OR derived from
 //                              the bearer token (token wins if both)
@@ -11,7 +11,7 @@
 // Required env:
 //   STRIPE_SECRET_KEY / STRIPE_RESTRICTED_KEY
 //   SUPABASE_URL, SUPABASE_SERVICE_KEY
-//   APP_URL — used as the return_url after the portal session
+//   APP_URL – used as the return_url after the portal session
 //
 // Required Stripe Dashboard setup (one-time, no code):
 //   Settings → Billing → Customer portal → enable + configure which actions
@@ -86,7 +86,7 @@ export default async function handler(req, res) {
 
   const customerId = await fetchStripeCustomerId(userId);
   if (!customerId) {
-    // User has never completed a Stripe checkout — there's no portal session
+    // User has never completed a Stripe checkout – there's no portal session
     // to create. Return a clear error so the UI can hide the button or show
     // a "subscribe first" hint.
     return res.status(400).json({

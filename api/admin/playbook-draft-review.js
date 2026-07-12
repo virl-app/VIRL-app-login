@@ -6,7 +6,7 @@
 // table, then marks the draft 'approved'. Reject: marks the draft
 // 'rejected' without touching the live playbook.
 //
-// Auth: bearer-token must belong to the admin email — same pattern as
+// Auth: bearer-token must belong to the admin email – same pattern as
 // admin-stats.js / playbook-update.js.
 
 const ADMIN_EMAIL          = "laurenannedoty@gmail.com";

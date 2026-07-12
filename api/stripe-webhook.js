@@ -27,10 +27,10 @@ import { getPendingReferralForReferred, updateReferral, REFERRAL_REWARD_CAP_PER_
 import { sendLoopsEvent, sendLoopsEventOnce, updateLoopsContact } from "./_lib/loops.js";
 
 // [CHANGE 3b] Disable Vercel's body parser so Stripe gets the exact raw bytes
-// it signed — any reformatting would invalidate the signature.
+// it signed – any reformatting would invalidate the signature.
 export const config = { api: { bodyParser: false } };
 
-// Best-effort lookup for personalized greetings — never blocks the webhook.
+// Best-effort lookup for personalized greetings – never blocks the webhook.
 // [EMAIL-CUTOVER] Now also surfaces signupAt + marketingSubscribed so the
 // downstream updateLoopsContact calls can include the §9 fields without
 // requiring a second auth.users fetch per webhook.
@@ -57,7 +57,7 @@ async function fetchUserContext(userId) {
     );
     if (profRes.ok) {
       const rows = await profRes.json();
-      // Strip < > — name is user-controlled and lands raw in HTML email bodies.
+      // Strip < > – name is user-controlled and lands raw in HTML email bodies.
       if (rows[0] && rows[0].name) out.name = String(rows[0].name).replace(/[<>]/g, "").slice(0, 120);
     }
   } catch (e) { /* non-fatal */ }
@@ -102,7 +102,7 @@ async function patchUserPlan(userId, fields) {
 
 // [PRICING 1] Fetch the current credits row so we can tell first-signup
 // (subscription_started_at IS NULL) from resubscription. Returns null on
-// any failure — caller treats null as "assume first signup," which only
+// any failure – caller treats null as "assume first signup," which only
 // affects the resubscription counter (cosmetic for admin dashboards).
 async function getCreditRow(userId) {
   const supabaseUrl = process.env.SUPABASE_URL;
@@ -129,7 +129,7 @@ async function getCreditRow(userId) {
 // [PRICING 1] Atomically claim a founding_position via the Postgres RPC.
 // Returns the position number (1..50), or null if all positions are
 // already filled (documented overflow window per the brief). Idempotent
-// inside the RPC itself — a webhook retry returns the same position.
+// inside the RPC itself – a webhook retry returns the same position.
 async function claimFoundingPosition(userId) {
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceKey  = process.env.SUPABASE_SERVICE_KEY;
@@ -164,7 +164,7 @@ async function claimFoundingPosition(userId) {
 // [PRICING 3b] Write plan fields to the user's credits row, creating the
 // row if it doesn't exist yet. VIRL provisions the credits row lazily (on
 // first plan generation), so a user who signs up and upgrades before
-// generating anything has no row — a plain PATCH would silently no-op and
+// generating anything has no row – a plain PATCH would silently no-op and
 // the upgrade would be lost. `rowExists` comes from the getCreditRow call
 // the caller already made, so this adds no extra round-trip.
 async function writeUserPlan(userId, fields, rowExists) {
@@ -188,7 +188,7 @@ async function writeUserPlan(userId, fields, rowExists) {
         }
       );
     } else {
-      // No row yet — insert. credits:150 mirrors the paid-tier allowance
+      // No row yet – insert. credits:150 mirrors the paid-tier allowance
       // other paid users carry (the HUD renders "Unlimited" for paid plans
       // regardless, so the number is a convention, not a gate).
       res = await fetch(
@@ -215,15 +215,15 @@ async function writeUserPlan(userId, fields, rowExists) {
 }
 
 // [CREDITS-FIX] Fields that grant a fresh paid weekly allowance: 150 credits,
-// a 7-day reset window, and refilled fresh-trends wallets — mirroring the lazy
+// a 7-day reset window, and refilled fresh-trends wallets – mirroring the lazy
 // weekly reset in chat.js (isPaid ? 150 : 20). Returns {} when the user is
 // ALREADY on a paid plan, so the grant only fires on the non-paid → paid
 // transition. This matters because a single new subscription makes Stripe fire
 // BOTH `checkout.session.completed` and `customer.subscription.created`, with
 // no guaranteed ordering and DISTINCT event ids (so the event-dedupe guard
 // above doesn't collapse them): gating on the existing plan means whichever
-// event lands on the row first grants the credits and the other — plus any
-// renewal or mid-cycle subscription.updated — is a safe no-op that preserves a
+// event lands on the row first grants the credits and the other – plus any
+// renewal or mid-cycle subscription.updated – is a safe no-op that preserves a
 // balance the user may have already spent down this week.
 const PAID_PLANS = ["founding", "pro", "standard"];
 function paidCreditGrant(existing) {
@@ -243,7 +243,7 @@ export default async function handler(req, res) {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    // [PRICING 1b] Accept either env var name — matches the same change in
+    // [PRICING 1b] Accept either env var name – matches the same change in
     // create-checkout.js so a restricted-key (rk_live_…) deployment can be
     // named accurately as STRIPE_RESTRICTED_KEY without a code change.
     const stripeSecretKey = process.env.STRIPE_RESTRICTED_KEY
@@ -252,9 +252,9 @@ export default async function handler(req, res) {
 
     // If Stripe isn't configured yet, swallow the event with 200 so Stripe
     // doesn't retry. This mirrors the graceful-degradation pattern in
-    // create-checkout.js — the dashboard simply won't be sending events yet.
+    // create-checkout.js – the dashboard simply won't be sending events yet.
     if (!stripeSecretKey || !webhookSecret) {
-      console.warn("[webhook] Stripe not configured — ignoring event");
+      console.warn("[webhook] Stripe not configured – ignoring event");
       return res.status(200).json({ received: true });
     }
 
@@ -272,7 +272,7 @@ export default async function handler(req, res) {
 
     // [STRIPE-IDEMPOTENCY] Try to claim this event.id in the dedupe table.
     // If the INSERT conflicts (409), this is a retry of an event we've
-    // already processed — return 200 immediately so Stripe stops retrying
+    // already processed – return 200 immediately so Stripe stops retrying
     // and we don't double-fire side effects (resubscription_count
     // increments, Loops events, etc.).
     //
@@ -282,7 +282,7 @@ export default async function handler(req, res) {
     // accept that vs the alternative (insert-at-end) which risks
     // parallel deliveries of the same event running side effects twice.
     //
-    // Fail-open if the dedupe table itself is unreachable — better to
+    // Fail-open if the dedupe table itself is unreachable – better to
     // risk an over-counted increment than to refuse all webhook
     // deliveries on a Supabase blip.
     const supabaseUrl     = process.env.SUPABASE_URL;
@@ -330,27 +330,27 @@ export default async function handler(req, res) {
         // checkout metadata where the client stamped it.
         const planType = (meta.planType === "annual") ? "annual" : "monthly";
         // [PAYMENT-SAFETY] A completed Checkout session does not guarantee the
-        // first invoice was actually paid — an async/pending payment method can
+        // first invoice was actually paid – an async/pending payment method can
         // leave payment_status === "unpaid". Granting the plan + credits here
         // would hand out paid access before any money cleared. Defer to the
         // customer.subscription.* events (which gate on status active/trialing)
         // when that happens. "paid" (immediate charge) and "no_payment_required"
         // (subscription trial) both pass.
         if (obj.payment_status === "unpaid") {
-          console.warn("[webhook] checkout.session.completed payment_status=unpaid — deferring plan grant to subscription.* for", userId);
+          console.warn("[webhook] checkout.session.completed payment_status=unpaid – deferring plan grant to subscription.* for", userId);
           break;
         }
         if (userId) {
           // [PRICING 1] Atomically claim a founding_position for new
           // Founder Circle members. Returns null when all 50 slots are
-          // already filled — caller still sets founding_tier to keep the
+          // already filled – caller still sets founding_tier to keep the
           // user's identity correct, but founding_position stays NULL
           // (the documented 1-2-over race window).
           let foundingPosition = null;
           if (foundingTier === "founder_circle") {
             foundingPosition = await claimFoundingPosition(userId);
             if (foundingPosition === null) {
-              console.warn("[webhook] Founder Circle overflow — user " + userId + " has no position");
+              console.warn("[webhook] Founder Circle overflow – user " + userId + " has no position");
             } else {
               console.log("[webhook] User " + userId + " assigned founder position " + foundingPosition);
             }
@@ -359,7 +359,7 @@ export default async function handler(req, res) {
           // [PRICING 1] Distinguish first signup from resubscription so
           // subscription_started_at is locked once and resubscription
           // metadata is bumped on returns. getCreditRow returning null
-          // (Supabase blip) degrades to treating as first signup — only
+          // (Supabase blip) degrades to treating as first signup – only
           // affects the resub counter, never breaks the upgrade.
           const existing = await getCreditRow(userId);
           const isFirstSignup = !existing || !existing.subscription_started_at;
@@ -385,7 +385,7 @@ export default async function handler(req, res) {
           // [CREDITS-FIX] Grant the paid weekly allowance on the non-paid →
           // paid transition (see paidCreditGrant). Without this a trial user
           // whose credits row already existed (seeded at the 20/week trial
-          // allowance) would keep that 20 after paying — the PATCH only touched
+          // allowance) would keep that 20 after paying – the PATCH only touched
           // plan/tier, never `credits`. No-op once the user is already paid, so
           // it's safe against the concurrent customer.subscription.created event.
           Object.assign(patchFields, paidCreditGrant(existing));
@@ -396,7 +396,7 @@ export default async function handler(req, res) {
           console.log("[webhook] User " + userId + " upgraded to " + plan + " (" + foundingTier + ")");
 
           // [REFERRAL] Referral state transitions ride the same event.
-          // Both are best-effort — a failure logs and never blocks the
+          // Both are best-effort – a failure logs and never blocks the
           // plan grant above.
           try {
             // (a) Bank redemption: this payer is a REFERRER who checked
@@ -410,7 +410,7 @@ export default async function handler(req, res) {
               console.log("[webhook] referral bank redeemed:", meta.referralBankRow);
             }
             // (b) Conversion: this payer was REFERRED. Mark converted and
-            // reward the referrer — balance credit if they're already a
+            // reward the referrer – balance credit if they're already a
             // Stripe customer, otherwise leave 'converted' banked for
             // their own checkout.
             const referral = await getPendingReferralForReferred(userId);
@@ -444,7 +444,7 @@ export default async function handler(req, res) {
                 await stripe.customers.createBalanceTransaction(referrerCustomer, {
                   amount: -rewardCents,
                   currency: "usd",
-                  description: "VIRL referral reward — one month on us",
+                  description: "VIRL referral reward – one month on us",
                 });
                 await updateReferral(referral.id, {
                   status: "referrer_rewarded",
@@ -462,7 +462,7 @@ export default async function handler(req, res) {
                 }
                 console.log("[webhook] referral reward granted to", referral.referrer_user_id);
               } else {
-                // Banked (referrer not paying yet) or capped — row stays
+                // Banked (referrer not paying yet) or capped – row stays
                 // 'converted'; create-checkout redeems banked rows.
                 console.log("[webhook] referral converted, reward banked/capped for", referral.referrer_user_id);
               }
@@ -470,12 +470,12 @@ export default async function handler(req, res) {
           } catch (e) {
             console.warn("[webhook] referral handling failed (non-fatal):", e.message);
           }
-          // Subscription welcome — dedupe by stripe subscription id so a
+          // Subscription welcome – dedupe by stripe subscription id so a
           // resubscribe creates a new send, but a webhook replay does not.
           const ctx   = await fetchUserContext(userId);
           if (ctx.email) {
             // [CX-FIX 5] Loops now owns the post-subscription welcome
-            // (driven by the subscriptionStarted event below) — tier-
+            // (driven by the subscriptionStarted event below) – tier-
             // aware variants are easier to author there than in code.
             // The Resend transactional welcome that used to fire here
             // is intentionally removed; otherwise new subscribers
@@ -493,7 +493,7 @@ export default async function handler(req, res) {
             // resubscribe fires fresh, but a Stripe webhook replay
             // (despite the event-level idempotency guard at the top of
             // the handler) doesn't re-trigger Cowork's Loop. Belt and
-            // braces — both protections active.
+            // braces – both protections active.
             await sendLoopsEventOnce({
               userId, email: ctx.email, eventName: "subscriptionStarted",
               properties: {
@@ -513,7 +513,7 @@ export default async function handler(req, res) {
                 foundingTier:     foundingTier,
                 foundingPosition: foundingPosition || 0,
                 isFoundingMember: plan === "founding",
-                // [EMAIL-CUTOVER] §9 fields — surfaced here so Loops audience
+                // [EMAIL-CUTOVER] §9 fields – surfaced here so Loops audience
                 // filters keyed on signupAt (trial-day-N) and
                 // marketingSubscribed (suppression) stay in sync even if
                 // a contact was created in Loops via this webhook before
@@ -526,12 +526,12 @@ export default async function handler(req, res) {
             // [PRICING 6] When the 50th Founder Circle position is claimed,
             // fire foundingCircleFull. claim_founding_position always takes
             // the lowest empty slot, so position 50 is necessarily the last
-            // filled — this fires exactly once. The event lands on the 50th
+            // filled – this fires exactly once. The event lands on the 50th
             // member's contact; broadcasting the "Founder Circle is full"
             // email to the wider waitlist is a Loops campaign triggered
             // separately (the event is the signal that the moment arrived).
             if (foundingTier === "founder_circle" && foundingPosition === 50) {
-              // [LOOPS-DEDUPE] Per-user singleton — this user only ever
+              // [LOOPS-DEDUPE] Per-user singleton – this user only ever
               // claims position 50 once. Webhook idempotency already
               // guards the outer flow, but the email_sends claim makes
               // the one-shot semantics explicit at the call site.
@@ -540,7 +540,7 @@ export default async function handler(req, res) {
                 properties: { filledCount: 50 },
                 dedupeKey: "foundingCircleFull",
               });
-              console.log("[webhook] Founder Circle filled — foundingCircleFull fired");
+              console.log("[webhook] Founder Circle filled – foundingCircleFull fired");
             }
           }
         } else {
@@ -559,7 +559,7 @@ export default async function handler(req, res) {
         if (status === "past_due" || status === "unpaid") {
           await patchUserPlan(userId, { plan: "past_due", stripe_customer_id: obj.customer || null });
           console.log("[webhook] User " + userId + " marked past_due");
-          // Payment failed email — dedupe by stripe sub id + month so the
+          // Payment failed email – dedupe by stripe sub id + month so the
           // user gets at most one nudge per billing cycle, even if Stripe
           // flips status back and forth on retries.
           const ymKey = new Date().toISOString().slice(0, 7); // YYYY-MM
@@ -573,19 +573,19 @@ export default async function handler(req, res) {
             });
           }
         } else if (status === "active" || status === "trialing") {
-          // trialing also gets the paid plan — they've completed checkout and
+          // trialing also gets the paid plan – they've completed checkout and
           // entered the subscription's trial window, which is functionally
           // paid from our gating perspective.
           // [PRICING 1] Match the checkout.session.completed handler's
           // tier resolution so subscription-level events agree with
-          // session-level ones. Don't overwrite founding_tier here —
+          // session-level ones. Don't overwrite founding_tier here –
           // identity is set once at checkout and is immutable.
           const foundingTier = meta.foundingTier
             || (meta.isFoundingMember === "true" ? "founder_circle" : "standard");
           const plan = foundingTier === "founder_circle" ? "founding" : "standard";
           // [CREDITS-FIX] Grant the paid allowance here too. This event races
           // checkout.session.completed onto the same row and can win, so it
-          // must move the user off the 20/week trial balance — otherwise a
+          // must move the user off the 20/week trial balance – otherwise a
           // paying customer is stuck at 20 until their trial week expires.
           // writeUserPlan (not patchUserPlan) so a missing row is still
           // created; paidCreditGrant is a no-op once either event has already
@@ -663,11 +663,11 @@ export default async function handler(req, res) {
         // [PRICING 6] Read the member's tier before flipping plan state so
         // the cancellation event tells Loops whether a Founder Circle member
         // churned (worth Lauren's personal follow-up per the brief) versus a
-        // Standard one. founding_tier itself is never cleared on cancel —
+        // Standard one. founding_tier itself is never cleared on cancel –
         // the position stays filled forever (no-take-backs rule).
         const cancelledCredit = await getCreditRow(userId);
         const cancelledTier = (cancelledCredit && cancelledCredit.founding_tier) || "standard";
-        // Mark the plan cancelled but DO NOT delete user data — they may
+        // Mark the plan cancelled but DO NOT delete user data – they may
         // resubscribe and we want their vault, profile, and history intact.
         await patchUserPlan(userId, { plan: "cancelled" });
         console.log("[webhook] User " + userId + " cancelled (" + cancelledTier + ")");
@@ -682,7 +682,7 @@ export default async function handler(req, res) {
           // [PREMIUM 7] Fire subscriptionCancelled + flip the contact's
           // plan property so the day-60 reactivation segment in Loops
           // can target this user.
-          // [LOOPS-DEDUPE] Dedupe by subscription id — a cancel event
+          // [LOOPS-DEDUPE] Dedupe by subscription id – a cancel event
           // for a specific subscription should fire the Loop once.
           // Resubscribe + re-cancel creates a new subId → new fire.
           await sendLoopsEventOnce({
@@ -695,7 +695,7 @@ export default async function handler(req, res) {
             properties: {
               plan:                "cancelled",
               foundingTier:        cancelledTier,
-              // [EMAIL-CUTOVER] §9 — keep marketingSubscribed mirrored so a
+              // [EMAIL-CUTOVER] §9 – keep marketingSubscribed mirrored so a
               // cancelled customer who didn't unsubscribe stays opted in
               // for the monthly editorial (per the strategic stance: a
               // cancellation isn't an unsubscribe).
@@ -714,7 +714,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ received: true });
   } catch (err) {
-    // Never let an unexpected bug 5xx the webhook — Stripe will retry forever.
+    // Never let an unexpected bug 5xx the webhook – Stripe will retry forever.
     console.error("[webhook] Unhandled error:", err && err.message);
     return res.status(200).json({ received: true });
   }

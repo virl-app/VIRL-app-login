@@ -6,16 +6,16 @@
 // request (all plan tiers).
 //
 // Allowlist:
-//   - US                       — mainland US
-//   - PR, GU, VI, AS, MP       — US territories (treated as US)
-//   - null / missing country   — fail-open. Some legitimate US users
+//   - US                       – mainland US
+//   - PR, GU, VI, AS, MP       – US territories (treated as US)
+//   - null / missing country   – fail-open. Some legitimate US users
 //                                are behind corporate VPNs or mobile
 //                                networks where Vercel can't geolocate;
 //                                blocking unknown would catch them too.
 //
 // Matcher: every route EXCEPT the waitlist endpoint itself (so non-US
 // visitors can submit the form), favicon, and robots.txt. /api/* routes
-// are otherwise gated, which is what we want — defense in depth against
+// are otherwise gated, which is what we want – defense in depth against
 // a curl client trying to hit /api/chat from outside the US.
 //
 // Bypass acceptability: this gate is NOT VPN-proof. Anyone with a US
@@ -45,7 +45,7 @@ export default function middleware(request) {
 }
 
 function unavailablePage() {
-  // Inline HTML — Edge runtime doesn't load template files, and a
+  // Inline HTML – Edge runtime doesn't load template files, and a
   // single-string page keeps the bundle tiny (~3KB). Fonts loaded via
   // Google Fonts to match the rest of the app's typography (Italiana
   // for the editorial headline, Jost for body).
@@ -54,7 +54,7 @@ function unavailablePage() {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>VIRL — Available in the US</title>
+<title>VIRL – Available in the US</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Italiana&family=Jost:wght@300;400;500;600;700&display=swap">
@@ -197,12 +197,12 @@ function unavailablePage() {
   <div class="card">
     <div id="form-state">
       <div class="headline">VIRL isn't available outside the US yet.</div>
-      <div class="body">International expansion is on the roadmap &mdash; drop your email and we'll let you know the moment VIRL ships where you are.</div>
+      <div class="body">International expansion is on the roadmap &ndash; drop your email and we'll let you know the moment VIRL ships where you are.</div>
       <form id="waitlist-form" novalidate>
         <input id="email" type="email" placeholder="Your email" required autocomplete="email">
         <label class="consent">
           <input id="consent" type="checkbox">
-          <span>Send me product updates and content tips from VIRL. Optional &mdash; unsubscribe any time.</span>
+          <span>Send me product updates and content tips from VIRL. Optional &ndash; unsubscribe any time.</span>
         </label>
         <button id="submit" type="submit">Notify me &rarr;</button>
         <div id="err" class="error"></div>
@@ -236,7 +236,7 @@ function unavailablePage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: email, marketing_opt_in: consent.checked }),
     })
-    .then(function(r){ return r.ok ? r.json() : r.json().then(function(d){ throw new Error((d && d.error) || 'Could not save — please try again.'); }); })
+    .then(function(r){ return r.ok ? r.json() : r.json().then(function(d){ throw new Error((d && d.error) || 'Could not save – please try again.'); }); })
     .then(function(){
       document.getElementById('form-state').style.display = 'none';
       document.getElementById('success-state').style.display = 'block';
@@ -244,7 +244,7 @@ function unavailablePage() {
     .catch(function(err){
       submit.disabled = false;
       submit.innerHTML = 'Notify me &rarr;';
-      errEl.textContent = (err && err.message) || 'Could not save — please try again.';
+      errEl.textContent = (err && err.message) || 'Could not save – please try again.';
     });
   });
 })();

@@ -114,7 +114,7 @@ export default async function handler(req, res) {
   for (const platform of PLATFORMS) {
     const currentEntry = playbook[platform];
     if (!currentEntry) {
-      console.warn("[cron/playbook-refresh] no current entry for", platform, "— skipping");
+      console.warn("[cron/playbook-refresh] no current entry for", platform, "– skipping");
       skipped++;
       continue;
     }
@@ -160,7 +160,7 @@ export default async function handler(req, res) {
     }
   } catch (e) { /* non-fatal */ }
 
-  // Notification email — one per cron run, dedupe-keyed by the run date so
+  // Notification email – one per cron run, dedupe-keyed by the run date so
   // re-running the cron the same day is a no-op.
   let emailed = false;
   if (drafted > 0 && adminUserId) {

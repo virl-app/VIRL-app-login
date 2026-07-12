@@ -1,7 +1,7 @@
 // Lightweight signed unsubscribe tokens. We sign `userId` with HMAC-SHA256
 // using a server secret so a one-click link can't be forged. URL-safe base64
 // keeps the token tidy in mailto/?t= params. No DB lookup is required to
-// verify — the secret-keyed signature is the proof.
+// verify – the secret-keyed signature is the proof.
 //
 // Token format: <userId>.<base64url-hmac>
 

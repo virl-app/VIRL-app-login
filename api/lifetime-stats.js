@@ -7,7 +7,7 @@
 //   The client tracks first-plan / first-caption / first-scan celebration
 //   overlays + milestone modals via localStorage flags
 //   (virl_plans_completed, virl_first_plan_celebrated, etc). When a user
-//   signs out, clearLocalUserData() wipes every virl_* key — so the next
+//   signs out, clearLocalUserData() wipes every virl_* key – so the next
 //   sign-in on the same browser, or any sign-in from a fresh browser
 //   (incognito, different device, new install), starts with all flags
 //   unset. The next plan generation then increments the counter from 0
@@ -27,7 +27,7 @@
 // /api/loops-event. Only ever returns counts for the authenticated user.
 //
 // Fail-open: returns 200 with zeros on any infra error so the client's
-// fire-and-forget never breaks — worst case the user sees a stale
+// fire-and-forget never breaks – worst case the user sees a stale
 // celebration once, which beats blocking the app on a Supabase blip.
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
@@ -45,7 +45,7 @@ async function fetchCounts(userId) {
   const out = { planCount: 0, captionCount: 0, scanCount: 0 };
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !userId) return out;
   try {
-    // PostgREST aggregate via the count header — keeps the response
+    // PostgREST aggregate via the count header – keeps the response
     // tiny (one HEAD-like exchange per type) instead of pulling rows.
     // We could combine all three into a single grouped query, but
     // PostgREST doesn't expose GROUP BY cleanly without an RPC; three
@@ -100,7 +100,7 @@ export default async function handler(req, res) {
   }
 
   // Verify the token + resolve userId. The endpoint NEVER trusts
-  // a user_id from the request body — the only counts ever returned
+  // a user_id from the request body – the only counts ever returned
   // are for the authenticated caller.
   let userId;
   try {

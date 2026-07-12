@@ -100,7 +100,7 @@ function dailySparkline(events, days) {
 }
 
 // [VOICE-DRIFT-GATE] Roll up the corrective-retry outcomes. The denominator
-// is gate-ELIGIBLE calls (non-streaming gen types — plan/plan_partial stream
+// is gate-ELIGIBLE calls (non-streaming gen types – plan/plan_partial stream
 // and are never gated), so retry_rate reads as "of the calls that could
 // retry, how many did." extra_cost_usd is the marginal spend of the retries
 // alone (already included in total cost; surfaced here for attribution).

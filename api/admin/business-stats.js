@@ -2,7 +2,7 @@
 // focused on growth / activation / engagement / revenue mix instead of
 // API spend. Pulls auth users, credits, events (60d), content_ratings,
 // rolls them up, and returns one JSON blob. Bearer-token gated to the
-// admin email — same pattern as usage-stats.js.
+// admin email – same pattern as usage-stats.js.
 //
 // All aggregation happens in JS so the shape can iterate without
 // schema migrations.
@@ -42,7 +42,7 @@ async function fetchAuthUsers() {
 }
 
 async function fetchCredits() {
-  // Don't reference updated_at — column isn't on the table and the request
+  // Don't reference updated_at – column isn't on the table and the request
   // 400s. If we later want a churn-by-date metric, that needs a migration
   // adding a plan_changed_at column the stripe webhook can stamp.
   const r = await fetch(
@@ -74,7 +74,7 @@ async function fetchRatings() {
     `${SUPABASE_URL}/rest/v1/content_ratings?select=generation_type,rating,created_at&limit=20000`,
     { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
   );
-  // Table is brand-new — if the migration hasn't been applied yet just
+  // Table is brand-new – if the migration hasn't been applied yet just
   // return an empty list rather than 500ing the whole dashboard.
   if (!r.ok) return [];
   return await r.json();
@@ -147,7 +147,7 @@ function activation(users, events, days) {
   };
 }
 
-// Active = generated, rated, scanned, etc. — anything that lands in events.
+// Active = generated, rated, scanned, etc. – anything that lands in events.
 function activeUsers(events) {
   const now = Date.now();
   const dau = new Set(), wau = new Set(), mau = new Set();
@@ -199,9 +199,9 @@ function planMix(credits) {
 }
 
 // Lifetime cancelled / past-due. We can't filter to "this month" without
-// a plan_changed_at column on credits — the webhook doesn't stamp one
+// a plan_changed_at column on credits – the webhook doesn't stamp one
 // today. Once that migration lands, swap this back to a date-windowed
-// count. For now, lifetime is still useful — paired with the active
+// count. For now, lifetime is still useful – paired with the active
 // counts in plan_mix you can eyeball net churn.
 function churnLifetime(credits) {
   let cancelled = 0, pastDue = 0;
@@ -214,7 +214,7 @@ function churnLifetime(credits) {
 
 // Most-recent signups for the admin's "Who just joined?" panel. Joined
 // against the profiles table so we can show real names alongside the
-// email — both fall back gracefully if missing.
+// email – both fall back gracefully if missing.
 function recentSignups(users, profilesById, n) {
   return users
     .filter(u => u && u.id && u.created_at)

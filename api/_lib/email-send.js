@@ -4,7 +4,7 @@
 // crash the calling endpoint. Triggers log + return false; callers continue.
 //
 // Idempotency lives in the email_sends table. Every send is keyed by
-// (user_id, template, dedupe_key) with a unique constraint — a duplicate
+// (user_id, template, dedupe_key) with a unique constraint – a duplicate
 // attempt resolves to "already sent, skip" instead of a second mail.
 
 import { Resend } from "resend";
@@ -19,7 +19,7 @@ function emailEnabled() {
 }
 
 // Insert a row into email_sends. Returns true if inserted (we should send),
-// false if the unique constraint fired (already sent — skip).
+// false if the unique constraint fired (already sent – skip).
 //
 // Exported so the Loops helpers can reuse the same per-user-per-template-
 // per-dedupe-key dedup table for one-shot Loops events (audit finding #12).
@@ -43,7 +43,7 @@ export async function claimSend(userId, template, dedupeKey) {
   // 201 Created → fresh send. 409 Conflict → already in table → skip.
   if (res.status === 201) return true;
   if (res.status === 409) return false;
-  // Any other status — log and skip to avoid duplicate mails on transient errors
+  // Any other status – log and skip to avoid duplicate mails on transient errors
   const body = await res.text().catch(() => "");
   console.warn(`[email] claimSend unexpected status ${res.status}:`, body);
   return false;
@@ -66,7 +66,7 @@ async function recordResendId(userId, template, dedupeKey, resendId) {
       }
     );
   } catch (e) {
-    // Non-fatal — we already inserted the row, the resend_id is just for audit.
+    // Non-fatal – we already inserted the row, the resend_id is just for audit.
   }
 }
 
@@ -92,7 +92,7 @@ export async function isMarketingOptedOut(userId) {
   }
 }
 
-// [CREDIT-NUDGE] Pure read of email_sends — did (user, template, dedupeKey)
+// [CREDIT-NUDGE] Pure read of email_sends – did (user, template, dedupeKey)
 // already fire? Unlike claimSend it does NOT insert, so it can be used to
 // *test* a prior send without consuming its dedupe slot (e.g. "did the
 // exhausted nudge already go out this cycle, so suppress the low one?").
@@ -121,26 +121,26 @@ export async function hasSent(userId, template, dedupeKey) {
 //   userId:     uuid (required)
 //   to:         email address (required)
 //   template:   short slug like "welcome" (required)
-//   dedupeKey:  per-occurrence key (required) — see triggers map below
+//   dedupeKey:  per-occurrence key (required) – see triggers map below
 //   subject:    string
 //   html:       string
 //   text:       string
-//   marketing:  boolean — if true, skips when marketing_opt_out
+//   marketing:  boolean – if true, skips when marketing_opt_out
 // }
 export async function sendEmail(opts) {
   if (!emailEnabled()) {
-    console.warn(`[email] skipped (${opts.template}) — Resend or Supabase env not configured`);
+    console.warn(`[email] skipped (${opts.template}) – Resend or Supabase env not configured`);
     return false;
   }
 
   if (opts.marketing && (await isMarketingOptedOut(opts.userId))) {
-    console.log(`[email] skipped (${opts.template}) — user ${opts.userId} opted out of marketing`);
+    console.log(`[email] skipped (${opts.template}) – user ${opts.userId} opted out of marketing`);
     return false;
   }
 
   const claimed = await claimSend(opts.userId, opts.template, opts.dedupeKey);
   if (!claimed) {
-    // Already sent — silently skip. Re-running cron is therefore safe.
+    // Already sent – silently skip. Re-running cron is therefore safe.
     return false;
   }
 

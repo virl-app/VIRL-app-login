@@ -14,16 +14,16 @@
 // a leaked job id can never expose another user's generation.
 //
 // Returns:
-//   200 { status: "running" }                      — job still in flight
+//   200 { status: "running" }                      – job still in flight
 //   200 { status: "complete", result_text, cost,
-//         usage, trends_snapshot, used_fresh_trends } — job finished
-//   200 { status: "error", error_msg }             — job failed upstream
-//   404 { status: "missing" }                      — no row for this id
+//         usage, trends_snapshot, used_fresh_trends } – job finished
+//   200 { status: "error", error_msg }             – job failed upstream
+//   404 { status: "missing" }                      – no row for this id
 //                                                    (id was never persisted
 //                                                    or never belonged to
 //                                                    this user)
-//   401 { error }                                  — invalid / missing token
-//   500 { error }                                  — server config issue
+//   401 { error }                                  – invalid / missing token
+//   500 { error }                                  – server config issue
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
@@ -49,7 +49,7 @@ export default async function handler(req, res) {
   }
 
   // Resolve the requesting user from the bearer token. NEVER trust a
-  // user_id supplied in the body or query — same rule that applies to
+  // user_id supplied in the body or query – same rule that applies to
   // every endpoint that reaches Supabase via the service key.
   let userId;
   try {

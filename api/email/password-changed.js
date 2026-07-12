@@ -9,7 +9,7 @@
 // doesn't send this on its own.
 //
 // Auth: requires the user's bearer token. We verify it against Supabase auth
-// and use the returned email — never trust a client-supplied target address
+// and use the returned email – never trust a client-supplied target address
 // here, because an attacker who could call this endpoint with someone else's
 // email could spam them with bogus password-change notifications.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,13 +54,13 @@ export default async function handler(req, res) {
     );
     if (profRes.ok) {
       const rows = await profRes.json();
-      // Strip < > — name is user-controlled and lands raw in HTML email bodies.
+      // Strip < > – name is user-controlled and lands raw in HTML email bodies.
       if (rows[0] && rows[0].name) name = String(rows[0].name).replace(/[<>]/g, "").slice(0, 120);
     }
   } catch (e) { /* non-fatal */ }
 
   const tpl = passwordChangedTemplate({ name });
-  // Dedupe by the exact second — collapses double-submits / network retries
+  // Dedupe by the exact second – collapses double-submits / network retries
   // but lets a genuine "user changed it twice in a row" send twice.
   const dedupeKey = "password_changed_" + Math.floor(Date.now() / 1000);
   const sent = await sendEmail({

@@ -995,7 +995,7 @@ export default async function handler(req, res) {
   // ~5 MB image ceiling Anthropic accepts; anything larger is not a real photo.
   if (imageBase64 != null) {
     if (typeof imageBase64 !== 'string' || imageBase64.length > 6_000_000) {
-      return res.status(413).json({ error: 'Image too large — please use a photo under 5 MB.' });
+      return res.status(413).json({ error: 'Image too large – please use a photo under 5 MB.' });
     }
   }
   if (imageType != null && (typeof imageType !== 'string' || !/^image\/(png|jpe?g|webp|gif)$/i.test(imageType))) {
@@ -1040,7 +1040,7 @@ export default async function handler(req, res) {
     if (rate.kind === "minute") {
       res.setHeader("Retry-After", "60");
       return res.status(429).json({
-        error: `Slow down — ${RATE_LIMIT_PER_MINUTE} generations per minute max. Try again in a moment.`,
+        error: `Slow down – ${RATE_LIMIT_PER_MINUTE} generations per minute max. Try again in a moment.`,
       });
     }
     res.setHeader("Retry-After", "3600");

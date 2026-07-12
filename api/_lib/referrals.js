@@ -3,7 +3,7 @@
 // Design notes:
 // - The ?ref= code is captured at signup into auth user_metadata (the
 //   GateScreen attribution block already stamps it), so claiming is a
-//   pure server-side read — no extra client round-trip at signup.
+//   pure server-side read – no extra client round-trip at signup.
 // - claimReferralIfAny is idempotent and called lazily from two
 //   touchpoints: GET /api/referral (user opens the share card) and
 //   create-checkout (so the friend's discount applies even if they
@@ -25,7 +25,7 @@ const HDRS = {
   "Content-Type": "application/json",
 };
 
-// Yearly cap on rewarded referrals per referrer — abuse ceiling, and a
+// Yearly cap on rewarded referrals per referrer – abuse ceiling, and a
 // bound on revenue giveback. Converted-but-uncapped rows stay 'converted'.
 export const REFERRAL_REWARD_CAP_PER_YEAR = 12;
 
@@ -57,7 +57,7 @@ export async function getOrCreateCode(userId) {
     });
     if (ins.ok) return code;
     if (ins.status === 409) {
-      // Either the user row already exists (concurrent request — re-read)
+      // Either the user row already exists (concurrent request – re-read)
       // or the code collided (retry with a fresh one).
       const re = await fetch(
         `${SUPABASE_URL}/rest/v1/referral_codes?user_id=eq.${userId}&select=code`,
@@ -142,7 +142,7 @@ export async function getPendingReferralForReferred(userId) {
 }
 
 // A banked reward: the referrer's friend converted while the referrer
-// wasn't a paying Stripe customer yet — redeemed at the referrer's own
+// wasn't a paying Stripe customer yet – redeemed at the referrer's own
 // checkout as a coupon.
 export async function getBankedRewardForReferrer(userId) {
   try {
@@ -167,7 +167,7 @@ export async function updateReferral(id, patch) {
 
 // A "free month" matches what the person actually pays: Founder Circle
 // months are $20, Standard months are $25. One idempotent coupon per
-// amount; created on first use — no Stripe dashboard setup required.
+// amount; created on first use – no Stripe dashboard setup required.
 export function referralMonthCents(foundingTier) {
   return foundingTier === "founder_circle" ? 2000 : 2500;
 }
@@ -184,7 +184,7 @@ export async function ensureReferralCoupon(stripe, amountCents) {
         amount_off: cents,
         currency: "usd",
         duration: "once",
-        name: `VIRL referral — one month on us ($${cents / 100})`,
+        name: `VIRL referral – one month on us ($${cents / 100})`,
       });
       return id;
     } catch (e2) {
