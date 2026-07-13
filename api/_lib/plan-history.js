@@ -38,6 +38,49 @@ async function fetchHistoryRows(userId, limit, currentWeekStart) {
   } catch (e) { return []; }
 }
 
+// Earliest plan_history week_start for the user — the anchor for
+// calendar-based week numbering. Returns null when the user has no
+// history (or on any fetch error, fail-open like the rest of this file).
+async function fetchEarliestWeekStart(userId) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return null;
+  try {
+    const url = `${SUPABASE_URL}/rest/v1/plan_history`
+      + `?user_id=eq.${userId}`
+      + `&select=week_start`
+      + `&order=week_start.asc`
+      + `&limit=1`;
+    const res = await fetch(url, { headers: SUPABASE_HEADERS });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return (rows[0] && rows[0].week_start) || null;
+  } catch (e) { return null; }
+}
+
+// UTC Monday of the week containing `d`, as YYYY-MM-DD. Server-side
+// fallback for when the client didn't send currentWeekStart — mirrors
+// the client's weekStartISO (index.html) closely enough for week math.
+function weekStartUTC(d) {
+  const date = new Date(d);
+  const day = date.getUTCDay() || 7; // Sunday=7
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() - (day - 1));
+  return date.toISOString().slice(0, 10);
+}
+
+// Calendar-based week number: how many calendar weeks the current week
+// sits after the user's first-ever plan week, plus one. Unlike counting
+// history rows, this survives regenerates (one row per week regardless)
+// and doesn't saturate at the fetch limit — a user in their 9th calendar
+// week is week 9 even though the prompt only sees the last 3 summaries.
+// Skipped weeks still advance the number, matching real elapsed time.
+function calendarWeekNumber(earliestWeekStart, currentWeekStart) {
+  if (!earliestWeekStart) return 1;
+  const ref = currentWeekStart || weekStartUTC(Date.now());
+  const diffMs = Date.parse(ref) - Date.parse(earliestWeekStart);
+  if (!Number.isFinite(diffMs)) return 1;
+  return Math.max(1, Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1);
+}
+
 async function fetchUserResults(userId) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return [];
   try {
@@ -94,21 +137,32 @@ function summarizeWeek(row, resultsByCardId) {
   };
 }
 
-// Main entry. Returns an array (most-recent-first) of week summaries.
-// Empty when the user has no history (week 1) or when the table isn't
-// provisioned yet. `currentWeekStart` (ISO YYYY-MM-DD of this week's
-// Monday, computed by the client) is used to exclude the user's own
-// in-progress week from the returned history — without it, a same-week
-// regenerate would mis-count as week N+1.
+// Main entry. Returns { weeks, weekNumber }:
+//   weeks      — array (most-recent-first) of condensed week summaries,
+//                empty when the user has no history or the table isn't
+//                provisioned yet.
+//   weekNumber — calendar-based: weeks elapsed since the user's first
+//                plan week + 1. Computed from the earliest week_start,
+//                NOT from weeks.length — the summaries are capped at
+//                `limit` for prompt size, and counting them froze the
+//                number at limit+1 ("week 4" forever once the user had
+//                3+ weeks of history).
+// `currentWeekStart` (ISO YYYY-MM-DD of this week's Monday, computed by
+// the client) is used to exclude the user's own in-progress week from
+// the returned summaries — without it, a same-week regenerate would
+// mis-count as week N+1. The calendar week number is naturally immune
+// to regenerates (one plan_history row per week regardless).
 export async function loadPlanHistoryForPrompt(userId, limit, currentWeekStart) {
-  const [rows, results] = await Promise.all([
+  const [rows, results, earliestWeekStart] = await Promise.all([
     fetchHistoryRows(userId, limit, currentWeekStart),
     fetchUserResults(userId),
+    fetchEarliestWeekStart(userId),
   ]);
-  if (!rows.length) return [];
+  const weekNumber = calendarWeekNumber(earliestWeekStart, currentWeekStart);
+  if (!rows.length) return { weeks: [], weekNumber };
   const resultsByCardId = {};
   for (const r of results) {
     if (r && r.id) resultsByCardId[r.id] = r;
   }
-  return rows.map(r => summarizeWeek(r, resultsByCardId));
+  return { weeks: rows.map(r => summarizeWeek(r, resultsByCardId)), weekNumber };
 }
