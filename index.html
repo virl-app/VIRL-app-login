@@ -7579,10 +7579,12 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   );
 }
 
-// Centered modal showing the full saved item — description, why, hashtags,
-// post time, optionally a saved script for plan items, full caption text
-// for caption items. Items saved before the full-payload migration may not
-// have every field; the modal only renders fields that are present.
+// Centered modal showing the full saved item — the format-specific post
+// content (long-form body, caption, slides, quote, story frames, production
+// direction), description, why, hashtags, post time, optionally a saved
+// script for plan items, full caption text for caption items. Items saved
+// before the full-payload migration may not have every field; the modal
+// only renders fields that are present.
 function VaultItemModal({item, onClose}) {
   useEffect(function(){
     function onKey(e){ if (e.key === "Escape") onClose(); }
@@ -7591,6 +7593,20 @@ function VaultItemModal({item, onClose}) {
   }, [onClose]);
 
   const tags = Array.isArray(item.hashtags) ? item.hashtags.map(cleanHashtag).filter(Boolean) : [];
+
+  // [VAULT-FULL-CARD] Whether this plan item carries the full post content
+  // captured at save time (post-VAULT-FULL-CARD saves). Gates the
+  // "saved before VIRL captured full details" fallback below so it only
+  // shows for genuinely empty legacy items.
+  const hasFormatContent = !!(
+    item.caption || item.body || item.closing || item.quote ||
+    (Array.isArray(item.slides) && item.slides.length) ||
+    (Array.isArray(item.frames) && item.frames.length) ||
+    (Array.isArray(item.onScreenText) && item.onScreenText.length) ||
+    item.filmDirection || item.photoDirection || item.compositionTip ||
+    item.audioRecommendation || item.designDirection || item.repurpose ||
+    (item.hook && item.hook !== item.title)
+  );
 
   return (
     <div onClick={onClose}
@@ -7619,6 +7635,12 @@ function VaultItemModal({item, onClose}) {
                 {item.postTime && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.divider,color:B.muted,borderRadius:99}}><Icon name="clock" size={11} style={{marginRight:4}}/>{item.postTime}</span>}
                 {item.format   && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.divider,color:B.muted,borderRadius:99}}>{item.format}</span>}
               </div>
+              {/* [VAULT-FULL-CARD] Full saved post content — same
+                   format-specific body the plan card renders (long-form
+                   body, caption, slides, quote, story frames, production
+                   direction), in the same position: above the description.
+                   Renders nothing for legacy items without the fields. */}
+              <FormatSpecificBody card={item}/>
               {item.description && (
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.7,marginBottom:14}}>
                   {item.description}
@@ -7660,7 +7682,7 @@ function VaultItemModal({item, onClose}) {
                   )}
                 </div>
               )}
-              {!item.description && !item.insight && !item.why && tags.length === 0 && !item.savedScript && (
+              {!item.description && !item.insight && !item.why && tags.length === 0 && !item.savedScript && !hasFormatContent && (
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,fontStyle:"italic"}}>This card was saved before VIRL captured full details. Re-save from the plan tab to get the full view.</div>
               )}
             </div>
@@ -10823,6 +10845,28 @@ function App() {
         trend:       card.trend||null,
         hashtags:    Array.isArray(card.hashtags) ? card.hashtags.slice() : [],
         savedScript: card.savedScript||null,
+        // [VAULT-FULL-CARD] Format-specific content fields — the actual
+        // post the user is saving (long-form body, caption, carousel
+        // slides, quote, story frames, production direction). These were
+        // previously dropped at save time, so the vault modal could only
+        // show the one-line description + insight + hashtags, never the
+        // post itself. Field list mirrors what FormatSpecificBody renders
+        // on the plan card; missing fields stay null so old-format cards
+        // save cleanly.
+        caption:             card.caption||null,
+        body:                card.body||null,
+        closing:             card.closing||null,
+        onScreenText:        Array.isArray(card.onScreenText) ? card.onScreenText.slice() : null,
+        audioRecommendation: card.audioRecommendation||null,
+        filmDirection:       card.filmDirection||null,
+        photoDirection:      card.photoDirection||null,
+        compositionTip:      card.compositionTip||null,
+        slides:              Array.isArray(card.slides) ? card.slides.slice() : null,
+        quote:               card.quote||null,
+        attribution:         card.attribution||null,
+        designDirection:     card.designDirection||null,
+        frames:              Array.isArray(card.frames) ? card.frames.slice() : null,
+        repurpose:           card.repurpose||null,
         savedAt:     fmtDate(),
         result:      null,
       }].concat(v);

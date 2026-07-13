@@ -918,13 +918,23 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     : "";
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
   const trendsCtx   = planTrendsContext(trends,   platformsArr);
-  const historyCtx  = planHistoryContext(history);
+  // [WEEK-NUMBER] plan-history.js now returns { weeks, weekNumber }.
+  // weekNumber is calendar-based (weeks since the user's first plan week
+  // + 1) — counting the returned summaries saturated at the fetch limit
+  // and told every user "week 4" forever. The Array.isArray branch keeps
+  // the old shape working (dispatch defaults history to []).
+  const historyWeeks = Array.isArray(history)
+    ? history
+    : (history && Array.isArray(history.weeks)) ? history.weeks : [];
+  const historyCtx  = planHistoryContext(historyWeeks);
   // [LEARN-FROM-EDITS] Recent before/after diffs from the user's
   // own card edits, formatted as voice ground-truth examples. Empty
   // string when no diffs (toggle off, no edits yet, or fetch failed)
   // so concatenating below is a no-op.
   const editsCtx    = formatEditsForPrompt(recentEdits);
-  const weekNumber  = (history && history.length) ? (history.length + 1) : 1;
+  const weekNumber  = (history && !Array.isArray(history) && history.weekNumber)
+    ? history.weekNumber
+    : (historyWeeks.length ? historyWeeks.length + 1 : 1);
 
   // Vault patterns: server-derived from the user's user_data row, so the
   // client never has to disclose its vault on every plan generation.
@@ -1883,8 +1893,11 @@ export function requiresImage(t) {
 // or throws on unknown type.
 //   - `playbook`   — algorithm rules per platform (loadPlaybook())
 //   - `trends`     — this week's trending items per platform (loadLatestTrends())
-//   - `history`    — last N weeks' plan history for week-over-week continuity
-//                    (loadPlanHistoryForPrompt(), plan generation only)
+//   - `history`    — { weeks, weekNumber } from loadPlanHistoryForPrompt()
+//                    (plan generation only): last N weeks' condensed plan
+//                    history for week-over-week continuity plus the
+//                    calendar-based week number. Legacy array shape still
+//                    accepted by buildPlan.
 //   - `compliance` — per-niche guardrail bundle from
 //                    getComplianceForNiche(loadComplianceRules(), niche, locale)
 //                    or null when out of scope. Builders concat the rendered
