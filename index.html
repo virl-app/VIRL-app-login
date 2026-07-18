@@ -138,6 +138,11 @@ async function saveProfileToSupabase(profile, userId) {
       ideal_client_problem: (profile.idealClientProblem   || "").trim() || null,
       primary_cta:          (profile.primaryCta           || "").trim() || null,
       common_objections:    (profile.commonObjections     || "").trim() || null,
+      // [NICHE-DETAIL + RESEARCH-REVIEW] Migration 023 columns. Same
+      // trim → null pattern; pre-migration upserts error visibly in the
+      // console like 015/016 did until the migration runs.
+      niche_detail:         (profile.nicheDetail          || "").trim() || null,
+      research_corrections: (profile.researchCorrections  || "").trim() || null,
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -237,7 +242,11 @@ async function loadProfileFromSupabase(userId) {
       serviceArea:         data.service_area         || "",
       idealClientProblem:  data.ideal_client_problem || "",
       primaryCta:          data.primary_cta          || "",
-      commonObjections:    data.common_objections    || ""
+      commonObjections:    data.common_objections    || "",
+      // [NICHE-DETAIL + RESEARCH-REVIEW] "" on pre-migration-023 rows so
+      // the textareas hydrate empty rather than "null".
+      nicheDetail:         data.niche_detail         || "",
+      researchCorrections: data.research_corrections || ""
     };
   } catch(e) { return {}; }
 }
@@ -6251,7 +6260,42 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
 }
 
 
-function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
+// [HANDLE-URLS] Normalize whatever the user gives us for a social handle:
+// a bare handle ("@lauren" / "lauren") or a pasted profile link
+// ("https://www.instagram.com/lauren/?igsh=abc"). Links are what people
+// actually copy from their own profiles, and the extracted handle is what
+// we store — the server rebuilds a canonical profile URL from it for
+// research. Qualifier paths survive as-is (linkedin "in/lauren-doty",
+// youtube "channel/UCxxxx", facebook "profile.php?id=123") so accounts
+// without a clean @handle still resolve. On any parse failure, return the
+// raw input — never eat what the user typed.
+function normalizeSocialInput(raw) {
+  var v = String(raw || "").trim();
+  if (!v) return "";
+  var looksUrl = /^(https?:\/\/|www\.)/i.test(v) || /\.[a-z]{2,}\//i.test(v);
+  if (!looksUrl) return v.replace(/^@+/, "");
+  try {
+    var u = new URL(/^https?:\/\//i.test(v) ? v : "https://" + v);
+    var path = u.pathname.replace(/^\/+|\/+$/g, "");
+    if (!path) return "";
+    // Facebook numeric profiles live behind profile.php?id=N — the query
+    // IS the identity, so keep it.
+    if (path.toLowerCase() === "profile.php" && u.search) return path + u.search;
+    var segs = path.split("/");
+    var first = segs[0].toLowerCase();
+    // Qualifier prefixes where the second segment is the real identifier.
+    if (first === "in" || first === "company" || first === "channel" || first === "user" || first === "c") {
+      return segs.slice(0, 2).join("/");
+    }
+    return segs[0].replace(/^@+/, "");
+  } catch (e) { return v; }
+}
+
+// [RESEARCH-REVIEW] userToken added so the panel can call
+// /api/profile-research-prewarm to display what VIRL learned from the
+// creator's channels. Optional — signed-out/legacy callers omit it and
+// the review block falls back to its "nothing yet" state.
+function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,userToken}) {
   const [myPlatforms,setMyPlatforms] = useState(profile.myPlatforms||[]);
   const [name,setName] = useState(profile.name||"");
   const [audience,setAudience] = useState(profile.audience||"");
@@ -6328,6 +6372,14 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   const [idealClientProblem,setIdealClientProblem] = useState(profile.idealClientProblem||"");
   const [primaryCta,setPrimaryCta]                 = useState(profile.primaryCta||"");
   const [commonObjections,setCommonObjections]     = useState(profile.commonObjections||"");
+  // [NICHE-DETAIL] The creator's own words on what they do and who pays
+  // them — the precise business definition inside the broad niche label.
+  const [nicheDetail,setNicheDetail]               = useState(profile.nicheDetail||"");
+  // [RESEARCH-REVIEW] Corrections to the machine-gathered channel research,
+  // plus fetch state for displaying the research paragraph itself.
+  // researchPreview.status: idle | loading | ready | none
+  const [researchCorrections,setResearchCorrections] = useState(profile.researchCorrections||"");
+  const [researchPreview,setResearchPreview]         = useState({status:"idle",text:""});
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -6378,11 +6430,24 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
     });
   }
 
+  // [HANDLE-URLS] Belt-and-suspenders normalization at save time — blur
+  // handles the visible case, but a save clicked with focus still in the
+  // input (blur not yet fired) or hydrated legacy URL values should never
+  // persist un-normalized.
+  function cleanedHandles() {
+    var out = {};
+    Object.keys(handles).forEach(function(k){
+      var c = normalizeSocialInput(handles[k]);
+      if (c) out[k] = c;
+    });
+    return out;
+  }
+
   function handleSave() {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -6394,7 +6459,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   // — otherwise a user who flips a toggle and clicks "Save my profile"
   // would have their toggle silently wiped to false by the upsert.
   function handleSavePhase1() {
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
     setPhase1Saved(true);
     setPhase1JustSaved(true);
   }
@@ -6713,6 +6778,55 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
           </div>
         </div>
       </div>
+      {/* [RESEARCH-REVIEW] Show the creator what the public-post research
+          actually says about them, and collect corrections. The research
+          used to be invisible: a wrong observation (same-name account,
+          stale read) silently steered every generation for up to 30 days.
+          Corrections persist on the profile row and override the machine
+          research in every prompt. */}
+      {learnFromPublicPosts && (
+        <div style={{marginTop:14,paddingTop:16,borderTop:"1px solid "+B.divider}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:6}}>What VIRL has learned from your channels</div>
+          {researchPreview.status === "idle" && (
+            <button onClick={function(){
+              if (!userToken) { setResearchPreview({status:"none",text:""}); return; }
+              setResearchPreview({status:"loading",text:""});
+              fetch("/api/profile-research-prewarm", {
+                method: "POST",
+                headers: { "Authorization": "Bearer "+userToken },
+              }).then(function(r){ return r.json(); }).then(function(j){
+                if (j && j.researchText) setResearchPreview({status:"ready",text:j.researchText});
+                else setResearchPreview({status:"none",text:""});
+              }).catch(function(){ setResearchPreview({status:"none",text:""}); });
+            }}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,letterSpacing:"0.03em",padding:"9px 16px",background:B.bg,color:B.navy,border:"1px solid "+B.border,borderRadius:9,cursor:"pointer"}}>
+              Show what VIRL learned
+            </button>
+          )}
+          {researchPreview.status === "loading" && (
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted}}>Checking your channels...</div>
+          )}
+          {researchPreview.status === "ready" && (
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.ink,lineHeight:1.7,background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",marginBottom:10}}>
+              {researchPreview.text}
+            </div>
+          )}
+          {researchPreview.status === "none" && (
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:10}}>
+              Nothing on file yet. Save your profile with your handles filled in and this toggle on, then check back - VIRL researches your channels on save and refreshes monthly.
+            </div>
+          )}
+          <div style={{marginTop:10}}>
+            <Label>Anything wrong or missing? (optional)</Label>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+              Your corrections always beat what the research says - they apply to every future generation once you save.
+            </div>
+            <textarea value={researchCorrections} onChange={function(e){setResearchCorrections(e.target.value);}}
+              placeholder="e.g. I don't do luxury listings - I work with first-time sellers. The weekly market update series ended last year; don't continue it."
+              style={Object.assign({},textareaStyle,{minHeight:66})}/>
+          </div>
+        </div>
+      )}
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:12,paddingTop:14,borderTop:"1px solid "+B.divider}}>
         Turning any toggle off is forward-looking — it stops future use of that source but doesn't delete data already collected. To wipe everything VIRL has learned, use <strong style={{color:B.navy}}>Delete account</strong> in Settings.
       </div>
@@ -6794,6 +6908,20 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
           <div style={{padding:"4px 24px 22px"}}>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.65,marginBottom:18,padding:"10px 14px",background:B.navySoft,borderRadius:10,border:"1px solid "+B.border}}>
               These fields unlock content that actually converts — for real estate agents, dental practices, coaches, fitness pros, small businesses. Every one is optional. Skip the whole section if you're a personal brand only.
+            </div>
+
+            {/* [NICHE-DETAIL] The precise business definition. Placed first
+                in the section: it scopes every field below it, and it's the
+                single highest-leverage sentence a service creator can give
+                the strategy engine. */}
+            <div id="vp-nicheDetail" style={{marginBottom:18}}>
+              <Label>What exactly do you do, and who pays you?</Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+                Your niche label is broad. This is the precise version - VIRL builds your strategy around it.
+              </div>
+              <textarea value={nicheDetail} onChange={function(e){setNicheDetail(e.target.value);}}
+                placeholder="e.g. I'm a listing agent focused on first-time sellers in the Indianapolis suburbs. My income is commission from home sales, so content needs to earn listing appointments - not just followers."
+                style={Object.assign({},textareaStyle,{minHeight:80})}/>
             </div>
 
             <div id="vp-businessWebsite" style={{marginBottom:18}}>
@@ -6916,7 +7044,12 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
                     </div>
                     <input value={(handles[p]||"")} onChange={function(e){
                       var h=Object.assign({},handles); h[p]=e.target.value; setHandles(h);
-                    }} placeholder={"@your"+p.toLowerCase()+"handle"}
+                    }} onBlur={function(e){
+                      // [HANDLE-URLS] Pasted profile links collapse to the
+                      // handle on blur so the user sees what will be stored.
+                      var cleaned = normalizeSocialInput(e.target.value);
+                      if (cleaned !== (handles[p]||"")) { var h=Object.assign({},handles); h[p]=cleaned; setHandles(h); }
+                    }} placeholder={"@handle or paste your "+p+" profile link"}
                     style={Object.assign({},inputStyle,{marginBottom:8,fontSize:13})}/>
                     <textarea value={(platformAudiences[p]||"")} onChange={function(e){
                       var a=Object.assign({},platformAudiences); a[p]=e.target.value; setPlatformAudiences(a);
@@ -7324,7 +7457,11 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
                   </div>
                   <input value={(handles[p]||"")} onChange={function(e){
                     var h=Object.assign({},handles); h[p]=e.target.value; setHandles(h);
-                  }} placeholder={"@your"+p.toLowerCase()+"handle"}
+                  }} onBlur={function(e){
+                    // [HANDLE-URLS] Same blur normalization as the wizard input.
+                    var cleaned = normalizeSocialInput(e.target.value);
+                    if (cleaned !== (handles[p]||"")) { var h=Object.assign({},handles); h[p]=cleaned; setHandles(h); }
+                  }} placeholder={"@handle or paste your "+p+" profile link"}
                   style={Object.assign({},inputStyle,{marginBottom:8,fontSize:13})}/>
                   <textarea value={(platformAudiences[p]||"")} onChange={function(e){
                     var a=Object.assign({},platformAudiences); a[p]=e.target.value; setPlatformAudiences(a);
@@ -11979,6 +12116,9 @@ return (
               </div>
             </div>
             <CreatorProfile profile={profile} syncState={profileSync} syncError={profileSyncError}
+              // [RESEARCH-REVIEW] Token lets the panel fetch + display the
+              // channel research for the signed-in user.
+              userToken={userToken}
               // [CHANGE 1] Lets Phase 1 success state navigate to the plan tab,
               // mirroring how the welcome modal hands off to plan.
               onNavigateToPlan={function(){setTab("plan");}}

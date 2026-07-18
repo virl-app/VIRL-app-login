@@ -932,6 +932,13 @@ async function fetchProfile(userId) {
       idealClientProblem: data.ideal_client_problem || "",
       primaryCta:         data.primary_cta          || "",
       commonObjections:   data.common_objections    || "",
+      // [NICHE-DETAIL] The creator's own words on what exactly they do and
+      // who pays them — the precise definition inside the broad niche label.
+      // [RESEARCH-REVIEW] Creator's corrections to the machine-gathered
+      // channel research; injected with override precedence in prompts.js.
+      // Both "" on pre-migration-023 rows → prompt builder skips cleanly.
+      nicheDetail:         data.niche_detail         || "",
+      researchCorrections: data.research_corrections || "",
     };
   } catch (e) {
     return {};

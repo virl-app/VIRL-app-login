@@ -30,7 +30,50 @@ const TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // into the handles hash so every cached row from the previous prompt
 // version re-fetches on next use — without this, existing users would
 // keep their v1 research (fewer dimensions, 5 excerpts) for up to 30 days.
-const PROMPT_VERSION = "v2";
+// [HANDLE-URLS] v3: handles now render as canonical profile URLs with a
+// "resolve the account from the URL, don't name-search" instruction.
+const PROMPT_VERSION = "v3";
+
+// [HANDLE-URLS] Defensive cleanup of a stored handle value. The client
+// normalizes on blur + save (index.html#normalizeSocialInput), but legacy
+// rows and API writes can still carry "@name", full URLs, or stray
+// slashes. Output is a bare handle ("lauren") or a qualifier path
+// ("in/lauren-doty", "channel/UCxxx", "profile.php?id=123").
+function cleanStoredHandle(v) {
+  let s = String(v || "").trim();
+  if (!s) return "";
+  s = s.replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+  const slash = s.indexOf("/");
+  // A dot before the first slash means a domain slipped in — drop it and
+  // keep the path, which carries the identity.
+  if (slash > 0 && s.slice(0, slash).indexOf(".") >= 0) s = s.slice(slash + 1);
+  s = s.replace(/^\/+|\/+$/g, "");
+  // Leading @ only matters when it's a bare handle, not a path.
+  if (s.indexOf("/") < 0) s = s.replace(/^@+/, "");
+  return s;
+}
+
+// [HANDLE-URLS] Canonical public profile URL per platform. Platform keys
+// are the client's display names (TikTok, Instagram, ...), matched
+// case-insensitively. Qualifier paths append to the domain root so
+// linkedin company pages, youtube channel IDs, and facebook numeric
+// profiles all resolve. Unknown platforms return "" and the prompt just
+// shows the bare handle.
+function profileUrlFor(platform, handle) {
+  const h = handle;
+  if (!h) return "";
+  if (/^https?:\/\//i.test(h)) return h;
+  const p = String(platform || "").toLowerCase();
+  const isPath = h.indexOf("/") >= 0 || h.indexOf("?") >= 0;
+  if (p === "tiktok")    return "https://www.tiktok.com/" + (isPath ? h : "@" + h);
+  if (p === "instagram") return "https://www.instagram.com/" + (isPath ? h : h + "/");
+  if (p === "youtube")   return "https://www.youtube.com/" + (isPath ? h : "@" + h);
+  if (p === "linkedin")  return "https://www.linkedin.com/" + (isPath ? h : "in/" + h + "/");
+  if (p === "facebook")  return "https://www.facebook.com/" + h;
+  if (p === "x" || p === "twitter") return "https://x.com/" + h;
+  if (p === "pinterest") return "https://www.pinterest.com/" + (isPath ? h : h + "/");
+  return "";
+}
 
 // Deterministic, content-addressable signature so a row's handles_hash
 // trivially tells us whether the cached research is still about the right
@@ -113,10 +156,22 @@ async function writeCache(userId, research_text, post_excerpts, handles_hash) {
 // user's actual posting compares to that aspiration, which can sharpen the
 // LLM's voice instructions.
 function buildResearchPrompt(handles, inspiration, businessWebsite) {
+  // [HANDLE-URLS] Render each handle WITH its canonical profile URL and
+  // tell the model to resolve the account from the URL. A bare handle
+  // forces the search engine to name-match, which is exactly how a
+  // same-name lookalike account ends up describing the wrong person for
+  // 30 days. The direct link removes the ambiguity.
   const handleList = Object.keys(handles)
     .filter(k => handles[k])
-    .map(k => k + ": " + String(handles[k]).trim())
-    .join(", ");
+    .map(k => {
+      const h = cleanStoredHandle(handles[k]);
+      if (!h) return null;
+      const url = profileUrlFor(k, h);
+      const label = h.indexOf("/") >= 0 ? h : "@" + h;
+      return "  - " + k + ": " + label + (url ? " → " + url : "");
+    })
+    .filter(Boolean)
+    .join("\n");
   const inspirationLine = (inspiration && typeof inspiration === "string" && inspiration.trim())
     ? "Style aspiration the creator named (context only — do NOT excerpt this person's posts): " + inspiration.trim()
     : "";
@@ -139,7 +194,9 @@ function buildResearchPrompt(handles, inspiration, businessWebsite) {
       + (hasWebsite ? ", and review their business website for offerings + brand-consistent terminology" : "")
       + ".",
     "",
-    handleList ? "Handles: " + handleList : "Handles: (none provided)",
+    handleList
+      ? "Profiles to research (open each URL directly and research THAT exact account — do NOT search by name or handle text, which risks pulling a different person with the same name. If a URL is unreachable, has no indexable posts, or clearly belongs to a different person or business than the other profiles suggest, say so plainly for that platform instead of substituting a lookalike account):\n" + handleList
+      : "Handles: (none provided)",
     ...(inspirationLine ? ["", inspirationLine] : []),
     ...(businessLine    ? ["", businessLine]    : []),
     "",
