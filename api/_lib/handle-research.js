@@ -25,6 +25,13 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 // Refresh research older than this OR when the handles / inspiration change.
 const TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// [NEGATIVE-TTL] Empty rows (NO_USEFUL_RESEARCH / parse failure) expire
+// much sooner. A transient Perplexity flub or an overly-cautious bail used
+// to blank a creator's research for the full 30 days — with the Profile
+// panel now SHOWING the research, that read as "VIRL lost my platforms."
+// 6 hours is long enough to not hammer Perplexity, short enough that the
+// next day's session retries.
+const NEGATIVE_TTL_MS = 6 * 60 * 60 * 1000;
 
 // [RESEARCH-V2] Bump when buildResearchPrompt materially changes. Folded
 // into the handles hash so every cached row from the previous prompt
@@ -42,7 +49,13 @@ const PROMPT_VERSION = "v3";
 function cleanStoredHandle(v) {
   let s = String(v || "").trim();
   if (!s) return "";
-  s = s.replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+  // [SHARE-LINK FIX] A stored full URL is the most precise research target
+  // there is — pass it through untouched. The client now deliberately
+  // stores full URLs for opaque shortlinks (facebook.com/share/XyZ) where
+  // no handle is extractable; stripping the domain here turned those into
+  // meaningless path fragments.
+  if (/^https?:\/\//i.test(s)) return s;
+  s = s.replace(/^www\./i, "");
   const slash = s.indexOf("/");
   // A dot before the first slash means a domain slipped in — drop it and
   // keep the path, which carries the identity.
@@ -167,6 +180,8 @@ function buildResearchPrompt(handles, inspiration, businessWebsite) {
       const h = cleanStoredHandle(handles[k]);
       if (!h) return null;
       const url = profileUrlFor(k, h);
+      // Full-URL values ARE the link — don't render them twice.
+      if (/^https?:\/\//i.test(h)) return "  - " + k + ": " + h;
       const label = h.indexOf("/") >= 0 ? h : "@" + h;
       return "  - " + k + ": " + label + (url ? " → " + url : "");
     })
@@ -216,7 +231,12 @@ function buildResearchPrompt(handles, inspiration, businessWebsite) {
       ? ["  8. From the business website: what specific products, services, or programs does this creator actually offer? Any branded terminology (program names, signature methods, taglines) that should be used verbatim in generated content rather than improvised? Stay concrete — name the actual offerings, do not paraphrase the website's marketing language."]
       : []),
     "",
-    "Be honest about uncertainty. If a handle returns very few indexable posts, say so plainly — DO NOT invent details. Never fill a numbered point with plausible guesses; skip what you can't observe. If the creator is small / new and you find nothing useful, return EXACTLY this string and nothing else: NO_USEFUL_RESEARCH",
+    // [PARTIAL-RESULTS] The escape hatch is now strictly last-resort. The
+    // previous wording let one dead link or one thin platform tip the model
+    // into bailing on the WHOLE brief — a creator with a rich Instagram and
+    // a broken Facebook shortlink got NO research (which then negative-
+    // cached). Partial coverage is the expected, useful outcome.
+    "Be honest about uncertainty. If a profile returns very few indexable posts or its URL is unreachable, say so plainly for THAT platform — DO NOT invent details, and never fill a numbered point with plausible guesses. But a dead link or an empty platform is NOT a reason to abandon the brief: write it from the platforms that DID yield content, and name the ones that came up empty. Return EXACTLY the string NO_USEFUL_RESEARCH (and nothing else) ONLY when every single profile above yields nothing usable at all.",
     "",
     "Format your reply with TWO sections separated by a blank line:",
     "",
@@ -294,9 +314,11 @@ export async function fetchHandleResearch(userId, handles, inspiration, business
   const cached = await readCache(userId);
   if (cached && cached.handles_hash === currentHash) {
     const ageMs = Date.now() - Date.parse(cached.fetched_at || 0);
-    if (Number.isFinite(ageMs) && ageMs < TTL_MS) {
-      // Negative-result rows have empty research_text — surface as null so
-      // callers skip the block, identical to the original behavior.
+    // [NEGATIVE-TTL] Negative rows (empty research_text) get the short
+    // TTL: within it, surface null so callers skip the block; past it,
+    // fall through to a fresh Perplexity attempt.
+    const ttl = cached.research_text ? TTL_MS : NEGATIVE_TTL_MS;
+    if (Number.isFinite(ageMs) && ageMs < ttl) {
       if (!cached.research_text) return null;
       return {
         researchText: cached.research_text,
