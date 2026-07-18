@@ -101,8 +101,13 @@ export default async function handler(req, res) {
     research = await fetchHandleResearch(userId, handles, inspiration, businessWebsite);
   } catch (e) { /* fail-open */ }
 
+  // [RESEARCH-REVIEW] Return the research paragraph itself so the Profile
+  // panel can show the creator what VIRL actually learned (and collect
+  // corrections). Auth above guarantees this is the caller's own research;
+  // older clients ignore the extra field.
   return res.status(200).json({
-    refreshed: !!research,
-    reason:    research ? "ok" : "no_research",
+    refreshed:    !!research,
+    reason:       research ? "ok" : "no_research",
+    researchText: research ? research.researchText : null,
   });
 }

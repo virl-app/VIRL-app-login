@@ -526,6 +526,14 @@ function buildProfileCtx(profile) {
   if (profile.audience)      parts.push("Target audience: " + profile.audience + ".");
   if (profile.name)          parts.push("Creator name: " + profile.name + ".");
 
+  // [NICHE-DETAIL] The creator's own definition of their business. The
+  // niche dropdown is a broad bucket ("Real Estate" spans listing agents,
+  // investors, stagers, lenders); this field says which business THIS
+  // creator actually runs. Placed early so it scopes everything after it.
+  if (profile.nicheDetail) {
+    parts.push("WHAT THIS CREATOR ACTUALLY DOES (their own words — the precise definition of their business inside the broad niche label; treat as the authoritative scope for topics, offers, strategy, and who the content must win over): " + profile.nicheDetail + ".");
+  }
+
   if (profile.emojiPref) {
     if (profile.emojiPref === "Never") {
       parts.push("EMOJI RULE: NEVER use emojis anywhere in any output. Not in captions, hooks, hashtags, or CTAs. Zero emojis.");
@@ -564,6 +572,16 @@ function buildProfileCtx(profile) {
     // the creator's own stated facts must always win on conflict — the old
     // label had the model siding with Perplexity over the person.
     parts.push("OBSERVED POSTING PATTERNS (machine-gathered from a recent scan of the creator's public posts — a strong signal for voice, topics, recurring series, and what already works for them; USE IT to vary angles and extend series they've started. But it is observational, not authoritative: wherever it conflicts with the creator's own stated facts — CRITICAL PERSONAL FACTS, profile fields, offerings — the creator's version wins, and never present an observed detail as fact in generated copy unless the profile confirms it): " + profile.handleResearch);
+  }
+
+  // [RESEARCH-REVIEW] The creator reviewed the machine research and typed
+  // corrections. Highest precedence over anything machine-gathered —
+  // rendered immediately after the observed-patterns block so the model
+  // reads the correction right after the thing it corrects. Still useful
+  // when the research block is absent (stale cache, consent recently
+  // enabled): the corrections read as standalone creator-stated facts.
+  if (profile.researchCorrections) {
+    parts.push("CREATOR'S CORRECTIONS TO MACHINE RESEARCH (the creator reviewed what VIRL observed about their channels and stated these corrections and additions — these OVERRIDE the observed posting patterns and any other machine-gathered detail wherever they conflict): " + profile.researchCorrections + ".");
   }
 
   if (profile.platformAudiences && typeof profile.platformAudiences === "object") {
