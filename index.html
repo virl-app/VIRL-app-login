@@ -6269,13 +6269,25 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
 // youtube "channel/UCxxxx", facebook "profile.php?id=123") so accounts
 // without a clean @handle still resolve. On any parse failure, return the
 // raw input — never eat what the user typed.
+// PRESERVE-DON'T-DESTROY (fix for a live data-corruption bug): extraction
+// happens ONLY when we're confident the path segment IS the identity.
+// Facebook's app copies profile links as opaque shortlinks
+// (facebook.com/share/XyZ...) where the first segment is the literal word
+// "share" and the identity is an unreadable redirect token — v1 of this
+// function stored the word "share" as the creator's Facebook handle and
+// destroyed the pasted link. Now: single-segment paths and known qualifier
+// pairs extract; EVERYTHING else (share links, reels, posts, unknown
+// multi-segment shapes) keeps the full original URL. A stored URL still
+// researches perfectly — the shortlink redirects to the real profile — and
+// the server passes http(s) values through as-is.
 function normalizeSocialInput(raw) {
   var v = String(raw || "").trim();
   if (!v) return "";
   var looksUrl = /^(https?:\/\/|www\.)/i.test(v) || /\.[a-z]{2,}\//i.test(v);
   if (!looksUrl) return v.replace(/^@+/, "");
+  var fullUrl = /^https?:\/\//i.test(v) ? v : "https://" + v;
   try {
-    var u = new URL(/^https?:\/\//i.test(v) ? v : "https://" + v);
+    var u = new URL(fullUrl);
     var path = u.pathname.replace(/^\/+|\/+$/g, "");
     if (!path) return "";
     // Facebook numeric profiles live behind profile.php?id=N — the query
@@ -6284,10 +6296,16 @@ function normalizeSocialInput(raw) {
     var segs = path.split("/");
     var first = segs[0].toLowerCase();
     // Qualifier prefixes where the second segment is the real identifier.
-    if (first === "in" || first === "company" || first === "channel" || first === "user" || first === "c") {
+    if (segs.length === 2 && (first === "in" || first === "company" || first === "channel" || first === "user" || first === "c")) {
       return segs.slice(0, 2).join("/");
     }
-    return segs[0].replace(/^@+/, "");
+    // Confident extraction only for a single-segment slug that isn't a
+    // shortlink marker word.
+    if (segs.length === 1) {
+      var seg = segs[0].replace(/^@+/, "");
+      if (seg && seg.toLowerCase() !== "share") return seg;
+    }
+    return fullUrl;
   } catch (e) { return v; }
 }
 
