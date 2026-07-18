@@ -26,6 +26,12 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // Refresh research older than this OR when the handles / inspiration change.
 const TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+// [RESEARCH-V2] Bump when buildResearchPrompt materially changes. Folded
+// into the handles hash so every cached row from the previous prompt
+// version re-fetches on next use — without this, existing users would
+// keep their v1 research (fewer dimensions, 5 excerpts) for up to 30 days.
+const PROMPT_VERSION = "v2";
+
 // Deterministic, content-addressable signature so a row's handles_hash
 // trivially tells us whether the cached research is still about the right
 // set of inputs. Sorted keys keep {tiktok, instagram} === {instagram, tiktok}.
@@ -48,7 +54,7 @@ function hashHandles(handles, inspiration, businessWebsite) {
     ? businessWebsite.trim().toLowerCase()
     : "";
   return crypto.createHash("sha256")
-    .update(sortedHandles.join("|") + "||insp:" + inspStr + "||site:" + siteStr)
+    .update(PROMPT_VERSION + "||" + sortedHandles.join("|") + "||insp:" + inspStr + "||site:" + siteStr)
     .digest("hex");
 }
 
@@ -142,17 +148,24 @@ function buildResearchPrompt(handles, inspiration, businessWebsite) {
     "  2. What's their voice / tone like? Pick concrete adjectives (warm, dry, conversational, authoritative, irreverent, etc.) — not generic praise. Anchor your read in the SOCIAL posts, not the website (which may be more formal). If they named a style aspiration above, briefly note how their actual voice compares (matches it, partway there, diverges).",
     "  3. What visual signature, if any? (e.g. 'always shot outdoors,' 'high-contrast B&W,' 'kitchen flat-lays,' 'screen-recorded tutorials')",
     "  4. Any recurring phrases, sign-offs, or in-jokes that show up in their captions?",
+    // [RESEARCH-V2] Three added dimensions: formats/series (so plans can
+    // continue what the creator already runs instead of inventing parallel
+    // lookalikes), visible resonance (only what's actually observable), and
+    // untouched adjacent topics (variety fuel beyond the profile fields).
+    "  5. What content FORMATS do they actually use (talking-head video, carousels, photo + long caption, Stories-style casual clips), and do they run any recurring series or franchises (a named weekly segment, a repeated format, an ongoing storyline)? Name the series if one exists.",
+    "  6. Where engagement is VISIBLE (comment counts, visible like counts), which of their posts or topics clearly resonate most with their audience? Only report what you can actually observe — if engagement isn't visible, skip this rather than guessing.",
+    "  7. What 2-3 topics ADJACENT to their niche do they post about rarely or never — obvious angles a strategist would flag as untapped? Frame these as observations about coverage, not criticisms.",
     ...(hasWebsite
-      ? ["  5. From the business website: what specific products, services, or programs does this creator actually offer? Any branded terminology (program names, signature methods, taglines) that should be used verbatim in generated content rather than improvised? Stay concrete — name the actual offerings, do not paraphrase the website's marketing language."]
+      ? ["  8. From the business website: what specific products, services, or programs does this creator actually offer? Any branded terminology (program names, signature methods, taglines) that should be used verbatim in generated content rather than improvised? Stay concrete — name the actual offerings, do not paraphrase the website's marketing language."]
       : []),
     "",
-    "Be honest about uncertainty. If a handle returns very few indexable posts, say so plainly — DO NOT invent details. If the creator is small / new and you find nothing useful, return EXACTLY this string and nothing else: NO_USEFUL_RESEARCH",
+    "Be honest about uncertainty. If a handle returns very few indexable posts, say so plainly — DO NOT invent details. Never fill a numbered point with plausible guesses; skip what you can't observe. If the creator is small / new and you find nothing useful, return EXACTLY this string and nothing else: NO_USEFUL_RESEARCH",
     "",
     "Format your reply with TWO sections separated by a blank line:",
     "",
-    "FIRST SECTION — one tight paragraph (max " + (hasWebsite ? "10" : "8") + " sentences) summarizing the points above. No headings, no bullet points, no marketing language. Treat this as a brief to another writer who needs to sound like this person and reference their actual business correctly.",
+    "FIRST SECTION — one tight paragraph (max " + (hasWebsite ? "12" : "10") + " sentences) summarizing the points above. No headings, no bullet points, no marketing language. Treat this as a brief to another writer who needs to sound like this person, extend the series they already run, and reference their actual business correctly.",
     "",
-    "SECOND SECTION — a line that says exactly 'POST_EXCERPTS:' followed by up to 5 verbatim caption / post excerpts from THIS creator's actual indexed posts, one per line, each starting with '- '. Pick excerpts that show their voice — opening hooks, sign-offs, or one-liners are ideal. Each excerpt should be 8-50 words. Quote them exactly — do not paraphrase. If you cannot find any real excerpts (uncached, private, or too few posts), output exactly 'POST_EXCERPTS: NONE' instead.",
+    "SECOND SECTION — a line that says exactly 'POST_EXCERPTS:' followed by up to 8 verbatim caption / post excerpts from THIS creator's actual indexed posts, one per line, each starting with '- '. Pick excerpts that show their RANGE, not eight variations of the same register — mix opening hooks, sign-offs, one-liners, and a longer storytelling beat if they have one. Each excerpt should be 8-50 words. Quote them exactly — do not paraphrase. If you cannot find any real excerpts (uncached, private, or too few posts), output exactly 'POST_EXCERPTS: NONE' instead.",
   ].join("\n");
 }
 
@@ -238,10 +251,12 @@ export async function fetchHandleResearch(userId, handles, inspiration, business
   // Cache miss / stale / inputs changed → re-fetch. Bump the token
   // budget when the website is included since Perplexity needs room
   // to surface offerings + voice signals in the same paragraph.
+  // [RESEARCH-V2] Budgets raised for the three added dimensions + up to
+  // 8 excerpts (was 5).
   const out = await callPerplexity({
     prompt:    buildResearchPrompt(safeHandles, inspiration, businessWebsite),
     model:     "sonar",
-    maxTokens: hasWebsite ? 1200 : 900,
+    maxTokens: hasWebsite ? 1700 : 1400,
   });
   if (!out || typeof out.text !== "string") return null;
   const rawText = out.text.trim();
