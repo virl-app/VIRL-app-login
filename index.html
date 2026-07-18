@@ -6376,6 +6376,58 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
   // profile form scannable; revisit the cap, not the schema, if it needs
   // to grow.
   const [voiceSamples,setVoiceSamples] = useState(Array.isArray(profile.voiceSamples)?profile.voiceSamples:[]);
+  // [POST-IMPORT] Paste-your-post-links importer state. Imported captions
+  // land as editable voiceSamples rows and persist through the normal
+  // profile save — the user reviews every string before it's kept.
+  const [importLinks,setImportLinks] = useState("");
+  const [importBusy,setImportBusy]   = useState(false);
+  const [importMsg,setImportMsg]     = useState("");
+
+  // [POST-IMPORT] Merge imported captions into the voice-sample rows:
+  // drop empty rows, dedupe on the first 80 chars, cap at 8 total so a
+  // bulk paste can't flood the editor (the server injects at most 6).
+  function handleImportLinks() {
+    if (importBusy) return;
+    var raw = importLinks.split(/[\n,\s]+/).map(function(s){ return s.trim(); }).filter(Boolean).slice(0,10);
+    if (!raw.length) { setImportMsg("Paste at least one post link first."); return; }
+    if (!userToken)  { setImportMsg("Sign in to import captions."); return; }
+    setImportBusy(true); setImportMsg("");
+    fetch("/api/import-post-links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer "+userToken },
+      body: JSON.stringify({ urls: raw }),
+    }).then(function(r){ return r.json(); }).then(function(j){
+      var results = (j && j.results) || [];
+      var okTexts = results.filter(function(x){ return x && x.ok && x.text; }).map(function(x){ return x.text; });
+      var metaBlocked = results.filter(function(x){ return x && x.error === "unsupported_platform"; }).length;
+      var failed = results.length - okTexts.length - metaBlocked;
+      if (okTexts.length) {
+        setVoiceSamples(function(prev){
+          var next = prev.filter(function(s){ return s && s.trim(); });
+          var seen = {};
+          next.forEach(function(s){ seen[s.trim().slice(0,80).toLowerCase()] = 1; });
+          okTexts.forEach(function(t){
+            var k = t.trim().slice(0,80).toLowerCase();
+            if (!seen[k] && next.length < 8) { seen[k] = 1; next.push(t); }
+          });
+          return next;
+        });
+        setImportLinks("");
+      }
+      var parts = [];
+      if (okTexts.length) parts.push("Imported "+okTexts.length+" caption"+(okTexts.length===1?"":"s")+" - review below, edit anything, then save your profile.");
+      if (metaBlocked)    parts.push(metaBlocked+" Instagram/Facebook link"+(metaBlocked===1?"":"s")+" skipped - those platforms don't allow caption fetching, so paste that caption into a sample row instead.");
+      if (failed > 0)     parts.push(failed+" link"+(failed===1?"":"s")+" couldn't be read - make sure they're links to specific public posts.");
+      if (!parts.length)  parts.push("Nothing imported - paste direct links to specific posts on TikTok, YouTube, X, or Pinterest.");
+      setImportMsg(parts.join(" "));
+    }).catch(function(){
+      setImportMsg("Import failed - try again in a moment.");
+    }).then(function(){
+      // Runs after both success and catch — promise-chain equivalent of
+      // finally, without relying on Promise.prototype.finally.
+      setImportBusy(false);
+    });
+  }
   // [BUSINESS-WEBSITE] Optional URL the creator can attach for context
   // in CTAs, long-form posts, etc. Not part of any tier-completeness
   // check — personal-brand creators without a business site are fully
@@ -7157,6 +7209,26 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
               <Label>More voice samples (optional)</Label>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:10}}>
                 Each one gives VIRL another reference for how you sound. The more captions you add, the closer your generations land.
+              </div>
+              {/* [POST-IMPORT] Paste post links → import the real captions.
+                  Works regardless of whether the account is indexed by
+                  search engines, which is what makes it the reliable path
+                  for new/small creators. */}
+              <div style={{marginBottom:14,padding:"12px 14px",background:B.navySoft,borderRadius:10,border:"1px solid "+B.border}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:4}}>Import captions from your posts</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:8}}>
+                  Paste links to a few posts that sound most like you - TikTok, YouTube, X, or Pinterest, one per line. VIRL pulls in the real captions as voice samples. (Instagram and Facebook don't allow this - paste those captions into a sample row by hand.)
+                </div>
+                <textarea value={importLinks} onChange={function(e){setImportLinks(e.target.value);}}
+                  placeholder={"https://www.tiktok.com/@you/video/123...\nhttps://www.pinterest.com/pin/456..."}
+                  style={Object.assign({},textareaStyle,{minHeight:64,marginBottom:8})}/>
+                <button type="button" onClick={handleImportLinks}
+                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:importBusy?B.divider:B.navy,color:importBusy?B.muted:B.white,border:"none",borderRadius:10,cursor:importBusy?"default":"pointer"}}>
+                  {importBusy ? "Importing..." : "Import captions"}
+                </button>
+                {importMsg && (
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:11.5,fontWeight:300,color:B.ink,lineHeight:1.6,marginTop:8}}>{importMsg}</div>
+                )}
               </div>
               {voiceSamples.map(function(sample, idx){
                 return (
