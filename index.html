@@ -6260,6 +6260,37 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
 }
 
 
+// [HANDLE-URLS] Normalize whatever the user gives us for a social handle:
+// a bare handle ("@lauren" / "lauren") or a pasted profile link
+// ("https://www.instagram.com/lauren/?igsh=abc"). Links are what people
+// actually copy from their own profiles, and the extracted handle is what
+// we store — the server rebuilds a canonical profile URL from it for
+// research. Qualifier paths survive as-is (linkedin "in/lauren-doty",
+// youtube "channel/UCxxxx", facebook "profile.php?id=123") so accounts
+// without a clean @handle still resolve. On any parse failure, return the
+// raw input — never eat what the user typed.
+function normalizeSocialInput(raw) {
+  var v = String(raw || "").trim();
+  if (!v) return "";
+  var looksUrl = /^(https?:\/\/|www\.)/i.test(v) || /\.[a-z]{2,}\//i.test(v);
+  if (!looksUrl) return v.replace(/^@+/, "");
+  try {
+    var u = new URL(/^https?:\/\//i.test(v) ? v : "https://" + v);
+    var path = u.pathname.replace(/^\/+|\/+$/g, "");
+    if (!path) return "";
+    // Facebook numeric profiles live behind profile.php?id=N — the query
+    // IS the identity, so keep it.
+    if (path.toLowerCase() === "profile.php" && u.search) return path + u.search;
+    var segs = path.split("/");
+    var first = segs[0].toLowerCase();
+    // Qualifier prefixes where the second segment is the real identifier.
+    if (first === "in" || first === "company" || first === "channel" || first === "user" || first === "c") {
+      return segs.slice(0, 2).join("/");
+    }
+    return segs[0].replace(/^@+/, "");
+  } catch (e) { return v; }
+}
+
 // [RESEARCH-REVIEW] userToken added so the panel can call
 // /api/profile-research-prewarm to display what VIRL learned from the
 // creator's channels. Optional — signed-out/legacy callers omit it and
@@ -6399,11 +6430,24 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
     });
   }
 
+  // [HANDLE-URLS] Belt-and-suspenders normalization at save time — blur
+  // handles the visible case, but a save clicked with focus still in the
+  // input (blur not yet fired) or hydrated legacy URL values should never
+  // persist un-normalized.
+  function cleanedHandles() {
+    var out = {};
+    Object.keys(handles).forEach(function(k){
+      var c = normalizeSocialInput(handles[k]);
+      if (c) out[k] = c;
+    });
+    return out;
+  }
+
   function handleSave() {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -6415,7 +6459,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
   // — otherwise a user who flips a toggle and clicks "Save my profile"
   // would have their toggle silently wiped to false by the upsert.
   function handleSavePhase1() {
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
     setPhase1Saved(true);
     setPhase1JustSaved(true);
   }
@@ -7000,7 +7044,12 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
                     </div>
                     <input value={(handles[p]||"")} onChange={function(e){
                       var h=Object.assign({},handles); h[p]=e.target.value; setHandles(h);
-                    }} placeholder={"@your"+p.toLowerCase()+"handle"}
+                    }} onBlur={function(e){
+                      // [HANDLE-URLS] Pasted profile links collapse to the
+                      // handle on blur so the user sees what will be stored.
+                      var cleaned = normalizeSocialInput(e.target.value);
+                      if (cleaned !== (handles[p]||"")) { var h=Object.assign({},handles); h[p]=cleaned; setHandles(h); }
+                    }} placeholder={"@handle or paste your "+p+" profile link"}
                     style={Object.assign({},inputStyle,{marginBottom:8,fontSize:13})}/>
                     <textarea value={(platformAudiences[p]||"")} onChange={function(e){
                       var a=Object.assign({},platformAudiences); a[p]=e.target.value; setPlatformAudiences(a);
@@ -7408,7 +7457,11 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
                   </div>
                   <input value={(handles[p]||"")} onChange={function(e){
                     var h=Object.assign({},handles); h[p]=e.target.value; setHandles(h);
-                  }} placeholder={"@your"+p.toLowerCase()+"handle"}
+                  }} onBlur={function(e){
+                    // [HANDLE-URLS] Same blur normalization as the wizard input.
+                    var cleaned = normalizeSocialInput(e.target.value);
+                    if (cleaned !== (handles[p]||"")) { var h=Object.assign({},handles); h[p]=cleaned; setHandles(h); }
+                  }} placeholder={"@handle or paste your "+p+" profile link"}
                   style={Object.assign({},inputStyle,{marginBottom:8,fontSize:13})}/>
                   <textarea value={(platformAudiences[p]||"")} onChange={function(e){
                     var a=Object.assign({},platformAudiences); a[p]=e.target.value; setPlatformAudiences(a);
