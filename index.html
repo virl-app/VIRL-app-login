@@ -6831,7 +6831,13 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
           )}
           {researchPreview.status === "none" && (
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:10}}>
-              Nothing on file yet. Save your profile with your handles filled in and this toggle on, then check back - VIRL researches your channels on save and refreshes monthly.
+              {/* [HONEST-EMPTY-STATE] "Nothing on file" read as a bug to
+                  creators whose accounts simply aren't in the public search
+                  index yet (new, small, or private accounts - most early
+                  creators). Say the real reason, what VIRL refuses to do
+                  about it (guess from lookalikes), and that their voice
+                  still comes from everything else in the profile. */}
+              No usable research yet. This usually means your accounts are still new, small, or private - public search engines have not indexed them yet, and VIRL will never guess from lookalike accounts with similar names. VIRL retries automatically as your accounts grow (and right away when you change a handle). Everything else in your profile - your voice samples, saved posts, and edits - still shapes every output. You can also describe your content yourself in the box below; it carries the same weight as research.
             </div>
           )}
           <div style={{marginTop:10}}>

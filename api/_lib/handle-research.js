@@ -39,7 +39,10 @@ const NEGATIVE_TTL_MS = 6 * 60 * 60 * 1000;
 // keep their v1 research (fewer dimensions, 5 excerpts) for up to 30 days.
 // [HANDLE-URLS] v3: handles now render as canonical profile URLs with a
 // "resolve the account from the URL, don't name-search" instruction.
-const PROMPT_VERSION = "v3";
+// [WEBSITE-FALLBACK] v4: when no social profile is publicly indexable but
+// the business website is readable, the brief is written from the website
+// instead of bailing with NO_USEFUL_RESEARCH.
+const PROMPT_VERSION = "v4";
 
 // [HANDLE-URLS] Defensive cleanup of a stored handle value. The client
 // normalizes on blur + save (index.html#normalizeSocialInput), but legacy
@@ -236,7 +239,10 @@ function buildResearchPrompt(handles, inspiration, businessWebsite) {
     // into bailing on the WHOLE brief — a creator with a rich Instagram and
     // a broken Facebook shortlink got NO research (which then negative-
     // cached). Partial coverage is the expected, useful outcome.
-    "Be honest about uncertainty. If a profile returns very few indexable posts or its URL is unreachable, say so plainly for THAT platform — DO NOT invent details, and never fill a numbered point with plausible guesses. But a dead link or an empty platform is NOT a reason to abandon the brief: write it from the platforms that DID yield content, and name the ones that came up empty. Return EXACTLY the string NO_USEFUL_RESEARCH (and nothing else) ONLY when every single profile above yields nothing usable at all.",
+    "Be honest about uncertainty. If a profile returns very few indexable posts or its URL is unreachable, say so plainly for THAT platform — DO NOT invent details, and never fill a numbered point with plausible guesses. But a dead link or an empty platform is NOT a reason to abandon the brief: write it from the platforms that DID yield content, and name the ones that came up empty."
+      + (hasWebsite
+        ? " WEBSITE FALLBACK: small or new creators are often not in the public search index at all — their social pages return nothing while their business website reads fine. In that case still write the brief: ground it in the website's voice, offerings, and terminology, open with a plain statement that the social profiles weren't publicly indexable yet, and output 'POST_EXCERPTS: NONE'. Return EXACTLY the string NO_USEFUL_RESEARCH (and nothing else) ONLY when the social profiles AND the website all yield nothing usable."
+        : " Return EXACTLY the string NO_USEFUL_RESEARCH (and nothing else) ONLY when every single profile above yields nothing usable at all."),
     "",
     "Format your reply with TWO sections separated by a blank line:",
     "",
