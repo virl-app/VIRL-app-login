@@ -9111,6 +9111,10 @@ function App() {
   const [platforms,setPlatforms] = useState(stored.platforms||["TikTok","Instagram"]);
   const [niche,setNiche] = useState(stored.niche||"Lifestyle");
   const [goal,setGoal] = useState(stored.goal||"Grow my following");
+  // [GOALS-2] Optional secondary goal. Empty string = none. The wizard
+  // renders it as its own chip row excluding the primary; the server
+  // gives it 2-3 supporting cards without diluting the primary goal.
+  const [goalSecondary,setGoalSecondary] = useState(stored.goalSecondary||"");
   const [formats,setFormats] = useState(stored.formats||["Talking-head video","Day in my life"]);
   const [followers,setFollowers] = useState(stored.followers||"Under 1K");
   const [context,setContext] = useState("");
@@ -10085,8 +10089,8 @@ function App() {
   }, [cards, isFoundingOrPro, trialExpired, planNudgeDismissed]);
 
   useEffect(function(){
-    save({platforms,niche,goal,formats,followers,vault,results,profile});
-  },[platforms,niche,goal,formats,followers,vault,results,profile]);
+    save({platforms,niche,goal,goalSecondary,formats,followers,vault,results,profile});
+  },[platforms,niche,goal,goalSecondary,formats,followers,vault,results,profile]);
 
   // Persist vault + results to Supabase whenever they change. Gated on
   // userDataHydrated so the empty initial state of an incognito browser
@@ -10240,6 +10244,7 @@ function App() {
       platforms:    platforms,
       niche:        niche,
       goal:         goal,
+      goalSecondary: goalSecondary || undefined,
       formats:      formats,
       followers:    followers,
       context:      context || "",
@@ -10369,6 +10374,13 @@ function App() {
     callAPI("plan_strategy", {
       cards:    condensedCards,
       strategy: strategy,
+      // [NICHE-PLAYBOOK] Ground the re-framed strategy in the same niche +
+      // goal + follower-tier context the original plan was built with, so
+      // "a different angle" still means winning in this niche.
+      niche:         niche,
+      goal:          goal,
+      goalSecondary: goalSecondary || undefined,
+      followers:     followers,
     }, { token: userToken, trendsSnapshot: planTrendsSnapshot }).then(function (data) {
       var parsed = extractJSON(data && data.text);
       var hasFields = parsed && (parsed.thesis || parsed.the_bet || parsed.optimizing_for || parsed.audience_read || parsed.success_metric);
@@ -10491,6 +10503,50 @@ function App() {
         var onListCards = parsedCards.filter(onSelectedPlatform);
         if (onListCards.length > 0) parsedCards = onListCards;
       }
+      // [TREND-VERIFY] Deterministic precision scrub: a card's `trend`
+      // must correspond to a real item in the trends snapshot the server
+      // actually injected. The prompt already demands this ([P10]), but
+      // the model still occasionally invents a vague riff — and a cited
+      // trend the creator can't verify reads as a credibility bug. Match
+      // is case-insensitive substring either direction, or >=60% of the
+      // shorter side's significant words appearing in the other (covers
+      // the "close paraphrase" the prompt allows). No snapshot → no
+      // verification possible → leave cards untouched.
+      if (parsedCards && freshSnapshot) {
+        var knownTrends = [];
+        try {
+          Object.keys(freshSnapshot).forEach(function(p){
+            var entry = freshSnapshot[p];
+            if (entry && Array.isArray(entry.items)) {
+              entry.items.forEach(function(it){
+                if (it && it.trend) knownTrends.push(String(it.trend).toLowerCase());
+              });
+            }
+          });
+        } catch(e) {}
+        if (knownTrends.length > 0) {
+          var trendWords = function(s){
+            return s.split(/[^a-z0-9']+/).filter(function(w){ return w.length > 3; });
+          };
+          parsedCards = parsedCards.map(function(c){
+            if (!c || !c.trend) return c;
+            var t = String(c.trend).toLowerCase();
+            var verified = knownTrends.some(function(k){
+              if (k.indexOf(t) >= 0 || t.indexOf(k) >= 0) return true;
+              var a = trendWords(t), b = trendWords(k);
+              if (!a.length || !b.length) return false;
+              var shorter = a.length <= b.length ? a : b;
+              var longer  = a.length <= b.length ? b : a;
+              var hits = shorter.filter(function(w){ return longer.indexOf(w) >= 0; }).length;
+              return hits / shorter.length >= 0.6;
+            });
+            if (verified) return c;
+            var copy = Object.assign({}, c);
+            delete copy.trend;
+            return copy;
+          });
+        }
+      }
       var parsedStrategy = parsed && parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
       var parsedStats    = parsed && parsed.stats    && typeof parsed.stats    === "object" ? parsed.stats    : null;
       var parsedTips     = parsed && Array.isArray(parsed.restDayTips) ? parsed.restDayTips : null;
@@ -10568,6 +10624,7 @@ function App() {
           platforms: platforms,
           niche:     niche,
           goal:      goal,
+          goalSecondary: goalSecondary || null,
           formats:   formats,
           isRegen:   !!cards,
           cardCount: parsedCards.length,
@@ -10592,6 +10649,9 @@ function App() {
       platforms:    platforms,
       niche:        niche,
       goal:         goal,
+      // [GOALS-2] Optional secondary goal; omitted when unset so the
+      // server prompt stays byte-identical for single-goal users.
+      goalSecondary: goalSecondary || undefined,
       formats:      formats,
       followers:    followers,
       context:      context || "",
@@ -12213,7 +12273,8 @@ return (
                 {lbl:"Your platforms",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={platforms.includes(p)} onClick={function(){setPlatforms(tog(platforms,p));}}>{p}</Chip>;})}</div>},
                 {lbl:"Your niche",el:<Sel value={niche} onChange={function(e){setNiche(e.target.value);}}>{NICHES.map(function(n){return <option key={n}>{n}</option>;})}</Sel>},
               ]:setupStep===1?[
-                {lbl:"Primary goal",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{GOALS.map(function(g){return <Chip key={g} active={goal===g} onClick={function(){setGoal(g);}}>{g}</Chip>;})}</div>},
+                {lbl:"Primary goal",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{GOALS.map(function(g){return <Chip key={g} active={goal===g} onClick={function(){setGoal(g); if (goalSecondary===g) setGoalSecondary("");}}>{g}</Chip>;})}</div>},
+                {lbl:"Secondary goal (optional)",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{GOALS.filter(function(g){return g!==goal;}).map(function(g){return <Chip key={g} active={goalSecondary===g} onClick={function(){setGoalSecondary(goalSecondary===g ? "" : g);}}>{g}</Chip>;})}</div>},
                 {lbl:"Content you can make",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{FORMATS.map(function(f){return <Chip key={f} active={formats.includes(f)} onClick={function(){setFormats(tog(formats,f));}}>{f}</Chip>;})}</div>},
                 {lbl:"Current followers",el:<Sel value={followers} onChange={function(e){setFollowers(e.target.value);}}>{FOLLOWERS.map(function(f){return <option key={f}>{f}</option>;})}</Sel>},
               ]:[]).map(function(row,i,arr){return (
@@ -12452,7 +12513,11 @@ return (
                       </button>
                       {/* [TRIAL-TRENDS] Make the live-trends value visible —
                           trial users were receiving it without knowing. */}
-                      {planTrendsSnapshot && (
+                      {/* [TREND-VERIFY] Gate on planUsedFreshTrends, not just
+                          the snapshot: the server now echoes cron-cached
+                          trends too (so cited trends are verifiable), and
+                          "pulled for this plan" would overclaim for those. */}
+                      {planUsedFreshTrends && planTrendsSnapshot && (
                         <div style={{marginTop:10,display:"flex",alignItems:"center",gap:7,fontFamily:"'Jost',sans-serif",fontSize:10.5,fontWeight:600,letterSpacing:"0.04em",color:B.navy}}>
                           <span aria-hidden="true">⚡</span> Built on live trend data pulled for this plan
                         </div>
@@ -12613,10 +12678,25 @@ return (
                     "Trends considered" dropdown was removed per creator
                     feedback: per-card trend context already lives in each
                     expanded card (the ✦ trend tag + "why this works"). */}
-                {stats&&(
+                {/* [GROUNDED-STATS] Stats are now emitted only when the
+                    server prompt had real logged results to extrapolate
+                    from, and individual fields (earnings especially) can
+                    be legitimately absent. Render only present values and
+                    size the grid to what exists; no stats at all → the
+                    whole accordion disappears, which is the honest state
+                    for creators with no logged results yet. */}
+                {(function(){
+                  if (!stats) return null;
+                  var tiles = [
+                    {l:"Weekly reach",v:stats.reach,c:B.navy},
+                    {l:"Engagement",v:stats.engagement,c:B.blue},
+                    {l:"Per post est.",v:stats.earnings,c:B.navy},
+                  ].filter(function(s){ return !!s.v; });
+                  if (!tiles.length) return null;
+                  return (
                   <Accordion title="This week's projections">
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
-                      {[{l:"Weekly reach",v:stats.reach,c:B.navy},{l:"Engagement",v:stats.engagement,c:B.blue},{l:"Per post est.",v:stats.earnings,c:B.navy}].map(function(s,i){return (
+                    <div style={{display:"grid",gridTemplateColumns:"repeat("+tiles.length+",1fr)",gap:8,marginBottom:12}}>
+                      {tiles.map(function(s,i){return (
                         <div key={i} style={{padding:"14px",background:i%2===0?B.navySoft:B.card,borderRadius:12}}>
                           <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:s.c,lineHeight:1,marginBottom:4}}>{s.v}</div>
                           <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted}}>{s.l}</div>
@@ -12626,11 +12706,12 @@ return (
                     <div style={{background:B.bg,borderRadius:10,padding:"12px 16px"}}>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>About these estimates</div>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.75}}>
-                        AI-generated estimates based on your niche, follower tier, and platforms. Use as directional benchmarks, not guarantees.
+                        Extrapolated from your own logged results, follower tier, and platforms. Use as directional benchmarks, not guarantees.
                       </div>
                     </div>
                   </Accordion>
-                )}
+                  );
+                })()}
                 {/* [PLAN-STATE v2] "Trends considered" accordion removed per
                     creator feedback \u2014 per-card trend context already lives in
                     each expanded card (the \u2726 trend tag + "why this works"),

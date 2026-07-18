@@ -56,7 +56,11 @@ function buildVaultExemplarsBlock(vaultPatterns) {
 // user has (empty vault → buildVaultExemplarsBlock returns ""), so showing
 // them directly is the main cold-start fix. Capped + truncated so the block
 // stays small and cache-friendly. Returns "" when there's nothing usable.
-const VOICE_SAMPLE_MAX = 4;
+// [RESEARCH-V2] Cap raised 4 → 6: handle-research now returns up to 8
+// verbatim excerpts, and the creator's real posts are the strongest
+// variety + voice signal we have. Six samples ≈ 2.4K chars worst case —
+// still cache-friendly in the per-user tier.
+const VOICE_SAMPLE_MAX = 6;
 const VOICE_SAMPLE_CHARS = 400;
 function buildVoiceSamplesBlock(profile) {
   if (!profile) return "";
@@ -152,6 +156,11 @@ function buildVoiceFingerprintBlock(profile) {
 // "view-source" to "non-trivial attack", not to be unjailbreakable.
 
 import { buildComplianceBlock } from "./compliance.js";
+// [NICHE-PLAYBOOK] Per-niche success models + per-goal tactics. Same
+// circular-import shape as compliance.js (niche-playbook.js imports
+// nicheCategory back from this module) — safe because both sides only
+// reference the other's exports at call time, never at module eval.
+import { formatNichePlaybookForPrompt } from "./niche-playbook.js";
 
 // ── Models ─────────────────────────────────────────────────────────────────
 export const MODEL_SONNET    = "claude-sonnet-4-6";
@@ -549,7 +558,12 @@ function buildProfileCtx(profile) {
   // a small/new creator), this block is silently skipped — the rest of
   // the profile context still flows normally.
   if (profile.handleResearch && typeof profile.handleResearch === "string") {
-    parts.push("Observed posting pattern (from a recent scan of the creator's actual public posts — treat as ground truth about how they sound, more reliable than abstract profile fields): " + profile.handleResearch);
+    // [RESEARCH-V2] Demoted from "treat as ground truth" to "observed
+    // patterns." The research is machine-gathered from public posts and can
+    // be partially wrong (same-name account confusion, sparse profiles), so
+    // the creator's own stated facts must always win on conflict — the old
+    // label had the model siding with Perplexity over the person.
+    parts.push("OBSERVED POSTING PATTERNS (machine-gathered from a recent scan of the creator's public posts — a strong signal for voice, topics, recurring series, and what already works for them; USE IT to vary angles and extend series they've started. But it is observational, not authoritative: wherever it conflicts with the creator's own stated facts — CRITICAL PERSONAL FACTS, profile fields, offerings — the creator's version wins, and never present an observed detail as fact in generated copy unless the profile confirms it): " + profile.handleResearch);
   }
 
   if (profile.platformAudiences && typeof profile.platformAudiences === "object") {
@@ -673,6 +687,22 @@ const STYLE_GUARD = ""
   + "Exclamation marks only when the moment genuinely calls for one. Default to a period.\n"
   + "\n"
   + "If you catch yourself reaching for any of the above, find the plainer word the creator would actually say in a voice memo or text. The bar: would a human writer, paid by the word, ever choose this phrase? If no, find another one.";
+
+// [VARIETY] Anti-sameness rules for plan generation. Motivated by direct
+// creator feedback: "almost all of my post outputs look/sound the same and
+// are based off of the few facts I put in my profile." Three failure modes
+// this block targets:
+//   1. Hook monotony — every card opening with the same rhetorical shape.
+//   2. Profile-fact overuse — the same 2-3 personal facts recycled into
+//      every card until the whole week reads like one post.
+//   3. Structural monotony — same caption length/rhythm on every card.
+// Lives in the shared (cacheable) plan tier: the rules are identical for
+// every user; the per-user voice blocks supply the raw material they act on.
+const VARIETY_BLOCK = " VARIETY — a week where every post sounds the same is a failed week, no matter how on-voice each post is individually.\n"
+  + " HOOK ARCHETYPES: open cards with genuinely different hook shapes. Rotate across at least 4 of these archetypes per week: direct question, contrarian claim, story cold-open (drop into a moment mid-scene), specific number/result, relatable POV moment, myth-bust, before/after reveal, bold promise with proof. HARD RULES: no more than 2 cards per week share an archetype, and no two consecutive cards (by day order) share one. If two hooks would start with the same first word or same sentence shape, rewrite one.\n"
+  + " PROFILE-FACT ROTATION: the creator's personal facts and touchpoints are seasoning, not the meal. Any single personal fact (a family detail, a pet, a location, a backstory beat) may anchor AT MOST 1-2 cards per week — after that it's off-limits until next week. Most cards should draw from the creator's TOPICS, OBSERVED POSTING PATTERNS, niche expertise, and this week's real context instead of their bio. A week that retells the profile is not a content strategy.\n"
+  + " STRUCTURAL VARIETY: vary caption and copy shape across the week — some one-liners, some story builds, some list-shaped, some conversational asks. If three cards in a row have the same paragraph count and rhythm, restructure one.\n"
+  + " FRESH ANGLES: when OBSERVED POSTING PATTERNS or vault exemplars show a series, format, or topic the creator already runs, continue and evolve it (new episode, next chapter) rather than inventing a parallel lookalike — and mine those observed topics for angles the profile fields alone would never suggest.";
 
 // [VOICE-ANCHOR] Single sentence appended to the END of the per-user
 // system prompt block — right before the user prompt arrives. Sits at
@@ -883,6 +913,10 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   const formats   = (params.formats   || []).join(",");
   const niche     = params.niche     || "";
   const goal      = params.goal      || "";
+  // [GOALS-2] Optional secondary goal from the plan wizard. Untrusted
+  // client string; the tactics lookup in niche-playbook.js only matches
+  // known GOALS labels, so junk values simply render nothing.
+  const goalSecondary = typeof params.goalSecondary === "string" ? params.goalSecondary : "";
   const followers = params.followers || "";
   const context   = params.context   || "";
   // [AUDIENCE 1] Week-of business context. Optional free-text from the
@@ -959,6 +993,12 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // Always returns a non-empty string (creator default for unmapped niches),
   // so it gets unconditionally appended below.
   const industryFormatGuidance = getFormatGuidance(niche);
+  // [NICHE-PLAYBOOK] Per-niche success model + funnel mix + KPI guidance +
+  // follower-tier baselines + primary/secondary goal tactics. This is the
+  // block that turns "strategy" from the model's generic priors into the
+  // actual playbook for succeeding in THIS creator's vertical. Per-request
+  // (niche + goals + followers vary), so it lives in the userPrompt.
+  const nichePlaybookCtx = formatNichePlaybookForPrompt(niche, goal, goalSecondary, followers);
   // [COMPLIANCE 1] Per-niche guardrail block. Empty string for niches /
   // locales without coverage so the concatenation is a no-op there. Lives
   // in the cached system-prompt prefix because it's a per-niche constant,
@@ -989,6 +1029,9 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // surface — were generated WITHOUT it. Shared across all plan users, so
     // it stays in the cacheable tier.
     + STYLE_GUARD + " "
+    // [VARIETY] Anti-sameness rules (hook archetype rotation, profile-fact
+    // rotation, structural variety). Shared across all users → cacheable.
+    + VARIETY_BLOCK + " "
     // [INTEL 3] Format diversity rules + the fixed format vocabulary land
     // in the systemPrompt because they are constraints on every plan, not
     // per-request data.
@@ -1005,6 +1048,12 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + "\"restDayTips\":[{\"day\":\"Day 2 - Tue\",\"type\":\"engage\",\"title\":\"<3-6 word title>\",\"body\":\"<1-2 sentence actionable nudge for THIS creator>\"}],"
     + "\"stats\":{\"reach\":\"45000\",\"engagement\":\"6.2%\",\"earnings\":\"$120-$400\"}"
     + "}"
+    // [GROUNDED-STATS] `stats` used to be a required field with no data to
+    // derive it from — the model fabricated reach/engagement/earnings every
+    // week, which read as made-up because it was. Now: emit stats ONLY when
+    // the creator's own logged numbers (performance insights block, prior
+    // weeks' top-performer metrics) give something real to extrapolate from.
+    + " STATS RULE — the `stats` field is OPTIONAL and grounded-only. Include it ONLY when the creator's actual logged results appear in this prompt (a performance-insights block or prior-week top-performer metrics with real view/like/save counts). When present: derive `reach` by extrapolating modestly from their recent actual views across this week's card count (never more than ~1.5x their demonstrated reach), derive `engagement` from their real engagement pattern, and include `earnings` ONLY if the creator's stated offerings make a defensible per-post estimate possible — otherwise leave earnings out of the stats object. When NO logged results appear in this prompt, OMIT the `stats` field entirely. Never invent projections from nothing."
     + " The cards array's length is specified per-request in the user prompt below (varies by the creator's posting cadence × platform count). Hashtag arrays per card should match the target platform's hashtag_count (range upper bound). Hashtag strings MUST NOT include the '#' prefix — return plain words only."
     // [COMPLIANCE 1] Optional per-card disclosure field. Empty / omitted by
     // default; only populated when the user's niche has compliance coverage
@@ -1134,9 +1183,14 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   }
 
   const userPrompt = "This is week " + weekNumber + " of an ongoing plan. Generate this week's content plan with these settings: "
-    + "platforms=" + platforms + " niche=" + niche + " goal=" + goal
+    + "platforms=" + platforms + " niche=" + niche + " primary goal=" + goal
+    + (goalSecondary && goalSecondary !== goal ? " secondary goal=" + goalSecondary : "")
     + " formats=" + formats + " followers=" + followers
     + allowedPlatformsCtx
+    // [NICHE-PLAYBOOK] Niche success model + goal tactics. Placed right
+    // after the settings line so the model reads WHAT winning means here
+    // before it reads any of the how-to-format guidance below.
+    + nichePlaybookCtx
     + (context  ? " Extra context: " + context : "")
     // [AUDIENCE 1] Week-of business context as a hard constraint, not
     // generic flavor. The creator told us what is happening in their
@@ -1218,6 +1272,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + "  - optimizing_for: MAX 8 words naming the dominant signals. No sentence. Example: \"Saves + profile visits + launch-day follow-through.\""
     + "  - audience_read: ONE sentence, MAX 25 words. Who this week lands for, written so the creator can verify it sounds like them. Example: \"Women 25-45 building something who follow you because you make doing-both feel possible.\""
     + "  - success_metric: an ARRAY of 3-4 objects, each {\"value\": \"<number or threshold>\", \"label\": \"<3-6 word descriptor>\"}. Concrete only — no prose, no compound clauses, no commas inside a single label. Example: [{\"value\":\"5\",\"label\":\"posts past 1K views\"},{\"value\":\"60+\",\"label\":\"saves on carousels\"},{\"value\":\"+100\",\"label\":\"net followers\"},{\"value\":\"10\",\"label\":\"beta-tester DMs\"}]."
+    // [GROUNDED-STATS] Metric thresholds were pure invention — the model
+    // picked plausible-sounding numbers with no anchor. Now: logged actuals
+    // first, tier baseline second, and prefer controllable/business metrics
+    // over reach the model can't predict.
+    + " GROUNDING RULE for success_metric values: when the creator's logged results appear in this prompt (performance insights, prior-week top performers), set each threshold 10-30% above their demonstrated recent numbers — a stretch on reality, not a fantasy. When no logged results exist, take conservative values from the FOLLOWER-TIER BASELINE above. At least one metric must be fully in the creator's control (posts shipped, DMs sent, comments replied to), and at least one must be a business signal tied to the PRIMARY goal (from the niche playbook's watch-metrics), not raw reach."
     + "  - the_bet: ONE sentence, MAX 25 words. The specific lean for this week and why. Must add NEW information vs the thesis — not a paraphrase. Cite prior weeks if relevant. Example: \"Lean into launch proximity — urgency makes behind-the-scenes posts feel like insider access.\""
     + " For each post: description is ONE sentence pitch, MAX 20 words — the angle / why this post exists. NOT a recap of the format-specific fields below it (hook / caption / slides / etc handle the how). Acts as the kicker, not the brief."
     // [P6] Insight on EVERY card. The earlier "1 in 3" version was meant
@@ -1367,6 +1426,18 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
 function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, _history, _recentEdits, compliance, personalDenylist) {
   const cards    = Array.isArray(params.cards) ? params.cards : [];
   const previous = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
+  // [NICHE-PLAYBOOK] Strategy regen gets the compact niche + goal grounding
+  // (success model + tier baseline + goal tactics, minus the funnel/KPI
+  // detail) so a re-framed strategy still describes winning in THIS niche
+  // for THIS goal, not a generically different angle. All optional — older
+  // clients that don't send these params get the pre-playbook prompt.
+  const goal          = typeof params.goal          === "string" ? params.goal          : "";
+  const goalSecondary = typeof params.goalSecondary === "string" ? params.goalSecondary : "";
+  const niche         = typeof params.niche         === "string" ? params.niche         : "";
+  const followers     = typeof params.followers     === "string" ? params.followers     : "";
+  const nichePlaybookCtx = (niche || goal)
+    ? formatNichePlaybookForPrompt(niche, goal, goalSecondary, followers, { compact: true })
+    : "";
 
   if (cards.length < 1) {
     throw new Error("plan_strategy needs the existing plan's cards as context.");
@@ -1401,6 +1472,10 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
     + "Re-frame this week's plan with a DIFFERENT strategic angle."
     + "\n\nTHIS WEEK'S CARDS (already finalized — do NOT propose changes to them):\n" + cardLines
     + "\n\nPREVIOUS STRATEGY (the user disagreed with this — find a different lens that still genuinely describes the same cards):\n" + previousBlock
+    + nichePlaybookCtx
+    + (nichePlaybookCtx
+        ? "\n\nThe new framing must still serve the PRIMARY goal above — a different lens on the same cards, grounded in how success actually works in this niche. success_metric values follow the FOLLOWER-TIER BASELINE (conservative, achievable) and at least one metric must tie to the primary goal's watch-metrics."
+        : "")
     + "\n\nRules — every field has a strict length cap; the UI breaks on overruns:"
     + "\n  - The new framing must honestly describe what is ON THE PLAN. Do not invent posts that aren't there."
     + "\n  - The new thesis and bet must be MEANINGFULLY DIFFERENT from the previous ones — not a paraphrase."
