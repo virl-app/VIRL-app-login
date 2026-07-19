@@ -397,6 +397,25 @@ async function savePlanToSupabase(userId, cards, stats, expiresAt, strategy, tre
   } catch(e) { /* non-fatal */ }
   return ok;
 }
+// [PLAN-SAVE-QUEUE] savePlanToSupabase is fired fire-and-forget from six
+// different call sites (partial regen, strategy regen, full generate,
+// script/long-post save, card edit) any time the working cards array
+// changes, and every call upserts the FULL cards array (not a diff). Left
+// unsequenced, two calls issued close together race on the network: the
+// one issued FIRST can still arrive at Supabase LAST, silently reverting
+// a newer edit/regeneration with an older snapshot of the plan. Since the
+// evening reminder cron reads exactly this row, that reversion is what
+// shows up as "the reminder email has outdated cards after I regenerated."
+// Chaining every call through one promise keeps at most one write in
+// flight at a time, so writes always land in the order they were issued.
+let planSaveChain = Promise.resolve();
+function queuePlanSave() {
+  var args = arguments;
+  planSaveChain = planSaveChain.then(function () {
+    return savePlanToSupabase.apply(null, args);
+  }).catch(function () {});
+  return planSaveChain;
+}
 async function deletePlanFromSupabase(userId) {
   try { await supabaseClient.from("plans").delete().eq("user_id", userId); } catch(e) {}
 }
@@ -10478,7 +10497,7 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch (e) {}
-      if (session) savePlanToSupabase(session.user.id, working, stats, planExpiresAt, strategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, working, stats, planExpiresAt, strategy, planTrendsSnapshot, restDayTips);
 
       try {
         var meta = (result && result.meta) || {};
@@ -10565,7 +10584,7 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch (e) {}
-      if (session) savePlanToSupabase(session.user.id, cards, stats, planExpiresAt, nextStrategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, cards, stats, planExpiresAt, nextStrategy, planTrendsSnapshot, restDayTips);
 
       try {
         var usage = (data && data.usage) || {};
@@ -10773,7 +10792,7 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e){}
-      if (session) savePlanToSupabase(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot, parsedTips);
+      if (session) queuePlanSave(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot, parsedTips);
       try {
         var weekStart = (function(){
           try { return new Date().toISOString().slice(0, 10); }
@@ -11183,7 +11202,7 @@ function App() {
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
       return next;
     });
   }
@@ -11209,7 +11228,7 @@ function App() {
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
       return next;
     });
   }
@@ -11318,7 +11337,7 @@ function App() {
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
       // [LEARNING-CONSENT] Refactored: edit-diff capture + consent
       // prompt trigger both flow through captureEditDiff. surface
       // "plan_card" fires the legacy plan_card_edited event name to
