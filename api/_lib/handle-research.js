@@ -338,28 +338,40 @@ export async function fetchHandleResearch(userId, handles, inspiration, business
   // to surface offerings + voice signals in the same paragraph.
   // [RESEARCH-V2] Budgets raised for the three added dimensions + up to
   // 8 excerpts (was 5).
-  const out = await callPerplexity({
-    prompt:    buildResearchPrompt(safeHandles, inspiration, businessWebsite),
-    model:     "sonar",
-    maxTokens: hasWebsite ? 1700 : 1400,
-  });
-  if (!out || typeof out.text !== "string") return null;
-  const rawText = out.text.trim();
-  if (!rawText || rawText === "NO_USEFUL_RESEARCH") {
+  const prompt    = buildResearchPrompt(safeHandles, inspiration, businessWebsite);
+  const maxTokens = hasWebsite ? 1700 : 1400;
+  let result = await attemptResearch(prompt, "sonar", maxTokens);
+  // [SONAR-PRO-FALLBACK] Base `sonar` search sometimes can't ground on
+  // accounts that ARE public but thin on generic-search signal (a real
+  // creator, correctly-linked profile, still comes back empty). Before
+  // accepting defeat and negative-caching for NEGATIVE_TTL_MS, retry once
+  // with `sonar-pro` — a deeper, more expensive search pass more likely to
+  // actually resolve the linked URLs rather than bail. Only spent on the
+  // failure path (cache hits and first-try successes never reach here),
+  // so the extra cost is bounded to once per user per handle-set change.
+  if (!result) {
+    result = await attemptResearch(prompt, "sonar-pro", maxTokens);
+  }
+  if (!result) {
     // Cache the negative result with the current hash so we don't fire
     // again until inputs change or the TTL expires.
     writeCache(userId, "", [], currentHash).catch(() => {});
     return null;
   }
 
-  const { description, excerpts } = parseResearchResponse(rawText);
-  if (!description) {
-    // Parser couldn't find anything usable — same fail-soft semantics as
-    // NO_USEFUL_RESEARCH.
-    writeCache(userId, "", [], currentHash).catch(() => {});
-    return null;
-  }
+  writeCache(userId, result.description, result.excerpts, currentHash).catch(() => {});
+  return { researchText: result.description, postExcerpts: result.excerpts };
+}
 
-  writeCache(userId, description, excerpts, currentHash).catch(() => {});
-  return { researchText: description, postExcerpts: excerpts };
+// One Perplexity attempt + parse. Returns null on any failure (API error,
+// NO_USEFUL_RESEARCH, or an unparseable/empty reply) so the caller can
+// decide whether to retry with a stronger model or give up.
+async function attemptResearch(prompt, model, maxTokens) {
+  const out = await callPerplexity({ prompt, model, maxTokens });
+  if (!out || typeof out.text !== "string") return null;
+  const rawText = out.text.trim();
+  if (!rawText || rawText === "NO_USEFUL_RESEARCH") return null;
+  const { description, excerpts } = parseResearchResponse(rawText);
+  if (!description) return null;
+  return { description, excerpts };
 }
