@@ -42,7 +42,12 @@ const NEGATIVE_TTL_MS = 6 * 60 * 60 * 1000;
 // [WEBSITE-FALLBACK] v4: when no social profile is publicly indexable but
 // the business website is readable, the brief is written from the website
 // instead of bailing with NO_USEFUL_RESEARCH.
-const PROMPT_VERSION = "v4";
+// [SONAR-PRO-FALLBACK] v5: a failed `sonar` attempt now retries once with
+// `sonar-pro` before giving up. Bumped so users already sitting on a
+// negative-cached row (NEGATIVE_TTL_MS = 6h) get a fresh attempt with the
+// stronger fallback immediately instead of serving the pre-fix "nothing
+// found" result until the negative TTL happens to expire.
+const PROMPT_VERSION = "v5";
 
 // [HANDLE-URLS] Defensive cleanup of a stored handle value. The client
 // normalizes on blur + save (index.html#normalizeSocialInput), but legacy
