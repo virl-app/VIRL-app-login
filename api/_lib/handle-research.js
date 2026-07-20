@@ -19,6 +19,12 @@
 
 import crypto from "node:crypto";
 import { callPerplexity } from "./perplexity.js";
+import { fetchPageText } from "./page-fetch.js";
+
+// [DIRECT-WEBSITE-FETCH] Cap on how much of the business website's raw
+// page text rides along in the prompt. Same order of magnitude as
+// listing-research.js's MAX_CONTEXT_CHARS.
+const WEBSITE_TEXT_MAX_CHARS = 3000;
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -47,7 +53,13 @@ const NEGATIVE_TTL_MS = 6 * 60 * 60 * 1000;
 // negative-cached row (NEGATIVE_TTL_MS = 6h) get a fresh attempt with the
 // stronger fallback immediately instead of serving the pre-fix "nothing
 // found" result until the negative TTL happens to expire.
-const PROMPT_VERSION = "v5";
+// [DIRECT-WEBSITE-FETCH] v6: the business website is now fetched directly
+// by our own server and handed to the model as real page text instead of
+// a URL for Perplexity's search to (maybe) find — fixes the specific case
+// of a brand-new/low-traffic domain that's fully live but not yet in any
+// search index. Bumped for the same reason as v5: force a fresh attempt
+// past any negative cache written before this change.
+const PROMPT_VERSION = "v6";
 
 // [HANDLE-URLS] Defensive cleanup of a stored handle value. The client
 // normalizes on blur + save (index.html#normalizeSocialInput), but legacy
@@ -176,7 +188,7 @@ async function writeCache(userId, research_text, post_excerpts, handles_hash) {
 // defeat the purpose. The descriptive paragraph IS allowed to note how the
 // user's actual posting compares to that aspiration, which can sharpen the
 // LLM's voice instructions.
-function buildResearchPrompt(handles, inspiration, businessWebsite) {
+function buildResearchPrompt(handles, inspiration, businessWebsite, websiteText) {
   // [HANDLE-URLS] Render each handle WITH its canonical profile URL and
   // tell the model to resolve the account from the URL. A bare handle
   // forces the search engine to name-match, which is exactly how a
@@ -199,17 +211,27 @@ function buildResearchPrompt(handles, inspiration, businessWebsite) {
     ? "Style aspiration the creator named (context only — do NOT excerpt this person's posts): " + inspiration.trim()
     : "";
   // [BUSINESS-WEBSITE] When the creator has supplied a business / brand
-  // URL AND consented to public-post research, ask Perplexity to read
-  // the site for voice + offering signals. Crucially: we want the site
-  // to INFORM the descriptive paragraph (voice + topics), not become
-  // its own deliverable. Marketing-page voice is often more polished
-  // than the creator's social voice, so we tell Perplexity to weight
-  // the social handles more heavily and use the site as a secondary
-  // input for offerings, services, and any specific terminology /
-  // claims the brand uses consistently.
-  const businessLine = (businessWebsite && typeof businessWebsite === "string" && businessWebsite.trim())
-    ? "Business / brand website (read this for the creator's actual offerings, services, and brand-consistent terminology — use as a secondary voice signal behind the social handles, since marketing copy on a website is often more formal than this creator's social posts): " + businessWebsite.trim()
-    : "";
+  // URL AND consented to public-post research, fold it in for voice +
+  // offering signals. Crucially: we want the site to INFORM the
+  // descriptive paragraph (voice + topics), not become its own
+  // deliverable. Marketing-page voice is often more polished than the
+  // creator's social voice, so we tell the model to weight the social
+  // handles more heavily and use the site as a secondary input for
+  // offerings, services, and any specific terminology / claims the brand
+  // uses consistently.
+  // [DIRECT-WEBSITE-FETCH] When our own server already fetched the page
+  // (websiteText), hand the model the ACTUAL page text instead of asking
+  // it to go find the URL via search. Perplexity's search grounding only
+  // sees pages it has already indexed — a brand-new or low-traffic domain
+  // can be fully live and public and still return zero search hits, which
+  // used to read as "unreachable." A direct fetch has no such dependency.
+  // Falls back to the old URL-only line when the fetch failed (down,
+  // timed out, or bot-walled) so Perplexity still gets a shot via search.
+  const siteUrl = (businessWebsite && typeof businessWebsite === "string") ? businessWebsite.trim() : "";
+  const siteText = (websiteText && typeof websiteText === "string") ? websiteText.trim() : "";
+  const businessLine = !siteUrl ? "" : (siteText
+    ? "Business / brand website (" + siteUrl + ") — here is its ACTUAL PAGE TEXT, fetched directly just now (this is ground truth, not a search result — read it for the creator's actual offerings, services, and brand-consistent terminology, and use it as a secondary voice signal behind the social handles, since marketing copy on a website is often more formal than this creator's social posts):\n\"\"\"\n" + siteText.slice(0, WEBSITE_TEXT_MAX_CHARS) + "\n\"\"\""
+    : "Business / brand website (read this for the creator's actual offerings, services, and brand-consistent terminology — use as a secondary voice signal behind the social handles, since marketing copy on a website is often more formal than this creator's social posts): " + siteUrl);
   const hasWebsite = !!businessLine;
 
   return [
@@ -247,6 +269,7 @@ function buildResearchPrompt(handles, inspiration, businessWebsite) {
     "Be honest about uncertainty. If a profile returns very few indexable posts or its URL is unreachable, say so plainly for THAT platform — DO NOT invent details, and never fill a numbered point with plausible guesses. But a dead link or an empty platform is NOT a reason to abandon the brief: write it from the platforms that DID yield content, and name the ones that came up empty."
       + (hasWebsite
         ? " WEBSITE FALLBACK: small or new creators are often not in the public search index at all — their social pages return nothing while their business website reads fine. In that case still write the brief: ground it in the website's voice, offerings, and terminology, open with a plain statement that the social profiles weren't publicly indexable yet, and output 'POST_EXCERPTS: NONE'. Return EXACTLY the string NO_USEFUL_RESEARCH (and nothing else) ONLY when the social profiles AND the website all yield nothing usable."
+          + (siteText ? " The website text above was fetched directly and is real, current content — never describe THAT site as unreachable or unindexed." : "")
         : " Return EXACTLY the string NO_USEFUL_RESEARCH (and nothing else) ONLY when every single profile above yields nothing usable at all."),
     "",
     "Format your reply with TWO sections separated by a blank line:",
@@ -338,12 +361,22 @@ export async function fetchHandleResearch(userId, handles, inspiration, business
     }
   }
 
+  // [DIRECT-WEBSITE-FETCH] Try reading the business website ourselves
+  // before asking Perplexity to. Our own server has no search-index
+  // dependency — a brand-new domain that Perplexity's search can't see
+  // yet is still a plain HTTP GET away for us. Fails silently to null
+  // (down, timed out, or bot-walled), in which case buildResearchPrompt
+  // falls back to the URL-only line Perplexity has always had.
+  const websiteText = hasWebsite
+    ? await fetchPageText(businessWebsite, WEBSITE_TEXT_MAX_CHARS).then(r => (r && r.text) || null)
+    : null;
+
   // Cache miss / stale / inputs changed → re-fetch. Bump the token
   // budget when the website is included since Perplexity needs room
   // to surface offerings + voice signals in the same paragraph.
   // [RESEARCH-V2] Budgets raised for the three added dimensions + up to
   // 8 excerpts (was 5).
-  const prompt    = buildResearchPrompt(safeHandles, inspiration, businessWebsite);
+  const prompt    = buildResearchPrompt(safeHandles, inspiration, businessWebsite, websiteText);
   const maxTokens = hasWebsite ? 1700 : 1400;
   let result = await attemptResearch(prompt, "sonar", maxTokens);
   // [SONAR-PRO-FALLBACK] Base `sonar` search sometimes can't ground on
