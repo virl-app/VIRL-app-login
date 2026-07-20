@@ -10306,13 +10306,15 @@ function App() {
   }
 
   // Calculate trial status only after Supabase credits have loaded — until
-  // then `isFoundingOrPro` defaults to false and would briefly fire trial
-  // expiry on real Pro users. If created_at is missing or unparseable we
-  // fail open client-side (treat as in-trial); the API still enforces the
-  // cap when it can read the auth row.
+  // then `isPaid` defaults to false and would briefly fire trial expiry on
+  // real paid users. If created_at is missing or unparseable we fail open
+  // client-side (treat as in-trial); the API still enforces the cap when
+  // it can read the auth row. Gated on isPaid (not isFoundingOrPro) so
+  // standard-tier subscribers are never flagged as trial-expired — mirrors
+  // PAID_PLANS in api/chat.js, which already treats standard as paid.
   var trialExpired = false;
   var daysIntoTrial = 0;
-  if (session && creditsLoaded && !isFoundingOrPro) {
+  if (session && creditsLoaded && !isPaid) {
     var signupMs = Date.parse(session.user.created_at);
     if (!isNaN(signupMs)) {
       daysIntoTrial = Math.floor((Date.now() - signupMs) / 86400000);
