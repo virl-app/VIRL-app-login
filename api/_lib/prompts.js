@@ -170,7 +170,7 @@ export const PLAN_MODEL       = MODEL_OPUS || MODEL_SONNET;
 export const ALLOWED_MODELS  = [MODEL_SONNET, MODEL_HAIKU, PLAN_MODEL].filter((v, i, a) => v && a.indexOf(v) === i);
 
 // ── Credit costs (server is the source of truth) ──────────────────────────
-export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1, long_post: 2, log_metrics: 0 };
+export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1, long_post: 2, log_metrics: 0, voice_sample_extract: 0 };
 
 // ── Playbook helpers ──────────────────────────────────────────────────────
 // `playbook` is a map keyed by platform: { TikTok: {cadence, peak_times, ...} }.
@@ -512,9 +512,15 @@ const GENERATION_TYPES = [
   // a structured vision extraction that lets a creator log a post's results by
   // snapping the platform's native insights panel instead of typing numbers.
   "log_metrics",
+  // [POST-SAMPLE] Screenshot of an existing post → verbatim caption text.
+  // Same "structured extraction, not content generation" shape as
+  // log_metrics — feeds the Profile voice-sample flow for creators whose
+  // handles can't be reached by automated research (bot-walled platforms,
+  // unindexed accounts).
+  "voice_sample_extract",
 ];
 
-const IMAGE_REQUIRED_TYPES = new Set(["scan_image", "scan_video_frame", "log_metrics"]);
+const IMAGE_REQUIRED_TYPES = new Set(["scan_image", "scan_video_frame", "log_metrics", "voice_sample_extract"]);
 
 // ── Profile context ────────────────────────────────────────────────────────
 function buildProfileCtx(profile) {
@@ -1960,6 +1966,37 @@ function buildLogMetrics() {
   };
 }
 
+// [POST-SAMPLE] Screenshot → verbatim caption transcription. Mirrors
+// buildLogMetrics exactly: no creator profile/voice/compliance context
+// (this reads pixels, it doesn't write copy), cheap model, 0 credits —
+// this is the reliable fallback when handle research can't reach a
+// creator's profiles at all (Instagram/TikTok/Facebook block automated
+// reads even of a correct, public, direct link; a screenshot has no such
+// dependency). The client shows the transcription for the creator to
+// confirm before it's saved as a voice sample, so a bad read is caught
+// by a human, not trusted blind.
+function buildVoiceSampleExtract() {
+  const systemPrompt =
+    "You transcribe the caption / body text of a social media post from a screenshot. "
+    + "Reproduce the text EXACTLY as written — every word, verbatim, no paraphrasing, "
+    + "no summarizing, no correcting typos or grammar. Ignore UI chrome (like counts, "
+    + "buttons, usernames, timestamps) unless it's part of the actual caption. Return "
+    + "ONLY valid JSON — no markdown, no prose.";
+  const userPrompt =
+    "Read this screenshot of a social media post and transcribe its caption / body text "
+    + "verbatim. If there is no readable caption (e.g. it's just a photo/video frame with "
+    + "no text, or the text is illegible), set found to false and leave captionText empty.\n\n"
+    + "Reply ONLY with JSON: "
+    + "{\"found\":<true or false>,\"captionText\":\"<the exact verbatim text, or empty string>\"}";
+  return {
+    systemPrompt,   // plain string → single cache breakpoint, shared across users
+    userPrompt,
+    model:     MODEL_HAIKU,
+    maxTokens: 500,
+    cost:      CREDIT_COSTS.voice_sample_extract,
+  };
+}
+
 const BUILDERS = {
   plan:             buildPlan,
   plan_partial:     buildPlanPartial,
@@ -1972,6 +2009,7 @@ const BUILDERS = {
   long_post:        buildLongPost,
   blog_post:        buildBlogPost,
   log_metrics:      buildLogMetrics,
+  voice_sample_extract: buildVoiceSampleExtract,
 };
 
 export function isValidGenerationType(t) {

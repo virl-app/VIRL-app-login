@@ -1398,6 +1398,100 @@ function VoiceExcerptSuggestions({voiceSamples, onKeep}) {
   );
 }
 
+// [POST-SAMPLE] The reliable fallback when handle research can't reach a
+// creator's profiles at all: instead of asking VIRL to go find a post,
+// the creator hands one over directly — a link or a screenshot. Neither
+// depends on a platform letting an automated request through the way
+// whole-profile research does (Instagram/TikTok/Facebook block that even
+// for a correct, public, direct link — a platform-side restriction, not
+// a VIRL bug). A screenshot always works since it's pixels, not a fetch;
+// a link works when the platform still serves link-preview metadata for
+// that one post (TikTok's oEmbed reliably does; others best-effort via
+// Open Graph tags). Extraction is never auto-saved — the creator reviews
+// the transcribed text and explicitly taps Keep, mirroring
+// VoiceExcerptSuggestions' one-tap-confirm pattern above.
+function PostSampleFeeder({userToken, onKeep}) {
+  const [urlValue,setUrlValue] = useState("");
+  const [busy,setBusy]         = useState(false);
+  const [error,setError]       = useState("");
+  const [pending,setPending]   = useState(null); // {caption}
+
+  function fetchFromUrl() {
+    var url = urlValue.trim();
+    if (!url || !userToken) return;
+    setBusy(true); setError(""); setPending(null);
+    fetch("/api/profile-post-sample", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + userToken },
+      body:    JSON.stringify({ postUrl: url }),
+    }).then(function(r){ return r.json(); }).then(function(j){
+      setBusy(false);
+      if (j && j.ok && j.caption) setPending({ caption: j.caption });
+      else setError("Couldn't read that link — this platform may be blocking it too. Try a screenshot instead.");
+    }).catch(function(){ setBusy(false); setError("Connection issue — try again."); });
+  }
+
+  function fetchFromScreenshot(file) {
+    if (!file || !userToken) return;
+    setBusy(true); setError(""); setPending(null);
+    decodeAndResizeImage(file).then(function(img){
+      return callAPI("voice_sample_extract", {}, { token: userToken, imageBase64: img.b64, imageType: img.mediaType });
+    }).then(function(data){
+      setBusy(false);
+      var parsed = extractJSON(data.text) || {};
+      var text = (parsed.captionText || "").trim();
+      if (parsed.found && text) setPending({ caption: text });
+      else setError("Couldn't find readable caption text in that screenshot — try one where the caption is visible.");
+    }).catch(function(e){
+      setBusy(false);
+      setError((e && e.message) || "Couldn't read that screenshot.");
+    });
+  }
+
+  var chipStyle = {fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 14px",background:B.navySoft,color:B.navy,border:"none",borderRadius:8,cursor:"pointer"};
+
+  return (
+    <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid "+B.divider}}>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:4}}>Feed VIRL one real post</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:10}}>
+        Paste a link to one of your posts, or upload a screenshot of one. This works even when a platform blocks automated research, since you're handing VIRL the content directly instead of asking it to go find it.
+      </div>
+      {pending ? (
+        <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",marginBottom:6}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.ink,lineHeight:1.6,fontStyle:"italic",marginBottom:10}}>{"“"+pending.caption+"”"}</div>
+          <div style={{display:"flex",gap:8}}>
+            <button type="button" onClick={function(){ onKeep(pending.caption); setPending(null); setUrlValue(""); }}
+              style={Object.assign({},chipStyle,{background:B.blue,color:B.white})}>
+              Keep as voice sample
+            </button>
+            <button type="button" onClick={function(){ setPending(null); }}
+              style={Object.assign({},chipStyle,{background:"transparent",color:B.muted,border:"1px solid "+B.border})}>
+              Discard
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
+          <input value={urlValue} onChange={function(e){ setUrlValue(e.target.value); }}
+            placeholder="Paste a link to one of your posts" disabled={busy}
+            style={{flex:"1 1 220px",background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"9px 12px",fontSize:12,color:B.ink,fontFamily:"'Jost',sans-serif"}}/>
+          <button type="button" onClick={fetchFromUrl} disabled={busy || !urlValue.trim()}
+            style={Object.assign({},chipStyle,{opacity:(busy||!urlValue.trim())?0.5:1})}>
+            Fetch
+          </button>
+          <label style={Object.assign({},chipStyle,{opacity:busy?0.5:1})}>
+            Upload screenshot
+            <input type="file" accept="image/*" disabled={busy} style={{display:"none"}}
+              onChange={function(e){ var f = e.target.files && e.target.files[0]; e.target.value = ""; fetchFromScreenshot(f); }}/>
+          </label>
+        </div>
+      )}
+      {busy && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6}}>Reading...</div>}
+      {error && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.coral,marginTop:6}}>{error}</div>}
+    </div>
+  );
+}
+
 function RatingButtons({sessionToken, generationType, targetRef, size}) {
   const [rating,setRating]   = useState(null);    // "up" | "down" | null
   const [working,setWorking] = useState(false);
@@ -6811,7 +6905,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
             Research my public posts
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-            Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content.
+            Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content. Heads up: Instagram, TikTok, and Facebook restrict automated access even to a correct, public, direct link, so this doesn't always succeed — if it comes back empty, you can feed VIRL a real post directly instead (link or screenshot) below.
           </div>
         </div>
       </div>
@@ -6849,14 +6943,23 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
             </div>
           )}
           {researchPreview.status === "none" && (
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:10}}>
-              {/* [HONEST-EMPTY-STATE] "Nothing on file" read as a bug to
-                  creators whose accounts simply aren't in the public search
-                  index yet (new, small, or private accounts - most early
-                  creators). Say the real reason, what VIRL refuses to do
-                  about it (guess from lookalikes), and that their voice
-                  still comes from everything else in the profile. */}
-              No usable research yet. This usually means your accounts are still new, small, or private - public search engines have not indexed them yet, and VIRL will never guess from lookalike accounts with similar names. VIRL retries automatically as your accounts grow (and right away when you change a handle). Everything else in your profile - your voice samples, saved posts, and edits - still shapes every output. You can also describe your content yourself in the box below; it carries the same weight as research.
+            <div style={{marginBottom:10}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
+                {/* [HONEST-EMPTY-STATE] "Nothing on file" read as a bug to
+                    creators whose accounts simply aren't in the public search
+                    index yet (new, small, or private accounts - most early
+                    creators), AND to creators on platforms that flat-out
+                    block automated reads regardless of indexing. Say both
+                    real reasons plainly instead of leaving it ambiguous —
+                    the platform restriction especially, since that one may
+                    genuinely never resolve on its own, unlike "not indexed
+                    yet." Then hand over the one path that's guaranteed to
+                    work regardless of what any platform blocks. */}
+                No usable research yet. Two real reasons this happens, and neither is a bug: your accounts may still be new or small enough that they're not in the public search index yet — that one resolves on its own as they grow. But Instagram, TikTok, and Facebook also actively restrict automated access to profile pages, even from a correct, public, direct link — that's those platforms' own policy, and it may never resolve no matter how VIRL's research improves. VIRL will never guess from a lookalike account to paper over either case. Everything else in your profile — your voice samples, saved posts, and edits — still shapes every output at full weight.
+              </div>
+              <PostSampleFeeder userToken={userToken} onKeep={function(t){
+                setVoiceSamples(function(prev){ return prev.concat([t]); });
+              }}/>
             </div>
           )}
           <div style={{marginTop:10}}>
