@@ -3014,7 +3014,10 @@ function RotatingStatus({kind, text, bare}) {
       }, 350);
     }, 3000);
     return function(){ alive = false; clearInterval(iv); if (fadeTimer) clearTimeout(fadeTimer); };
-  }, [lines.length, text]);
+    // [A6] Re-arm the rotation if `kind` changes — `lines` is derived from
+    // `kind` via WAIT_MESSAGES, so depending on `kind` directly tracks the
+    // real input. (lines.length alone could miss a same-length kind swap.)
+  }, [kind, text]);
   var msg = text || lines[idx];
   var line = (
     <span style={{opacity:vis?1:0, transition:"opacity .35s ease"}}>{msg}</span>
@@ -4318,20 +4321,13 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
 }
 
 function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRegenerate,regenBusy,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends,allDayLabels}) {
-  // When `replacing` is true, this card slot is awaiting a streaming
-  // replacement from /api/chat?generationType=plan_partial. Render a
-  // skeleton instead of the real card so the user sees their kept cards
-  // stay put while only the selected ones swap.
-  if (replacing) {
-    return (
-      <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:"3px solid "+B.border,padding:"22px 22px",marginBottom:8,opacity:0.7,animationDelay:(idx*0.04)+"s"}}>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.navy,marginBottom:8}}>Regenerating…</div>
-        <div style={{height:14,width:"60%",background:B.border,borderRadius:4,marginBottom:8}}/>
-        <div style={{height:10,width:"90%",background:B.border,borderRadius:4,marginBottom:6}}/>
-        <div style={{height:10,width:"75%",background:B.border,borderRadius:4}}/>
-      </div>
-    );
-  }
+  // [A5] Hooks declared FIRST, unconditionally — any early return must come
+  // after the hooks so the same hook call order is preserved across renders.
+  // The production React build was tolerating an early return before hooks
+  // in this component, but it relied on a quirk of how mount-vs-update is
+  // dispatched (a swap from skeleton→real card was treated as a fresh
+  // mount), which also silently reset any local UI state the card had built
+  // up. Declaring hooks first removes that landmine and keeps state intact.
   var cardId = buildCardId(card);
   var bl = card.priority==="HIGH"?B.navy:card.priority==="MED"?B.blue:B.border;
   const [expanded,setExpanded] = useState(false);
@@ -4517,6 +4513,22 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
   // re-renders immediately after a click without forcing a parent
   // re-render. Initialized from localStorage on mount.
   const [posted,setPosted]     = useState(function(){ return isCardPosted(cardId); });
+
+  // [A5] Early return AFTER all hooks have been declared. When `replacing`
+  // is true, this card slot is awaiting a streaming replacement from
+  // /api/chat?generationType=plan_partial — render a skeleton instead of
+  // the real card so kept cards stay put while only the selected ones swap.
+  if (replacing) {
+    return (
+      <div className="su" style={{background:B.card,borderRadius:12,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",borderLeft:"3px solid "+B.border,padding:"22px 22px",marginBottom:8,opacity:0.7,animationDelay:(idx*0.04)+"s"}}>
+        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",color:B.navy,marginBottom:8}}>Regenerating…</div>
+        <div style={{height:14,width:"60%",background:B.border,borderRadius:4,marginBottom:8}}/>
+        <div style={{height:10,width:"90%",background:B.border,borderRadius:4,marginBottom:6}}/>
+        <div style={{height:10,width:"75%",background:B.border,borderRadius:4}}/>
+      </div>
+    );
+  }
+
   var reminder = "VIRL "+card.day+": "+card.title+" - Post at "+card.postTime+" on "+card.platform;
   var hasSavedScript = !!card.savedScript;
   // [P1] One-line preview shown beneath the title on collapsed cards so
@@ -10507,10 +10519,14 @@ function App() {
     // the card it swaps out (and never drifts to an unselected platform like
     // LinkedIn). Same order as `sorted` so it lines up with the streamed
     // replacements.
+    // [A4] DO NOT filter — replaceSlots must stay 1:1 with `sorted` so the
+    // server's per-slot guidance lines up with the streamed replacements.
+    // Filtering on `s.day` was dropping slots whose card had no day, which
+    // desynced subsequent slots' platform/format hints onto the wrong cards.
     var replaceSlots = sorted.map(function (i) {
       var c = cards[i] || {};
       return { day: c.day || null, platform: c.platform || null, format: c.format || null };
-    }).filter(function (s) { return s.day; });
+    });
     var keptCards = cards
       .map(function (c, i) { return { c: c, i: i }; })
       .filter(function (x) { return !replaceIdxSet.has(x.i) && x.c; })
@@ -13909,12 +13925,21 @@ return (
                           sub={(d.retries || 0) + " of " + (d.eligible_calls || 0) + " eligible calls"}
                           color={B.navy}/>
                         <UsageKPI label="Avg improvement"
-                          value={d.retries > 0 && d.avg_improvement != null ? ("−" + d.avg_improvement + " pts") : "—"}
+                          // [A3] Sign-aware: avg_improvement is positive when drift went DOWN
+                          // (a win). It can legitimately be negative when retries on average
+                          // scored worse; hardcoding "−" rendered "−-2.3 pts" in that case.
+                          value={(function(){
+                            if (!(d.retries > 0) || d.avg_improvement == null) return "—";
+                            var v = d.avg_improvement;
+                            if (v > 0) return "−" + v.toFixed(1) + " pts";          // drift went down (good)
+                            if (v < 0) return "+" + Math.abs(v).toFixed(1) + " pts"; // drift went UP (bad)
+                            return "±0 pts";
+                          })()}
                           sub={d.retries > 0 ? (d.avg_score_before + " → " + d.avg_score_after + " drift score") : "no retries yet"}
-                          color={B.green}/>
+                          color={d.avg_improvement != null && d.avg_improvement < 0 ? B.coral : B.green}/>
                         <UsageKPI label="Kept rate"
                           value={d.retries > 0 ? (Math.round((d.kept_rate || 0) * 100) + "%") : "—"}
-                          sub="retries that improved voice"
+                          sub="retries we actually used"
                           color={B.blue}/>
                         <UsageKPI label="Extra spend"
                           value={"$" + (d.extra_cost_usd || 0).toFixed(2)}
