@@ -1,0 +1,15 @@
+<!--
+  [PWA] Placeholder app icon. Navy background + serif "V" mark in the
+  VIRL color palette. SVG so it scales for every platform that accepts
+  SVG manifest icons (Chrome, Edge, Firefox). iOS still needs a
+  separate apple-touch-icon.png — see /icons/apple-touch-icon.png and
+  the meta tag in index.html.
+
+  Designed to be drop-in replaceable: when Lauren ships the final
+  brand icon, replace this file + the PNG variants without touching
+  manifest.json or the index.html meta tags.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="VIRL app icon">
+  <rect width="512" height="512" rx="96" fill="#1F3A8A"/>
+  <text x="256" y="360" font-family="Georgia, 'Times New Roman', serif" font-size="320" font-style="italic" fill="#FFFFFF" text-anchor="middle" font-weight="400" letter-spacing="-8">V</text>
+</svg>
