@@ -8,3 +8,6 @@ node_modules/
 .claude/
 scripts/voice-eval-profiles.json
 scripts/voice-eval-history.jsonl
+# Persona eval: synthetic profiles ARE committed (reproducible golden set);
+# only the append-only run history stays local.
+scripts/persona-eval-history.jsonl

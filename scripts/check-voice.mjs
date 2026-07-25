@@ -93,6 +93,13 @@ const REQUIRED = [
   { name: "creator's own-writing examples",   re: /THE CREATOR'S OWN WRITING/ },
   { name: "own-writing shown verbatim",       re: /why does nobody talk about how hard mornings/ },
   { name: "scraped excerpt shown verbatim",   re: /5am club is a lie/ },
+  // [PERSONA] The character sheet must lead EVERY generation surface. This is
+  // the same silent-drop failure the voice stack above guards against: a
+  // refactor that drops the persona from one surface reads fine locally and
+  // ships a tool-voiced caption to that surface only. The two anchors below
+  // are load-bearing lines from the C1 sheet (identity + the no-human clause).
+  { name: "VIRL_PERSONA (identity line)",     re: /YOU ARE VIRL — the user's content strategist/ },
+  { name: "VIRL_PERSONA (never-human clause)", re: /never pretend otherwise/ },
 ];
 
 for (const s of SURFACES) {
@@ -106,6 +113,33 @@ for (const s of SURFACES) {
   for (const req of REQUIRED) {
     assert(req.re.test(sys), `${s.label} (${s.gt}): missing ${req.name}`);
   }
+}
+
+// [PERSONA] Register split — the boundary that keeps VIRL's strategist voice
+// out of publishable copy — must reach every surface that emits creator copy.
+// Its absence is how a caption ends up saying "my call is Instagram" in the
+// creator's feed. Anchor on the block's headline sentence.
+for (const s of SURFACES) {
+  let sys = "";
+  try { sys = buildSystem(s.gt, s.params, GOLDEN_PROFILE); } catch (e) { continue; }
+  assert(/DO NOT MIX THEM/.test(sys), `${s.label} (${s.gt}): missing the two-register split`);
+}
+
+// [PERSONA] The rationale voice rules (with the SLOP/ON-VOICE calibration
+// pairs) must reach the plan surface — that's where every "why this works"
+// field lives, and the calibration pairs do more than the rules alone.
+{
+  const planParams = { platforms: ["Instagram"], formats: ["video"], niche: "Wellness", goal: "growth" };
+  const planBuilt = dispatch("plan", planParams, GOLDEN_PROFILE, null, {}, {}, [], null, null, null);
+  const planSys  = flatten(planBuilt.systemPrompt);
+  const planUser = planBuilt.userPrompt || "";
+  assert(/RATIONALE VOICE/.test(planSys),          "Plan: missing RATIONALE_RULES");
+  assert(/rides the POV-tour trend/.test(planSys), "Plan: missing the ON-VOICE calibration example");
+  assert(/silently review your draft/.test(planSys), "Plan: missing SELF_CHECK_RUBRIC");
+  // The structural trend rule rides the USER prompt (via planTrendsContext),
+  // and with no trends passed it must emit the explicit empty-state form.
+  assert(/TREND GROUNDING — STRUCTURAL/.test(planUser), "Plan: missing structural trend-grounding rule");
+  assert(/no trend research is available/.test(planUser), "Plan: missing trend empty-state (no-research) instruction");
 }
 
 // Empty-safe: a brand-new profile with no voice reference must still build a
