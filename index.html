@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>VIRL - Finally, a content strategy that sounds like you.</title>
 <script type="text/javascript" src="https://app.termly.io/resource-blocker/a8c380c9-9255-4beb-b922-7a884c5cc9e0?autoBlock=on"></script>
+<!-- Google tag (gtag.js) – Google Analytics 4. Loaded from googletagmanager.com,
+     so Termly's auto-blocker categorizes and holds it until analytics/cookie
+     consent is granted, same as any other tracking script. -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-FDY1JT7NMD"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-FDY1JT7NMD');
+</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -138,6 +148,11 @@ async function saveProfileToSupabase(profile, userId) {
       ideal_client_problem: (profile.idealClientProblem   || "").trim() || null,
       primary_cta:          (profile.primaryCta           || "").trim() || null,
       common_objections:    (profile.commonObjections     || "").trim() || null,
+      // [NICHE-DETAIL + RESEARCH-REVIEW] Migration 023 columns. Same
+      // trim → null pattern; pre-migration upserts error visibly in the
+      // console like 015/016 did until the migration runs.
+      niche_detail:         (profile.nicheDetail          || "").trim() || null,
+      research_corrections: (profile.researchCorrections  || "").trim() || null,
     });
     if (error) {
       // Surface the full Supabase error to the console so a schema
@@ -237,7 +252,11 @@ async function loadProfileFromSupabase(userId) {
       serviceArea:         data.service_area         || "",
       idealClientProblem:  data.ideal_client_problem || "",
       primaryCta:          data.primary_cta          || "",
-      commonObjections:    data.common_objections    || ""
+      commonObjections:    data.common_objections    || "",
+      // [NICHE-DETAIL + RESEARCH-REVIEW] "" on pre-migration-023 rows so
+      // the textareas hydrate empty rather than "null".
+      nicheDetail:         data.niche_detail         || "",
+      researchCorrections: data.research_corrections || ""
     };
   } catch(e) { return {}; }
 }
@@ -387,6 +406,25 @@ async function savePlanToSupabase(userId, cards, stats, expiresAt, strategy, tre
     }, { onConflict: "user_id,week_start" });
   } catch(e) { /* non-fatal */ }
   return ok;
+}
+// [PLAN-SAVE-QUEUE] savePlanToSupabase is fired fire-and-forget from six
+// different call sites (partial regen, strategy regen, full generate,
+// script/long-post save, card edit) any time the working cards array
+// changes, and every call upserts the FULL cards array (not a diff). Left
+// unsequenced, two calls issued close together race on the network: the
+// one issued FIRST can still arrive at Supabase LAST, silently reverting
+// a newer edit/regeneration with an older snapshot of the plan. Since the
+// evening reminder cron reads exactly this row, that reversion is what
+// shows up as "the reminder email has outdated cards after I regenerated."
+// Chaining every call through one promise keeps at most one write in
+// flight at a time, so writes always land in the order they were issued.
+let planSaveChain = Promise.resolve();
+function queuePlanSave() {
+  var args = arguments;
+  planSaveChain = planSaveChain.then(function () {
+    return savePlanToSupabase.apply(null, args);
+  }).catch(function () {});
+  return planSaveChain;
 }
 async function deletePlanFromSupabase(userId) {
   try { await supabaseClient.from("plans").delete().eq("user_id", userId); } catch(e) {}
@@ -1366,6 +1404,100 @@ function VoiceExcerptSuggestions({voiceSamples, onKeep}) {
           </button>
         </div>
       );})}
+    </div>
+  );
+}
+
+// [POST-SAMPLE] The reliable fallback when handle research can't reach a
+// creator's profiles at all: instead of asking VIRL to go find a post,
+// the creator hands one over directly — a link or a screenshot. Neither
+// depends on a platform letting an automated request through the way
+// whole-profile research does (Instagram/TikTok/Facebook block that even
+// for a correct, public, direct link — a platform-side restriction, not
+// a VIRL bug). A screenshot always works since it's pixels, not a fetch;
+// a link works when the platform still serves link-preview metadata for
+// that one post (TikTok's oEmbed reliably does; others best-effort via
+// Open Graph tags). Extraction is never auto-saved — the creator reviews
+// the transcribed text and explicitly taps Keep, mirroring
+// VoiceExcerptSuggestions' one-tap-confirm pattern above.
+function PostSampleFeeder({userToken, onKeep}) {
+  const [urlValue,setUrlValue] = useState("");
+  const [busy,setBusy]         = useState(false);
+  const [error,setError]       = useState("");
+  const [pending,setPending]   = useState(null); // {caption}
+
+  function fetchFromUrl() {
+    var url = urlValue.trim();
+    if (!url || !userToken) return;
+    setBusy(true); setError(""); setPending(null);
+    fetch("/api/profile-post-sample", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + userToken },
+      body:    JSON.stringify({ postUrl: url }),
+    }).then(function(r){ return r.json(); }).then(function(j){
+      setBusy(false);
+      if (j && j.ok && j.caption) setPending({ caption: j.caption });
+      else setError("Couldn't read that link — this platform may be blocking it too. Try a screenshot instead.");
+    }).catch(function(){ setBusy(false); setError("Connection issue — try again."); });
+  }
+
+  function fetchFromScreenshot(file) {
+    if (!file || !userToken) return;
+    setBusy(true); setError(""); setPending(null);
+    decodeAndResizeImage(file).then(function(img){
+      return callAPI("voice_sample_extract", {}, { token: userToken, imageBase64: img.b64, imageType: img.mediaType });
+    }).then(function(data){
+      setBusy(false);
+      var parsed = extractJSON(data.text) || {};
+      var text = (parsed.captionText || "").trim();
+      if (parsed.found && text) setPending({ caption: text });
+      else setError("Couldn't find readable caption text in that screenshot — try one where the caption is visible.");
+    }).catch(function(e){
+      setBusy(false);
+      setError((e && e.message) || "Couldn't read that screenshot.");
+    });
+  }
+
+  var chipStyle = {fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 14px",background:B.navySoft,color:B.navy,border:"none",borderRadius:8,cursor:"pointer"};
+
+  return (
+    <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid "+B.divider}}>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:4}}>Feed VIRL one real post</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:10}}>
+        Paste a link to one of your posts, or upload a screenshot of one. This works even when a platform blocks automated research, since you're handing VIRL the content directly instead of asking it to go find it.
+      </div>
+      {pending ? (
+        <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",marginBottom:6}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.ink,lineHeight:1.6,fontStyle:"italic",marginBottom:10}}>{"“"+pending.caption+"”"}</div>
+          <div style={{display:"flex",gap:8}}>
+            <button type="button" onClick={function(){ onKeep(pending.caption); setPending(null); setUrlValue(""); }}
+              style={Object.assign({},chipStyle,{background:B.blue,color:B.white})}>
+              Keep as voice sample
+            </button>
+            <button type="button" onClick={function(){ setPending(null); }}
+              style={Object.assign({},chipStyle,{background:"transparent",color:B.muted,border:"1px solid "+B.border})}>
+              Discard
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
+          <input value={urlValue} onChange={function(e){ setUrlValue(e.target.value); }}
+            placeholder="Paste a link to one of your posts" disabled={busy}
+            style={{flex:"1 1 220px",background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"9px 12px",fontSize:12,color:B.ink,fontFamily:"'Jost',sans-serif"}}/>
+          <button type="button" onClick={fetchFromUrl} disabled={busy || !urlValue.trim()}
+            style={Object.assign({},chipStyle,{opacity:(busy||!urlValue.trim())?0.5:1})}>
+            Fetch
+          </button>
+          <label style={Object.assign({},chipStyle,{opacity:busy?0.5:1})}>
+            Upload screenshot
+            <input type="file" accept="image/*" disabled={busy} style={{display:"none"}}
+              onChange={function(e){ var f = e.target.files && e.target.files[0]; e.target.value = ""; fetchFromScreenshot(f); }}/>
+          </label>
+        </div>
+      )}
+      {busy && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6}}>Reading...</div>}
+      {error && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.coral,marginTop:6}}>{error}</div>}
     </div>
   );
 }
@@ -6256,7 +6388,60 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
 }
 
 
-function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
+// [HANDLE-URLS] Normalize whatever the user gives us for a social handle:
+// a bare handle ("@lauren" / "lauren") or a pasted profile link
+// ("https://www.instagram.com/lauren/?igsh=abc"). Links are what people
+// actually copy from their own profiles, and the extracted handle is what
+// we store — the server rebuilds a canonical profile URL from it for
+// research. Qualifier paths survive as-is (linkedin "in/lauren-doty",
+// youtube "channel/UCxxxx", facebook "profile.php?id=123") so accounts
+// without a clean @handle still resolve. On any parse failure, return the
+// raw input — never eat what the user typed.
+// PRESERVE-DON'T-DESTROY (fix for a live data-corruption bug): extraction
+// happens ONLY when we're confident the path segment IS the identity.
+// Facebook's app copies profile links as opaque shortlinks
+// (facebook.com/share/XyZ...) where the first segment is the literal word
+// "share" and the identity is an unreadable redirect token — v1 of this
+// function stored the word "share" as the creator's Facebook handle and
+// destroyed the pasted link. Now: single-segment paths and known qualifier
+// pairs extract; EVERYTHING else (share links, reels, posts, unknown
+// multi-segment shapes) keeps the full original URL. A stored URL still
+// researches perfectly — the shortlink redirects to the real profile — and
+// the server passes http(s) values through as-is.
+function normalizeSocialInput(raw) {
+  var v = String(raw || "").trim();
+  if (!v) return "";
+  var looksUrl = /^(https?:\/\/|www\.)/i.test(v) || /\.[a-z]{2,}\//i.test(v);
+  if (!looksUrl) return v.replace(/^@+/, "");
+  var fullUrl = /^https?:\/\//i.test(v) ? v : "https://" + v;
+  try {
+    var u = new URL(fullUrl);
+    var path = u.pathname.replace(/^\/+|\/+$/g, "");
+    if (!path) return "";
+    // Facebook numeric profiles live behind profile.php?id=N — the query
+    // IS the identity, so keep it.
+    if (path.toLowerCase() === "profile.php" && u.search) return path + u.search;
+    var segs = path.split("/");
+    var first = segs[0].toLowerCase();
+    // Qualifier prefixes where the second segment is the real identifier.
+    if (segs.length === 2 && (first === "in" || first === "company" || first === "channel" || first === "user" || first === "c")) {
+      return segs.slice(0, 2).join("/");
+    }
+    // Confident extraction only for a single-segment slug that isn't a
+    // shortlink marker word.
+    if (segs.length === 1) {
+      var seg = segs[0].replace(/^@+/, "");
+      if (seg && seg.toLowerCase() !== "share") return seg;
+    }
+    return fullUrl;
+  } catch (e) { return v; }
+}
+
+// [RESEARCH-REVIEW] userToken added so the panel can call
+// /api/profile-research-prewarm to display what VIRL learned from the
+// creator's channels. Optional — signed-out/legacy callers omit it and
+// the review block falls back to its "nothing yet" state.
+function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,userToken}) {
   const [myPlatforms,setMyPlatforms] = useState(profile.myPlatforms||[]);
   const [name,setName] = useState(profile.name||"");
   const [audience,setAudience] = useState(profile.audience||"");
@@ -6333,6 +6518,14 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   const [idealClientProblem,setIdealClientProblem] = useState(profile.idealClientProblem||"");
   const [primaryCta,setPrimaryCta]                 = useState(profile.primaryCta||"");
   const [commonObjections,setCommonObjections]     = useState(profile.commonObjections||"");
+  // [NICHE-DETAIL] The creator's own words on what they do and who pays
+  // them — the precise business definition inside the broad niche label.
+  const [nicheDetail,setNicheDetail]               = useState(profile.nicheDetail||"");
+  // [RESEARCH-REVIEW] Corrections to the machine-gathered channel research,
+  // plus fetch state for displaying the research paragraph itself.
+  // researchPreview.status: idle | loading | ready | none
+  const [researchCorrections,setResearchCorrections] = useState(profile.researchCorrections||"");
+  const [researchPreview,setResearchPreview]         = useState({status:"idle",text:""});
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -6383,11 +6576,24 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
     });
   }
 
+  // [HANDLE-URLS] Belt-and-suspenders normalization at save time — blur
+  // handles the visible case, but a save clicked with focus still in the
+  // input (blur not yet fired) or hydrated legacy URL values should never
+  // persist un-normalized.
+  function cleanedHandles() {
+    var out = {};
+    Object.keys(handles).forEach(function(k){
+      var c = normalizeSocialInput(handles[k]);
+      if (c) out[k] = c;
+    });
+    return out;
+  }
+
   function handleSave() {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -6399,7 +6605,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   // — otherwise a user who flips a toggle and clicks "Save my profile"
   // would have their toggle silently wiped to false by the upsert.
   function handleSavePhase1() {
-    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles,platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections});
+    onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
     setPhase1Saved(true);
     setPhase1JustSaved(true);
   }
@@ -6714,10 +6920,74 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
             Research my public posts
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-            Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content.
+            Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content. Heads up: Instagram, TikTok, and Facebook restrict automated access even to a correct, public, direct link, so this doesn't always succeed — if it comes back empty, you can feed VIRL a real post directly instead (link or screenshot) below.
           </div>
         </div>
       </div>
+      {/* [RESEARCH-REVIEW] Show the creator what the public-post research
+          actually says about them, and collect corrections. The research
+          used to be invisible: a wrong observation (same-name account,
+          stale read) silently steered every generation for up to 30 days.
+          Corrections persist on the profile row and override the machine
+          research in every prompt. */}
+      {learnFromPublicPosts && (
+        <div style={{marginTop:14,paddingTop:16,borderTop:"1px solid "+B.divider}}>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:6}}>What VIRL has learned from your channels</div>
+          {researchPreview.status === "idle" && (
+            <button onClick={function(){
+              if (!userToken) { setResearchPreview({status:"none",text:""}); return; }
+              setResearchPreview({status:"loading",text:""});
+              fetch("/api/profile-research-prewarm", {
+                method: "POST",
+                headers: { "Authorization": "Bearer "+userToken },
+              }).then(function(r){ return r.json(); }).then(function(j){
+                if (j && j.researchText) setResearchPreview({status:"ready",text:j.researchText});
+                else setResearchPreview({status:"none",text:""});
+              }).catch(function(){ setResearchPreview({status:"none",text:""}); });
+            }}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,letterSpacing:"0.03em",padding:"9px 16px",background:B.bg,color:B.navy,border:"1px solid "+B.border,borderRadius:9,cursor:"pointer"}}>
+              Show what VIRL learned
+            </button>
+          )}
+          {researchPreview.status === "loading" && (
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted}}>Checking your channels...</div>
+          )}
+          {researchPreview.status === "ready" && (
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.ink,lineHeight:1.7,background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",marginBottom:10}}>
+              {researchPreview.text}
+            </div>
+          )}
+          {researchPreview.status === "none" && (
+            <div style={{marginBottom:10}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
+                {/* [HONEST-EMPTY-STATE] "Nothing on file" read as a bug to
+                    creators whose accounts simply aren't in the public search
+                    index yet (new, small, or private accounts - most early
+                    creators), AND to creators on platforms that flat-out
+                    block automated reads regardless of indexing. Say both
+                    real reasons plainly instead of leaving it ambiguous —
+                    the platform restriction especially, since that one may
+                    genuinely never resolve on its own, unlike "not indexed
+                    yet." Then hand over the one path that's guaranteed to
+                    work regardless of what any platform blocks. */}
+                No usable research yet. Two real reasons this happens, and neither is a bug: your accounts may still be new or small enough that they're not in the public search index yet — that one resolves on its own as they grow. But Instagram, TikTok, and Facebook also actively restrict automated access to profile pages, even from a correct, public, direct link — that's those platforms' own policy, and it may never resolve no matter how VIRL's research improves. VIRL will never guess from a lookalike account to paper over either case. Everything else in your profile — your voice samples, saved posts, and edits — still shapes every output at full weight.
+              </div>
+              <PostSampleFeeder userToken={userToken} onKeep={function(t){
+                setVoiceSamples(function(prev){ return prev.concat([t]); });
+              }}/>
+            </div>
+          )}
+          <div style={{marginTop:10}}>
+            <Label>Anything wrong or missing? (optional)</Label>
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+              Your corrections always beat what the research says - they apply to every future generation once you save.
+            </div>
+            <textarea value={researchCorrections} onChange={function(e){setResearchCorrections(e.target.value);}}
+              placeholder="e.g. I don't do luxury listings - I work with first-time sellers. The weekly market update series ended last year; don't continue it."
+              style={Object.assign({},textareaStyle,{minHeight:66})}/>
+          </div>
+        </div>
+      )}
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:12,paddingTop:14,borderTop:"1px solid "+B.divider}}>
         Turning any toggle off is forward-looking — it stops future use of that source but doesn't delete data already collected. To wipe everything VIRL has learned, use <strong style={{color:B.navy}}>Delete account</strong> in Settings.
       </div>
@@ -6799,6 +7069,20 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
           <div style={{padding:"4px 24px 22px"}}>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.65,marginBottom:18,padding:"10px 14px",background:B.navySoft,borderRadius:10,border:"1px solid "+B.border}}>
               These fields unlock content that actually converts — for real estate agents, dental practices, coaches, fitness pros, small businesses. Every one is optional. Skip the whole section if you're a personal brand only.
+            </div>
+
+            {/* [NICHE-DETAIL] The precise business definition. Placed first
+                in the section: it scopes every field below it, and it's the
+                single highest-leverage sentence a service creator can give
+                the strategy engine. */}
+            <div id="vp-nicheDetail" style={{marginBottom:18}}>
+              <Label>What exactly do you do, and who pays you?</Label>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
+                Your niche label is broad. This is the precise version - VIRL builds your strategy around it.
+              </div>
+              <textarea value={nicheDetail} onChange={function(e){setNicheDetail(e.target.value);}}
+                placeholder="e.g. I'm a listing agent focused on first-time sellers in the Indianapolis suburbs. My income is commission from home sales, so content needs to earn listing appointments - not just followers."
+                style={Object.assign({},textareaStyle,{minHeight:80})}/>
             </div>
 
             <div id="vp-businessWebsite" style={{marginBottom:18}}>
@@ -6921,7 +7205,12 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
                     </div>
                     <input value={(handles[p]||"")} onChange={function(e){
                       var h=Object.assign({},handles); h[p]=e.target.value; setHandles(h);
-                    }} placeholder={"@your"+p.toLowerCase()+"handle"}
+                    }} onBlur={function(e){
+                      // [HANDLE-URLS] Pasted profile links collapse to the
+                      // handle on blur so the user sees what will be stored.
+                      var cleaned = normalizeSocialInput(e.target.value);
+                      if (cleaned !== (handles[p]||"")) { var h=Object.assign({},handles); h[p]=cleaned; setHandles(h); }
+                    }} placeholder={"@handle or paste your "+p+" profile link"}
                     style={Object.assign({},inputStyle,{marginBottom:8,fontSize:13})}/>
                     <textarea value={(platformAudiences[p]||"")} onChange={function(e){
                       var a=Object.assign({},platformAudiences); a[p]=e.target.value; setPlatformAudiences(a);
@@ -7329,7 +7618,11 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
                   </div>
                   <input value={(handles[p]||"")} onChange={function(e){
                     var h=Object.assign({},handles); h[p]=e.target.value; setHandles(h);
-                  }} placeholder={"@your"+p.toLowerCase()+"handle"}
+                  }} onBlur={function(e){
+                    // [HANDLE-URLS] Same blur normalization as the wizard input.
+                    var cleaned = normalizeSocialInput(e.target.value);
+                    if (cleaned !== (handles[p]||"")) { var h=Object.assign({},handles); h[p]=cleaned; setHandles(h); }
+                  }} placeholder={"@handle or paste your "+p+" profile link"}
                   style={Object.assign({},inputStyle,{marginBottom:8,fontSize:13})}/>
                   <textarea value={(platformAudiences[p]||"")} onChange={function(e){
                     var a=Object.assign({},platformAudiences); a[p]=e.target.value; setPlatformAudiences(a);
@@ -7584,10 +7877,12 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   );
 }
 
-// Centered modal showing the full saved item — description, why, hashtags,
-// post time, optionally a saved script for plan items, full caption text
-// for caption items. Items saved before the full-payload migration may not
-// have every field; the modal only renders fields that are present.
+// Centered modal showing the full saved item — the format-specific post
+// content (long-form body, caption, slides, quote, story frames, production
+// direction), description, why, hashtags, post time, optionally a saved
+// script for plan items, full caption text for caption items. Items saved
+// before the full-payload migration may not have every field; the modal
+// only renders fields that are present.
 function VaultItemModal({item, onClose}) {
   useEffect(function(){
     function onKey(e){ if (e.key === "Escape") onClose(); }
@@ -7596,6 +7891,20 @@ function VaultItemModal({item, onClose}) {
   }, [onClose]);
 
   const tags = Array.isArray(item.hashtags) ? item.hashtags.map(cleanHashtag).filter(Boolean) : [];
+
+  // [VAULT-FULL-CARD] Whether this plan item carries the full post content
+  // captured at save time (post-VAULT-FULL-CARD saves). Gates the
+  // "saved before VIRL captured full details" fallback below so it only
+  // shows for genuinely empty legacy items.
+  const hasFormatContent = !!(
+    item.caption || item.body || item.closing || item.quote ||
+    (Array.isArray(item.slides) && item.slides.length) ||
+    (Array.isArray(item.frames) && item.frames.length) ||
+    (Array.isArray(item.onScreenText) && item.onScreenText.length) ||
+    item.filmDirection || item.photoDirection || item.compositionTip ||
+    item.audioRecommendation || item.designDirection || item.repurpose ||
+    (item.hook && item.hook !== item.title)
+  );
 
   return (
     <div onClick={onClose}
@@ -7624,6 +7933,12 @@ function VaultItemModal({item, onClose}) {
                 {item.postTime && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.divider,color:B.muted,borderRadius:99}}><Icon name="clock" size={11} style={{marginRight:4}}/>{item.postTime}</span>}
                 {item.format   && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"4px 12px",background:B.divider,color:B.muted,borderRadius:99}}>{item.format}</span>}
               </div>
+              {/* [VAULT-FULL-CARD] Full saved post content — same
+                   format-specific body the plan card renders (long-form
+                   body, caption, slides, quote, story frames, production
+                   direction), in the same position: above the description.
+                   Renders nothing for legacy items without the fields. */}
+              <FormatSpecificBody card={item}/>
               {item.description && (
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.7,marginBottom:14}}>
                   {item.description}
@@ -7665,7 +7980,7 @@ function VaultItemModal({item, onClose}) {
                   )}
                 </div>
               )}
-              {!item.description && !item.insight && !item.why && tags.length === 0 && !item.savedScript && (
+              {!item.description && !item.insight && !item.why && tags.length === 0 && !item.savedScript && !hasFormatContent && (
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,fontStyle:"italic"}}>This card was saved before VIRL captured full details. Re-save from the plan tab to get the full view.</div>
               )}
             </div>
@@ -9094,6 +9409,10 @@ function App() {
   const [platforms,setPlatforms] = useState(stored.platforms||["TikTok","Instagram"]);
   const [niche,setNiche] = useState(stored.niche||"Lifestyle");
   const [goal,setGoal] = useState(stored.goal||"Grow my following");
+  // [GOALS-2] Optional secondary goal. Empty string = none. The wizard
+  // renders it as its own chip row excluding the primary; the server
+  // gives it 2-3 supporting cards without diluting the primary goal.
+  const [goalSecondary,setGoalSecondary] = useState(stored.goalSecondary||"");
   const [formats,setFormats] = useState(stored.formats||["Talking-head video","Day in my life"]);
   const [followers,setFollowers] = useState(stored.followers||"Under 1K");
   const [context,setContext] = useState("");
@@ -9843,7 +10162,7 @@ function App() {
         setAdminLoading(false);
         return;
       }
-      const {credits:creditsRaw, events:eventsRaw} = await res.json();
+      const {credits:creditsRaw, events:eventsRaw, events_window_days:eventsWindowDays} = await res.json();
       const credits = Array.isArray(creditsRaw) ? creditsRaw : [];
       const events = Array.isArray(eventsRaw) ? eventsRaw : [];
 
@@ -9886,7 +10205,7 @@ function App() {
         topPlatforms: topPlatforms,
       };
 
-      setAdminData({credits, total, paid, free, mrr, eventStats});
+      setAdminData({credits, total, paid, free, mrr, eventStats, eventsWindowDays});
     } catch(e) {
       console.error("Admin load error:", e);
     }
@@ -10002,13 +10321,15 @@ function App() {
   }
 
   // Calculate trial status only after Supabase credits have loaded — until
-  // then `isFoundingOrPro` defaults to false and would briefly fire trial
-  // expiry on real Pro users. If created_at is missing or unparseable we
-  // fail open client-side (treat as in-trial); the API still enforces the
-  // cap when it can read the auth row.
+  // then `isPaid` defaults to false and would briefly fire trial expiry on
+  // real paid users. If created_at is missing or unparseable we fail open
+  // client-side (treat as in-trial); the API still enforces the cap when
+  // it can read the auth row. Gated on isPaid (not isFoundingOrPro) so
+  // standard-tier subscribers are never flagged as trial-expired — mirrors
+  // PAID_PLANS in api/chat.js, which already treats standard as paid.
   var trialExpired = false;
   var daysIntoTrial = 0;
-  if (session && creditsLoaded && !isFoundingOrPro) {
+  if (session && creditsLoaded && !isPaid) {
     var signupMs = Date.parse(session.user.created_at);
     if (!isNaN(signupMs)) {
       daysIntoTrial = Math.floor((Date.now() - signupMs) / 86400000);
@@ -10068,8 +10389,8 @@ function App() {
   }, [cards, isFoundingOrPro, trialExpired, planNudgeDismissed]);
 
   useEffect(function(){
-    save({platforms,niche,goal,formats,followers,vault,results,profile});
-  },[platforms,niche,goal,formats,followers,vault,results,profile]);
+    save({platforms,niche,goal,goalSecondary,formats,followers,vault,results,profile});
+  },[platforms,niche,goal,goalSecondary,formats,followers,vault,results,profile]);
 
   // Persist vault + results to Supabase whenever they change. Gated on
   // userDataHydrated so the empty initial state of an incognito browser
@@ -10223,6 +10544,7 @@ function App() {
       platforms:    platforms,
       niche:        niche,
       goal:         goal,
+      goalSecondary: goalSecondary || undefined,
       formats:      formats,
       followers:    followers,
       context:      context || "",
@@ -10295,7 +10617,7 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch (e) {}
-      if (session) savePlanToSupabase(session.user.id, working, stats, planExpiresAt, strategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, working, stats, planExpiresAt, strategy, planTrendsSnapshot, restDayTips);
 
       try {
         var meta = (result && result.meta) || {};
@@ -10352,6 +10674,13 @@ function App() {
     callAPI("plan_strategy", {
       cards:    condensedCards,
       strategy: strategy,
+      // [NICHE-PLAYBOOK] Ground the re-framed strategy in the same niche +
+      // goal + follower-tier context the original plan was built with, so
+      // "a different angle" still means winning in this niche.
+      niche:         niche,
+      goal:          goal,
+      goalSecondary: goalSecondary || undefined,
+      followers:     followers,
     }, { token: userToken, trendsSnapshot: planTrendsSnapshot }).then(function (data) {
       var parsed = extractJSON(data && data.text);
       var hasFields = parsed && (parsed.thesis || parsed.the_bet || parsed.optimizing_for || parsed.audience_read || parsed.success_metric);
@@ -10375,7 +10704,7 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch (e) {}
-      if (session) savePlanToSupabase(session.user.id, cards, stats, planExpiresAt, nextStrategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, cards, stats, planExpiresAt, nextStrategy, planTrendsSnapshot, restDayTips);
 
       try {
         var usage = (data && data.usage) || {};
@@ -10440,6 +10769,16 @@ function App() {
     var parser = createStreamingPlanParser();
     var progressiveCards = [];
 
+    // [PLAN-PLATFORM-FIX] Client-side backstop behind the server prompt's
+    // ALLOWED PLATFORMS constraint: never render or persist a card whose
+    // platform isn't in this generation's selection. Cards without a
+    // platform field pass through (the renderer tolerates them).
+    function onSelectedPlatform(card) {
+      if (!card || !card.platform) return true;
+      var p = String(card.platform).trim().toLowerCase();
+      return platforms.some(function (sel) { return String(sel).trim().toLowerCase() === p; });
+    }
+
     // [PLAN-JOB-RECOVERY] Shared render-and-persist path. Streaming
     // success uses parser.finalize().parsed; recovery uses
     // JSON.parse(result_text). Both reach the same state-setting +
@@ -10454,6 +10793,60 @@ function App() {
 
       var data = { text: finalText, cost: meta.cost, usage: meta.usage };
       var parsedCards    = parsed && Array.isArray(parsed.cards) ? parsed.cards : null;
+      // [PLAN-PLATFORM-FIX] Drop off-platform cards from the canonical
+      // parse too, so persistence (Supabase, plan_history, localStorage)
+      // matches what the progressive filter rendered. If filtering would
+      // empty a non-empty plan (model went fully off-list — should be
+      // impossible with the prompt constraint), keep the originals rather
+      // than surface a false "cut off mid-thought" error.
+      if (parsedCards && parsedCards.length > 0) {
+        var onListCards = parsedCards.filter(onSelectedPlatform);
+        if (onListCards.length > 0) parsedCards = onListCards;
+      }
+      // [TREND-VERIFY] Deterministic precision scrub: a card's `trend`
+      // must correspond to a real item in the trends snapshot the server
+      // actually injected. The prompt already demands this ([P10]), but
+      // the model still occasionally invents a vague riff — and a cited
+      // trend the creator can't verify reads as a credibility bug. Match
+      // is case-insensitive substring either direction, or >=60% of the
+      // shorter side's significant words appearing in the other (covers
+      // the "close paraphrase" the prompt allows). No snapshot → no
+      // verification possible → leave cards untouched.
+      if (parsedCards && freshSnapshot) {
+        var knownTrends = [];
+        try {
+          Object.keys(freshSnapshot).forEach(function(p){
+            var entry = freshSnapshot[p];
+            if (entry && Array.isArray(entry.items)) {
+              entry.items.forEach(function(it){
+                if (it && it.trend) knownTrends.push(String(it.trend).toLowerCase());
+              });
+            }
+          });
+        } catch(e) {}
+        if (knownTrends.length > 0) {
+          var trendWords = function(s){
+            return s.split(/[^a-z0-9']+/).filter(function(w){ return w.length > 3; });
+          };
+          parsedCards = parsedCards.map(function(c){
+            if (!c || !c.trend) return c;
+            var t = String(c.trend).toLowerCase();
+            var verified = knownTrends.some(function(k){
+              if (k.indexOf(t) >= 0 || t.indexOf(k) >= 0) return true;
+              var a = trendWords(t), b = trendWords(k);
+              if (!a.length || !b.length) return false;
+              var shorter = a.length <= b.length ? a : b;
+              var longer  = a.length <= b.length ? b : a;
+              var hits = shorter.filter(function(w){ return longer.indexOf(w) >= 0; }).length;
+              return hits / shorter.length >= 0.6;
+            });
+            if (verified) return c;
+            var copy = Object.assign({}, c);
+            delete copy.trend;
+            return copy;
+          });
+        }
+      }
       var parsedStrategy = parsed && parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
       var parsedStats    = parsed && parsed.stats    && typeof parsed.stats    === "object" ? parsed.stats    : null;
       var parsedTips     = parsed && Array.isArray(parsed.restDayTips) ? parsed.restDayTips : null;
@@ -10519,7 +10912,7 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e){}
-      if (session) savePlanToSupabase(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot, parsedTips);
+      if (session) queuePlanSave(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot, parsedTips);
       try {
         var weekStart = (function(){
           try { return new Date().toISOString().slice(0, 10); }
@@ -10531,6 +10924,7 @@ function App() {
           platforms: platforms,
           niche:     niche,
           goal:      goal,
+          goalSecondary: goalSecondary || null,
           formats:   formats,
           isRegen:   !!cards,
           cardCount: parsedCards.length,
@@ -10555,6 +10949,9 @@ function App() {
       platforms:    platforms,
       niche:        niche,
       goal:         goal,
+      // [GOALS-2] Optional secondary goal; omitted when unset so the
+      // server prompt stays byte-identical for single-goal users.
+      goalSecondary: goalSecondary || undefined,
       formats:      formats,
       followers:    followers,
       context:      context || "",
@@ -10569,6 +10966,14 @@ function App() {
       // complete-strategy framing to the prompt.
       weekIntensity: lightWeek ? "light" : "standard",
       isRegen:      !!cards,
+      // [REGEN-AWARE] The plan being replaced. Without this the regen
+      // prompt was byte-identical to the original generation (the current
+      // week is excluded from plan_history on purpose), so "Generate
+      // again" reliably returned a near-identical plan. Titles + hooks
+      // only — the server caps and truncates as untrusted input.
+      rejectedCards: cards ? cards.slice(0, 20).map(function (c) {
+        return { title: (c && c.title) || "", hook: (c && c.hook) || "" };
+      }) : undefined,
       // Same Monday-of-this-week key the client uses when upserting
       // plan_history. The server uses it to exclude this row from the
       // history it loads, so a same-week regenerate is treated as
@@ -10593,6 +10998,9 @@ function App() {
         parser.push(delta, {
           onStrategy: function (s) { setStrategy(s); },
           onCard:     function (card) {
+            // [PLAN-PLATFORM-FIX] Off-platform cards never render, even
+            // mid-stream — the finalize pass applies the same filter.
+            if (!onSelectedPlatform(card)) return;
             progressiveCards.push(card);
             // New array reference so React re-renders the list.
             setCards(progressiveCards.slice());
@@ -10797,6 +11205,28 @@ function App() {
         trend:       card.trend||null,
         hashtags:    Array.isArray(card.hashtags) ? card.hashtags.slice() : [],
         savedScript: card.savedScript||null,
+        // [VAULT-FULL-CARD] Format-specific content fields — the actual
+        // post the user is saving (long-form body, caption, carousel
+        // slides, quote, story frames, production direction). These were
+        // previously dropped at save time, so the vault modal could only
+        // show the one-line description + insight + hashtags, never the
+        // post itself. Field list mirrors what FormatSpecificBody renders
+        // on the plan card; missing fields stay null so old-format cards
+        // save cleanly.
+        caption:             card.caption||null,
+        body:                card.body||null,
+        closing:             card.closing||null,
+        onScreenText:        Array.isArray(card.onScreenText) ? card.onScreenText.slice() : null,
+        audioRecommendation: card.audioRecommendation||null,
+        filmDirection:       card.filmDirection||null,
+        photoDirection:      card.photoDirection||null,
+        compositionTip:      card.compositionTip||null,
+        slides:              Array.isArray(card.slides) ? card.slides.slice() : null,
+        quote:               card.quote||null,
+        attribution:         card.attribution||null,
+        designDirection:     card.designDirection||null,
+        frames:              Array.isArray(card.frames) ? card.frames.slice() : null,
+        repurpose:           card.repurpose||null,
         savedAt:     fmtDate(),
         result:      null,
       }].concat(v);
@@ -10892,7 +11322,7 @@ function App() {
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
       return next;
     });
   }
@@ -10918,7 +11348,7 @@ function App() {
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
       return next;
     });
   }
@@ -11027,7 +11457,7 @@ function App() {
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) savePlanToSupabase(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
       // [LEARNING-CONSENT] Refactored: edit-diff capture + consent
       // prompt trigger both flow through captureEditDiff. surface
       // "plan_card" fires the legacy plan_card_edited event name to
@@ -11849,6 +12279,9 @@ return (
               </div>
             </div>
             <CreatorProfile profile={profile} syncState={profileSync} syncError={profileSyncError}
+              // [RESEARCH-REVIEW] Token lets the panel fetch + display the
+              // channel research for the signed-in user.
+              userToken={userToken}
               // [CHANGE 1] Lets Phase 1 success state navigate to the plan tab,
               // mirroring how the welcome modal hands off to plan.
               onNavigateToPlan={function(){setTab("plan");}}
@@ -12143,7 +12576,8 @@ return (
                 {lbl:"Your platforms",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{PLATFORMS.map(function(p){return <Chip key={p} active={platforms.includes(p)} onClick={function(){setPlatforms(tog(platforms,p));}}>{p}</Chip>;})}</div>},
                 {lbl:"Your niche",el:<Sel value={niche} onChange={function(e){setNiche(e.target.value);}}>{NICHES.map(function(n){return <option key={n}>{n}</option>;})}</Sel>},
               ]:setupStep===1?[
-                {lbl:"Primary goal",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{GOALS.map(function(g){return <Chip key={g} active={goal===g} onClick={function(){setGoal(g);}}>{g}</Chip>;})}</div>},
+                {lbl:"Primary goal",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{GOALS.map(function(g){return <Chip key={g} active={goal===g} onClick={function(){setGoal(g); if (goalSecondary===g) setGoalSecondary("");}}>{g}</Chip>;})}</div>},
+                {lbl:"Secondary goal (optional)",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{GOALS.filter(function(g){return g!==goal;}).map(function(g){return <Chip key={g} active={goalSecondary===g} onClick={function(){setGoalSecondary(goalSecondary===g ? "" : g);}}>{g}</Chip>;})}</div>},
                 {lbl:"Content you can make",el:<div style={{display:"flex",flexWrap:"wrap",gap:8}}>{FORMATS.map(function(f){return <Chip key={f} active={formats.includes(f)} onClick={function(){setFormats(tog(formats,f));}}>{f}</Chip>;})}</div>},
                 {lbl:"Current followers",el:<Sel value={followers} onChange={function(e){setFollowers(e.target.value);}}>{FOLLOWERS.map(function(f){return <option key={f}>{f}</option>;})}</Sel>},
               ]:[]).map(function(row,i,arr){return (
@@ -12381,11 +12815,12 @@ return (
                         <span aria-hidden="true">📅</span> Add this week to your calendar
                       </button>
                       {/* [TRIAL-TRENDS] Make the live-trends value visible —
-                          trial users were receiving it without knowing.
-                          [TREND-PIPELINE] Stamp the trend-data refresh date when
-                          the DB-backed snapshot carries one (v2 snapshots only;
-                          older Perplexity snapshots have no refreshedAt). */}
-                      {planTrendsSnapshot && (
+                          trial users were receiving it without knowing. */}
+                      {/* [TREND-VERIFY] Gate on planUsedFreshTrends, not just
+                          the snapshot: the server now echoes cron-cached
+                          trends too (so cited trends are verifiable), and
+                          "pulled for this plan" would overclaim for those. */}
+                      {planUsedFreshTrends && planTrendsSnapshot && (
                         <div style={{marginTop:10,display:"flex",alignItems:"center",gap:7,fontFamily:"'Jost',sans-serif",fontSize:10.5,fontWeight:600,letterSpacing:"0.04em",color:B.navy}}>
                           <span aria-hidden="true">⚡</span>
                           {planTrendsSnapshot.refreshedAt
@@ -12549,10 +12984,25 @@ return (
                     "Trends considered" dropdown was removed per creator
                     feedback: per-card trend context already lives in each
                     expanded card (the ✦ trend tag + "why this works"). */}
-                {stats&&(
+                {/* [GROUNDED-STATS] Stats are now emitted only when the
+                    server prompt had real logged results to extrapolate
+                    from, and individual fields (earnings especially) can
+                    be legitimately absent. Render only present values and
+                    size the grid to what exists; no stats at all → the
+                    whole accordion disappears, which is the honest state
+                    for creators with no logged results yet. */}
+                {(function(){
+                  if (!stats) return null;
+                  var tiles = [
+                    {l:"Weekly reach",v:stats.reach,c:B.navy},
+                    {l:"Engagement",v:stats.engagement,c:B.blue},
+                    {l:"Per post est.",v:stats.earnings,c:B.navy},
+                  ].filter(function(s){ return !!s.v; });
+                  if (!tiles.length) return null;
+                  return (
                   <Accordion title="This week's projections">
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
-                      {[{l:"Weekly reach",v:stats.reach,c:B.navy},{l:"Engagement",v:stats.engagement,c:B.blue},{l:"Per post est.",v:stats.earnings,c:B.navy}].map(function(s,i){return (
+                    <div style={{display:"grid",gridTemplateColumns:"repeat("+tiles.length+",1fr)",gap:8,marginBottom:12}}>
+                      {tiles.map(function(s,i){return (
                         <div key={i} style={{padding:"14px",background:i%2===0?B.navySoft:B.card,borderRadius:12}}>
                           <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:s.c,lineHeight:1,marginBottom:4}}>{s.v}</div>
                           <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.muted}}>{s.l}</div>
@@ -12562,11 +13012,12 @@ return (
                     <div style={{background:B.bg,borderRadius:10,padding:"12px 16px"}}>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>About these estimates</div>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.75}}>
-                        AI-generated estimates based on your niche, follower tier, and platforms. Use as directional benchmarks, not guarantees.
+                        Extrapolated from your own logged results, follower tier, and platforms. Use as directional benchmarks, not guarantees.
                       </div>
                     </div>
                   </Accordion>
-                )}
+                  );
+                })()}
                 {/* [PLAN-STATE v2] "Trends considered" accordion removed per
                     creator feedback \u2014 per-card trend context already lives in
                     each expanded card (the \u2726 trend tag + "why this works"),
@@ -13908,9 +14359,13 @@ return (
                 })()}
 
                 {/* ── Feature usage ── */}
+                {/* [DASH-ACCURACY] Counts are a server-windowed slice (7 days
+                    by default, echoed as events_window_days) instead of the
+                    old "most recent 500 events of any type" — the label
+                    carries the window so the tiles read as what they are. */}
                 {adminData.eventStats&&(
                   <div style={{marginBottom:20}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>Feature usage</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.15em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>{"Feature usage · last "+(adminData.eventsWindowDays||7)+" days"}</div>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:12}}>
                       {[
                         {label:"Plans generated",   value:adminData.eventStats.plans,       sub:adminData.eventStats.plansUsers+" users"},
@@ -13967,14 +14422,23 @@ return (
                           )}
                         </div>
                         <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,color:row.plan==="standard"||row.plan==="founding"?B.green:B.muted,textTransform:"capitalize"}}>{row.plan}</div>
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.ink}}>{row.credits}</div>
+                        {/* [DASH-ACCURACY] effective_credits mirrors the lazy
+                            weekly refill chat.js applies on the user's next
+                            generation; the stored row.credits is stale for
+                            anyone who hasn't generated since reset_at passed.
+                            Falls back to row.credits if the API predates the
+                            field. The * marks a refill that is due but not
+                            yet written. */}
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:row.refill_pending?B.muted:B.ink}}>
+                          {(row.effective_credits!=null?row.effective_credits:row.credits)}{row.refill_pending?" *":""}
+                        </div>
                       </div>
                     );
                   })}
                 </div>
 
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:12,textAlign:"center"}}>
-                  {"Est. MRR assumes $25/mo per Standard user, $20/mo per Founder Circle member (locked for life). Data from Supabase credits table only."}
+                  {"Est. MRR assumes $25/mo per Standard user, $20/mo per Founder Circle member (locked for life). Data from Supabase credits table only. * = weekly refill due — shows the balance their wallet refills to on their next generation."}
                 </div>
               </div>
             )}

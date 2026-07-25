@@ -923,6 +923,13 @@ async function fetchProfile(userId) {
       idealClientProblem: data.ideal_client_problem || "",
       primaryCta:         data.primary_cta          || "",
       commonObjections:   data.common_objections    || "",
+      // [NICHE-DETAIL] The creator's own words on what exactly they do and
+      // who pays them — the precise definition inside the broad niche label.
+      // [RESEARCH-REVIEW] Creator's corrections to the machine-gathered
+      // channel research; injected with override precedence in prompts.js.
+      // Both "" on pre-migration-023 rows → prompt builder skips cleanly.
+      nicheDetail:         data.niche_detail         || "",
+      researchCorrections: data.research_corrections || "",
     };
   } catch (e) {
     return {};
@@ -1388,6 +1395,17 @@ export default async function handler(req, res) {
         trendsSnapshotEcho = ctx.snapshot;
       }
     }
+  }
+
+  // [TREND-VERIFY] Echo whatever trends map was actually injected into the
+  // prompt — fresh, client-supplied, or cron-cached — so the client can
+  // deterministically verify each card's `trend` field against the real
+  // list and strip citations the model invented. Previously only fresh
+  // inline trends were echoed, which left cached-trends plans unverifiable.
+  // The client's "live trend data" badge is gated on usedFreshTrends, not
+  // on the snapshot's presence, so echoing cached trends doesn't mislabel.
+  if (!trendsSnapshotEcho && trends && Object.keys(trends).length > 0) {
+    trendsSnapshotEcho = trends;
   }
 
   let built;

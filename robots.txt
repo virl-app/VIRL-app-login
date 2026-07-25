@@ -4,6 +4,13 @@
 # AI training crawlers blocked across all paths so VIRL's prompts, copy, and
 # product surface don't end up training competing models.
 # Adjust this list as new crawlers emerge.
+#
+# NOTE: Perplexity's crawlers are deliberately NOT blocked. Perplexity is
+# retrieval (search + answer), not model training — and VIRL's own
+# channel-research feature runs on Perplexity, so blocking it broke research
+# for any creator whose business website lives on a VIRL domain (including
+# the founder's). It also hid VIRL from AI-search users asking "what is
+# VIRL." Keep PerplexityBot / Perplexity-User out of the blocklist below.
 
 User-agent: *
 Allow: /
@@ -31,12 +38,6 @@ User-agent: anthropic-ai
 Disallow: /
 
 User-agent: cohere-ai
-Disallow: /
-
-User-agent: PerplexityBot
-Disallow: /
-
-User-agent: Perplexity-User
 Disallow: /
 
 User-agent: CCBot
