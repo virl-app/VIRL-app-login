@@ -2,6 +2,35 @@
 // send wrapper can render either format. Keep markup simple — many email
 // clients strip CSS aggressively. Inline styles only, single-column 600px
 // layout, italic-serif headlines (matching the app), navy/blue/coral palette.
+//
+// ── [PERSONA] Voice classification (Task Group D3) ─────────────────────────
+// Every template is exactly ONE voice. A message never mixes them — a plan
+// nudge that opens as VIRL and closes as Lauren reads like two people wrote
+// it, which is worse than either voice alone.
+//
+// VIRL voice — the strategist talking to the creator, first person = VIRL.
+// Product and lifecycle nudges about the creator's content work. VIRL refers
+// to itself as "I", never "VIRL is…". It may point to the humans behind the
+// product ("a real person reads every reply") — that's VIRL naming the team,
+// not claiming to BE a person, so it stays on-persona.
+//   welcome-adjacent lifecycle: phase1NoPlan, firstPlanGenerated, weeklyReset,
+//   postingReminder, sundayReset, sundayLogNudge, inactive7Day,
+//   trialDay7, trialDay11, trialDay13, trialExpired.
+//
+// Lauren voice — the founder, first person = Lauren, a human. Milestone and
+// relationship moments. Refers to VIRL in the third person ("VIRL gets
+// sharper"), because here a person is talking ABOUT the product.
+//   welcome, subscriptionWelcome, subscriptionCancelled, inactive30Day,
+//   referralRewarded, referralMilestone.
+//
+// Neutral / transactional — NO persona (money, security, legal: the no-
+// persona zones). Plain product voice, no first-person strategist, no
+// opinions. A strategist with opinions is alarming when confirming a charge.
+//   paymentFailed, renewalUpcoming, passwordChanged, accountDeleted,
+//   playbookDraftsReady (admin-internal).
+//
+// When adding a template: classify it here first, then write it in that one
+// voice. If it doesn't fit a bucket, it's probably two messages.
 
 const APP_URL          = process.env.APP_URL || "https://app.govirl.ai";
 const UNSUBSCRIBE_BASE = `${APP_URL}/api/email/unsubscribe`;
@@ -172,13 +201,13 @@ export function welcome({ name }) {
 export function trialDay11({ name, unsubscribeToken }) {
   const headline = "Three days left in your free trial.";
   const body = `
-    <p style="margin:0 0 12px">${name ? name + ", you've" : "You've"} had 11 days with VIRL. Three more before the trial ends.</p>
-    <p style="margin:0 0 12px">If VIRL is helping, the Founder Circle locks in $20/month for life as long as you stay subscribed — first 50 paying members only.</p>
+    <p style="margin:0 0 12px">${name ? name + ", you've" : "You've"} had 11 days with me. Three more before the trial ends.</p>
+    <p style="margin:0 0 12px">If I'm earning my keep, the Founder Circle locks in $20/month for life as long as you stay subscribed — first 50 paying members only.</p>
     <p style="margin:0">No pressure if it's not the right fit. Either way, your plans and vault stay safe.</p>`;
   return {
     subject: "3 days left in your VIRL trial",
     html:    layout({ eyebrow: "Reminder", headline, body, primaryCta: { href: `${APP_URL}/?intent=founder&plan=monthly`, label: "Upgrade now" }, unsubscribeToken }),
-    text:    `${headline}\n\nYou've had 11 days with VIRL. Three more before the trial ends.\n\nIf VIRL is helping, the Founder Circle locks in $20/month for life as long as you stay subscribed — first 50 paying members only.\n\n${APP_URL}/?intent=founder&plan=monthly${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nYou've had 11 days with me. Three more before the trial ends.\n\nIf I'm earning my keep, the Founder Circle locks in $20/month for life as long as you stay subscribed — first 50 paying members only.\n\n${APP_URL}/?intent=founder&plan=monthly${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -187,12 +216,12 @@ export function trialDay13({ name, unsubscribeToken }) {
   const headline = "Last day of your VIRL trial.";
   const body = `
     <p style="margin:0 0 12px">${name ? name + ", today" : "Today"} is day 14 — your trial ends tonight.</p>
-    <p style="margin:0 0 12px">If you've found VIRL useful, the Founder Circle is still open: $20/mo or $215/yr, locked for life as long as you stay subscribed. First 50 only — the door closes at 50.</p>
+    <p style="margin:0 0 12px">If I've been useful, the Founder Circle is still open: $20/mo or $215/yr, locked for life as long as you stay subscribed. First 50 only — the door closes at 50.</p>
     <p style="margin:0">If it's not the fit, that's totally fine — your account stays open, your vault and saved plans are yours to keep.</p>`;
   return {
     subject: "Last day of your VIRL trial",
     html:    layout({ eyebrow: "Last day", accent: "coral", headline, body, primaryCta: { href: `${APP_URL}/?intent=founder&plan=annual`, label: "Claim my spot" }, unsubscribeToken }),
-    text:    `${headline}\n\nToday is day 14 — your trial ends tonight.\n\nIf you've found VIRL useful, the Founder Circle is still open: $20/mo or $215/yr, locked for life. First 50 only.\n\n${APP_URL}/?intent=founder&plan=annual${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nToday is day 14 — your trial ends tonight.\n\nIf I've been useful, the Founder Circle is still open: $20/mo or $215/yr, locked for life. First 50 only.\n\n${APP_URL}/?intent=founder&plan=annual${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -203,7 +232,7 @@ export function trialExpired({ name, unsubscribeToken }) {
     <p style="margin:0 0 12px">${name ? name + ", your" : "Your"} 14-day trial is over. Your profile, vault, and saved plans are still here — they don't go anywhere.</p>
     <p style="margin:0 0 16px">If you'd like to keep generating new plans, captions, posts, scripts, and scans, subscribe today.</p>
     ${inlineButton({ href: `${APP_URL}`, label: "Upgrade to Standard" })}
-    <p style="margin:0">No hard feelings if not — reply and tell me why VIRL didn't fit. That feedback is gold this early.</p>`;
+    <p style="margin:0">No hard feelings if not — reply and tell me where I fell short. A real person reads every reply, and that feedback is gold this early.</p>`;
   return {
     subject: "Your VIRL free trial has ended",
     html:    layout({ eyebrow: "Trial ended", headline, body, unsubscribeToken }),
@@ -263,15 +292,15 @@ export function subscriptionCancelled({ name }) {
 // Greeting is weekday-neutral: the cron now sends this on each user's own
 // credit-reset day (see api/cron/email-triggers.js), which is rarely a Monday.
 export function weeklyReset({ name, unsubscribeToken }) {
-  const headline = "Fresh week, fresh momentum.";
+  const headline = "Your week's ready when you are.";
   const body = `
-    <p style="margin:0 0 12px">A new week — perfect time to draft your next plan and ship it before the week gets ahead of you.</p>
-    <p style="margin:0 0 12px">A 60-second plan generation sets the next seven days. The earlier you draft it, the more room you have to actually post it.</p>
-    <p style="margin:0">If your audience expanded last week — or anything changed about how you sound — update your profile first, then generate.</p>`;
+    <p style="margin:0 0 12px">New week. Give me 60 seconds and I'll have your next seven days planned before the week gets ahead of you.</p>
+    <p style="margin:0 0 12px">The earlier you generate it, the more room you have to actually post it. That's the whole game.</p>
+    <p style="margin:0">If your audience grew last week, or anything changed about how you sound, update your profile first and I'll fold it in.</p>`;
   return {
-    subject: "Fresh week, fresh VIRL plan",
+    subject: "Your week's ready — here's my thinking",
     html:    layout({ eyebrow: "Fresh week", headline, body, primaryCta: { href: APP_URL, label: "Generate this week's plan" }, unsubscribeToken }),
-    text:    `${headline}\n\nA new week — perfect time to draft your next plan.\n\nA 60-second generation sets the next seven days.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nNew week. Give me 60 seconds and I'll have your next seven days planned.\n\nThe earlier you generate it, the more room you have to post it.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -300,11 +329,11 @@ export function playbookDraftsReady({ count, summaries }) {
 
 // 10. Profile saved, no plan generated within 24h — activation nudge.
 export function phase1NoPlan({ name, unsubscribeToken }) {
-  const headline = "Your profile's set. Now build your week.";
+  const headline = "Your profile's set. Now let me build your week.";
   const body = `
-    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'ve given VIRL the foundation. The next step is the one that pays off — generating your first 7-day plan.</p>
-    <p style="margin:0 0 12px">It takes about 60 seconds. VIRL writes it in your voice, scoped to your audience, and timed to each platform's peak window.</p>
-    <p style="margin:0">If something's stopping you from clicking generate, hit reply and tell me why. Real person reads every reply.</p>`;
+    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'ve given me the foundation. The next step is the one that pays off — your first 7-day plan.</p>
+    <p style="margin:0 0 12px">It takes about 60 seconds. I write it in your voice, scoped to your audience, timed to each platform's peak window.</p>
+    <p style="margin:0">If something's stopping you from hitting generate, reply and tell me — a real person reads every reply.</p>`;
   return {
     subject: "Your VIRL profile's set — generate your first plan",
     html:    layout({ eyebrow: "Activation", headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Generate my first plan" }, unsubscribeToken }),
@@ -318,9 +347,9 @@ export function firstPlanGenerated({ name }) {
   const body = `
     <p style="margin:0 0 12px">It's live. A few things to know now that you have one:</p>
     <ul style="margin:0 0 16px;padding-left:18px">
-      <li><strong>Save the posts you love</strong> to your Vault — VIRL learns your taste from what you save and weights similar styles in next week's plan.</li>
-      <li><strong>Generate scripts</strong> from any plan card. The hook + sections + CTA all stay in your voice.</li>
-      <li><strong>Log results after you post</strong> (views, likes, saves). The Results tab is how VIRL learns what's actually working for <em>your</em> audience, not generic best practices.</li>
+      <li><strong>Save the posts you love</strong> to your Vault — I learn your taste from what you save and weight similar styles in next week's plan.</li>
+      <li><strong>Generate scripts</strong> from any plan card. The hook, sections, and CTA all stay in your voice.</li>
+      <li><strong>Log results after you post</strong> (views, likes, saves). That's how I learn what's actually working for <em>your</em> audience, not generic best practices.</li>
     </ul>
     <p style="margin:0">Plans reset Monday morning. Until then, this one's yours to refine and ship.</p>`;
   return {
@@ -335,8 +364,8 @@ export function inactive7Day({ name, unsubscribeToken }) {
   const headline = "Your VIRL plan's been waiting.";
   const body = `
     <p style="margin:0 0 12px">${name ? "Hey " + name + " — it" : "It"}'s been a week since you signed in. Your plan, vault, and saved scripts are still here exactly as you left them.</p>
-    <p style="margin:0 0 12px">If life got in the way, no judgment. If something about VIRL didn't click, I'd love to hear it — reply to this email.</p>
-    <p style="margin:0">Otherwise, the Monday reset is right around the corner. Worth a 60-second plan generation to put a fresh week on the calendar.</p>`;
+    <p style="margin:0 0 12px">If life got in the way, no judgment. If something didn't click, reply and tell me — a real person reads every reply.</p>
+    <p style="margin:0">Otherwise, the Monday reset is right around the corner. Give me 60 seconds and I'll put a fresh week on your calendar.</p>`;
   return {
     subject: "Your VIRL plan is waiting",
     html:    layout({ eyebrow: "Check-in", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
@@ -348,15 +377,15 @@ export function inactive7Day({ name, unsubscribeToken }) {
 // who didn't open the app on Sunday. Marketing-opt-out-able.
 export function sundayLogNudge({ name, unloggedCount, unsubscribeToken }) {
   const noun = unloggedCount === 1 ? "post" : "posts";
-  const headline = "How did this week go?";
+  const headline = "How did this week land?";
   const body = `
     <p style="margin:0 0 12px">${name ? name + ", you" : "You"} have ${unloggedCount} ${noun} from this week's plan that ${unloggedCount === 1 ? "still needs" : "still need"} results logged. It takes 90 seconds.</p>
-    <p style="margin:0 0 12px">Why bother: VIRL learns what's working for <em>your</em> audience from these numbers. Logged results sharpen next week's plan in ways generic best practices can't.</p>
+    <p style="margin:0 0 12px">Why it's worth it: I learn what's working for <em>your</em> audience from these numbers. Tell me how it landed and next week's plan gets sharper in ways generic best practices can't.</p>
     <p style="margin:0">Plans reset tomorrow morning, so this is the last good window to log this week.</p>`;
   return {
     subject: `Log this week's ${noun} — ${unloggedCount} pending`,
     html:    layout({ eyebrow: "Weekly wrap", headline, body, primaryCta: { href: APP_URL + "/?tab=results", label: "Log results" }, unsubscribeToken }),
-    text:    `${headline}\n\nYou have ${unloggedCount} ${noun} from this week's plan that need results logged. Takes 90 seconds.\n\nVIRL learns what's working for your audience from these numbers.\n\n${APP_URL}/?tab=results${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nYou have ${unloggedCount} ${noun} from this week's plan that need results logged. Takes 90 seconds.\n\nTell me how they landed and next week's plan gets sharper.\n\n${APP_URL}/?tab=results${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -386,7 +415,7 @@ export function postingReminder({ name, cards, unsubscribeToken }) {
   const headline = count === 1 ? "One post on deck tomorrow." : `${count} posts on deck tomorrow.`;
   const items = reminderCardRows(list);
   const body = `
-    <p style="margin:0 0 14px">${name ? name + ", here" : "Here"}'s what's on your VIRL plan for tomorrow. Tonight's the easy window to prep — the times below are when your audience is most active.</p>
+    <p style="margin:0 0 14px">${name ? name + ", here" : "Here"}'s what I've got on your plan for tomorrow. Tonight's the easy window to prep — the times below are when your audience is most active.</p>
     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 8px">${items}</table>`;
   const textLines = list.map(c => {
     const meta = [c.platform, c.postTime].filter(Boolean).join(" · ");
@@ -395,7 +424,7 @@ export function postingReminder({ name, cards, unsubscribeToken }) {
   return {
     subject: count === 1 ? "Tomorrow's post is ready to go" : `Tomorrow's ${count} posts are ready to go`,
     html:    layout({ eyebrow: "Tomorrow", accent: "coral", headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Open tomorrow's plan" }, unsubscribeToken }),
-    text:    `${headline}\n\nHere's what's on your VIRL plan for tomorrow:\n\n${textLines}\n\n${APP_URL}/?tab=plan${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nHere's what I've got on your plan for tomorrow:\n\n${textLines}\n\n${APP_URL}/?tab=plan${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -438,19 +467,19 @@ export function sundayReset({ name, unloggedCount, cards, hasPlan, unsubscribeTo
 
 // 14. Trial day 7 mid-trial check-in — friendly, no urgency yet.
 export function trialDay7({ name, unsubscribeToken }) {
-  const headline = "A week with VIRL.";
+  const headline = "One week in.";
   const body = `
-    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'re halfway through the free trial. Most creators discover by day 7 that the saved-to-vault loop is where VIRL actually starts working — once VIRL has 3-5 saved posts to learn from, the next plan starts feeling pointed.</p>
+    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'re halfway through the free trial. Here's what most creators figure out by day 7: the saved-to-vault loop is where I actually start working. Once I have 3-5 saved posts to learn from, the next plan starts feeling pointed.</p>
     <p style="margin:0 0 12px">If you haven't yet, two quick things to try this week:</p>
     <ul style="margin:0 0 16px;padding-left:18px">
-      <li><strong>Save 3 posts</strong> from your plan to your vault. Future plans will weight similar styles higher.</li>
-      <li><strong>Log results</strong> on anything you've actually posted. The Results tab is how VIRL learns what's landing for <em>your</em> audience, not generic best practices.</li>
+      <li><strong>Save 3 posts</strong> from your plan to your vault. I'll weight similar styles higher next time.</li>
+      <li><strong>Log results</strong> on anything you've actually posted. That's how I learn what's landing for <em>your</em> audience, not generic best practices.</li>
     </ul>
-    <p style="margin:0">If something's not clicking, hit reply — real person reads every reply.</p>`;
+    <p style="margin:0">If something's not clicking, reply — a real person reads every one.</p>`;
   return {
-    subject: "How VIRL gets sharper after this week",
+    subject: "How I get sharper after this week",
     html:    layout({ eyebrow: "Mid-trial", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
-    text:    `${headline}\n\nYou're halfway through the trial. Two things to try this week: save 3 posts to your vault, and log results on anything you've posted.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nYou're halfway through the trial. Two things to try this week: save 3 posts to your vault, and log results on anything you've posted — that's how I get sharper.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 

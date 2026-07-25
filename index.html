@@ -1565,7 +1565,7 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
         </span>
       )}
       {rating==="down"&&chipSent&&(
-        <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,color:B.muted}}>Noted — VIRL learns from this</span>
+        <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,color:B.muted}}>Noted — I'll learn from this</span>
       )}
       <button onClick={onDown} disabled={working} aria-label="Thumbs down"
         style={{
@@ -2952,44 +2952,49 @@ const Spinner = ({text}) => (
 // covers the voice-drift gate's occasional corrective retry ("Making sure it
 // sounds like you…") — with a few high-value craft tips so the wait delivers
 // value rather than just passing time. Kept short; ~3s each.
+// [PERSONA] Loading states in VIRL's first person — the creator is watching
+// their strategist work, not watching a progress bar. The plan set ends on a
+// visible review step ("Reviewing every post for voice match…"): the self-check
+// pass now runs in-prompt, and surfacing it is a trust signal — the creator
+// sees that VIRL checks its own work before handing it over.
 const WAIT_MESSAGES = {
   plan: [
-    "Reading your voice fingerprint…",
-    "Pulling this week's trends for your platforms…",
-    "Mapping ideas to your best posting days…",
-    "Drafting each post in your voice…",
+    "Reading how you actually sound…",
+    "Checking what's trending in your niche this week…",
+    "Building your week…",
+    "Mapping each post to your best days…",
     "Balancing formats so your week isn't all one thing…",
-    "A strong first line is what stops the scroll — every card leads with one.",
-    "Tip: save posts you love to your Vault — VIRL learns your taste from them.",
+    "My rule: every card earns its slot or it's cut.",
+    "Reviewing every post for voice match…",
     "Almost there — lining up your week…",
   ],
   post: [
     "Re-reading how you actually write…",
-    "Shaping the hook before the 'see more' fold…",
+    "Landing the hook before the 'see more' fold…",
     "Drafting in your voice, not generic AI…",
-    "Making sure it sounds like you…",
-    "Tip: the first line does most of the work on social — earn the next one.",
+    "Checking it still sounds like you…",
+    "My take: the first line does most of the work — I'm earning the next one.",
     "Tightening it so every line pulls its weight…",
   ],
   scan: [
     "Looking at what's actually in your shot…",
-    "Scoring it against what's performing right now…",
+    "Scoring it against what's landing right now…",
     "Picking the platform that rewards this most…",
-    "Writing a caption in your voice…",
-    "Tip: posts that show a face tend to out-perform ones that don't.",
+    "Writing your caption in your voice…",
+    "Making my call…",
   ],
   caption: [
     "Re-reading your voice…",
     "Trying a few angles on the hook…",
     "Drafting options in your style…",
-    "Making sure it sounds like you…",
-    "Tip: one clear idea beats three crammed into one caption.",
+    "Checking each one sounds like you…",
+    "My rule: one clear idea beats three crammed in.",
   ],
   script: [
-    "Shaping the hook for the first 1.5 seconds…",
+    "Landing the hook for the first 1.5 seconds…",
     "Structuring the beats…",
     "Writing it the way you'd actually say it…",
-    "Tip: the first 3 seconds decide whether they keep watching.",
+    "My take: the first 3 seconds decide whether they keep watching.",
   ],
 };
 
@@ -6851,8 +6856,8 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:personalizationOn?"rgba(255,255,255,0.75)":B.muted,lineHeight:1.5}}>
             {personalizationOn
-              ? "VIRL is learning from the sources you've enabled below."
-              : "VIRL is not learning from any source. Generations will be less tailored to your voice."}
+              ? "I'm learning from the sources you've enabled below."
+              : "I'm not learning from any source right now. Your generations will be less tailored to your voice."}
           </div>
         </div>
       </div>
@@ -7021,7 +7026,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
           <div style={{padding:"4px 24px 22px"}}>
             <div id="vp-name" style={{marginBottom:18}}>
               <Label>Your first name <TierBadge tier="basic"/></Label>
-              <input value={name} onChange={function(e){setName(e.target.value);}} placeholder="What should VIRL call you?" style={inputStyle}/>
+              <input value={name} onChange={function(e){setName(e.target.value);}} placeholder="What should I call you?" style={inputStyle}/>
             </div>
             <div id="vp-voice" style={{marginBottom:18}}>
               <Label>Describe your voice in your own words <span style={{color:B.coral,fontSize:10,fontWeight:600,letterSpacing:0,textTransform:"none"}}>most important field</span> <TierBadge tier="dialed"/></Label>
@@ -7288,7 +7293,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
               }}/>
               <Label>More voice samples (optional)</Label>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,marginBottom:10}}>
-                Each one gives VIRL another reference for how you sound. The more captions you add, the closer your generations land.
+                Each one gives me another reference for how you sound. The more captions you add, the closer your generations land.
               </div>
               {voiceSamples.map(function(sample, idx){
                 return (
@@ -7582,7 +7587,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
           <div id="vp-businessWebsite" style={{marginBottom:24}}>
             <Label>Your business or brand website (optional)</Label>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
-              If your content points to a business, VIRL uses this as the canonical link destination in CTAs and grounds real product/service names. If you've opted into "Research my public posts" under Personalization & Privacy, VIRL will also read your site for voice and offerings the next time it learns about you. Skip this if you're a personal brand — it won't affect your profile completeness.
+              If your content points to a business, I use this as the canonical link destination in CTAs and ground real product/service names. If you've opted into "Research my public posts" under Personalization & Privacy, I'll also read your site for voice and offerings the next time I learn about you. Skip this if you're a personal brand — it won't affect your profile completeness.
             </div>
             <input value={businessWebsite} onChange={function(e){setBusinessWebsite(e.target.value);}} placeholder="https://yourbusiness.com" style={Object.assign({},inputStyle,{fontStyle:"italic"})}/>
           </div>
@@ -7862,7 +7867,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
       )}
       {eliteDone && (
         <div style={{background:B.navy,borderRadius:12,padding:"18px 20px",marginTop:4}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>How VIRL uses your profile</div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>How I use your profile</div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:"rgba(255,255,255,0.7)",lineHeight:1.75}}>
             Every plan, caption, script, and scan is shaped by everything you have shared here. Your voice, platforms, purpose, off-limits, and north star all feed into every output.
           </div>
@@ -8015,7 +8020,7 @@ function Vault({vault,onDelete,onRemix}) {
        welcoming a guest, not a system reporting "no data found". */
     <div style={{textAlign:"center",padding:"60px 20px"}}>
       <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,marginBottom:8}}>Save what resonates with you.</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,maxWidth:380,margin:"0 auto",lineHeight:1.65}}>Tap Save on any caption or post you love – VIRL learns from what you keep, and your future plans get sharper.</div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,maxWidth:380,margin:"0 auto",lineHeight:1.65}}>Tap Save on any caption or post you love – I learn from what you keep, and your future plans get sharper.</div>
     </div>
   );
   return (
@@ -8137,7 +8142,7 @@ function Results({results,onPlanWithInsights,vault}) {
     <div style={{textAlign:"center",padding:"60px 20px"}}>
       <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,marginBottom:8}}>Nothing logged yet.</div>
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,maxWidth:420,margin:"0 auto",lineHeight:1.65}}>
-        {"When you mark a plan card as posted and log a number — even just views — it lands here, grouped by week. VIRL reads these to learn what's actually working for your audience and sharpens next week's plan."}
+        {"When you mark a plan card as posted and log a number — even just views — it lands here, grouped by week. I read these to learn what's actually working for your audience and sharpen next week's plan."}
       </div>
     </div>
   );
@@ -8154,7 +8159,7 @@ function Results({results,onPlanWithInsights,vault}) {
   }
   return (
     <div>
-      <SherpaTip>These are your real numbers. Log results after every post and VIRL will show you which platforms, formats, and topics are actually working for your specific audience.</SherpaTip>
+      <SherpaTip>These are your real numbers. Log results after every post and I'll show you which platforms, formats, and topics are actually working for your specific audience.</SherpaTip>
       {/* [UX-01] Plan-next-week CTA — only mounted once we have a top
            performer to reference. */}
       {onPlanWithInsights && topPerformer && (
@@ -8197,14 +8202,14 @@ function Results({results,onPlanWithInsights,vault}) {
             {perf.thin ? (
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>
                 {perf.total < 3
-                  ? "Log " + (3 - perf.total) + " more post" + ((3 - perf.total) === 1 ? "" : "s") + " and VIRL will surface your best-performing format and platform here — and lean next week's plan into them."
-                  : "Keep logging — once a couple of posts share a format or platform, VIRL will call out what's winning and steer your plan into it."}
+                  ? "Log " + (3 - perf.total) + " more post" + ((3 - perf.total) === 1 ? "" : "s") + " and I'll surface your best-performing format and platform here, then lean next week's plan into them."
+                  : "Keep logging. Once a couple of posts share a format or platform, I'll call out what's winning and steer your plan into it."}
               </div>
             ) : (
               <div>
                 {fmtLine && <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.ink,lineHeight:1.3,marginBottom:platLine?6:8}}>{fmtLine + "."}</div>}
                 {platLine && <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.ink,lineHeight:1.3,marginBottom:8}}>{platLine + "."}</div>}
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55}}>{"VIRL is already leaning your plans toward these."}</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55}}>{"I'm already leaning your plans toward these."}</div>
               </div>
             )}
           </div>
@@ -8986,10 +8991,10 @@ function SundayLogModal({unloggedCards, onLog, onClose, userToken}) {
           <div style={{width:40,height:4,background:B.border,borderRadius:99,margin:"0 auto 20px"}}/>
           <div style={{textAlign:"center",marginBottom:4}}>
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.26em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>Week in review</div>
-            <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.navy,lineHeight:1.15}}>Log this week's results.</div>
+            <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.navy,lineHeight:1.15}}>Tell me how they landed.</div>
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,textAlign:"center",marginTop:6}}>
-            Fill in what you remember – VIRL will use this to get sharper each week.
+            Fill in what you remember. I use these numbers to make next week's plan sharper.
           </div>
         </div>
 
@@ -12546,7 +12551,7 @@ return (
                 {"← Back to this week's plan"}
               </button>
             )}
-            <SherpaTip>Tell VIRL your setup and it builds your week across your platforms — every post with timing, trend angles, and the strategic reason behind it. Number of posts comes from your posting cadence × platform count, so a "daily" creator gets a fuller week than a "few times a week" creator. Tap Write Script on any card to go even deeper.</SherpaTip>
+            <SherpaTip>Tell me your setup and I'll build your week across your platforms — every post with its timing, trend angle, and the reason it earns its slot. Your post count comes from your posting cadence × platform count, so a "daily" creator gets a fuller week than a "few times a week" one. Tap Write Script on any card to go deeper.</SherpaTip>
             {/* [PLAN-STATE] 3-step wizard progress. Same state, same rows —
                  just staged so the first screen asks two questions, not
                  seven. */}
@@ -12628,7 +12633,7 @@ return (
                   placeholder="e.g. your newest listing, a product page, an event"
                   style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:13,fontWeight:300,padding:"10px 14px"}}/>
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:10.5,fontWeight:300,color:B.muted,marginTop:6}}>
-                  {"VIRL reads the page and builds 2\u20134 of this week's posts around it. If the page can't be read, the plan still generates \u2014 add key details in the box above instead."}
+                  {"I read the page and build 2\u20134 of this week's posts around it. If the page can't be read, the plan still generates \u2014 add key details in the box above instead."}
                 </div>
               </div>
               {/* [LIGHT-WEEK] Opt-in small week. Framed as a strategy
@@ -12734,7 +12739,7 @@ return (
                     );
                   })}
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:10}}>
-                    Check anything you want VIRL to consider in this week's content.
+                    Check anything you want me to consider in this week's content.
                   </div>
                 </div>
               );
@@ -12817,7 +12822,10 @@ return (
                           "pulled for this plan" would overclaim for those. */}
                       {planUsedFreshTrends && planTrendsSnapshot && (
                         <div style={{marginTop:10,display:"flex",alignItems:"center",gap:7,fontFamily:"'Jost',sans-serif",fontSize:10.5,fontWeight:600,letterSpacing:"0.04em",color:B.navy}}>
-                          <span aria-hidden="true">⚡</span> Built on live trend data pulled for this plan
+                          <span aria-hidden="true">⚡</span>
+                          {planTrendsSnapshot.refreshedAt
+                            ? "Trend data refreshed " + planTrendsSnapshot.refreshedAt
+                            : "Built on live trend data pulled for this plan"}
                         </div>
                       )}
                       {/* [REFERRAL] Share moment right where the plan pays
@@ -13139,9 +13147,18 @@ return (
                   <div style={{background:B.navySoft,borderRadius:14,padding:"16px 20px",marginBottom:16,display:"flex",gap:14,alignItems:"flex-start"}}>
                     <div style={{fontSize:20,flexShrink:0}}>{"✦"}</div>
                     <div style={{flex:1}}>
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.navy,marginBottom:4}}>This plan was built around you.</div>
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:600,color:B.navy,marginBottom:4}}>I built this around you.</div>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.6}}>
-                        {profileComplete?"Every post uses "+profile.name+"'s voice, audience, and pillars. Each card shows the strategic reason it will work for your specific audience.":"Fill in your Creator Profile to make every plan sound like you - not generic AI."}
+                        {profileComplete?"Every post uses "+profile.name+"'s voice, audience, and pillars. Each card shows my reason it earns its slot for your specific audience.":"Fill in your Creator Profile and I'll make every plan sound like you, not generic AI."}
+                      </div>
+                      {/* [PERSONA/C4] Confirmation that the in-prompt self-check
+                           ran. The plan path appends SELF_CHECK_RUBRIC, so every
+                           plan is reviewed for voice match + trend grounding
+                           before it reaches the creator. Surfacing it is a trust
+                           signal — the creator sees VIRL checks its own work. */}
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:400,color:B.navy,opacity:0.75,lineHeight:1.5,marginTop:8,display:"flex",alignItems:"center",gap:6}}>
+                        <span aria-hidden="true">{"✓"}</span>
+                        Reviewed for voice match and trend accuracy.
                       </div>
                     </div>
                     <button onClick={dismissExplainer}
@@ -13159,7 +13176,7 @@ return (
                     <div style={{flex:1}}>
                       <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.navy,lineHeight:1.2,marginBottom:4}}>Learning from your Vault.</div>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.navy,lineHeight:1.55}}>
-                        {"Based on your "+vaultPatterns.count+" saved post"+(vaultPatterns.count===1?"":"s")+", VIRL is weighing "+(vaultPatterns.topFormat||vaultPatterns.topPlatform)+" content higher this week."}
+                        {"Based on your "+vaultPatterns.count+" saved post"+(vaultPatterns.count===1?"":"s")+", I'm weighing "+(vaultPatterns.topFormat||vaultPatterns.topPlatform)+" content higher this week."}
                       </div>
                     </div>
                   </div>
@@ -13548,7 +13565,7 @@ return (
                 {playbookFetched && Object.keys(playbook).length > 0 && (
                   <div style={{background:B.navySoft,borderRadius:12,padding:"14px 18px",marginTop:8}}>
                     <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.navy,marginBottom:4}}>The same intel powers every VIRL generation</div>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.6}}>Platforms shift constantly. Anything you see here is what VIRL is silently following when it builds a plan, writes a script, or scans a photo.</div>
+                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.6}}>Platforms shift constantly. Anything you see here is what I'm silently following when I build a plan, write a script, or scan a photo.</div>
                   </div>
                 )}
               </div>

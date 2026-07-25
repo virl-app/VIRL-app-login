@@ -156,6 +156,16 @@ function buildVoiceFingerprintBlock(profile) {
 // "view-source" to "non-trivial attack", not to be unjailbreakable.
 
 import { buildComplianceBlock } from "./compliance.js";
+// [PERSONA] The VIRL character sheet, rationale voice rules, self-check
+// rubric, and the two-register split. Single source of truth — no builder in
+// this file may inline its own copy of any of them. Boundary rules (where the
+// persona may and may not speak) are documented at the top of that module.
+import {
+  VIRL_PERSONA,
+  RATIONALE_RULES,
+  SELF_CHECK_RUBRIC,
+  registerSplitFor,
+} from "./virl-persona.js";
 // [NICHE-PLAYBOOK] Per-niche success models + per-goal tactics. Same
 // circular-import shape as compliance.js (niche-playbook.js imports
 // nicheCategory back from this module) — safe because both sides only
@@ -164,10 +174,18 @@ import { formatNichePlaybookForPrompt } from "./niche-playbook.js";
 
 // ── Models ─────────────────────────────────────────────────────────────────
 export const MODEL_SONNET    = "claude-sonnet-4-6";
-export const MODEL_HAIKU     = "claude-haiku-4-5-20251001";
+// [SINGLE-MODEL] Haiku is retired from the active fleet — every generation now
+// runs on Sonnet (persona rollout: one model, one consistent VIRL voice across
+// every surface, including the log-metrics OCR that used to run on Haiku). The
+// constant + its pricing row in pricing.js are kept ONLY so historical
+// usage_events rows priced at Haiku still resolve; nothing calls it anymore.
+export const MODEL_HAIKU     = "claude-haiku-4-5-20251001"; // retired — see [SINGLE-MODEL]
 export const MODEL_OPUS      = process.env.PLAN_MODEL_OVERRIDE || "";   // e.g. "claude-opus-4-8" — [OPUS-FLAG]
 export const PLAN_MODEL       = MODEL_OPUS || MODEL_SONNET;
-export const ALLOWED_MODELS  = [MODEL_SONNET, MODEL_HAIKU, PLAN_MODEL].filter((v, i, a) => v && a.indexOf(v) === i);
+// Runtime allow-list for `built.model` (chat.js coerces anything else to
+// Sonnet). Haiku is intentionally NOT here anymore — the fleet is Sonnet, plus
+// the optional Opus plan-model override when PLAN_MODEL_OVERRIDE is set.
+export const ALLOWED_MODELS  = [MODEL_SONNET, PLAN_MODEL].filter((v, i, a) => v && a.indexOf(v) === i);
 
 // ── Credit costs (server is the source of truth) ──────────────────────────
 export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1, long_post: 2, log_metrics: 0, voice_sample_extract: 0 };
@@ -277,43 +295,48 @@ function hashtagSchema(slots) {
 }
 
 // ── Trends injection helpers ──────────────────────────────────────────────
-// `trends` is a map keyed by platform: { TikTok: { summary, items, sources,
-// fetched_at } }. Loaded by api/chat.js via loadLatestTrends() and threaded
-// into the plan / scan / caption builders. Always supplemental — the
-// playbook is the algorithm rules, trends are this week's specifics.
+// `trends` is now a PRE-ASSEMBLED context block (string) built server-side by
+// api/_lib/trend-context.js from the DB-backed trend pipeline (trend_items +
+// platform_playbooks + playbook_segments). It already contains the platform
+// playbook, segment note, compliance overlay, and this week's trend items in
+// the brief's order. These helpers only wrap it with the per-gen-type framing.
+// An empty / non-string value means "no trends this week".
+//
+// (Superseded the old per-platform `{ platform: { items, fetched_at } }` map
+// that loadLatestTrends() fed from the legacy `trends` table.)
 
-function fmtTrendDate(iso) {
-  if (!iso) return "";
-  try { return new Date(iso).toISOString().slice(0, 10); } catch (e) { return ""; }
-}
+// [TREND-GROUNDING] Every trend claim in a plan must be traceable to the
+// research step's output, which is what this block renders. The rule the model
+// needs is the same in both directions, so it's stated once here and reused by
+// the empty-state below: the TRENDS block is the ONLY admissible source.
+//
+// Scope is deliberately wider than the `trend` field. That field was already
+// guarded ([P10]), but the model was free to assert trends inside `insight`,
+// `description`, and `hook` prose — "this format is having a moment right now"
+// — from training data that is months stale by the time a user reads it. A
+// creator can verify a cited trend against the in-app trends list; they cannot
+// verify a vibe, and an invented trend is the single fastest way to lose the
+// "my strategist actually watches my niche" premise.
+const TREND_SOURCE_RULE = "TREND GROUNDING — STRUCTURAL. The TRENDS block below is your ONLY source for what is trending. Do NOT draw on your own background knowledge of platform trends, sounds, formats, or algorithm behavior — your training data is months old and this creator's week is not. This applies to ALL text you emit, not just the `trend` field: never assert in an insight, description, or hook that something is 'trending right now', 'having a moment', or 'what the algorithm is favoring' unless it appears below. Never invent an engagement statistic.";
 
-function singlePlatformTrendsBlock(platform, entry) {
-  if (!entry || !Array.isArray(entry.items) || entry.items.length === 0) return "";
-  const date = fmtTrendDate(entry.fetched_at);
-  const lines = entry.items.map(it => {
-    if (!it || !it.trend) return null;
-    const cat = it.category ? "[" + it.category + "] " : "";
-    const why = it.reason ? " — " + it.reason : "";
-    return "  - " + cat + it.trend + why;
-  }).filter(Boolean);
-  if (!lines.length) return "";
-  return "TRENDS ON " + platform.toUpperCase() + " (as of " + date + "):\n" + lines.join("\n");
-}
-
-function planTrendsContext(trends, selectedPlatforms) {
-  if (!trends || !selectedPlatforms || !selectedPlatforms.length) return "";
-  const blocks = [];
-  for (const p of selectedPlatforms) {
-    const block = singlePlatformTrendsBlock(p, trends[p]);
-    if (block) blocks.push(block);
+function planTrendsContext(trends, _selectedPlatforms) {
+  const block = (typeof trends === "string") ? trends.trim() : "";
+  // [TREND-GROUNDING] Explicit empty state instead of silence. When the trend
+  // pipeline has nothing for this creator (fetch failed, cold niche, quiet
+  // week), the prompt must NAME the absence — otherwise the grounding rule
+  // references "the TRENDS block below" with no such block, which reads as an
+  // oversight and invites the model to fill the gap from stale memory.
+  if (!block) {
+    return "\n\n" + TREND_SOURCE_RULE
+      + "\n\nTRENDS: no trend research is available for this week. That means NO card may cite a trend. Omit the `trend` field on every card and make zero claims about what is currently trending. Build the week on the creator's own strategy, cadence, and logged results instead — a plan with no trend hooks is fine; an invented one is not.";
   }
-  if (!blocks.length) return "";
-  return "\n\nWeave these current trends into the plan where they fit naturally. Don't force them — skip a trend rather than retrofit it onto an off-brand post.\n\n" + blocks.join("\n\n");
+  return "\n\n" + TREND_SOURCE_RULE
+    + "\n\nWeave the current trends below into the plan where they fit naturally. Don't force them — skip a trend rather than retrofit it onto an off-brand post.\n\n"
+    + block;
 }
 
-function captionTrendsContext(trends, platform) {
-  const entry = trends && trends[platform];
-  const block = singlePlatformTrendsBlock(platform, entry);
+function captionTrendsContext(trends, _platform) {
+  const block = (typeof trends === "string") ? trends.trim() : "";
   if (!block) return "";
   return "\n\n" + block + "\n\nIf any of these naturally apply to the topic, lean into them. Otherwise ignore.";
 }
@@ -447,21 +470,11 @@ function planHistoryContext(history) {
 }
 
 function scanTrendsContext(trends) {
-  if (!trends) return "";
-  const platforms = Object.keys(trends);
-  if (!platforms.length) return "";
-  const lines = [];
-  for (const p of platforms) {
-    const entry = trends[p];
-    if (!entry || !Array.isArray(entry.items) || !entry.items.length) continue;
-    // Compact form for scan — the model is also reading platform signals
-    // from the playbook context, so trends are a smaller supplementary
-    // layer.
-    const top = entry.items.slice(0, 3).map(it => it && it.trend).filter(Boolean).join("; ");
-    if (top) lines.push("- " + p + ": " + top);
-  }
-  if (!lines.length) return "";
-  return "\n\nThis week's trends (use to break ties when picking the best platform):\n" + lines.join("\n");
+  const block = (typeof trends === "string") ? trends.trim() : "";
+  if (!block) return "";
+  // Scan already reads platform signals from the playbook context, so trends
+  // are a supplementary tie-breaker layer here.
+  return "\n\n" + block + "\n\n(Use these signals to break ties when picking the best platform.)";
 }
 
 // [SCAN-DETAILS] Optional free-text the creator types before scanning — any
@@ -805,7 +818,19 @@ function buildSystemPrompt(profile, role, vaultPatterns, personalDenylist) {
   const critical = buildCriticalFactsBlock(profile);
   const ctx      = buildProfileCtx(profile);
 
-  const shared = "You are VIRL, an expert " + role + " for social media creators. "
+  // [PERSONA] The character sheet leads every generation prompt. Two reasons
+  // it goes at literal position 0 rather than after the role line:
+  //   1. Persona is the frame the role sits inside, not a modifier on it —
+  //      "you are VIRL, and on this surface you're doing X" reads correctly;
+  //      "you are an expert caption writer, and also you have a personality"
+  //      gets treated as flavor and dropped under schema pressure.
+  //   2. [CACHE-TIER] It makes the shared tier's PREFIX identical across every
+  //      role. Previously each role diverged at token ~4 ("expert caption
+  //      writer" vs "expert content scriptwriter"), so the shared block only
+  //      cached per-role. Now ~400 tokens of persona + a role line later, the
+  //      cache prefix is common to all of them.
+  const shared = VIRL_PERSONA + "\n\n"
+    + "On this surface you're working as " + role + " for this creator. "
     + "You always produce content that sounds authentically like the creator — never generic AI. "
     + "Return ONLY valid JSON. No markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
@@ -856,10 +881,20 @@ function buildSystemPrompt(profile, role, vaultPatterns, personalDenylist) {
 // Non-plan builders all use this helper. buildPlan / buildPlanStrategy
 // compose their own shared/perUser pair because they have additional
 // shared content (schema, format diversity, format-specific fields).
-function composeSystemPrompt(profile, role, compliance, vaultPatterns, personalDenylist) {
+//
+// [PERSONA] `registers` is the optional { virl, creator } field map for this
+// surface. It lands in the SHARED tier because it's a property of the
+// surface's schema, not of the user — every caption request from every
+// creator gets byte-identical text, so it caches like the rest of the block.
+// Omit it only for surfaces with genuinely one register (see buildLogMetrics,
+// which has no persona at all).
+function composeSystemPrompt(profile, role, compliance, vaultPatterns, personalDenylist, registers) {
   const sp = buildSystemPrompt(profile, role, vaultPatterns, personalDenylist);
+  const split = registers
+    ? "\n\n" + registerSplitFor(registers.virl, registers.creator)
+    : "";
   return {
-    shared:  sp.shared + buildComplianceBlock(compliance),
+    shared:  sp.shared + split + buildComplianceBlock(compliance),
     perUser: sp.perUser,
   };
 }
@@ -928,6 +963,31 @@ const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mi
   + "Stories (Instagram, Facebook) are casual, in-the-moment, interactive (polls, questions, tap-throughs), ideal for daily presence and behind-the-scenes. "
   + "Long-form text (LinkedIn) is narrative storytelling, no visual required, ideal for thought leadership and personal essays. "
   + "Each post in the plan MUST set its 'format' field to exactly one of: video, single_image, carousel, quote_graphic, story, long_form_text. Do not invent other format values.";
+
+// [PERSONA] Field-level register map for the plan schema. The split is the
+// whole ballgame on this surface: the creator reads `insight` and `the_bet`
+// as VIRL talking to them, and PUBLISHES `caption` and `hook` as themselves.
+// Get it wrong in one direction and captions read like a consultant's memo;
+// get it wrong in the other and the strategy block reads like a caption.
+//
+// Direction fields (filmDirection, photoDirection, designDirection,
+// compositionTip) sit on the VIRL side: they're instructions TO the creator
+// about how to shoot or build the asset, never words that appear in the post.
+const PLAN_REGISTER_SPLIT = registerSplitFor(
+  [
+    "strategy.thesis", "strategy.optimizing_for", "strategy.audience_read",
+    "strategy.the_bet", "insight", "description", "repurpose",
+    "restDayTips[].title", "restDayTips[].body",
+    "filmDirection", "photoDirection", "compositionTip",
+    "slides[].designDirection", "designDirection",
+  ],
+  [
+    "title", "hook", "caption", "onScreenText[]",
+    "slides[].headline", "slides[].body", "quote",
+    "frames[].content", "frames[].textOverlay", "frames[].interactiveElement",
+    "body", "closing",
+  ]
+);
 
 // ── Builders, one per generation type ──────────────────────────────────────
 
@@ -1042,8 +1102,20 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // profileCtx was moved AFTER the schema rules so the shared content can
   // form a clean cache prefix. The model still sees both — order within
   // the assembled system prompt is shared-then-per-user.
-  const sharedSystemPrompt = "You are VIRL, an AI content strategist and creative director. "
-    + "Your job is to create highly personalized 7-day social media content plans that build on each other week over week. "
+  // [PERSONA] Plan is the surface where the persona matters most — it's the
+  // one that ships strategist commentary (strategy block, per-card `insight`,
+  // rest-day tips) alongside publishable creator copy (titles, hooks,
+  // captions, slides). So it gets all three blocks: the character sheet, the
+  // rationale voice rules (the "why this works" fields live here), and the
+  // register split naming which output field belongs to which voice.
+  //
+  // PLAN_REGISTER_SPLIT is built from the actual schema field names below.
+  // An abstract "keep the voices separate" line gets ignored under schema
+  // pressure; a literal field list does not.
+  const sharedSystemPrompt = VIRL_PERSONA + "\n\n"
+    + PLAN_REGISTER_SPLIT + "\n\n"
+    + RATIONALE_RULES + "\n\n"
+    + "On this surface you're building the creator's week: a highly personalized 7-day social media content plan that builds on the weeks before it. "
     + "Always return valid JSON only — no markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
     + LOCALE_LINE + " "
@@ -1111,7 +1183,20 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // [COMPLIANCE 1] Per-niche guardrails. Empty string when the user's
     // niche / locale isn't covered. Per-niche but shared across all users
     // of that niche → belongs in the shared cache tier.
-    + complianceBlock;
+    + complianceBlock
+    // [PERSONA] Self-check rubric LAST, after the schema and every field
+    // rule — rubric item 5 ("does the output match the required schema
+    // exactly?") needs a schema above it to point at, and the whole block
+    // is a review pass, which only means anything once the model has read
+    // what it's reviewing against.
+    //
+    // Embedded critique in a SINGLE call, deliberately: a second round trip
+    // would double plan latency (already the slowest surface) and double the
+    // output-token bill on the most expensive generation type. The model
+    // drafts, reviews, and revises inside one completion, and emits only the
+    // revised plan — "Do not show your review notes" is load-bearing, since
+    // any review prose it leaks would break the JSON parse downstream.
+    + "\n\n" + SELF_CHECK_RUBRIC;
 
   // [CACHE-TIER] Leading paragraph break so the perUser block doesn't
   // jam against the shared block's trailing punctuation when the model
@@ -1310,7 +1395,14 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // Reel on the creator's strongest format), the insight names it as
     // such instead of pretending there's a hidden lever. Never reach for
     // hype to fill the slot.
-    + " Add an `insight` field to EVERY card. 1-2 short specific sentences explaining the strategic call — hook structure, timing choice, format pick, audience read, anything the creator can learn from. Examples: 'This hook leads with curiosity — strongest format for educational content.' / 'Tuesday at 7pm — when your audience is most active.' / 'Quote-on-image plays well on Instagram saves in this niche.' If a card is a sensible default with no specific strategic angle, say so honestly: 'A solid default — your audience already shows up for this format on Tuesdays.' / 'Standard cadence pick — this slot exists to keep your week consistent, not to break new ground.' NEVER use 'engagement-boosting', 'go viral', 'algorithm hack', or generic platitudes. Voice is honest strategist, not hypey marketer."
+    // [PERSONA] `insight` is the flagship rationale field — it follows the
+    // RATIONALE VOICE rules in the system prompt rather than restating them
+    // here. What stays local is the part those rules don't cover: the honesty
+    // valve for cards that genuinely have no clever angle. Without it the
+    // "cite something specific" rule pressures the model into inventing a
+    // hidden lever for a routine Tuesday Reel, which is exactly the fabricated
+    // -reasoning failure the rules exist to prevent.
+    + " Add an `insight` field to EVERY card — your call on why this post earns its slot, in your voice, following the RATIONALE VOICE rules above. Name the post's job (reach, nurture, convert, community) and the specific thing driving the call: the trend it rides, the timing, the format pick, what their logged results say. If a card is a sensible default with no clever angle, SAY SO — do not manufacture a hidden lever to fill the slot. Honest examples: \"A solid default. Your audience already shows up for this format on Tuesdays, so I'm not going to get cute with it.\" / \"This slot's here to keep your week consistent, not to break new ground.\" NEVER 'engagement-boosting', 'go viral', 'algorithm hack', or a sentence that just restates the post."
     // [P10] Trend honesty. The `trend` field used to be a free-text
     // string and the model filled it with vague riffs ('morning routine
     // content', 'self-care vibes') even when no real trend was on the
@@ -1470,7 +1562,15 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
   // [COMPLIANCE 1] Per-niche guardrails ride the cached system prefix
   // alongside the base role prompt. Empty string for out-of-scope niches.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and creative director", compliance, null, personalDenylist);
+  // [PERSONA] Pure VIRL voice — the strategy block is entirely you talking to
+  // the creator about their week. Nothing here gets published, so there is no
+  // creator-voice field to protect. It DOES need the rationale rules: `the_bet`
+  // is the single most slop-prone field in the product.
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and creative director", compliance, null, personalDenylist, {
+    virl:    ["thesis", "optimizing_for", "audience_read", "success_metric[].label", "the_bet"],
+    creator: [],
+  });
+  systemPrompt.shared += "\n\n" + RATIONALE_RULES;
 
   // Condensed per-card line — enough signal for the model to find a
   // through-line, no card bodies/hashtags that would inflate tokens.
@@ -1531,7 +1631,13 @@ function buildScript(params, profile, vaultPatterns, playbook, _trends, _history
   // [VAULT-EXEMPLARS] vaultPatterns threaded through so scripts get the
   // same few-shot voice references as plans + captions.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "content scriptwriter", compliance, vaultPatterns, personalDenylist);
+  // [PERSONA] Mixed register. `tip` and `shotList` are capture directions —
+  // you talking to the creator behind the camera. Everything the camera
+  // actually records is theirs.
+  const systemPrompt = composeSystemPrompt(profile, "content scriptwriter", compliance, vaultPatterns, personalDenylist, {
+    virl:    ["sections[].tip", "shotList[]", "audioSuggestion"],
+    creator: ["hook", "sections[].script", "cta", "onScreenText[]"],
+  });
   const userPrompt = "Write a complete ready-to-film script for this post: " + (card.title || "") + ". "
     + "Platform: " + platform + " — format guide: " + guide
     + scriptPlaybookContext(playbook, platform) + " "
@@ -1588,7 +1694,11 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
   // [VAULT-EXEMPLARS] vaultPatterns threaded through so long posts get the
   // same few-shot voice references as plans, scripts, captions.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "long-form LinkedIn writer", compliance, vaultPatterns, personalDenylist);
+  // [PERSONA] Single-register — the whole post ships under the creator's name.
+  const systemPrompt = composeSystemPrompt(profile, "long-form LinkedIn writer", compliance, vaultPatterns, personalDenylist, {
+    virl:    [],
+    creator: ["hook", "body", "closing"],
+  });
 
   // [VIRL-POSTS-TAB] Two seed modes — plan-card seed (existing flow:
   // "Write Full Post" on a long_form_text plan card) OR standalone
@@ -1715,7 +1825,13 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
         ? "Deep — 5-7 sections, room for an extended example or case study. Earn the length with specifics, not padding."
         : "Standard blog length — 4-5 sections, enough room to develop the argument without taxing the reader.";
 
-  const systemPrompt = composeSystemPrompt(profile, "long-form blog writer", compliance, vaultPatterns, personalDenylist);
+  // [PERSONA] Single-register — the whole article ships under the creator's
+  // byline. meta_description is the one neutral field: it's SEO plumbing, so
+  // it's plain and factual rather than in either voice.
+  const systemPrompt = composeSystemPrompt(profile, "long-form blog writer", compliance, vaultPatterns, personalDenylist, {
+    virl:    [],
+    creator: ["title", "subtitle", "intro", "sections[].heading", "sections[].body", "conclusion"],
+  });
 
   const seedBlock = [
     "## TOPIC & SUPPORTING POINTS",
@@ -1795,8 +1911,19 @@ function buildCaption(params, profile, vaultPatterns, playbook, trends, _history
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // [VAULT-EXEMPLARS] Caption builder gets the few-shot voice references too.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "caption writer and content strategist", compliance, vaultPatterns, personalDenylist);
+  // [PERSONA] Captions are a single-register surface: every field in the
+  // schema is publishable copy. Naming that explicitly matters MORE here than
+  // on a mixed surface, not less — the persona sheet at the top of the shared
+  // block tells the model to be opinionated and first-person, and with no
+  // field assigned to VIRL there is nowhere for that impulse to land except
+  // the captions themselves. So the map says so: nothing is VIRL's voice here.
+  // VIRL's judgment shows up in WHICH three options exist, never in narration.
+  const systemPrompt = composeSystemPrompt(profile, "caption writer and content strategist", compliance, vaultPatterns, personalDenylist, {
+    virl:    [],
+    creator: ["hook", "captions[].text", "hashtags[]"],
+  });
   const userPrompt = "Generate 3 caption options for a " + platform + " post about: " + topic + ". "
+    + "Every word of all three options is the CREATOR's voice, not yours — you are choosing the angles, they are speaking. Do not narrate your reasoning anywhere in the output. "
     + "Tone: " + tone + ". Length: " + length + " — " + lengthRule + " "
     + "Platform style: " + platformCtx
     + captionPlaybookContext(playbook, platform)
@@ -1824,7 +1951,12 @@ function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _
   // for a different angle on a caption, so steering toward THEIR voice is
   // doubly important here vs. a fresh caption from a blank brief.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "caption writer and remixer", compliance, vaultPatterns, personalDenylist);
+  // [PERSONA] Single-register, same as buildCaption — all three variants are
+  // publishable copy in the creator's voice.
+  const systemPrompt = composeSystemPrompt(profile, "caption writer and remixer", compliance, vaultPatterns, personalDenylist, {
+    virl:    [],
+    creator: ["shorter.text", "hook.text", "story.text"],
+  });
   const userPrompt = "Rewrite this caption 3 ways. Keep the core message but vary the angle. "
     + "Each version must sound like the creator — same voice, different approach. "
     + "Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"},\"compliance_note\":\"OPTIONAL — short disclosure when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"} "
@@ -1860,23 +1992,43 @@ const SCAN_POST_TYPE_GUIDE =
   + "- LinkedIn post: hook + a short professional caption (2-3 sentences); hashtags 0-3.\n"
   + "Omit any field that does not apply to the chosen post_type (e.g. no sticker_idea unless it's a Story).";
 
+// [PERSONA] Scan is where the persona is most visible to the creator: they
+// hand over a photo and want a verdict, not a report. Every judgment field
+// below is written in first person — "I'd post this one", "my call is
+// Instagram" — because a scan with no opinion is just a score with adjectives.
+//
+// The numeric score PRESENTATION is untouched ("X.X out of 10"): the client
+// parses that string to render the score dial, and the creator reads the
+// number as the objective part of the read. VIRL argues for the number in
+// `analysis`; it doesn't editorialize inside the number itself.
+//
+// `hook`, `caption`, `overlay_text`, `sticker_idea` and `slides` stay in the
+// CREATOR's voice — those get published. Boundary rule 2 holds here exactly
+// as it does on the plan: the verdict is VIRL's, the words in the post are not.
+// [PERSONA] Shared by both scan builders so the image and video-frame paths
+// can't drift apart on which fields carry which voice.
+const SCAN_REGISTERS = {
+  virl:    ["why_format", "tip", "analysis", "alt_formats[].note", "thumbnailNote"],
+  creator: ["hook", "caption", "overlay_text", "sticker_idea", "slides[]", "hashtags[]"],
+};
+
 function scanResultSchema(isVideo) {
   return "\n\nReply ONLY with valid JSON (no markdown): {"
     + "\"score\":\"X.X out of 10\","
     + "\"platform\":\"best platform\","
     + "\"post_type\":\"one of: Story | Reel | Feed post | Carousel | Video | LinkedIn post — the single best way to post THIS asset\","
-    + "\"why_format\":\"one sentence: why this asset suits that post type over the others\","
-    + "\"hook\":\"scroll-stopping opening line under 10 words\","
+    + "\"why_format\":\"YOUR voice, first person: one sentence on why you'd post it this way over the others. Name what in the asset drove the call.\","
+    + "\"hook\":\"scroll-stopping opening line under 10 words — the CREATOR's voice, this gets published\","
     + "\"overlay_text\":\"OPTIONAL short on-screen text for Story/Reel — a few words; omit for Feed/Carousel\","
     + "\"sticker_idea\":\"OPTIONAL Story only — one poll/question/quiz sticker prompt; omit otherwise\","
     + "\"audio_idea\":\"OPTIONAL Reel/Video only — a trending-audio or sound direction; omit otherwise\","
     + "\"slides\":[\"OPTIONAL Carousel only — 3-5 short slide headlines; omit otherwise\"],"
     + "\"caption\":\"caption SIZED to post_type per the sizing rules above — never a 3-paragraph caption on a Story\","
     + "\"hashtags\":[\"count sized to post_type; plain words, NO '#' prefix\"],"
-    + "\"alt_formats\":[{\"post_type\":\"another way to use this asset\",\"note\":\"one line on how to post it that way instead\"}],"
-    + "\"tip\":\"one specific tip to maximize this post on the chosen platform + post type\","
-    + "\"analysis\":\"2 sentences on why this will perform — cite the algorithmic signal\","
-    + (isVideo ? "\"thumbnailNote\":\"one sentence on why this frame works as a thumbnail\"," : "")
+    + "\"alt_formats\":[{\"post_type\":\"another way to use this asset\",\"note\":\"YOUR voice: one line on how you'd post it that way instead\"}],"
+    + "\"tip\":\"YOUR voice, first person: the one thing you'd do to make this land on the chosen platform + post type. Specific to THIS asset — not a tip that would fit any photo.\","
+    + "\"analysis\":\"YOUR voice, first person — this is your verdict and the creator reads it first. 2-3 short sentences. OPEN with the call ('I'd post this one.' / 'I'd sit on this one.' / 'I'd reshoot before this goes up.'), then say what in the image drove it — the light, the framing, what it reads as. CLOSE by naming the platform ('My call: Instagram.'). Be honest: if the asset is weak, say so and say why. No hedging, no cheerleading.\","
+    + (isVideo ? "\"thumbnailNote\":\"YOUR voice: one sentence on whether you'd use this frame as the thumbnail, and why.\"," : "")
     + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}";
 }
 
@@ -1885,8 +2037,9 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
   // Only the prompt-level block fires on scans; the post-generation scrub
   // stays wired to plan / script / caption paths.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist);
-  const userPrompt = "Analyze this image for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the image shows — then recommend the single best POST TYPE for it and write content sized to that type."
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist, SCAN_REGISTERS);
+  const userPrompt = "The creator just handed you this image and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the image actually shows — then call the single best POST TYPE and write content sized to that type."
+    + " Be honest about a weak asset. \"I'd reshoot this\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
     + scanDetailsContext(params)
@@ -1908,8 +2061,9 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
 function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   // [COMPLIANCE 1] Same scope as buildScanImage — prompt-level block only.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist);
-  const userPrompt = "Analyze this video frame for social media viral potential. Pick the best platform using the platform-signals reference below — match the visual to the platform that rewards what the frame shows — then recommend the single best POST TYPE for it and write content sized to that type."
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist, SCAN_REGISTERS);
+  const userPrompt = "The creator just handed you this video frame and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the frame actually shows — then call the single best POST TYPE and write content sized to that type."
+    + " Be honest about a weak frame. \"I'd pull a different frame\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
     + scanDetailsContext(params)
@@ -1928,13 +2082,17 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, 
 
 // [LOG-METRICS] Screenshot → metrics extraction. Deliberately minimal: no
 // creator profile, voice, compliance, or vault context — this is structured
-// OCR, not content generation. A tiny purpose-built prompt on the cheap model
-// keeps it fast and effectively free, and the shared (profile-less) system
-// string caches across every user's log_metrics call. Costs the user 0 credits
-// on purpose — logging results is friction we want to REMOVE, not meter; the
-// per-call spend is a fraction of a cent and the /api/chat rate limiter still
-// bounds abuse. The client shows the extracted numbers for confirmation before
-// writing them to results, so an OCR slip is caught by the human, not trusted.
+// OCR, not content generation. The tiny purpose-built prompt (300-token cap)
+// keeps it fast, and the shared (profile-less) system string caches across
+// every user's log_metrics call. Costs the user 0 credits on purpose — logging
+// results is friction we want to REMOVE, not meter; the per-call spend is tiny
+// and the /api/chat rate limiter still bounds abuse. The client shows the
+// extracted numbers for confirmation before writing them to results, so an OCR
+// slip is caught by the human, not trusted.
+// [SINGLE-MODEL] Runs on Sonnet like every other surface — the Sonnet/Haiku
+// split is retired. This is the only builder that ever used Haiku; on a tiny
+// bounded prompt the cost difference is negligible and Sonnet reads noisy
+// analytics panels more reliably.
 function buildLogMetrics() {
   const systemPrompt =
     "You extract social-media post metrics from a screenshot of a platform's "
@@ -1960,7 +2118,7 @@ function buildLogMetrics() {
   return {
     systemPrompt,   // plain string → single cache breakpoint, shared across users
     userPrompt,
-    model:     MODEL_HAIKU,
+    model:     MODEL_SONNET, // [SINGLE-MODEL] was MODEL_HAIKU; fleet is now all Sonnet
     maxTokens: 300,
     cost:      CREDIT_COSTS.log_metrics,
   };

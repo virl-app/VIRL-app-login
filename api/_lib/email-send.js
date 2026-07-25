@@ -13,6 +13,37 @@ const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const RESEND_API_KEY       = process.env.RESEND_API_KEY;
 const EMAIL_FROM           = process.env.EMAIL_FROM || "VIRL <hello@govirl.ai>";
+// [PERSONA] Sender-identity split (Task Group D3). Product/lifecycle mail sends
+// AS VIRL (the strategist); milestone + founder mail sends AS Lauren, the
+// founder, so the human moments feel human. Same address — only the display
+// name differs — so replies still thread to the same inbox and deliverability
+// isn't split across senders. Derived from EMAIL_FROM's address so a custom
+// EMAIL_FROM env override keeps both senders on the same domain.
+//   VIRL <hello@govirl.ai>  →  Lauren at VIRL <hello@govirl.ai>
+const EMAIL_FROM_FOUNDER   = process.env.EMAIL_FROM_FOUNDER
+  || `Lauren at VIRL <${(EMAIL_FROM.match(/<([^>]+)>/) || [, "hello@govirl.ai"])[1]}>`;
+
+// [PERSONA] Templates written in Lauren's voice (see the classification header
+// in email-templates.js). Everything not listed here sends as VIRL. These are
+// the RUNTIME template slugs the callers pass to sendEmail (snake_case), NOT
+// the camelCase builder names — the split is keyed on what actually arrives in
+// opts.template. Keep in lockstep with the classification header: a template's
+// voice and its sender must agree, or the From line contradicts the body.
+export const FOUNDER_VOICE_TEMPLATES = new Set([
+  "welcome",
+  "subscription_welcome",
+  "subscription_cancelled",
+  "inactive_30d",
+  "referral_rewarded",
+  "referral_milestone",
+]);
+
+// Resolve the display sender for a template slug. Central so callers never
+// hand-pick a From — they pass the template (which they already do) and the
+// voice split is applied in one place.
+export function senderFor(template) {
+  return FOUNDER_VOICE_TEMPLATES.has(template) ? EMAIL_FROM_FOUNDER : EMAIL_FROM;
+}
 
 function emailEnabled() {
   return !!(RESEND_API_KEY && SUPABASE_URL && SUPABASE_SERVICE_KEY);
@@ -147,7 +178,9 @@ export async function sendEmail(opts) {
   try {
     const resend = new Resend(RESEND_API_KEY);
     const { data, error } = await resend.emails.send({
-      from:    EMAIL_FROM,
+      // [PERSONA] From line follows the template's voice. Explicit opts.from
+      // still wins for any one-off caller that needs to override.
+      from:    opts.from || senderFor(opts.template),
       to:      [opts.to],
       subject: opts.subject,
       html:    opts.html,

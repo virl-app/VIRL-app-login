@@ -1,0 +1,104 @@
+[
+  {
+    "name": "Nashville realtor",
+    "niche": "Real Estate",
+    "goal": "Book more listing appointments",
+    "audience": "First-time buyers and move-up families in Franklin and Nashville suburbs",
+    "knownFor": "Straight talk about a market everyone else hypes",
+    "postFreq": "A few times a week",
+    "evalTopic": "a new Hendersonville listing hitting the market this weekend",
+    "personalFacts": "Sells in Franklin, Brentwood, and Hendersonville. Two kids in elementary school. Was a teacher before real estate.",
+    "loveToReference": "The teacher-to-realtor backstory; local coffee shops she shows homes near.",
+    "sampleCaption": "y'all. THIS kitchen. i've sold 40 homes in franklin and i still gasped.",
+    "voiceSamples": [
+      "hot take: the best time to list isn't spring. it's when your agent actually has a plan.",
+      "just left a closing where the sellers cried happy tears. this job, man."
+    ],
+    "handlePostExcerpts": [
+      "nobody tells first-time buyers this: your pre-approval number is not your budget. here's why.",
+      "showed 6 houses today. the one they picked wasn't even on their list. trust the process."
+    ]
+  },
+  {
+    "name": "Fitness coach",
+    "niche": "Fitness",
+    "goal": "Grow the online coaching waitlist",
+    "audience": "Busy women 30-45 rebuilding strength after having kids",
+    "knownFor": "Workouts that fit a real schedule, not a bodybuilder's",
+    "postFreq": "Daily",
+    "evalTopic": "a 15-minute strength circuit you can do before the kids wake up",
+    "personalFacts": "Certified strength coach. Trains clients online only. Had two kids; rebuilt her own strength postpartum.",
+    "neverAssume": "Do not assume clients have a gym membership or free weights.",
+    "loveToReference": "The 15-minute-before-the-kids-wake-up window; her own postpartum rebuild.",
+    "sampleCaption": "you don't need an hour. you need 15 honest minutes and to actually show up. that's it.",
+    "voiceSamples": [
+      "stop apologizing for the workout you didn't do. start with the one you can.",
+      "progress isn't linear and neither is motherhood. we adjust. we keep going."
+    ],
+    "handlePostExcerpts": [
+      "your core isn't weak. it's disconnected. here's the first move to wake it back up.",
+      "no equipment, no floor space, no excuses. wall sits while the coffee brews. go."
+    ]
+  },
+  {
+    "name": "Boutique owner",
+    "niche": "Fashion",
+    "goal": "Drive weekend foot traffic and online orders",
+    "audience": "Women 25-40 who want elevated basics without fast-fashion guilt",
+    "knownFor": "A tightly curated rack where everything actually goes together",
+    "postFreq": "A few times a week",
+    "evalTopic": "a new fall arrivals drop landing in-store Friday",
+    "personalFacts": "Runs a single storefront in a walkable downtown. Curates every piece herself. Small team of two.",
+    "loveToReference": "The Friday new-arrivals ritual; styling one piece three ways.",
+    "sampleCaption": "bought this for the shop and immediately wanted to keep it. that's how i know it's good.",
+    "voiceSamples": [
+      "one great blazer beats ten okay ones. i will die on this hill.",
+      "we don't do trends that expire in a season. we do things you'll actually wear."
+    ],
+    "handlePostExcerpts": [
+      "same dress, three ways: errands, dinner, and 'i have nothing to wear' emergencies.",
+      "restocked the jeans everyone's been asking for. they will not last the weekend."
+    ]
+  },
+  {
+    "name": "Wellness practitioner",
+    "niche": "Wellness",
+    "goal": "Fill the Sunday reset class and 1:1 sessions",
+    "audience": "Overworked professionals whose nervous systems are fried",
+    "knownFor": "Calm that doesn't feel woo — practical nervous-system work",
+    "postFreq": "A few times a week",
+    "evalTopic": "why your to-do list won't fix your exhaustion",
+    "personalFacts": "Runs a boutique wellness studio in Austin. Teaches a Sunday reset class. Background in somatic therapy.",
+    "neverAssume": "Do not assume the audience meditates or has any prior practice.",
+    "loveToReference": "The Sunday reset class; early-morning routines before the studio opens.",
+    "sampleCaption": "your nervous system doesn't care about your to-do list. start there instead.",
+    "voiceSamples": [
+      "no fluff today. just the one thing that actually moved the needle this week.",
+      "i used to think rest days were lazy. turns out they're the whole strategy."
+    ],
+    "handlePostExcerpts": [
+      "the 5am club is a lie. here's what actually works when you're already exhausted.",
+      "you can't think your way out of a stress response. you have to move through it."
+    ]
+  },
+  {
+    "name": "Consultant",
+    "niche": "Education",
+    "goal": "Book discovery calls for the consulting practice",
+    "audience": "Founders and operators at 10-50 person B2B companies",
+    "knownFor": "Turning vague strategy into a plan a team can actually run",
+    "postFreq": "Weekly",
+    "evalTopic": "a lesson from a client engagement about why most strategy decks die in a drawer",
+    "personalFacts": "Solo operations consultant. Ex-COO. Writes long-form on LinkedIn. Works with B2B SaaS.",
+    "loveToReference": "The ex-COO operator lens; the drawer where strategy decks go to die.",
+    "sampleCaption": "most strategy decks die in a drawer because nobody assigned the first ugly step.",
+    "voiceSamples": [
+      "strategy isn't the hard part. sequencing the work so a tired team can follow it is.",
+      "a plan nobody owns is a wish. name the owner or don't ship the plan."
+    ],
+    "handlePostExcerpts": [
+      "i've never seen a company fail from too little strategy. always too little execution.",
+      "the best operators i know are boring on purpose. boring ships. clever stalls."
+    ]
+  }
+]

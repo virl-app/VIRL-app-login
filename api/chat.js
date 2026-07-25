@@ -6,10 +6,11 @@ import {
   MODEL_SONNET,
 } from "./_lib/prompts.js";
 import { loadPlaybook }              from "./_lib/playbook.js";
-import { loadLatestTrends }          from "./_lib/trends.js";
 import { loadComplianceRules, getComplianceForNiche, scrubCompliance, detectHealthcareProvider, attachWatchoutNotes } from "./_lib/compliance.js";
-import { fetchInlineTrends, isValidTrendsSnapshot } from "./_lib/fresh-trends-inline.js";
-import { fetchRecentTrendStrings }   from "./_lib/recent-trends.js";
+// [TREND-PIPELINE] Per-generation trend context now comes from the DB-backed
+// trend pipeline (trend_items + playbook layer), assembled here, instead of a
+// live Perplexity web-search on every generation. See api/_lib/trend-context.js.
+import { buildTrendContext, isValidTrendSnapshot } from "./_lib/trend-context.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
 import { fetchEditsForMining, mineDenylistFromEdits } from "./_lib/personal-denylist.js";
@@ -75,19 +76,10 @@ function voiceCorrectionInstruction(drift) {
   return instr;
 }
 
-// Gen types that can be backed by inline fresh-trends research and the
-// `credits` column that gates each one for free-trial users. Paid users
-// (PAID_PLANS) bypass the gate entirely; each free user gets one freebie
-// per gen type per credit-week (resets alongside `credits.reset_at`).
-const FRESH_TRENDS_COLUMNS = {
-  plan:    'fresh_trends_plan_remaining',
-  scan:    'fresh_trends_scan_remaining',
-  caption: 'fresh_trends_caption_remaining',
-};
-// Map every concrete generationType to one of the keys above (or null
-// if the type doesn't get inline fresh trends). plan_partial /
-// plan_strategy / regen all inherit the parent plan's snapshot via the
-// client-supplied trendsSnapshot rather than firing Perplexity again.
+// [TREND-PIPELINE] Gen types that get DB-backed trend context. plan_partial /
+// plan_strategy / regen aren't listed: they inherit the parent plan's trend
+// block via the client-supplied trendsSnapshot rather than rebuilding it, so a
+// single-card regen stays consistent with the rest of the plan.
 const FRESH_TRENDS_TYPE = {
   plan:             'plan',
   scan_image:       'scan',
@@ -768,14 +760,13 @@ async function checkChatRateLimit(userId) {
   }
 }
 
-// Picks the platforms to fan inline Perplexity calls out over for each
-// gen type. Keeps the request count small (see MAX_INLINE_PLATFORMS) so
-// fresh-trends inline never balloons the per-call cost.
+// [TREND-PIPELINE] Picks the target platform(s) buildTrendContext queries the
+// DB trend pipeline for, per gen type:
 //   - plan / plan_partial:    user's selected platforms in this request
 //   - caption:                the single platform being captioned
 //   - scan_image / video:     user's profile.myPlatforms (no per-request
 //                             platform list — scan is multi-platform by
-//                             design). Empty → caller falls back to cached.
+//                             design). Empty → no trend context built.
 function pickInlinePlatforms(generationType, params, profile) {
   if (generationType === 'plan' || generationType === 'plan_partial') {
     return Array.isArray(params && params.platforms) ? params.platforms : [];
@@ -979,10 +970,10 @@ export default async function handler(req, res) {
     imageBase64,
     imageType,
     token: bodyToken,
-    // Client passes the parent plan's Perplexity snapshot back on regen
-    // paths (plan_partial / plan_strategy / regen) so we don't re-bill the
-    // user's fresh-trends allowance or fire a duplicate Perplexity call.
-    // Untrusted input — validated by isValidTrendsSnapshot before use.
+    // [TREND-PIPELINE] Client passes the parent plan's trend snapshot back on
+    // regen paths (plan_partial / plan_strategy / regen) so a single-card regen
+    // reuses the same trend block and stays consistent with the parent plan.
+    // Untrusted input — validated by isValidTrendSnapshot before use.
     trendsSnapshot: bodyTrendsSnapshot,
   } = req.body || {};
 
@@ -1106,6 +1097,29 @@ export default async function handler(req, res) {
       caption: row.fresh_trends_caption_remaining == null ? 1 : row.fresh_trends_caption_remaining,
     };
 
+    // Trial enforcement: free users get TRIAL_DAYS from signup. The client
+    // already blocks past day 14, but the cap is meaningless if the API
+    // doesn't enforce it too. Fail open when created_at is missing so a
+    // malformed auth row doesn't lock real users out.
+    //
+    // [TRIAL-GATE-ORDER] This MUST run before the lazy weekly reset below.
+    // It used to sit after it, which meant an expired free user who tapped
+    // Generate got their credits refilled to 20 and reset_at pushed +7d on
+    // the way to a 402 they were always going to receive. That left the
+    // credits table showing months-old free accounts on live weekly cycles —
+    // which reads as "the trial isn't enforced" in SQL even though every
+    // generation was in fact blocked. Gating first keeps the wallet state
+    // honest: no refill for an account that cannot spend it.
+    if (!isPaid && !compActive && createdAt) {
+      const signupMs = Date.parse(createdAt);
+      if (!Number.isNaN(signupMs)) {
+        const daysSinceSignup = Math.floor((Date.now() - signupMs) / 86400000);
+        if (daysSinceSignup >= TRIAL_DAYS) {
+          return res.status(402).json({ error: 'Your free trial has ended.' });
+        }
+      }
+    }
+
     // Lazy weekly reset — day-count-based per user, not calendar Mondays.
     // Refills credits AND the three fresh-trends counters in one PATCH so
     // a user who signs up Wednesday gets a full Wednesday-to-Wednesday
@@ -1135,20 +1149,6 @@ export default async function handler(req, res) {
       currentCredits = newCredits;
       freshTrends = { plan: 2, scan: 1, caption: 1 };
       resetAt = newResetAt; // [CREDIT-NUDGE] this request opened a new cycle
-    }
-
-    // Trial enforcement: free users get TRIAL_DAYS from signup. The client
-    // already blocks past day 14, but the cap is meaningless if the API
-    // doesn't enforce it too. Fail open when created_at is missing so a
-    // malformed auth row doesn't lock real users out.
-    if (!isPaid && !compActive && createdAt) {
-      const signupMs = Date.parse(createdAt);
-      if (!Number.isNaN(signupMs)) {
-        const daysSinceSignup = Math.floor((Date.now() - signupMs) / 86400000);
-        if (daysSinceSignup >= TRIAL_DAYS) {
-          return res.status(402).json({ error: 'Your free trial has ended.' });
-        }
-      }
     }
   } catch (e) {
     console.error('Credit check error:', e.message);
@@ -1188,11 +1188,10 @@ export default async function handler(req, res) {
   const targetPlatforms = (generationType === "plan" || generationType === "plan_partial")
     ? (Array.isArray(params && params.platforms) ? params.platforms : [])
     : (generationType === "caption" && params && params.platform ? [params.platform] : []);
-  const [profile, vaultPatterns, playbook, cachedTrends, history, complianceRules, listingResearch] = await Promise.all([
+  const [profile, vaultPatterns, playbook, history, complianceRules, listingResearch] = await Promise.all([
     fetchProfile(userId),
     VOICE_GEN_TYPES.has(generationType) ? fetchVaultPatterns(userId, targetPlatforms)                         : Promise.resolve(null),
     loadPlaybook(),
-    loadLatestTrends(),
     generationType === "plan" ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart)     : Promise.resolve([]),
     // [COMPLIANCE 1] Per-niche compliance rules (Real Estate, Wellness in
     // v1). Loader returns {} on any infra failure so the get-for-niche
@@ -1360,48 +1359,41 @@ export default async function handler(req, res) {
   }
 
   // ── Decide trends source ─────────────────────────────────────────────────
-  // Three paths, in priority order:
-  //   1. Client-supplied snapshot (regen paths) → reuse, no Perplexity
-  //      call, no allowance tick. plan_partial / plan_strategy / regen
-  //      send the parent plan's `trendsSnapshot` so a single-card regen
-  //      stays consistent with the rest of the plan.
-  //   2. Inline fresh-trends → paid users always; free users when they
-  //      still have an allowance for this gen type. Fires Perplexity per
-  //      platform (capped by MAX_INLINE_PLATFORMS) and decrements the
-  //      free-user counter after the upstream call succeeds.
-  //   3. Cached cron trends → default fallback (up to 7 days old).
-  let trends             = cachedTrends;
+  // [TREND-PIPELINE] Trend context is now a pre-assembled block string from the
+  // DB-backed pipeline (trend_items + platform_playbooks + playbook_segments),
+  // built by buildTrendContext. No live Perplexity call, no per-generation cost,
+  // so it is ALWAYS-ON for eligible gen types (no paid/allowance gate).
+  //
+  // Two paths:
+  //   1. Client-supplied snapshot (regen paths) → reuse the parent plan's block
+  //      verbatim so a single-card regen stays consistent with the rest of the
+  //      plan. plan_partial / plan_strategy / regen send `trendsSnapshot`.
+  //   2. Fresh DB build → query the pipeline for this gen's platform(s) + the
+  //      creator's segment. `trends` becomes the block string the prompt
+  //      builders inject (see planTrendsContext / captionTrendsContext /
+  //      scanTrendsContext in prompts.js).
+  let trends             = "";
   let usedFreshTrends    = false;
   let trendsSnapshotEcho = null;
   const freshKey = FRESH_TRENDS_TYPE[generationType];
 
-  if (bodyTrendsSnapshot != null && isValidTrendsSnapshot(bodyTrendsSnapshot)) {
-    trends = bodyTrendsSnapshot;
-    // Snapshot is a passthrough — the parent plan already paid for it.
-  } else if (freshKey && (isPaid || freshTrends[freshKey] > 0)) {
-    const inlinePlatforms = pickInlinePlatforms(generationType, params, profile);
-    if (inlinePlatforms.length > 0) {
-      // [TRENDS-VARIETY] Inline trends are now niche-aware and dedup
-      // against the user's recent surfaced trends. Niche sharpens the
-      // Perplexity query toward the creator's actual vertical (fitness
-      // creators get fitness-specific TikTok signal, etc.). The
-      // exclude-list pushes Perplexity past trends VIRL has already
-      // shown this user in the last ~3 weeks of plans, so week-over-
-      // week feels fresh instead of resurfacing the same items.
-      //
-      // Adds one Supabase query (~50ms) before the Perplexity fan-out;
-      // negligible against the 3-5s Perplexity round-trip. Any error
-      // in the recent-trends fetch returns [] and the inline call
-      // falls through to its pre-variety behavior (no exclude list).
+  if (bodyTrendsSnapshot != null && isValidTrendSnapshot(bodyTrendsSnapshot)) {
+    // Regen passthrough — reuse the exact block the parent plan was built with.
+    trends             = bodyTrendsSnapshot.block;
+    usedFreshTrends    = Array.isArray(bodyTrendsSnapshot.items) && bodyTrendsSnapshot.items.length > 0;
+    trendsSnapshotEcho = bodyTrendsSnapshot;
+  } else if (freshKey) {
+    const trendPlatforms = pickInlinePlatforms(generationType, params, profile);
+    if (trendPlatforms.length > 0) {
       const niche = (params && typeof params.niche === "string") ? params.niche : "";
-      const excludeTrends = await fetchRecentTrendStrings(userId).catch(() => []);
-      const inline = await fetchInlineTrends(inlinePlatforms, cachedTrends, {
-        niche,
-        excludeTrends,
-      });
-      trends             = inline;
-      usedFreshTrends    = true;
-      trendsSnapshotEcho = inline;
+      // Fail-open: buildTrendContext returns an empty block on any DB blip, and
+      // the prompt builders fall back to their explicit "no trends" state.
+      const ctx = await buildTrendContext({ platforms: trendPlatforms, niche, profile }).catch(() => null);
+      if (ctx && ctx.block) {
+        trends             = ctx.block;
+        usedFreshTrends    = ctx.usedTrends;
+        trendsSnapshotEcho = ctx.snapshot;
+      }
     }
   }
 
@@ -1497,26 +1489,11 @@ export default async function handler(req, res) {
         }
       }
     }
-    // Decrement the fresh-trends counter for free users that just
-    // consumed their freebie. Paid users skip — they have no cap.
-    // Fire-and-forget; the upstream call has not run yet but we
-    // accept the small risk of "charged but no result" over the
-    // alternative of "result but no charge" if Anthropic fails after
-    // this PATCH lands. The wallet stays consistent with credits.
-    if (usedFreshTrends && !isPaid && freshKey) {
-      const counterCol = FRESH_TRENDS_COLUMNS[freshKey];
-      const nextVal    = Math.max(0, freshTrends[freshKey] - 1);
-      fetch(`${SUPABASE_URL}/rest/v1/credits?user_id=eq.${userId}`, {
-        method: 'PATCH',
-        headers: {
-          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-          'apikey': SUPABASE_SERVICE_KEY,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal',
-        },
-        body: JSON.stringify({ [counterCol]: nextVal }),
-      }).catch(() => {});
-    }
+    // [TREND-PIPELINE] The old per-generation fresh-trends allowance is gone —
+    // DB-backed trend context has no per-generation vendor cost, so trends are
+    // always-on and nothing is decremented here. The credits.fresh_trends_*
+    // columns are left intact (still reset on the weekly cycle above) pending a
+    // separate pricing/UX decision; they no longer gate anything.
   } catch (e) {
     console.error('Credit check error:', e.message);
     return res.status(500).json({ error: 'Could not verify credits.' });
@@ -1721,6 +1698,53 @@ export default async function handler(req, res) {
         // can't be parsed.
         const errBody = await retryRes.text().catch(() => '');
         console.warn('[no-truncation] retry transport-failed', retryRes.status, errBody.slice(0, 200));
+      }
+    }
+
+    // [JSON-VALIDITY] Validate the output JSON OUTSIDE the model, and retry
+    // once when it doesn't parse. Every non-streaming generation type promises
+    // a strict JSON contract; when the model wraps it in prose, adds a
+    // trailing note, or emits a stray token, the payload used to fall straight
+    // through to the client's extractJSON best-effort recovery — which shows a
+    // "format came back garbled" error the user pays a credit for. A single
+    // corrective retry recovers the common case (a well-formed model that just
+    // added a preamble) for one extra call.
+    //
+    // Runs AFTER the truncation retry (a truncated payload is legitimately
+    // unparseable — repairing it is truncation's job, not this gate's) and
+    // BEFORE the drift + compliance parses below, so a repaired payload flows
+    // through the rest of the pipeline normally. Skipped when the text already
+    // parses, when it was truncated, and when we already spent the one retry
+    // on truncation — the budget is one corrective call, not one per failure
+    // mode. The plan/plan_partial streaming path has its own recovery and
+    // never reaches here.
+    if (!truncated && !retried) {
+      const firstText = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+      let parses = false;
+      try { JSON.parse(firstText); parses = true; } catch (e) { /* parses stays false */ }
+      if (!parses) {
+        console.warn('[json-validity] output did not parse; retrying once', JSON.stringify({ generationType, len: firstText.length }));
+        const repairRes = await callAnthropic(payload).catch(() => null);
+        if (repairRes && repairRes.ok) {
+          const repairData = await repairRes.json();
+          retried = true;
+          inputTokensAcc  += (repairData.usage && repairData.usage.input_tokens)              || 0;
+          outputTokensAcc += (repairData.usage && repairData.usage.output_tokens)             || 0;
+          cacheReadAcc    += (repairData.usage && repairData.usage.cache_read_input_tokens)     || 0;
+          cacheWriteAcc   += (repairData.usage && repairData.usage.cache_creation_input_tokens) || 0;
+          // Keep the retry ONLY if it actually parses. If the second attempt
+          // is also unparseable, the first stands — the client's extractJSON
+          // fallback is no worse off, and we don't want a truncated-but-worse
+          // second draft replacing a first that extractJSON might recover.
+          const repairText = repairData.content.filter(b => b.type === 'text').map(b => b.text).join('');
+          let repairParses = false;
+          try { JSON.parse(repairText); repairParses = true; } catch (e) { /* keep first */ }
+          if (repairParses) {
+            data       = repairData;
+            stopReason = repairData.stop_reason || null;
+            truncated  = stopReason === 'max_tokens';
+          }
+        }
       }
     }
 
