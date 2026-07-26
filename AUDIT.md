@@ -475,3 +475,81 @@ Then `nicheCategory`, `getFormatGuidance`, `NICHE_MODELS`, `NICHE_TO_SEGMENT`, `
 One caveat on sequencing: **Briefs 1 and 3 both consume pack defaults**, so Brief 4's `defaults` block is a hidden dependency for both. Either ship Brief 4 first, or hardcode a single `creator` default set in Brief 1 and refactor it into the pack later.
 
 A second caveat worth naming plainly: with 29 total signups and 6 monthly actives, none of these findings will be validated by the numbers for a while. The activation funnel (F1) is the one finding with enough production evidence behind it to act on with confidence today.
+
+---
+
+## 12. What this audit does not answer
+
+Written after the fact, in response to the question "will this make VIRL world-class?" The honest answer is **no — this audit is necessary and not sufficient**, and the gaps below matter more than the findings above.
+
+### 12.1 It optimizes a conversion rate when volume is the binding constraint
+
+The largest number in this report is **6 monthly active users**, and §5.6 buried it under a cost table. Brief 1 is an M-sized build that moves activation from 31% to perhaps 80% — from 9 activated users to ~23. Findings were ranked by "activation/retention impact ÷ effort" without first establishing that activation is the constraint. At 29 lifetime signups it is not; **distribution is**, and nothing in this audit addresses it because nothing in the brief asked.
+
+Implication for sequencing: every brief here is worth doing *eventually*, and none of them is obviously the highest-value use of the next month.
+
+### 12.2 It audits the voice machinery and never checks whether the voice is good
+
+The differentiator is "content that sounds like the user." This audit examined drift scoring, vault exemplars, the mined denylist, the register split, and the retry gate in depth — the **machinery** — and never evaluated a single generated output.
+
+This is directly measurable and was not measured: `usage_events.drift_score_after` is populated on every row specifically so voice fidelity is trendable (see the `[DRIFT-RECORD]` changes at `chat.js:489-500` and `1771-1776`). The queries that should have run:
+
+```sql
+-- Is voice fidelity actually good, and is it improving?
+select date_trunc('week', created_at) wk, generation_type,
+       count(*) n, round(avg(drift_score_after)::numeric,1) avg_drift,
+       count(*) filter (where drift_retried) retries
+from usage_events where drift_score_after is not null group by 1,2 order by 1;
+
+-- Does the drift retry actually help when it fires?
+select round(avg(drift_score_before)::numeric,1) before,
+       round(avg(drift_score_after)::numeric,1)  after,
+       count(*) from usage_events where drift_retried;
+```
+
+Until those numbers exist, **the central product claim is unverified**, and every brief in §9 is an investment in a differentiator whose current quality is unknown.
+
+### 12.3 It measures activation and never measures retention
+
+Despite ranking by "activation/retention," only activation was measured. Unmeasured and checkable:
+
+- Of the 9 users who generated a plan, how many generated a **second** one?
+- Time between plan 1 and plan 2 — is there a weekly rhythm, or one-and-done?
+- `user_data.results` — does **anyone** log that they actually posted the content? For a content tool, publish rate is the real retention signal, and a plan nobody posts is a plan nobody needed.
+
+A week-one funnel fix does nothing for a product people don't return to in week two.
+
+### 12.4 Brief 3 is sequenced dangerously
+
+Proactive weekly delivery **amplifies whatever quality already exists**. Emailing an unprompted plan every Sunday before §12.2 has been answered is a churn accelerator with a cron attached — it converts "I forgot about VIRL" into "VIRL emails me things I don't use," which is a harder state to recover from.
+
+**Revised recommendation:** Brief 3 should be explicitly gated on a quality bar (a drift-score threshold, or a manual read of 20 generated plans), not shipped because the positioning promises it. Phase A (persist plan inputs — 5 columns) is cheap and safe to ship immediately regardless; Phases B and C should wait.
+
+### 12.5 It missed a genuine world-class blocker in the file it read most
+
+`index.html` is **862KB of JSX compiled in the browser** by Babel standalone loaded from a CDN (`index.html:21`, `index.html:70`). Consequences, none of which appear anywhere in §1–§11:
+
+- Every cold load downloads 862KB and runs a full JSX compile client-side **before first paint**. On mobile 4G — the actual device for this audience — that is seconds of blank screen. It is plausibly a larger contributor to the 31% activation rate than the wizard is, and it was not considered.
+- **There is no error boundary**, and cannot be one under this setup. `index.html:8733`: *"ErrorBoundary removed — static class methods not supported in Babel standalone."* A single render error white-screens the entire app with no recovery.
+- A 14,610-line single file with no build step, no module boundaries, and no component tests gets progressively more expensive to change. Every brief in §9 pays this tax.
+- A CDN `<script>` is a third-party runtime dependency on the critical path of a paid product.
+
+**This belongs in the findings table as an S-to-M effort with outsized leverage:** introduce a real build step (Vite or esbuild), ship precompiled JS, restore an error boundary, and begin extracting components. It does not require rewriting the app.
+
+### 12.6 Reasoning quality issues in the report above
+
+- The §10 recommendation to freeze `plan_strategy` cites "2 uses in production lifetime." Out of 61 total generations, **n=2 is not evidence**. Withdraw that item pending real data.
+- Narrowing `NICHES` from 17 to 3 (§10) is sound for focus but is presented as housekeeping. At 29 signups it is a **bet on an ICP**, not a cleanup, and deserves to be made deliberately.
+- The COGS projections in §5.6 are arithmetic on 6 users' behaviour. They are directionally fine and should not be treated as forecasts.
+
+### 12.7 What "world-class" would actually require
+
+Not covered here, and not derivable from the brief:
+
+1. **A verified quality bar** — §12.2. Nothing else matters until a creator reliably reads a generated caption and thinks *that's me*. This is the whole company.
+2. **A demonstrated retention loop** — §12.3. Proof that week 2 happens without a nudge.
+3. **A distribution answer** — the actual constraint at 29 signups, and entirely absent from this audit.
+4. **Craft on the surface** — §12.5. Load time, error resilience, perceived speed. World-class apps feel fast and never white-screen.
+5. **A competitive read** — this audit never asked what else a solo creator could use instead, or why they'd pick VIRL. "Voice fidelity" is asserted as the differentiator throughout; it is not validated as one.
+
+**Summary:** §1–§11 is an accurate map of the engineering debt between the current build and the stated positioning, and the fixes are worth making. It is not a plan for a world-class product, because it answers "is this built correctly against the brief" rather than "why would anyone love this." Items 1, 2 and 3 above are the questions that decide the outcome, and all three are cheap to answer — two of them with SQL that could run today.
