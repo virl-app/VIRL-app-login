@@ -33,7 +33,7 @@ export const FOUNDER_VOICE_TEMPLATES = new Set([
   "welcome",
   "subscription_welcome",
   "subscription_cancelled",
-  "inactive_30d",
+  "reengagement_14d",
   "referral_rewarded",
   "referral_milestone",
 ]);

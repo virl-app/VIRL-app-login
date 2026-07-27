@@ -28,7 +28,7 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // trial sequence via Loops audience filters keyed on the contact's
 // signupAt property — see migrations/003-email-preferences-schema.sql and
 // Claude Cowork's Loops setup). Other cron sends (weekly_reset,
-// phase1_no_plan_24h, inactive_7d, etc.) are NOT yet migrated and continue
+// phase1_no_plan_24h, reengagement_14d, etc.) are NOT yet migrated and continue
 // to fire via Resend regardless of this flag.
 const EMAIL_VIA_LOOPS      = process.env.EMAIL_VIA_LOOPS === "true";
 
@@ -228,6 +228,39 @@ async function fetchTomorrowsCards(userId) {
   } catch (e) { return empty; }
 }
 
+// Days since the user was last genuinely active — the most RECENT of their
+// last sign-in and their last recorded event. Returns null when neither
+// signal is readable.
+//
+// Why both: last_sign_in_at only moves on an actual sign-in, and Supabase
+// refresh tokens keep a session alive for weeks, so an active user's
+// last_sign_in_at can be a month stale. The events table catches that user.
+// Conversely a brand-new user may have signed in but fired no events yet, so
+// neither signal alone is sufficient.
+//
+// Fails toward "recently active" (suppress the email) on a fetch error: a
+// transient blip must not produce a "we noticed you're gone" email to someone
+// who never left. That's the embarrassing direction to be wrong in, and the
+// send is one-shot-forever, so a bad send can't be corrected by a later run.
+async function daysSinceLastActivity(userId, lastSignInAt) {
+  let lastEventISO = null;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/events?user_id=eq.${userId}`
+        + `&select=created_at&order=created_at.desc&limit=1`,
+      { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    if (!res.ok) return null; // unreadable → treat as active, send nothing
+    const rows = await res.json();
+    lastEventISO = (rows[0] && rows[0].created_at) || null;
+  } catch (e) { return null; }
+
+  const candidates = [daysSince(lastSignInAt), daysSince(lastEventISO)]
+    .filter(d => d !== null);
+  if (!candidates.length) return null;
+  return Math.min(...candidates); // most recent activity wins
+}
+
 // True when the user already received any OTHER lifecycle email today
 // (trial sequence, welcome, inactivity, etc). The evening reminder yields
 // to those — one conversion-critical email a day beats two nudges.
@@ -261,7 +294,6 @@ async function processUser(user, todayIsSunday, weekKey) {
 
   const name = await fetchProfileName(userId);
   const unsubToken = makeUnsubToken(userId);
-  const lastSignInDays = daysSince(user.last_sign_in_at);
 
   // [LOOPS-PLAN] Periodic contact-property sync. Two jobs here:
   //   1. Keep `plan` non-blank and current — free/trial users (whose plan
@@ -409,40 +441,35 @@ async function processUser(user, todayIsSunday, weekKey) {
     }
   }
 
-  // Tier 2 — 7-day inactivity re-engagement. Last sign-in was 7-30 days
-  // ago and the account is past the trial-warning windows. Weekly dedupe
-  // so we don't send daily.
+  // Re-engagement — the single shot, replacing the old chained inactive_7d
+  // (weekly across days 7-30 idle) + inactive_30d (monthly, forever) pair.
   //
-  // [OVERLAP-FIX] Upper bound was `<= 30`, which collided with the Tier 3
-  // rule below (`>= 30`) on the exact day a user hit 30 days idle — that
-  // user got BOTH win-back emails in the same cron run. Now `< 30`, so the
-  // two tiers partition cleanly.
+  // [CADENCE] docs/email-strategy-guide.md §1: "If the user went quiet, they
+  // had a reason. One re-engagement attempt at 14 days inactive, then VIRL
+  // goes quiet." The chain did the opposite — a dormant account received mail
+  // every month indefinitely, and nothing ever went quiet. §6 specs this
+  // replacement as firing AT MOST ONCE per user ever; the static dedupeKey is
+  // what enforces that, so it must never be made per-week or per-month.
   //
-  // [KNOWN-ISSUE — needs a copy decision, deliberately not fixed here]
-  // The `days >= 14` floor means that for a FREE user this email only ever
-  // fires after the trial has expired. Its subject is "Your VIRL plan is
-  // waiting" and its CTA points at generation — which api/chat.js refuses
-  // with a 402 for exactly these users. Suppressing it was the other option
-  // and was rejected: this is currently the ONLY recurring touchpoint the
-  // lapsed free base receives, so silencing it would remove the last
-  // conversion surface rather than fix it. The real fix is an
-  // upgrade-framed variant for expired trials (new copy → Lauren's call).
-  if (lastSignInDays !== null && lastSignInDays >= 7 && lastSignInDays < 30 && days >= 14) {
-    const tpl = T.inactive7Day({ name, unsubscribeToken: unsubToken });
+  // [WINDOW] The 21-day ceiling is deliberate and load-bearing in two ways.
+  // It mirrors the §6 audience filter (`lastActiveAt >= 14d AND < 21d`), and
+  // it means shipping this does NOT blast every long-dormant account with a
+  // "we noticed you're gone" email on the first cron run after deploy.
+  // Accounts already past 21 days idle simply go quiet, which is the intended
+  // end state for them anyway.
+  //
+  // [ACTIVITY] Gated on real activity, not sign-ins alone. Supabase refresh
+  // tokens keep a session alive for weeks without touching last_sign_in_at,
+  // so a daily-active user can carry a 30-day-old last_sign_in_at. The old
+  // chain read that as churn and mailed "it's been 30 days since you last
+  // opened VIRL" to people using the product that morning. lastActivityDays
+  // takes the most recent of sign-in and events, so it can only ever
+  // over-estimate activity — the safe direction for a suppression signal.
+  const lastActivityDays = await daysSinceLastActivity(userId, user.last_sign_in_at);
+  if (lastActivityDays !== null && lastActivityDays >= 14 && lastActivityDays < 21) {
+    const tpl = T.reengagement14d({ name, unsubscribeToken: unsubToken });
     await sendEmail({
-      userId, to: email, template: "inactive_7d", dedupeKey: `inactive_7d_${weekKey}`,
-      subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
-    });
-  }
-
-  // Tier 3 — 30-day inactivity (deeper churn). Last sign-in 30+ days ago.
-  // Monthly dedupe key (year-month) so a long-dormant user gets at most
-  // one of these per month rather than weekly noise.
-  if (lastSignInDays !== null && lastSignInDays >= 30) {
-    const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM
-    const tpl = T.inactive30Day({ name, unsubscribeToken: unsubToken });
-    await sendEmail({
-      userId, to: email, template: "inactive_30d", dedupeKey: `inactive_30d_${monthKey}`,
+      userId, to: email, template: "reengagement_14d", dedupeKey: "reengagement_14d",
       subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
     });
   }

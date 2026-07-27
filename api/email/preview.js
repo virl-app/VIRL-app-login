@@ -31,7 +31,7 @@ const TEMPLATES = {
   weekly_reset:           (uid) => T.weeklyReset({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   phase1_no_plan_24h:     (uid) => T.phase1NoPlan({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   first_plan_generated:   (uid) => T.firstPlanGenerated({ name: "Lauren" }),
-  inactive_7d:            (uid) => T.inactive7Day({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
+  reengagement_14d:       (uid) => T.reengagement14d({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   sunday_log:             (uid) => T.sundayLogNudge({ name: "Lauren", unloggedCount: 4, unsubscribeToken: makeUnsubToken(uid) }),
   posting_reminder:       (uid) => T.postingReminder({ name: "Lauren", cards: [
     { title: "3 morning habits that changed my routine", platform: "Instagram", postTime: "7:00 PM" },
@@ -43,7 +43,6 @@ const TEMPLATES = {
   sunday_reset_no_plan:   (uid) => T.sundayReset({ name: "Lauren", unloggedCount: 2, hasPlan: false, cards: [], unsubscribeToken: makeUnsubToken(uid) }),
   referral_rewarded:      (uid) => T.referralRewarded({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   trial_day_7:            (uid) => T.trialDay7({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
-  inactive_30d:           (uid) => T.inactive30Day({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   renewal_upcoming:       (uid) => T.renewalUpcoming({ name: "Lauren", plan: "founding", amountUsd: 225, renewalDate: new Date(Date.now() + 7 * 86400000).toISOString() }),
   account_deleted:        (uid) => T.accountDeleted({ name: "Lauren" }),
   referral_milestone:     (uid) => T.referralMilestone({ name: "Lauren", milestone: 7, unsubscribeToken: makeUnsubToken(uid) }),

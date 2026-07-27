@@ -14,13 +14,13 @@
 // product ("a real person reads every reply") — that's VIRL naming the team,
 // not claiming to BE a person, so it stays on-persona.
 //   welcome-adjacent lifecycle: phase1NoPlan, firstPlanGenerated, weeklyReset,
-//   postingReminder, sundayReset, sundayLogNudge, inactive7Day,
+//   postingReminder, sundayReset, sundayLogNudge,
 //   trialDay7, trialDay11, trialDay13, trialExpired.
 //
 // Lauren voice — the founder, first person = Lauren, a human. Milestone and
 // relationship moments. Refers to VIRL in the third person ("VIRL gets
 // sharper"), because here a person is talking ABOUT the product.
-//   welcome, subscriptionWelcome, subscriptionCancelled, inactive30Day,
+//   welcome, subscriptionWelcome, subscriptionCancelled, reengagement14d,
 //   referralRewarded, referralMilestone.
 //
 // Neutral / transactional — NO persona (money, security, legal: the no-
@@ -359,17 +359,32 @@ export function firstPlanGenerated({ name }) {
   };
 }
 
-// 12. 7-day inactivity — re-engagement.
-export function inactive7Day({ name, unsubscribeToken }) {
-  const headline = "Your VIRL plan's been waiting.";
+// 12. Re-engagement — THE single shot. Fires at most once per user, ever, at
+// 14 days inactive, and then VIRL goes quiet for good.
+//
+// Replaces the chained inactive7Day (weekly, days 7-30 idle) + inactive30Day
+// (monthly, forever) pair. That chain contradicted the strategy guide's stated
+// stance — "if the user went quiet, they had a reason. One re-engagement
+// attempt at 14 days inactive, then VIRL goes quiet" (§1) — and in practice
+// nothing ever went quiet: a dormant account received mail every month
+// indefinitely. Copy below is the approved draft from §6.
+//
+// The PS is load-bearing. It is a promise the cadence has to keep, so it is
+// enforced in code by a static dedupe key (see api/cron/email-triggers.js).
+// Do not add a second re-engagement send without first rewriting that line.
+export function reengagement14d({ name, unsubscribeToken }) {
+  const headline = "Did the strategy go quiet, or just the inbox?";
   const body = `
-    <p style="margin:0 0 12px">${name ? "Hey " + name + " — it" : "It"}'s been a week since you signed in. Your plan, vault, and saved scripts are still here exactly as you left them.</p>
-    <p style="margin:0 0 12px">If life got in the way, no judgment. If something didn't click, reply and tell me — a real person reads every reply.</p>
-    <p style="margin:0">Otherwise, the Monday reset is right around the corner. Give me 60 seconds and I'll put a fresh week on your calendar.</p>`;
+    <p style="margin:0 0 12px">${name ? name + ", it" : "It"}'s been two weeks since you last opened VIRL.</p>
+    <p style="margin:0 0 16px">If something fell off — life, the algorithm, the week from hell — no judgment. The account is still here, your voice is still saved, and a new week is one tap away.</p>
+    ${inlineButton({ href: APP_URL, label: "Open VIRL" })}
+    <p style="margin:0 0 12px">If VIRL just isn't the right fit, that's useful information for me. I read every reply.</p>
+    <p style="margin:0 0 12px">— Lauren</p>
+    <p style="margin:0;font-size:14px;color:${COLOR.muted}">PS: This is the only nudge you'll get from me. After this, the inbox is yours.</p>`;
   return {
-    subject: "Your VIRL plan is waiting",
-    html:    layout({ eyebrow: "Check-in", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
-    text:    `${headline}\n\nA week since you signed in. Your plan, vault, and saved scripts are still here.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    subject: "Did the strategy go quiet, or just the inbox?",
+    html:    layout({ eyebrow: "Check-in", headline, body, unsubscribeToken }),
+    text:    `${headline}\n\nIt's been two weeks since you last opened VIRL.\n\nIf something fell off — life, the algorithm, the week from hell — no judgment. The account is still here, your voice is still saved, and a new week is one tap away:\n\n${APP_URL}\n\nIf VIRL just isn't the right fit, that's useful information for me. I read every reply.\n\n— Lauren\n\nPS: This is the only nudge you'll get from me. After this, the inbox is yours.${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -483,19 +498,12 @@ export function trialDay7({ name, unsubscribeToken }) {
   };
 }
 
-// 15. 30-day inactivity — softer than 7-day, more honest.
-export function inactive30Day({ name, unsubscribeToken }) {
-  const headline = "Honest check-in.";
-  const body = `
-    <p style="margin:0 0 12px">${name ? "Hey " + name + " — it" : "It"}'s been 30 days since you last opened VIRL. Either life got in the way (totally fine) or VIRL didn't end up clicking. I'd love to know which.</p>
-    <p style="margin:0 0 12px">If something specific bounced you, reply with one line — even a curt one. That kind of feedback at this stage shapes what VIRL becomes.</p>
-    <p style="margin:0">If you do come back: your vault, profile, and any saved scripts are exactly where you left them.</p>`;
-  return {
-    subject: "Did VIRL drop the ball?",
-    html:    layout({ eyebrow: "Check-in", headline, body, primaryCta: { href: APP_URL, label: "Reopen VIRL" }, unsubscribeToken }),
-    text:    `${headline}\n\nIt's been 30 days since you last opened VIRL. If something bounced you, reply with one line — that feedback shapes what VIRL becomes.\n\nIf you do come back: vault, profile, saved scripts all where you left them.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
-  };
-}
+// 15. [RETIRED Jul 2026] inactive30Day lived here — the second half of the
+// chained re-engagement flow, sent monthly and forever to any dormant
+// account. Retired together with inactive7Day in favour of the single-shot
+// reengagement14d above (see §6/§10 of docs/email-strategy-guide.md, and
+// roadmap item 12). Deleted rather than left dormant: an unused sender is a
+// sender someone re-wires later without reading the cadence rationale.
 
 // 16. Renewal upcoming — fired by Stripe's invoice.upcoming webhook.
 // Transparency cuts down "I didn't know I'd be charged" support tickets.

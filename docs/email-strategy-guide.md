@@ -336,9 +336,8 @@ All defined in `api/_lib/email-templates.js`:
 | `playbookDraftsReady` | (admin) | cron `playbook-refresh.js` |
 | `phase1NoPlan` | (see file) | cron `email-triggers.js` |
 | `firstPlanGenerated` | (see file) | inline in chat.js |
-| `inactive7Day` | (see file) | cron `email-triggers.js` |
 | `sundayLogNudge` | (see file) | cron `email-triggers.js` |
-| `inactive30Day` | (see file) | cron `email-triggers.js` |
+| `reengagement14d` | (see file) | cron `email-triggers.js` |
 | `renewalUpcoming` | (see file) | stripe-webhook invoice.upcoming |
 | `accountDeleted` | "VIRL account closed" | `/api/delete-account` |
 | `referralMilestone` | (see file) | inline in chat.js |
@@ -1205,7 +1204,8 @@ How to migrate one template:
 
 ### Phase 2 (month 2-3)
 
-- Re-engagement: `inactive_7d`, `inactive_30d`
+- Re-engagement: `reengagement_14d` (single-shot; replaced the retired
+  `inactive_7d` + `inactive_30d` chain, Jul 2026)
 - Engagement: `weekly_reset`, `sunday_log`, `phase1_no_plan_24h`
 - Milestones: `first_plan_generated`, `referral_milestone`
 
@@ -1266,9 +1266,16 @@ release-blocking — don't move on to the next week until those land.
     template structure and shorten.
 11. Migrate the **day-30 milestone** from Resend to Loops if not already
     done (existing draft in §6).
-12. Build the **single-shot 14-day re-engagement** from §6, and **retire
-    the chained `inactive_7d` + `inactive_30d` flow.** Document the
-    retirement in the next admin changelog.
+12. ~~Build the **single-shot 14-day re-engagement** from §6, and **retire
+    the chained `inactive_7d` + `inactive_30d` flow.**~~ **Done Jul 2026**
+    — shipped in `api/cron/email-triggers.js` as `reengagement_14d`, gated
+    on a 14–21 day inactivity window and a static dedupe key (once per
+    user, ever). Built on Resend rather than the Loops automation §6
+    sketches: the cron already walks every user daily, and one-shot-ever
+    is enforced for free by the `email_sends` unique index, so the Loops
+    audience filter would have added a second system without adding a
+    guarantee. Both retired templates are deleted, not dormant. Still owed:
+    the admin-changelog note.
 
 **Week 4 — Marketing infrastructure**
 
@@ -1492,6 +1499,21 @@ Exceptions to quiet hours:
 - Trial-ending day-of (transactional, billing-adjacent)
 - Payment-failed (transactional, action required)
 - Security alerts (password-changed, new-device-login)
+- **The Sunday reset** (`sunday_reset`, sent Sunday ~6:30 PM CT). Sunday
+  evening isn't incidental to this email, it *is* the email — closing the
+  week just ended and opening the one about to start. Moving it out of the
+  quiet window would leave a different email wearing its name. Ratified
+  Jul 2026 after the send was found sitting inside the window; the rule
+  above stands for everything else.
+- The Saturday-evening `posting_reminder`, for the same reason: it exists
+  to give Sunday's posts a night of prep.
+
+Note that as of Jul 2026 none of §10's caps — quiet hours, the marketing
+frequency cap, the lifecycle throttle — are enforced in code.
+`api/_lib/email-send.js` checks marketing opt-out and nothing else. The
+exceptions above are therefore documentation of intent, not of behaviour;
+treat this section as the spec to implement against, not a description of
+what ships today.
 
 ### Pre-send checklist (every marketing campaign)
 
