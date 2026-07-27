@@ -84,6 +84,23 @@ async function fetchCredits(userId) {
   return rows[0] || null;
 }
 
+// [TRIAL-AWARE-EMAIL] The single definition of "past the free trial",
+// shared by both cron passes. Mirror of the generation gate in api/chat.js
+// — kept in the same shape on purpose: the moment these two drift we start
+// mailing people about actions the API refuses. A live comp bypasses the
+// day cap there, so it must bypass "expired" here too.
+function isTrialExpired(user, credit) {
+  if (PAID_PLANS.includes(credit ? credit.plan : null)) return false;
+  const compExpiresMs = credit && credit.comp_expires_at
+    ? Date.parse(credit.comp_expires_at) : NaN;
+  const compActive = !Number.isNaN(compExpiresMs)
+    && compExpiresMs > Date.now()
+    && credit.comp_weekly_credits != null;
+  if (compActive) return false;
+  const days = daysSince(user.created_at);
+  return days !== null && days >= TRIAL_DAYS;
+}
+
 async function fetchProfileName(userId) {
   try {
     const res = await fetch(
@@ -240,16 +257,7 @@ async function processUser(user, todayIsSunday, weekKey) {
   const resetAt = credit ? credit.reset_at : null;
   const isPaid = PAID_PLANS.includes(plan);
 
-  // [TRIAL-AWARE-EMAIL] Mirror of the generation gate in api/chat.js. Kept in
-  // the same shape on purpose: the moment these two drift we start mailing
-  // people about actions the API refuses. A live comp bypasses the day cap
-  // there, so it must bypass "expired" here too.
-  const compExpiresMs = credit && credit.comp_expires_at
-    ? Date.parse(credit.comp_expires_at) : NaN;
-  const compActive = !Number.isNaN(compExpiresMs)
-    && compExpiresMs > Date.now()
-    && credit.comp_weekly_credits != null;
-  const trialExpired = !isPaid && !compActive && days >= TRIAL_DAYS;
+  const trialExpired = isTrialExpired(user, credit);
 
   const name = await fetchProfileName(userId);
   const unsubToken = makeUnsubToken(userId);
@@ -464,6 +472,24 @@ async function processReminderUser(user, todayIsSunday, weekKey) {
   if (!email) return;
 
   const { cards: tomorrowCards, hasPlan } = await fetchTomorrowsCards(userId);
+
+  // [TRIAL-AWARE-EMAIL] This pass had NO trial check at all, which made the
+  // Sunday reset the one email that mailed dead free accounts forever. The
+  // send condition below fires when `!hasPlan` — and an expired free user
+  // can never have a plan, because generating one is exactly what
+  // api/chat.js answers with a 402. So every expired trial got the
+  // build-your-week variant ("60 seconds tonight sets up your whole week")
+  // every single Sunday, pitching the one action it cannot take.
+  //
+  // The guard is `expired AND no active plan`, not a blanket expiry skip: a
+  // free user who generated on day 13 still has a live 7-day plan for a
+  // week after the trial ends, and reminders about cards already sitting in
+  // their app are honest and useful. What we refuse to send is the pitch to
+  // build something new. Once that last plan lapses, this pass goes quiet —
+  // win-back for lapsed accounts belongs to the lifecycle pass, not here.
+  const credit = await fetchCredits(userId);
+  if (isTrialExpired(user, credit) && !hasPlan) return;
+
   const unlogged = todayIsSunday ? await fetchUnloggedCount(userId) : 0;
 
   if (todayIsSunday) {
