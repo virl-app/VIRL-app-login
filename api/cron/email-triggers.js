@@ -79,9 +79,21 @@ async function fetchCredits(userId) {
       + `&select=plan,reset_at,comp_weekly_credits,comp_expires_at`,
     { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
   );
-  if (!res.ok) return null;
+  // [FAIL-LOUD] A failed read and "this user has no credits row" are NOT the
+  // same thing, and collapsing both to null was actively dangerous: a null
+  // credit reads as plan=null, which is not in PAID_PLANS, which makes a
+  // PAYING customer look like an expired free trial. That mis-read fires the
+  // whole trial sequence at them — four once-ever sends that can never be
+  // taken back — and suppresses their weekly reset, all because of one
+  // transient 500.
+  //
+  // Throwing instead lets the per-user catch in the handler skip this user for
+  // today and pick them up on tomorrow's run. A missed day costs nothing here:
+  // every trigger is `>=` bounded specifically so it self-heals. A wrong
+  // classification costs a customer.
+  if (!res.ok) throw new Error(`credits fetch ${res.status} for ${userId}`);
   const rows = await res.json();
-  return rows[0] || null;
+  return rows[0] || null; // genuinely no row → treat as free, which is correct
 }
 
 // [TRIAL-AWARE-EMAIL] The single definition of "past the free trial",
@@ -243,6 +255,14 @@ async function fetchTomorrowsCards(userId) {
 // who never left. That's the embarrassing direction to be wrong in, and the
 // send is one-shot-forever, so a bad send can't be corrected by a later run.
 async function daysSinceLastActivity(userId, lastSignInAt) {
+  // Short-circuit the common case. The only caller cares whether this is >= 14,
+  // and the result is the MINIMUM of the two signals — so a sign-in inside the
+  // last 14 days already settles it, and the events read cannot change the
+  // answer. Skipping it here means the extra query is paid only for users who
+  // look dormant, not for every user on every daily run.
+  const signInDays = daysSince(lastSignInAt);
+  if (signInDays !== null && signInDays < 14) return signInDays;
+
   let lastEventISO = null;
   try {
     const res = await fetch(
@@ -499,6 +519,13 @@ async function processReminderUser(user, todayIsSunday, weekKey) {
   if (!email) return;
 
   const { cards: tomorrowCards, hasPlan } = await fetchTomorrowsCards(userId);
+
+  // Rest day outside Sunday: nothing to say regardless of trial or plan state.
+  // Returning here rather than after the credits read below keeps this pass to
+  // one Supabase round-trip for the many users who have no card tomorrow —
+  // this runs for every user, every evening, so a needless read is a needless
+  // read times the whole table.
+  if (!todayIsSunday && tomorrowCards.length === 0) return;
 
   // [TRIAL-AWARE-EMAIL] This pass had NO trial check at all, which made the
   // Sunday reset the one email that mailed dead free accounts forever. The
