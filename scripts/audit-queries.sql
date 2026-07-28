@@ -76,14 +76,50 @@ from usage_events
 group by 1
 order by plans desc;
 
--- Q2c. THE REAL RETENTION SIGNAL: does anyone log that they posted?
--- A plan nobody publishes is a plan nobody needed.
+-- Q2c. DOES ANYONE ACTUALLY POST THE CONTENT?
+--
+-- IMPORTANT: do NOT read this off user_data.results. Results logging is a
+-- manual, multi-step flow (SundayLogModal: remember → open → per-card
+-- screenshot or type 3 numbers → verify → save, ×7 cards). A low number
+-- there measures LOGGING FRICTION, not publishing. Using it as a publish
+-- proxy was an error in an earlier draft of AUDIT.md §12.3.
+--
+-- Use `post_marked` instead: a one-tap toggle on each card
+-- (index.html:4577), fired on toggle-on only. Far lower friction, so far
+-- closer to a real publish signal.
 select
-  count(*)                                                          as user_data_rows,
-  count(*) filter (where jsonb_array_length(coalesce(results,'[]'::jsonb)) > 0) as users_who_logged_results,
-  sum(jsonb_array_length(coalesce(results,'[]'::jsonb)))            as total_results_logged,
-  sum(jsonb_array_length(coalesce(vault,'[]'::jsonb)))              as total_vault_saves
-from user_data;
+  count(*)                                as post_marked_events,
+  count(distinct user_id)                 as users_who_marked_posted,
+  count(distinct properties->>'platform') as distinct_platforms
+from events
+where event_name = 'post_marked';
+
+-- Q2b-i. Publish rate: marks-posted per plan generated, per user.
+-- This is the number that says whether plans become posts.
+select
+  u.user_id,
+  u.plans,
+  coalesce(m.marked, 0)                                   as posts_marked,
+  round(coalesce(m.marked,0)::numeric / nullif(u.plans,0), 1) as marked_per_plan
+from (
+  select user_id, count(*) as plans
+  from usage_events where generation_type = 'plan' group by 1
+) u
+left join (
+  select user_id, count(*) as marked
+  from events where event_name = 'post_marked' group by 1
+) m on m.user_id = u.user_id
+order by u.plans desc;
+
+-- Q2c-ii. Lighter-weight intent signals, for triangulation. Copying a
+-- caption is the action immediately BEFORE posting — but note CopyBtn
+-- (index.html:3064) currently fires no event, so `caption_copied` will
+-- return zero until that is instrumented. See NEXT-STEPS.md Step 2.
+select event_name, count(*) as n, count(distinct user_id) as users
+from events
+where event_name in ('post_marked','vault_saved','result_logged',
+                     'plan_calendar_exported','caption_copied','card_copied')
+group by 1 order by n desc;
 
 
 -- ─────────────────────────────────────────────────────────────────────────

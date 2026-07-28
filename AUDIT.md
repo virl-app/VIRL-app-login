@@ -515,7 +515,11 @@ Despite ranking by "activation/retention," only activation was measured. Unmeasu
 
 - Of the 9 users who generated a plan, how many generated a **second** one?
 - Time between plan 1 and plan 2 — is there a weekly rhythm, or one-and-done?
-- `user_data.results` — does **anyone** log that they actually posted the content? For a content tool, publish rate is the real retention signal, and a plan nobody posts is a plan nobody needed.
+- **Publish rate** — do people actually post what VIRL generates? For a content tool this is the real retention signal.
+
+  **Correction (added after review).** An earlier draft of this section proposed reading publish rate off `user_data.results`. That is wrong, and it would have produced a false conclusion. Results logging is a manual multi-step flow (`SundayLogModal`, `index.html:8931`: remember to come back → open the modal → per card, screenshot the platform's insights panel or type three numbers → verify → save, ×7 cards). A low number there measures **logging friction**, not publishing behaviour.
+
+  Measure `post_marked` instead (`index.html:4577`) — a one-tap toggle that is already instrumented. And note the bigger gap it exposed: **`CopyBtn` (`index.html:3064-3071`) fires no event at all**, so the highest-intent action in the product — copying a caption, the moment immediately before posting — is completely invisible in telemetry. Instrumenting it is a one-line change and is Step 1 of `NEXT-STEPS.md`.
 
 A week-one funnel fix does nothing for a product people don't return to in week two.
 
