@@ -464,7 +464,7 @@ async function processUser(user, todayIsSunday, weekKey) {
   // Re-engagement — the single shot, replacing the old chained inactive_7d
   // (weekly across days 7-30 idle) + inactive_30d (monthly, forever) pair.
   //
-  // [CADENCE] docs/email-strategy-guide.md §1: "If the user went quiet, they
+  // [CADENCE] docs/email/stance.md: "If the user went quiet, they
   // had a reason. One re-engagement attempt at 14 days inactive, then VIRL
   // goes quiet." The chain did the opposite — a dormant account received mail
   // every month indefinitely, and nothing ever went quiet. §6 specs this

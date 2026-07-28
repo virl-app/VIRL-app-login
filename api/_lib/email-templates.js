@@ -501,8 +501,8 @@ export function trialDay7({ name, unsubscribeToken }) {
 // 15. [RETIRED Jul 2026] inactive30Day lived here — the second half of the
 // chained re-engagement flow, sent monthly and forever to any dormant
 // account. Retired together with inactive7Day in favour of the single-shot
-// reengagement14d above (see §6/§10 of docs/email-strategy-guide.md, and
-// roadmap item 12). Deleted rather than left dormant: an unused sender is a
+// reengagement14d above (see docs/email/decisions.md). Deleted rather than
+// left dormant: an unused sender is a
 // sender someone re-wires later without reading the cadence rationale.
 
 // 16. Renewal upcoming — fired by Stripe's invoice.upcoming webhook.

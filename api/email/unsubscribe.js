@@ -35,7 +35,7 @@ async function setOptOut(userId) {
 // the Supabase opt-out is what gates `api/_lib/email-send.js` suppression,
 // so the user stays suppressed for any send going through that path.
 // Loops sync drift gets reconciled by the monthly suppression audit
-// described in docs/email-strategy-guide.md §7 (Week 4).
+// described in docs/email/decisions.md (opt-in audit, gap 4).
 async function syncOptOutToLoops(userId) {
   try {
     await updateLoopsContact({
