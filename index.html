@@ -1549,8 +1549,54 @@ function PostSampleFeeder({userToken, onKeep}) {
   );
 }
 
+// [REACTION-LOOP] Why this widget remembers.
+//
+// The reaction chips only render while `rating === "down"`, and `rating`
+// used to be plain component state with nothing hydrating it. The widget
+// itself is mounted conditionally — a plan card renders it only while
+// expanded. So the sequence was:
+//
+//   tap 👎 → rating="down" in memory → chips appear → collapse the card,
+//   switch tabs, or refresh → unmount → state gone → reopen → rating is
+//   null, the 👎 isn't even lit, and the chips are never offered again.
+//
+// The down-rate itself persisted fine (it's a server round trip, which is
+// why down-rates show up in the dashboard) — but the chance to say WHY
+// lasted a few seconds, once, and never came back. That is the most
+// likely reason a live feature produced zero rows: not a failing write, a
+// window nobody could reach twice.
+//
+// Persisting per-item locally is enough to fix it: the chips stay
+// available on a down-rated item until the creator actually answers, and
+// a previously-rated item shows its state when they come back to it.
+// Mirrors the existing localStorage caching in this file (plan, credits,
+// user data) rather than adding a server fetch per rating widget — a plan
+// week renders seven of these.
+function ratingMemoryKey(generationType, targetRef) {
+  return "virl_rating_" + generationType + "|" + String(targetRef || "");
+}
+function loadRatingMemory(generationType, targetRef) {
+  if (!targetRef) return null;
+  try {
+    const raw = localStorage.getItem(ratingMemoryKey(generationType, targetRef));
+    const parsed = raw ? JSON.parse(raw) : null;
+    return (parsed && typeof parsed === "object") ? parsed : null;
+  } catch (e) { return null; }
+}
+function saveRatingMemory(generationType, targetRef, rating, reason) {
+  if (!targetRef) return;
+  try {
+    const key = ratingMemoryKey(generationType, targetRef);
+    // No rating means the server row is gone; drop the local copy too
+    // rather than leaving a ghost the UI would rehydrate from.
+    if (!rating) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify({ rating: rating, reason: reason || null }));
+  } catch (e) { /* private mode / quota — the widget still works in-session */ }
+}
+
 function RatingButtons({sessionToken, generationType, targetRef, size}) {
-  const [rating,setRating]   = useState(null);    // "up" | "down" | null
+  const remembered = loadRatingMemory(generationType, targetRef);
+  const [rating,setRating]   = useState(remembered ? (remembered.rating || null) : null);
   const [working,setWorking] = useState(false);
   const compact = size === "sm";
   const btnPad  = compact ? "5px 10px" : "7px 12px";
@@ -1572,7 +1618,13 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
       headers: { "Content-Type":"application/json", "Authorization":"Bearer "+sessionToken },
       body:    JSON.stringify({ generation_type: generationType, target_ref: targetRef, rating: next }),
     })
-      .then(function(r){ if (!r.ok) setRating(previous); })
+      .then(function(r){
+        if (!r.ok) { setRating(previous); return; }
+        // Rating without a chip clears any stored reason, matching the
+        // server: /api/rate writes reason:null on a bare rate call, and
+        // clearing a rating deletes the row outright.
+        saveRatingMemory(generationType, targetRef, next, null);
+      })
       .catch(function(){ setRating(previous); })
       .finally(function(){ setWorking(false); });
   }
@@ -1591,7 +1643,7 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
   // describes, and api/_lib/voice-reactions.js feeds it into this
   // creator's next drafts. The confirmation below is stated only after
   // the server confirms the write, so the promise matches what happened.
-  const [chipState,setChipState] = useState("");  // "" | "sending" | "sent" | "failed"
+  const [chipState,setChipState] = useState(remembered && remembered.reason ? "sent" : "");  // "" | "sending" | "sent" | "failed"
   function sendChip(label) {
     if (!sessionToken || !targetRef) return;
     setChipState("sending");
@@ -1604,13 +1656,15 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
       // (a database still waiting on migration 025). Don't claim to have
       // learned something that wasn't recorded.
       return r.json().catch(function(){ return {}; }).then(function(j){
-        setChipState(r.ok && j.reasonStored !== false ? "sent" : "failed");
+        const stored = r.ok && j.reasonStored !== false;
+        if (stored) saveRatingMemory(generationType, targetRef, "down", label);
+        setChipState(stored ? "sent" : "failed");
       });
     }).catch(function(){ setChipState("failed"); });
   }
 
   return (
-    <div style={{display:"inline-flex",alignItems:"center",gap:6}}>
+    <div style={{display:"inline-flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
       <button onClick={onUp} disabled={working} aria-label="Thumbs up"
         style={{
           fontFamily:"'Jost',sans-serif",fontSize:btnSize,padding:btnPad,
