@@ -16,8 +16,31 @@
 // is fail-open inside fetchHandleResearch — if Perplexity is down, we
 // return { refreshed: false, reason: "no_research" } and the next plan
 // generation just runs without the research block.
+//
+// [RESEARCH-VERIFY] The endpoint also serves the Profile panel's explicit
+// "here's what's wrong, run it again" action. POST body (all optional):
+//
+//   { corrections: string, saveOnly: true, refresh: true }
+//
+// corrections are persisted to the caller's own profile row before the
+// research runs, so the correction is (a) saved without requiring a full
+// profile save, (b) an input to the regenerated brief, and (c) part of
+// the research cache key. refresh forces a re-run past the cache — rate
+// limited, since unlike the prewarm path it always spends money.
+//
+// saveOnly persists the correction and returns immediately. The Profile
+// panel uses it to split "save my correction" from "now go re-research",
+// because those two have very different latencies: the save is a single
+// PATCH, while the re-run is a live Perplexity call plus a verification
+// pass and can run for tens of seconds. Folded into one request, a slow
+// or timed-out re-run would leave the creator unable to tell whether
+// their correction survived — and the correction is the part that
+// actually matters, since it overrides the research in every prompt
+// whether or not the re-run ever succeeds.
 
 import { fetchHandleResearch } from "./_lib/handle-research.js";
+
+const MAX_CORRECTIONS_CHARS = 2000;
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -46,6 +69,76 @@ export default async function handler(req, res) {
   }
   if (!userId) return res.status(401).json({ error: "Sign in required." });
 
+  const body        = (req.body && typeof req.body === "object") ? req.body : {};
+  const wantRefresh = !!body.refresh;
+  // undefined means "don't touch the stored value"; "" is a real value
+  // (the creator cleared their correction) and must be persisted as such.
+  const newCorrections = typeof body.corrections === "string"
+    ? body.corrections.trim().slice(0, MAX_CORRECTIONS_CHARS)
+    : null;
+
+  // [RESEARCH-VERIFY] Save the correction FIRST, before any research
+  // runs. If Perplexity or the verifier then fails, the creator has still
+  // not lost what they typed — and the correction is already overriding
+  // the research in every prompt via prompts.js, which is the part that
+  // actually protects their generations.
+  if (newCorrections !== null) {
+    let savedOk = false;
+    try {
+      const w = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`, {
+        method: "PATCH",
+        headers: {
+          apikey:         SUPABASE_SERVICE_KEY,
+          Authorization:  `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+          Prefer:         "return=minimal",
+        },
+        body: JSON.stringify({ research_corrections: newCorrections || null }),
+      });
+      savedOk = w.ok;
+      if (!w.ok) {
+        const t = await w.text().catch(() => "");
+        console.error("[research-prewarm] corrections save failed", w.status, t.slice(0, 200));
+      }
+    } catch (e) {
+      console.error("[research-prewarm] corrections save threw", e.message);
+    }
+    // The creator is owed a straight answer about their own words. A
+    // failed save is reported as failed rather than swallowed — unlike
+    // the research itself, which is genuinely optional.
+    if (!savedOk) {
+      return res.status(500).json({ error: "Couldn't save that correction — try again.", savedCorrections: false });
+    }
+    if (body.saveOnly) {
+      return res.status(200).json({ savedCorrections: true, refreshed: false, reason: "saved" });
+    }
+  } else if (body.saveOnly) {
+    return res.status(200).json({ savedCorrections: false, refreshed: false, reason: "nothing_to_save" });
+  }
+
+  // A forced re-run always spends a Perplexity call plus a verification
+  // call, so it gets the same burst limiter feedback.js uses. The
+  // unforced prewarm path is cache-backed and stays unlimited.
+  if (wantRefresh) {
+    try {
+      const rl = await fetch(`${SUPABASE_URL}/rest/v1/rpc/check_and_record_rate_limits`, {
+        method: "POST",
+        headers: {
+          apikey:         SUPABASE_SERVICE_KEY,
+          Authorization:  `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ p_user_id: userId, p_endpoint: "research_refresh", p_minute_max: 2, p_hour_max: 10 }),
+      });
+      if (rl.ok && (await rl.json()) !== "ok") {
+        return res.status(429).json({
+          error: "That's a few re-runs in a row — give it a minute and try again. Your correction is saved either way.",
+          savedCorrections: newCorrections !== null,
+        });
+      }
+    } catch (e) { /* fail-open */ }
+  }
+
   // Read handles + inspiration + learn_from_public_posts from the profiles
   // table — NEVER trust the request body, since that would let a caller
   // pre-warm research against fabricated handles / aspirations and force
@@ -56,9 +149,19 @@ export default async function handler(req, res) {
   let inspiration = "";
   let businessWebsite = "";
   let learnFromPublicPosts = false;
+  // [RESEARCH-VERIFY] The verifier needs the creator's own account of
+  // themselves to check the research against, so the select now pulls the
+  // ground-truth fields too. All read from the same trusted server-side
+  // row as the handles, for the same reason: a caller who could supply
+  // their own "ground truth" could talk the verifier into approving
+  // anything.
+  let corrections = "";
+  let name = "";
+  let offerings = "";
+  let nicheDetail = "";
   try {
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=handles,inspiration,business_website,learn_from_public_posts`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=handles,inspiration,business_website,learn_from_public_posts,research_corrections,name,offerings,niche_detail`,
       { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
     );
     if (r.ok) {
@@ -70,8 +173,16 @@ export default async function handler(req, res) {
       // this column — the || "" falls through cleanly.
       businessWebsite      = (rows[0] && typeof rows[0].business_website === "string") ? rows[0].business_website : "";
       learnFromPublicPosts = !!(rows[0] && rows[0].learn_from_public_posts);
+      corrections          = (rows[0] && typeof rows[0].research_corrections === "string") ? rows[0].research_corrections : "";
+      name                 = (rows[0] && typeof rows[0].name === "string") ? rows[0].name : "";
+      offerings            = (rows[0] && typeof rows[0].offerings === "string") ? rows[0].offerings : "";
+      nicheDetail          = (rows[0] && typeof rows[0].niche_detail === "string") ? rows[0].niche_detail : "";
     }
   } catch (e) { /* fail-open below */ }
+
+  // The PATCH above may not be visible to this read yet, and it is the
+  // newer value regardless — prefer it.
+  if (newCorrections !== null) corrections = newCorrections;
 
   // [BUSINESS-WEBSITE] Pre-warming proceeds when there's anything to
   // research — either at least one social handle OR a business website.
@@ -80,7 +191,11 @@ export default async function handler(req, res) {
   const hasHandle  = handles && Object.keys(handles).some(k => handles[k]);
   const hasWebsite = !!(businessWebsite && businessWebsite.trim());
   if (!hasHandle && !hasWebsite) {
-    return res.status(200).json({ refreshed: false, reason: "no_handles_or_website" });
+    return res.status(200).json({
+      refreshed: false,
+      reason: "no_handles_or_website",
+      savedCorrections: newCorrections !== null,
+    });
   }
 
   // [LEARNING-CONSENT] Skip the Perplexity research call entirely when the
@@ -89,7 +204,11 @@ export default async function handler(req, res) {
   // gate covers the business website too: reading the public site is the
   // same kind of public-data-research the toggle authorizes.
   if (!learnFromPublicPosts) {
-    return res.status(200).json({ refreshed: false, reason: "consent_off" });
+    return res.status(200).json({
+      refreshed: false,
+      reason: "consent_off",
+      savedCorrections: newCorrections !== null,
+    });
   }
 
   // fetchHandleResearch is idempotent: returns cached text when fresh,
@@ -98,16 +217,28 @@ export default async function handler(req, res) {
   // hot for the next generation") is satisfied.
   let research = null;
   try {
-    research = await fetchHandleResearch(userId, handles, inspiration, businessWebsite);
+    research = await fetchHandleResearch(userId, handles, inspiration, businessWebsite, {
+      corrections,
+      name,
+      offerings,
+      nicheDetail,
+      force: wantRefresh,
+    });
   } catch (e) { /* fail-open */ }
 
   // [RESEARCH-REVIEW] Return the research paragraph itself so the Profile
   // panel can show the creator what VIRL actually learned (and collect
   // corrections). Auth above guarantees this is the caller's own research;
   // older clients ignore the extra field.
+  // [RESEARCH-VERIFY] `verification` rides along so the panel can report
+  // what the fact-check removed. It is deliberately shown even when
+  // nothing was removed — "checked, nothing pulled" is the reassurance a
+  // creator who has been burned by a wrong brief actually wants.
   return res.status(200).json({
-    refreshed:    !!research,
-    reason:       research ? "ok" : "no_research",
-    researchText: research ? research.researchText : null,
+    refreshed:        !!research,
+    reason:           research ? "ok" : "no_research",
+    researchText:     research ? research.researchText : null,
+    verification:     research ? (research.verification || null) : null,
+    savedCorrections: newCorrections !== null,
   });
 }

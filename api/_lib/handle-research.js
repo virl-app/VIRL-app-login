@@ -20,6 +20,7 @@
 import crypto from "node:crypto";
 import { callPerplexity } from "./perplexity.js";
 import { fetchPageText } from "./page-fetch.js";
+import { verifyResearch } from "./research-verify.js";
 
 // [DIRECT-WEBSITE-FETCH] Cap on how much of the business website's raw
 // page text rides along in the prompt. Same order of magnitude as
@@ -59,7 +60,15 @@ const NEGATIVE_TTL_MS = 6 * 60 * 60 * 1000;
 // of a brand-new/low-traffic domain that's fully live but not yet in any
 // search index. Bumped for the same reason as v5: force a fresh attempt
 // past any negative cache written before this change.
-const PROMPT_VERSION = "v6";
+// [RESEARCH-VERIFY] v7: the prompt now carries an explicit ground-truth
+// block (the creator's own website domain and corrections) with a
+// standing instruction never to describe a business at any other domain,
+// and every brief runs through the verification pass in
+// _lib/research-verify.js before it is cached or shown. Bumped so every
+// row written under v6 — any of which may carry an unverified false
+// identity — is re-fetched and re-checked on next use rather than
+// waiting out a 30-day TTL.
+const PROMPT_VERSION = "v7";
 
 // [HANDLE-URLS] Defensive cleanup of a stored handle value. The client
 // normalizes on blur + save (index.html#normalizeSocialInput), but legacy
@@ -117,7 +126,15 @@ function profileUrlFor(platform, handle) {
 // editing or adding a URL re-fetches research that incorporates it.
 // Empty / absent website hashes the same as before, so users without a
 // site don't get cache churn from this change.
-function hashHandles(handles, inspiration, businessWebsite) {
+// [RESEARCH-VERIFY] corrections are hashed too. Before this, a creator
+// who read a wrong brief and typed "my website is X, you listed the
+// wrong one" changed nothing about the research itself — the correction
+// only ever appeared as an override further down the prompt, while the
+// wrong brief sat in cache for up to 30 days and kept being shown back
+// to them. Hashing corrections makes writing one re-run the research
+// with that correction as an input, which is what a creator typing into
+// a box labelled "anything wrong or missing?" plainly expects.
+function hashHandles(handles, inspiration, businessWebsite, corrections) {
   const safeHandles = (handles && typeof handles === "object") ? handles : {};
   const sortedHandles = Object.keys(safeHandles)
     .filter(k => safeHandles[k])
@@ -129,8 +146,11 @@ function hashHandles(handles, inspiration, businessWebsite) {
   const siteStr = (businessWebsite && typeof businessWebsite === "string")
     ? businessWebsite.trim().toLowerCase()
     : "";
+  const corrStr = (corrections && typeof corrections === "string")
+    ? corrections.trim().toLowerCase()
+    : "";
   return crypto.createHash("sha256")
-    .update(PROMPT_VERSION + "||" + sortedHandles.join("|") + "||insp:" + inspStr + "||site:" + siteStr)
+    .update(PROMPT_VERSION + "||" + sortedHandles.join("|") + "||insp:" + inspStr + "||site:" + siteStr + "||corr:" + corrStr)
     .digest("hex");
 }
 
@@ -153,10 +173,23 @@ async function readCache(userId) {
 }
 
 // Upserts the cache. Fire-and-forget from the caller's perspective.
-async function writeCache(userId, research_text, post_excerpts, handles_hash) {
+// [RESEARCH-VERIFY] verify_notes (migration 024) rides along so the
+// Profile panel can tell the creator what the verification pass removed
+// without re-running it on every page view. Written defensively: if the
+// column doesn't exist yet, PostgREST 400s the whole row, so a failure
+// retries once without the field rather than losing the cache write
+// entirely on a deploy that lands ahead of the migration.
+async function writeCache(userId, research_text, post_excerpts, handles_hash, verify_notes) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !userId) return;
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/creator_handle_research`, {
+  const base = {
+    user_id:       userId,
+    research_text,
+    post_excerpts: Array.isArray(post_excerpts) ? post_excerpts : [],
+    handles_hash,
+    fetched_at:    new Date().toISOString(),
+  };
+  async function put(row) {
+    return fetch(`${SUPABASE_URL}/rest/v1/creator_handle_research`, {
       method: "POST",
       headers: {
         apikey:           SUPABASE_SERVICE_KEY,
@@ -164,14 +197,16 @@ async function writeCache(userId, research_text, post_excerpts, handles_hash) {
         "Content-Type":   "application/json",
         Prefer:           "resolution=merge-duplicates,return=minimal",
       },
-      body: JSON.stringify({
-        user_id:       userId,
-        research_text,
-        post_excerpts: Array.isArray(post_excerpts) ? post_excerpts : [],
-        handles_hash,
-        fetched_at:    new Date().toISOString(),
-      }),
+      body: JSON.stringify(row),
     });
+  }
+  try {
+    const res = await put(verify_notes ? { ...base, verify_notes } : base);
+    if (!res.ok && verify_notes) {
+      const text = await res.text().catch(() => "");
+      console.warn("[handle-research] cache write with verify_notes failed, retrying without:", res.status, text.slice(0, 200));
+      await put(base);
+    }
   } catch (e) { /* non-fatal */ }
 }
 
@@ -188,7 +223,7 @@ async function writeCache(userId, research_text, post_excerpts, handles_hash) {
 // defeat the purpose. The descriptive paragraph IS allowed to note how the
 // user's actual posting compares to that aspiration, which can sharpen the
 // LLM's voice instructions.
-function buildResearchPrompt(handles, inspiration, businessWebsite, websiteText) {
+function buildResearchPrompt(handles, inspiration, businessWebsite, websiteText, corrections) {
   // [HANDLE-URLS] Render each handle WITH its canonical profile URL and
   // tell the model to resolve the account from the URL. A bare handle
   // forces the search engine to name-match, which is exactly how a
@@ -234,10 +269,41 @@ function buildResearchPrompt(handles, inspiration, businessWebsite, websiteText)
     : "Business / brand website (read this for the creator's actual offerings, services, and brand-consistent terminology — use as a secondary voice signal behind the social handles, since marketing copy on a website is often more formal than this creator's social posts): " + siteUrl);
   const hasWebsite = !!businessLine;
 
+  // [RESEARCH-VERIFY] Ground-truth block. The single worst failure this
+  // research has produced is describing a DIFFERENT business than the
+  // creator's — a search-grounded model, handed thin signal, resolves to
+  // whatever entity ranks and then writes about it with full confidence.
+  // Naming the creator's own domain up front and forbidding any other one
+  // is the cheap prevention; _lib/research-verify.js is the cure that runs
+  // over the output regardless.
+  let siteHost = "";
+  if (siteUrl) {
+    try { siteHost = new URL(/^https?:\/\//i.test(siteUrl) ? siteUrl : "https://" + siteUrl).hostname.replace(/^www\./, ""); }
+    catch (e) { siteHost = ""; }
+  }
+  const groundTruthLines = [];
+  if (siteHost) {
+    groundTruthLines.push(
+      "GROUND TRUTH — the creator's business is the one published at " + siteHost + ". That domain is confirmed by the creator themselves. "
+      + "If your search surfaces a company with a different name or a different domain, that is a DIFFERENT business and it is not theirs — do not describe it, do not name it, and do not blend its offerings into this brief. "
+      + "A brief that names the wrong company is worse than no brief at all."
+    );
+  }
+  // The creator's own corrections are the highest-authority input there
+  // is: they wrote them after reading a previous version of this brief.
+  const correctionsText = (corrections && typeof corrections === "string") ? corrections.trim() : "";
+  if (correctionsText) {
+    groundTruthLines.push(
+      "CORRECTIONS THE CREATOR MADE TO YOUR PREVIOUS BRIEF — these are facts stated by the creator about themselves. They outrank anything your search returns. "
+      + "Where a search result conflicts with these, the search result is wrong; drop it rather than averaging the two:\n\"\"\"\n" + correctionsText.slice(0, 1500) + "\n\"\"\""
+    );
+  }
+
   return [
     "Research this creator's actual posting patterns across their connected platforms"
       + (hasWebsite ? ", and review their business website for offerings + brand-consistent terminology" : "")
       + ".",
+    ...(groundTruthLines.length ? ["", groundTruthLines.join("\n\n")] : []),
     "",
     handleList
       ? "Profiles to research (open each URL directly and research THAT exact account — do NOT search by name or handle text, which risks pulling a different person with the same name. If a URL is unreachable, has no indexable posts, or clearly belongs to a different person or business than the other profiles suggest, say so plainly for that platform instead of substituting a lookalike account):\n" + handleList
@@ -274,7 +340,15 @@ function buildResearchPrompt(handles, inspiration, businessWebsite, websiteText)
     "",
     "Format your reply with TWO sections separated by a blank line:",
     "",
-    "FIRST SECTION — one tight paragraph (max " + (hasWebsite ? "12" : "10") + " sentences) summarizing the points above. No headings, no bullet points, no marketing language. Treat this as a brief to another writer who needs to sound like this person, extend the series they already run, and reference their actual business correctly.",
+    // [RESEARCH-VERIFY] The formatting rules here are load-bearing, not
+    // cosmetic. The Profile panel shows this text to the creator as plain
+    // text, so stray markdown renders as literal asterisks; and a hedged
+    // claim ("...if those labels appear in the product descriptions") is
+    // the exact shape of the invented-program failure. Anything that
+    // survives these rules still gets audited downstream.
+    "FIRST SECTION — one tight paragraph (max " + (hasWebsite ? "12" : "10") + " sentences) summarizing the points above. Plain prose only: no headings, no bullet points, no markdown or asterisks of any kind, no citation markers, no marketing language. Treat this as a brief to another writer who needs to sound like this person, extend the series they already run, and reference their actual business correctly.",
+    "",
+    "Every sentence in that paragraph must be something you actually observed. Do not name a program, tagline, series, or product and then hedge on whether it exists — if you are not confident it is real, leave it out entirely. Never write a conditional claim like \"X if that label appears\" or \"X or a similarly specific tagline\": an unverifiable claim is not worth a sentence. Skipping a numbered point above is a perfectly good outcome; padding it with plausible-sounding filler is not.",
     "",
     "SECOND SECTION — a line that says exactly 'POST_EXCERPTS:' followed by up to 8 verbatim caption / post excerpts from THIS creator's actual indexed posts, one per line, each starting with '- '. Pick excerpts that show their RANGE, not eight variations of the same register — mix opening hooks, sign-offs, one-liners, and a longer storytelling beat if they have one. Each excerpt should be 8-50 words. Quote them exactly — do not paraphrase. If you cannot find any real excerpts (uncached, private, or too few posts), output exactly 'POST_EXCERPTS: NONE' instead.",
   ].join("\n");
@@ -320,7 +394,20 @@ function parseResearchResponse(rawText) {
 }
 
 // Public entry. Returns either null (no usable research) or:
-//   { researchText: string, postExcerpts: string[] }
+//   { researchText: string, postExcerpts: string[], verification: object|null }
+//
+// [RESEARCH-VERIFY] researchText is the VERIFIED brief — it has been
+// audited against the creator's stated ground truth by
+// _lib/research-verify.js before ever being cached. `verification`
+// summarizes what that audit removed (null only on cache rows written
+// before migration 024). Callers that just want context can keep
+// ignoring it; the Profile panel uses it to tell the creator what was
+// thrown out and why.
+//
+// opts (all optional): { corrections, name, offerings, nicheDetail, force }
+// — corrections are both an input to the research prompt and part of the
+// cache key, and `force` bypasses the cache read for an explicit
+// creator-requested re-run.
 //
 // Caller (chat.js) sets profile.handleResearch = researchText (preserving
 // the prompts.js consumption shape) and profile.handlePostExcerpts =
@@ -333,8 +420,11 @@ function parseResearchResponse(rawText) {
 // function because chat.js + profile-research-prewarm.js each have
 // their own reasons for the call (and chat.js short-circuits before
 // reaching here when consent is off).
-export async function fetchHandleResearch(userId, handles, inspiration, businessWebsite) {
+export async function fetchHandleResearch(userId, handles, inspiration, businessWebsite, opts) {
   if (!userId) return null;
+  const options     = opts && typeof opts === "object" ? opts : {};
+  const corrections = typeof options.corrections === "string" ? options.corrections : "";
+  const force       = !!options.force;
   const safeHandles = (handles && typeof handles === "object") ? handles : {};
   const hasHandle  = Object.keys(safeHandles).some(k => safeHandles[k]);
   const hasWebsite = !!(businessWebsite && typeof businessWebsite === "string" && businessWebsite.trim());
@@ -344,9 +434,14 @@ export async function fetchHandleResearch(userId, handles, inspiration, business
   // social handles yet) still gets brand-grounded research.
   if (!hasHandle && !hasWebsite) return null;
 
-  const currentHash = hashHandles(safeHandles, inspiration, businessWebsite);
+  const currentHash = hashHandles(safeHandles, inspiration, businessWebsite, corrections);
   const cached = await readCache(userId);
-  if (cached && cached.handles_hash === currentHash) {
+  // [RESEARCH-VERIFY] `force` is the creator explicitly asking for a
+  // re-run from the Profile panel ("Run it again"). Their judgment that
+  // the brief is wrong beats our cache's judgment that it's fresh, so
+  // skip the read entirely. Cost is bounded by the rate limit on the
+  // endpoint that sets this flag — no background path ever passes it.
+  if (!force && cached && cached.handles_hash === currentHash) {
     const ageMs = Date.now() - Date.parse(cached.fetched_at || 0);
     // [NEGATIVE-TTL] Negative rows (empty research_text) get the short
     // TTL: within it, surface null so callers skip the block; past it,
@@ -357,6 +452,14 @@ export async function fetchHandleResearch(userId, handles, inspiration, business
       return {
         researchText: cached.research_text,
         postExcerpts: Array.isArray(cached.post_excerpts) ? cached.post_excerpts : [],
+        // [RESEARCH-VERIFY] Replay the stored verification summary on a
+        // cache hit so the Profile panel shows the same "what VIRL threw
+        // out" note on every visit, not just the visit that happened to
+        // trigger the fetch. Null on pre-migration-024 rows — the UI
+        // treats a missing summary as "not checked" and says so.
+        verification: (cached.verify_notes && typeof cached.verify_notes === "object")
+          ? cached.verify_notes
+          : null,
       };
     }
   }
@@ -376,7 +479,7 @@ export async function fetchHandleResearch(userId, handles, inspiration, business
   // to surface offerings + voice signals in the same paragraph.
   // [RESEARCH-V2] Budgets raised for the three added dimensions + up to
   // 8 excerpts (was 5).
-  const prompt    = buildResearchPrompt(safeHandles, inspiration, businessWebsite, websiteText);
+  const prompt    = buildResearchPrompt(safeHandles, inspiration, businessWebsite, websiteText, corrections);
   const maxTokens = hasWebsite ? 1700 : 1400;
   let result = await attemptResearch(prompt, "sonar", maxTokens);
   // [SONAR-PRO-FALLBACK] Base `sonar` search sometimes can't ground on
@@ -397,8 +500,64 @@ export async function fetchHandleResearch(userId, handles, inspiration, business
     return null;
   }
 
-  writeCache(userId, result.description, result.excerpts, currentHash).catch(() => {});
-  return { researchText: result.description, postExcerpts: result.excerpts };
+  // [RESEARCH-VERIFY] Nothing reaches the cache — and therefore nothing
+  // reaches the creator's profile or any prompt — until it has been
+  // audited against the creator's own stated facts. This is the whole
+  // point of the pass: the research call is the only step that can
+  // hallucinate an identity, and it is now never the last step.
+  //
+  // The verified text is what we store, so the audit is paid for once
+  // per refresh rather than on every read, and so the brief the creator
+  // reviews in the Profile panel is byte-identical to the brief the
+  // prompt builder consumes. A creator who reads the brief and approves
+  // it has approved exactly what VIRL will use.
+  const audited = await verifyResearch({
+    researchText: result.description,
+    excerpts:     result.excerpts,
+    groundTruth:  {
+      name:            options.name || "",
+      businessWebsite: businessWebsite || "",
+      handles:         safeHandles,
+      handleList:      describeHandles(safeHandles),
+      siteText:        websiteText || "",
+      offerings:       options.offerings || "",
+      nicheDetail:     options.nicheDetail || "",
+      corrections,
+    },
+  });
+
+  // Verification can legitimately empty the brief — a research pass that
+  // produced nothing but false-identity claims SHOULD leave nothing
+  // behind. Treat that like any other empty result: negative-cache it so
+  // the short TTL retries soon, and return null so callers fall through
+  // to their no-research path rather than showing an empty box.
+  if (!audited.text) {
+    console.warn("[handle-research] verification emptied the brief for user", userId,
+      audited.verification.foreignDomains.length ? ("foreign domains: " + audited.verification.foreignDomains.join(",")) : "");
+    writeCache(userId, "", [], currentHash, audited.verification).catch(() => {});
+    return null;
+  }
+
+  writeCache(userId, audited.text, audited.excerpts, currentHash, audited.verification).catch(() => {});
+  return {
+    researchText: audited.text,
+    postExcerpts: audited.excerpts,
+    verification: audited.verification,
+  };
+}
+
+// Renders the creator's handles as a plain list for the verifier's
+// ground-truth block. Same normalization the research prompt uses, minus
+// the URLs — the verifier is checking claims, not visiting pages.
+function describeHandles(handles) {
+  return Object.keys(handles || {})
+    .filter(k => handles[k])
+    .map(k => {
+      const h = cleanStoredHandle(handles[k]);
+      return h ? "  - " + k + ": " + h : null;
+    })
+    .filter(Boolean)
+    .join("\n");
 }
 
 // One Perplexity attempt + parse. Returns null on any failure (API error,
