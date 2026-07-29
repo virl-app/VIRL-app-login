@@ -22,7 +22,7 @@
 // intentionally OUT of scope here — it's non-deterministic, costs money, and
 // needs an API key. Run that one nightly/manually, not as a PR gate.
 
-import { dispatch } from "../api/_lib/prompts.js";
+import { dispatch, VOICE_LEARNING_TYPES } from "../api/_lib/prompts.js";
 import { computeVoiceDrift, FEATURE_NORMS } from "../api/_lib/voice-drift.js";
 
 let failures = 0;
@@ -150,6 +150,83 @@ try {
   assert(!/THE CREATOR'S OWN WRITING/.test(bare), "bare profile should not emit an own-writing block");
 } catch (e) {
   assert(false, `bare profile build threw — ${e && e.message}`);
+}
+
+// ── Layer A2: learned signals reach every surface that claims them ──────────
+//
+// [VOICE-LEARNING] The checks above cover the STATIC voice stack — persona,
+// style guard, personal facts. This covers the LEARNED signals: what the
+// creator has edited, and what they've flagged as off.
+//
+// This is the assertion that would have caught the bug it was written for.
+// long_post and blog_post sat in the fetch list in chat.js, with comments
+// explaining that voice fidelity mattered most on exactly those surfaces,
+// while their builders took the diffs as `_recentEdits` and discarded them.
+// Every generation paid for the query; none of them used the answer; nothing
+// anywhere said so. Two lists that had to agree, and no check that they did.
+//
+// Now there is one list — VOICE_LEARNING_TYPES — and this walks it. A type
+// added to the set without wiring its builder fails here, as does a builder
+// that quietly stops consuming the signal.
+{
+  const LEARNING_PARAMS = {
+    plan:             { platforms: ["Instagram"], formats: ["video"], niche: "Wellness", goal: "growth" },
+    plan_partial:     { platforms: ["Instagram"], formats: ["video"], niche: "Wellness", goal: "growth", replaceSlots: [{ day: "Day 1 - Mon", platform: "Instagram", format: "video" }], strategy: {} },
+    caption:          { platform: "Instagram", topic: "morning routines" },
+    caption_remix:    { platform: "Instagram", topic: "morning routines", originalCaption: "mornings are hard with three kids" },
+    scan_image:       {},
+    scan_video_frame: {},
+    long_post:        { topic: "morning routines", length: "medium" },
+    blog_post:        { topic: "morning routines", length: "medium" },
+    script:           { card: { title: "Morning reset", description: "a calm start", platform: "Instagram", format: "video" } },
+  };
+
+  const EDITS = [{ field: "hook", before: "Discover the transformative power of morning routines", after: "my mornings are chaos", surface: "caption" }];
+  const PROFILE_WITH_REACTIONS = Object.assign({}, GOLDEN_PROFILE, {
+    voiceReactions: [{ reason: "Too formal", count: 3, lastAt: "2026-07-27T10:00:00Z", lastType: "caption" }],
+  });
+
+  for (const gt of VOICE_LEARNING_TYPES) {
+    const params = LEARNING_PARAMS[gt];
+    // A type in the set with no fixture here is itself a failure: it means
+    // someone widened the set without teaching the gate how to exercise it.
+    if (!params) {
+      assert(false, `${gt}: in VOICE_LEARNING_TYPES but has no fixture in check-voice.mjs — add one`);
+      continue;
+    }
+    let text = "";
+    try {
+      const built = dispatch(gt, params, PROFILE_WITH_REACTIONS, null, {}, {}, [], EDITS, null, null);
+      // The blocks ride the user prompt on some surfaces and the system
+      // prompt on others; both are the model's input, so check the pair.
+      text = flatten(built.systemPrompt) + "\n" + (built.userPrompt || "");
+    } catch (e) {
+      assert(false, `${gt}: prompt build threw while checking learned signals — ${e && e.message}`);
+      continue;
+    }
+    assert(/HOW THIS CREATOR REVISES VIRL DRAFTS/.test(text),
+      `${gt}: in VOICE_LEARNING_TYPES but its prompt carries no edit-diff block`);
+    assert(/my mornings are chaos/.test(text),
+      `${gt}: edit-diff block present but the actual diff text is missing`);
+    assert(/WHAT THIS CREATOR HAS FLAGGED AS OFF/.test(text),
+      `${gt}: in VOICE_LEARNING_TYPES but its prompt carries no reaction block`);
+  }
+
+  // The inverse: a type deliberately EXCLUDED must stay excluded, so the
+  // exclusions in VOICE_LEARNING_TYPES stay decisions rather than drifting
+  // into accidents. plan_strategy emits strategic direction, never creator
+  // copy — learned voice signal has no business there.
+  assert(!VOICE_LEARNING_TYPES.has("plan_strategy"),
+    "plan_strategy should stay out of VOICE_LEARNING_TYPES — it emits strategy, not creator copy");
+  {
+    const built = dispatch("plan_strategy", {
+      platforms: ["Instagram"], niche: "Wellness", goal: "growth",
+      cards: [{ day: "Day 1 - Mon", title: "Morning reset", platform: "Instagram", format: "video" }],
+    }, PROFILE_WITH_REACTIONS, null, {}, {}, [], EDITS, null, null);
+    const text = flatten(built.systemPrompt) + "\n" + (built.userPrompt || "");
+    assert(!/HOW THIS CREATOR REVISES VIRL DRAFTS/.test(text),
+      "plan_strategy: excluded from VOICE_LEARNING_TYPES but still emitting the edit-diff block");
+  }
 }
 
 // ── Layer B: the drift scorer (powers the drift gate) behaves ───────────────

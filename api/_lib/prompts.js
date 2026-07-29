@@ -414,6 +414,116 @@ function formatEditsForPrompt(diffs) {
     + " strongest available signal of how this creator actually sounds.";
 }
 
+// [VOICE-LEARNING] The single source of truth for which generation types
+// consume what VIRL has learned from this creator — their edit diffs and
+// their reaction chips.
+//
+// This list exists because the app had drifted into TWO lists that were
+// supposed to agree and didn't: chat.js decided what to FETCH, each
+// builder independently decided what to USE, and nothing checked them
+// against each other. long_post and blog_post were in the fetch list —
+// with comments explaining that voice fidelity matters most there — and
+// then both builders took `_recentEdits` and dropped it on the floor. We
+// paid for the query and threw away the answer, silently, on the two
+// longest-form surfaces in the product.
+//
+// So: one list, exported, imported by chat.js as its fetch gate, and
+// asserted by scripts/check-voice.mjs (which already exists to catch
+// "voice signal present on some surfaces, missing on others").
+//
+// Exclusions are deliberate and belong here rather than being an
+// accident of which builder someone remembered to wire:
+//   plan_strategy        — emits strategic direction, not creator copy.
+//                          Nothing it writes is published in their voice.
+//   log_metrics          — OCR of a screenshot. No prose.
+//   voice_sample_extract — reads the creator's own words back; learning
+//                          from our drafts would be circular.
+export const VOICE_LEARNING_TYPES = new Set([
+  "plan", "plan_partial",
+  "caption", "caption_remix",
+  "scan_image", "scan_video_frame",
+  // [LINKEDIN-LONG-POST] Long-form posts are voice-heavy by definition.
+  "long_post",
+  // [VIRL-POSTS-TAB] The longest single-artifact generation we produce.
+  "blog_post",
+  // [VOICE-LEARNING] Scripts are words the creator will say out loud —
+  // the surface where sounding like someone else is most obvious. It was
+  // excluded for no recorded reason; there isn't a good one.
+  "script",
+]);
+
+// [VOICE-LEARNING] One block for everything VIRL has learned about how
+// this creator wants to sound. Every builder in VOICE_LEARNING_TYPES
+// calls exactly this, so the next signal added here reaches all of them
+// at once instead of needing nine call sites updated in lockstep — which
+// is how the surfaces diverged in the first place.
+//
+// Order is meaningful: edits (evidence of what they actually wrote) come
+// before reactions (a verdict on what they didn't want), and the
+// reactions block states that precedence explicitly for the model.
+function formatVoiceLearning(recentEdits, profile) {
+  return formatEditsForPrompt(recentEdits)
+    + formatReactionsForPrompt(profile && profile.voiceReactions);
+}
+
+// [REACTION-LOOP] What each chip actually instructs the model to do.
+//
+// The chip labels are written for the creator ("Too formal") and are far
+// too compressed to act on as-is — a model handed the bare string will
+// mostly ignore it. Each one is expanded here into the concrete change it
+// implies, so the block reads as a standing correction rather than a mood
+// report. The mapping lives next to the prompt copy, not next to the
+// storage layer, because it is prompt language: api/rate.js owns which
+// labels are legal, this owns what they mean.
+const REACTION_DIRECTIVES = {
+  "Too formal": "drop the register — shorter sentences, contractions, plainer words, no polish they didn't ask for",
+  "Not my words": "the vocabulary was wrong, not the structure — lean harder on their voice samples and their own edits for word choice, and stop reaching for phrasing they never use",
+  "Wrong energy": "the intensity was off — match their actual level rather than dialling up enthusiasm, urgency, or drama the creator does not perform",
+};
+
+// Recent reaction chips → prompt context.
+//
+// Weaker evidence than edit diffs and treated as such: a reaction says a
+// draft was wrong without showing what right looks like, so this block
+// gives DIRECTION while formatEditsForPrompt gives GROUND TRUTH. When the
+// two disagree, the edits win — that precedence is stated in the block
+// itself, since the model sees both.
+//
+// Repetition is the signal that matters. One tap is noise; the same
+// complaint three times is a voice instruction, so counts are surfaced
+// explicitly and singletons are labelled as the weak evidence they are.
+function formatReactionsForPrompt(reactions) {
+  if (!Array.isArray(reactions)) return "";
+  // fetchVoiceReactions already drops reasonless rows; this is the same
+  // belt-and-braces filter formatEditsForPrompt applies, and it matters
+  // more here — an entry with no label would otherwise render the literal
+  // string "undefined" into the prompt as a voice correction.
+  const usable = reactions.filter(function (r) {
+    return r && typeof r.reason === "string" && r.reason.trim();
+  });
+  if (usable.length === 0) return "";
+  const lines = usable.map(function (r) {
+    const directive = REACTION_DIRECTIVES[r.reason];
+    // An unmapped label (a chip added to the UI but not here) still gets
+    // reported rather than dropped — better a bare label the model can
+    // partially use than a silent hole in the creator's feedback.
+    const meaning = directive ? " — " + directive : "";
+    const weight = r.count > 1
+      ? "flagged " + r.count + " times"
+      : "flagged once (weak signal — apply gently)";
+    return "  \"" + r.reason + "\" (" + weight + ")" + meaning;
+  });
+  return "\n\nWHAT THIS CREATOR HAS FLAGGED AS OFF (their own one-tap reactions to recent VIRL drafts, strongest signal first):\n"
+    + lines.join("\n")
+    + "\n\nTreat these as STANDING CORRECTIONS, not one-off notes: the creator"
+    + " tapped these about drafts VIRL already gave them, so repeating the same"
+    + " miss is the one outcome to avoid. Apply them to everything you write here."
+    + " Where a reaction seems to conflict with the creator's own edits above, the"
+    + " EDITS WIN — those show what this creator actually wrote, while a reaction"
+    + " only says what they didn't want. Do not mention, apologize for, or"
+    + " reference this feedback in the output; just write differently.";
+}
+
 // Plan history → prompt context. Surfaces last 1-3 weeks' strategy + each
 // week's top performer (by views+likes×2+saves×4) + how many cards never
 // got logged. The LLM uses this to build narratively, double down on what
@@ -1049,7 +1159,10 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // own card edits, formatted as voice ground-truth examples. Empty
   // string when no diffs (toggle off, no edits yet, or fetch failed)
   // so concatenating below is a no-op.
-  const editsCtx    = formatEditsForPrompt(recentEdits);
+  // [VOICE-LEARNING] Edit diffs + reaction chips, one block. See
+  // formatVoiceLearning — profile.voiceReactions is attached by chat.js
+  // the way profile.handleResearch is, so builder signatures stay put.
+  const editsCtx    = formatVoiceLearning(recentEdits, profile);
   const weekNumber  = (history && !Array.isArray(history) && history.weekNumber)
     ? history.weekNumber
     : (historyWeeks.length ? historyWeeks.length + 1 : 1);
@@ -1519,7 +1632,7 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
     // strategy, the new cards should still sound like the user —
     // they're going to sit alongside (and be edited the same way as)
     // the kept ones. Empty string when no edits / opt-out.
-    + formatEditsForPrompt(recentEdits);
+    + formatVoiceLearning(recentEdits, profile);
 
   return {
     systemPrompt: fullBuilt.systemPrompt,
@@ -1623,7 +1736,7 @@ function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, 
   };
 }
 
-function buildScript(params, profile, vaultPatterns, playbook, _trends, _history, _recentEdits, compliance, personalDenylist) {
+function buildScript(params, profile, vaultPatterns, playbook, _trends, _history, recentEdits, compliance, personalDenylist) {
   const card = params.card || {};
   const platform = card.platform || "TikTok";
   const guide = SCRIPT_PLATFORM_GUIDE[platform] || "short-form social video 60 seconds.";
@@ -1641,7 +1754,12 @@ function buildScript(params, profile, vaultPatterns, playbook, _trends, _history
   const userPrompt = "Write a complete ready-to-film script for this post: " + (card.title || "") + ". "
     + "Platform: " + platform + " — format guide: " + guide
     + scriptPlaybookContext(playbook, platform) + " "
-    + "Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences in creator voice\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script in creator voice\",\"tip\":\"one CAPTURE direction for this section: what to film, where, and how to frame it — specific enough to shoot from, not generic advice\"}],\"cta\":\"closing call to action in creator voice\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe that matches creator aesthetic\",\"shotList\":[\"3-6 shots to capture BEFORE filming the talking parts — each item is one clip: subject + location + action + framing (e.g. 'b-roll: hands pouring coffee, kitchen counter, morning light, close-up'). Phone-shootable. Include at least one no-face b-roll option usable with voiceover for camera-shy days. Order them so the creator can batch-film in one pass.\"],\"compliance_note\":\"OPTIONAL — short disclosure / disclaimer the creator should add to the post, only when one of the COMPLIANCE GUARDRAILS situations applies; omit the field otherwise\"}";
+    + "Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences in creator voice\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script in creator voice\",\"tip\":\"one CAPTURE direction for this section: what to film, where, and how to frame it — specific enough to shoot from, not generic advice\"}],\"cta\":\"closing call to action in creator voice\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe that matches creator aesthetic\",\"shotList\":[\"3-6 shots to capture BEFORE filming the talking parts — each item is one clip: subject + location + action + framing (e.g. 'b-roll: hands pouring coffee, kitchen counter, morning light, close-up'). Phone-shootable. Include at least one no-face b-roll option usable with voiceover for camera-shy days. Order them so the creator can batch-film in one pass.\"],\"compliance_note\":\"OPTIONAL — short disclosure / disclaimer the creator should add to the post, only when one of the COMPLIANCE GUARDRAILS situations applies; omit the field otherwise\"}"
+    // [VOICE-LEARNING] Was fetched by chat.js and then dropped on the
+    // floor here (the param arrived as `_recentEdits`). See
+    // VOICE_LEARNING_TYPES — this surface is in the set, so it
+    // consumes the signal like every other one.
+    + formatVoiceLearning(recentEdits, profile);
   return {
     systemPrompt,
     userPrompt,
@@ -1673,7 +1791,7 @@ function buildScript(params, profile, vaultPatterns, playbook, _trends, _history
 // generated posts above 3000 chars will still flow, just truncated
 // on the platform unless the user trims them. We let the model lean
 // long so creators have material to cut from, not stretch.
-function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _history, _recentEdits, compliance, personalDenylist) {
+function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _history, recentEdits, compliance, personalDenylist) {
   const card = params.card || {};
   // Length target. Users can specify "short" (~350 words / under
   // LinkedIn's see-more cutoff), "medium" (~600 words, default),
@@ -1763,7 +1881,12 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
     + "\"closing\":\"final 1-2 sentences in creator voice\","
     + "\"hashtags\":[\"3-5 LinkedIn hashtags, plain words no # prefix\"],"
     + "\"compliance_note\":\"OPTIONAL short disclosure; omit field entirely otherwise\""
-    + "}";
+    + "}"
+    // [VOICE-LEARNING] Was fetched by chat.js and then dropped on the
+    // floor here (the param arrived as `_recentEdits`). See
+    // VOICE_LEARNING_TYPES — this surface is in the set, so it
+    // consumes the signal like every other one.
+    + formatVoiceLearning(recentEdits, profile);
 
   return {
     systemPrompt,
@@ -1800,7 +1923,7 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
 // Cap at 5000 output tokens — bigger than long_post because blog
 // targets are 1000-2500 words. Cost matches long_post (2 credits)
 // since the per-token billing carries the actual variance.
-function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _history, _recentEdits, compliance, personalDenylist) {
+function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _history, recentEdits, compliance, personalDenylist) {
   const topic = (params.topic && typeof params.topic === "string") ? params.topic.trim() : "";
   const points = Array.isArray(params.supportingPoints)
     ? params.supportingPoints.map(s => String(s || "").trim()).filter(Boolean)
@@ -1861,7 +1984,12 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
     + "\"meta_description\":\"150-160 character SEO summary\","
     + "\"hashtags\":[\"OPTIONAL 3-5 tag words for the creator's CMS; omit if not useful\"],"
     + "\"compliance_note\":\"OPTIONAL short disclosure; omit field entirely otherwise\""
-    + "}";
+    + "}"
+    // [VOICE-LEARNING] Was fetched by chat.js and then dropped on the
+    // floor here (the param arrived as `_recentEdits`). See
+    // VOICE_LEARNING_TYPES — this surface is in the set, so it
+    // consumes the signal like every other one.
+    + formatVoiceLearning(recentEdits, profile);
 
   return {
     systemPrompt,
@@ -1934,7 +2062,7 @@ function buildCaption(params, profile, vaultPatterns, playbook, trends, _history
     // Caption generation benefits as much as plan generation: the
     // hook + each caption variant should match the rewriting
     // patterns the user applies. Empty string when no edits.
-    + formatEditsForPrompt(recentEdits);
+    + formatVoiceLearning(recentEdits, profile);
   return {
     systemPrompt,
     userPrompt,
@@ -1964,7 +2092,7 @@ function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _
     // [LEARN-FROM-EDITS] Voice diffs as ground truth. Caption remix
     // is specifically about voice ("different angle, same voice") —
     // edits are the strongest signal we have for "same voice".
-    + formatEditsForPrompt(recentEdits);
+    + formatVoiceLearning(recentEdits, profile);
   return {
     systemPrompt,
     userPrompt,
@@ -2048,7 +2176,7 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
     // [LEARN-FROM-EDITS] Voice signal — the hook + caption fields
     // this scan emits are the same field types the user routinely
     // edits on plan cards, so the diffs apply directly.
-    + formatEditsForPrompt(recentEdits);
+    + formatVoiceLearning(recentEdits, profile);
   return {
     systemPrompt,
     userPrompt,
@@ -2070,7 +2198,7 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, 
     + SCAN_POST_TYPE_GUIDE
     + scanResultSchema(true)
     // [LEARN-FROM-EDITS] Same rationale as buildScanImage.
-    + formatEditsForPrompt(recentEdits);
+    + formatVoiceLearning(recentEdits, profile);
   return {
     systemPrompt,
     userPrompt,

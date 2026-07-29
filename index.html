@@ -1549,8 +1549,54 @@ function PostSampleFeeder({userToken, onKeep}) {
   );
 }
 
+// [REACTION-LOOP] Why this widget remembers.
+//
+// The reaction chips only render while `rating === "down"`, and `rating`
+// used to be plain component state with nothing hydrating it. The widget
+// itself is mounted conditionally — a plan card renders it only while
+// expanded. So the sequence was:
+//
+//   tap 👎 → rating="down" in memory → chips appear → collapse the card,
+//   switch tabs, or refresh → unmount → state gone → reopen → rating is
+//   null, the 👎 isn't even lit, and the chips are never offered again.
+//
+// The down-rate itself persisted fine (it's a server round trip, which is
+// why down-rates show up in the dashboard) — but the chance to say WHY
+// lasted a few seconds, once, and never came back. That is the most
+// likely reason a live feature produced zero rows: not a failing write, a
+// window nobody could reach twice.
+//
+// Persisting per-item locally is enough to fix it: the chips stay
+// available on a down-rated item until the creator actually answers, and
+// a previously-rated item shows its state when they come back to it.
+// Mirrors the existing localStorage caching in this file (plan, credits,
+// user data) rather than adding a server fetch per rating widget — a plan
+// week renders seven of these.
+function ratingMemoryKey(generationType, targetRef) {
+  return "virl_rating_" + generationType + "|" + String(targetRef || "");
+}
+function loadRatingMemory(generationType, targetRef) {
+  if (!targetRef) return null;
+  try {
+    const raw = localStorage.getItem(ratingMemoryKey(generationType, targetRef));
+    const parsed = raw ? JSON.parse(raw) : null;
+    return (parsed && typeof parsed === "object") ? parsed : null;
+  } catch (e) { return null; }
+}
+function saveRatingMemory(generationType, targetRef, rating, reason) {
+  if (!targetRef) return;
+  try {
+    const key = ratingMemoryKey(generationType, targetRef);
+    // No rating means the server row is gone; drop the local copy too
+    // rather than leaving a ghost the UI would rehydrate from.
+    if (!rating) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify({ rating: rating, reason: reason || null }));
+  } catch (e) { /* private mode / quota — the widget still works in-session */ }
+}
+
 function RatingButtons({sessionToken, generationType, targetRef, size}) {
-  const [rating,setRating]   = useState(null);    // "up" | "down" | null
+  const remembered = loadRatingMemory(generationType, targetRef);
+  const [rating,setRating]   = useState(remembered ? (remembered.rating || null) : null);
   const [working,setWorking] = useState(false);
   const compact = size === "sm";
   const btnPad  = compact ? "5px 10px" : "7px 12px";
@@ -1562,35 +1608,63 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
     setWorking(true);
     const previous = rating;
     setRating(next); // optimistic
+    // [REACTION-LOOP] Leaving a thumbs-down clears any chip state, so
+    // coming back to it later offers the chips again rather than showing
+    // a stale confirmation for a reaction the server no longer holds
+    // (clearing a rating deletes the row, reason included).
+    if (next !== "down") setChipState("");
     fetch("/api/rate", {
       method:  "POST",
       headers: { "Content-Type":"application/json", "Authorization":"Bearer "+sessionToken },
       body:    JSON.stringify({ generation_type: generationType, target_ref: targetRef, rating: next }),
     })
-      .then(function(r){ if (!r.ok) setRating(previous); })
+      .then(function(r){
+        if (!r.ok) { setRating(previous); return; }
+        // Rating without a chip clears any stored reason, matching the
+        // server: /api/rate writes reason:null on a bare rate call, and
+        // clearing a rating deletes the row outright.
+        saveRatingMemory(generationType, targetRef, next, null);
+      })
       .catch(function(){ setRating(previous); })
       .finally(function(){ setWorking(false); });
   }
 
   function onUp()   { send(rating === "up"   ? null : "up");   }
   function onDown() { send(rating === "down" ? null : "down"); }
-  // [VOICE-FEED] One-tap "what was off" after a thumbs-down. Routed to
-  // /api/feedback with a voice: context so the themes are minable; chips
-  // disappear after one tap or dismiss.
-  const [chipSent,setChipSent] = useState(false);
+  // [REACTION-LOOP] One-tap "what was off" after a thumbs-down.
+  //
+  // This used to POST to /api/feedback — the support inbox — with
+  // sentiment:"negative", which isn't in that endpoint's allowed set
+  // {happy, neutral, sad}, so every tap was stored with a null sentiment.
+  // Nothing read the rows back into generation either way, while the UI
+  // promised "Noted — I'll learn from this."
+  //
+  // The chip now goes to /api/rate as an annotation on the thumbs-down it
+  // describes, and api/_lib/voice-reactions.js feeds it into this
+  // creator's next drafts. The confirmation below is stated only after
+  // the server confirms the write, so the promise matches what happened.
+  const [chipState,setChipState] = useState(remembered && remembered.reason ? "sent" : "");  // "" | "sending" | "sent" | "failed"
   function sendChip(label) {
-    setChipSent(true);
-    try {
-      fetch("/api/feedback", {
-        method: "POST",
-        headers: { "Content-Type":"application/json", "Authorization":"Bearer "+sessionToken },
-        body: JSON.stringify({ message: label, sentiment: "negative", context: ("voice:"+generationType).slice(0,100) }),
-      }).catch(function(){});
-    } catch(e) {}
+    if (!sessionToken || !targetRef) return;
+    setChipState("sending");
+    fetch("/api/rate", {
+      method: "POST",
+      headers: { "Content-Type":"application/json", "Authorization":"Bearer "+sessionToken },
+      body: JSON.stringify({ generation_type: generationType, target_ref: targetRef, rating: "down", reason: label }),
+    }).then(function(r){
+      // reasonStored:false means the rating landed but the reason didn't
+      // (a database still waiting on migration 025). Don't claim to have
+      // learned something that wasn't recorded.
+      return r.json().catch(function(){ return {}; }).then(function(j){
+        const stored = r.ok && j.reasonStored !== false;
+        if (stored) saveRatingMemory(generationType, targetRef, "down", label);
+        setChipState(stored ? "sent" : "failed");
+      });
+    }).catch(function(){ setChipState("failed"); });
   }
 
   return (
-    <div style={{display:"inline-flex",alignItems:"center",gap:6}}>
+    <div style={{display:"inline-flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
       <button onClick={onUp} disabled={working} aria-label="Thumbs up"
         style={{
           fontFamily:"'Jost',sans-serif",fontSize:btnSize,padding:btnPad,
@@ -1601,18 +1675,21 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
         }}>
         {"👍"}
       </button>
-      {rating==="down"&&!chipSent&&(
+      {rating==="down"&&chipState!=="sent"&&(
         <span style={{display:"inline-flex",gap:4,alignItems:"center"}}>
           {["Too formal","Not my words","Wrong energy"].map(function(c){ return (
-            <button key={c} onClick={function(){ sendChip(c); }}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,padding:"4px 8px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer",lineHeight:1}}>
+            <button key={c} onClick={function(){ sendChip(c); }} disabled={chipState==="sending"}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,padding:"4px 8px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:chipState==="sending"?"default":"pointer",lineHeight:1,opacity:chipState==="sending"?0.5:1}}>
               {c}
             </button>
           );})}
         </span>
       )}
-      {rating==="down"&&chipSent&&(
-        <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,color:B.muted}}>Noted — I'll learn from this</span>
+      {rating==="down"&&chipState==="sent"&&(
+        <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,color:B.muted}}>Got it — your next drafts will account for this</span>
+      )}
+      {rating==="down"&&chipState==="failed"&&(
+        <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,color:B.coral}}>Didn't save — tap again</span>
       )}
       <button onClick={onDown} disabled={working} aria-label="Thumbs down"
         style={{
@@ -14033,6 +14110,74 @@ return (
                         );
                       })}
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted,fontStyle:"italic",marginTop:8}}>{"Up-rate < 40% → tune the prompt for that type."}</div>
+                      {/* [REACTION-LOOP] Fleet-wide chip tallies. Each
+                          creator's own reactions already steer their own
+                          drafts; this is the read on whether a theme is
+                          big enough to be a default-voice problem worth
+                          fixing in the prompts for everyone. */}
+                      {bizStats.rating_reasons && Object.keys(bizStats.rating_reasons).length > 0 && (
+                        <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid "+B.divider}}>
+                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>Why the thumbs-downs</div>
+                          {Object.keys(bizStats.rating_reasons).sort(function(a,b){
+                            return bizStats.rating_reasons[b] - bizStats.rating_reasons[a];
+                          }).map(function(reason){
+                            return (
+                              <div key={reason} style={{display:"flex",justifyContent:"space-between",fontFamily:"'Jost',sans-serif",fontSize:11,color:B.ink,padding:"3px 0"}}>
+                                <span>{reason}</span>
+                                <span style={{fontWeight:600}}>{bizStats.rating_reasons[reason]}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* [OUTREACH-SIGNAL] Who to go talk to.
+
+                    A bare thumbs-down is weak signal for the prompt — it
+                    says a draft was wrong without saying how, which is why
+                    generation only consumes the chip-annotated ones. It is
+                    strong signal for a founder: the output isn't meeting
+                    that customer's needs, and the way to find out why is to
+                    ask them. The un-annotated downs generation ignores are
+                    therefore the ones surfaced hardest here. */}
+                {bizStats.outreach_signals && bizStats.outreach_signals.length > 0 && (
+                  <div style={{marginBottom:18}}>
+                    <Eyebrow>Worth reaching out to (30d)</Eyebrow>
+                    <div style={{background:B.card,borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                      {bizStats.outreach_signals.map(function(u){
+                        var when = u.last_down_at ? new Date(u.last_down_at).toLocaleDateString() : "";
+                        return (
+                          <div key={u.user_id} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,padding:"7px 0",borderBottom:"1px solid "+B.divider}}>
+                            <div style={{minWidth:0}}>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.ink}}>
+                                {u.name || u.user_id.slice(0,8)}
+                              </div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.5}}>
+                                {u.reasons && u.reasons.length
+                                  ? u.reasons.join(", ")
+                                  : "no reason given"}
+                                {when ? " · last " + when : ""}
+                              </div>
+                            </div>
+                            <div style={{textAlign:"right",flexShrink:0}}>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:u.downs>=3?B.coral:B.ink,lineHeight:1.2}}>
+                                {u.downs}
+                              </div>
+                              {u.unexplained > 0 && (
+                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",color:B.coral}}>
+                                  {u.unexplained + " unexplained"}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted,fontStyle:"italic",marginTop:8}}>
+                        Unexplained down-rates are the ones VIRL can't learn from on its own — those are the conversations worth having.
+                      </div>
                     </div>
                   </div>
                 )}

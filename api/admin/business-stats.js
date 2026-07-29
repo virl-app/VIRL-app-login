@@ -71,12 +71,26 @@ async function fetchEvents(sinceIso) {
 
 async function fetchRatings() {
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/content_ratings?select=generation_type,rating,created_at&limit=20000`,
+    // [REACTION-LOOP] `reason` joins the select so the chip themes stay
+    // visible to the team. They used to land in the feedback inbox (badly
+    // — see migration 025); now they live on the rating row, and this is
+    // where they surface instead.
+    `${SUPABASE_URL}/rest/v1/content_ratings?select=user_id,generation_type,rating,reason,created_at&limit=20000`,
     { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
   );
   // Table is brand-new — if the migration hasn't been applied yet just
   // return an empty list rather than 500ing the whole dashboard.
-  if (!r.ok) return [];
+  // [REACTION-LOOP] Same reasoning now covers the `reason` column: a
+  // database still waiting on migration 025 400s on the unknown column,
+  // so retry once without it rather than blanking the ratings panel.
+  if (!r.ok) {
+    const retry = await fetch(
+      `${SUPABASE_URL}/rest/v1/content_ratings?select=user_id,generation_type,rating,created_at&limit=20000`,
+      { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    if (!retry.ok) return [];
+    return await retry.json();
+  }
   return await r.json();
 }
 
@@ -178,6 +192,72 @@ function ratingsByType(rows) {
     const tot = out[t].up + out[t].down;
     out[t].total = tot;
     out[t].up_rate = tot ? +(out[t].up / tot).toFixed(2) : 0;
+  }
+  return out;
+}
+
+// [OUTREACH-SIGNAL] Who is down-rating, so the team knows who to talk to.
+//
+// A bare thumbs-down with no chip tapped is weak signal for the PROMPT —
+// it says a draft was wrong without saying how, which is why
+// voice-reactions.js only feeds chip-annotated downs into generation. But
+// it is strong signal for a FOUNDER: it means the output isn't meeting
+// that customer's needs, and the person who can find out why is Lauren,
+// by asking them directly.
+//
+// So the un-annotated downs that generation deliberately ignores are
+// exactly the ones surfaced hardest here. A creator quietly thumbs-downing
+// four drafts and never explaining is the most valuable outreach target in
+// the product, and previously nothing anywhere said their name.
+//
+// Windowed to 30 days (an outreach list is only useful while it's warm)
+// and sorted by down-count, with `unexplained` — downs carrying no reason
+// — broken out as the "go ask them" number.
+function outreachSignals(ratings, profilesById, days) {
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const byUser = {};
+  for (const r of ratings) {
+    if (!r || r.rating !== "down" || !r.user_id) continue;
+    const at = Date.parse(r.created_at || "");
+    if (!Number.isFinite(at) || at < cutoff) continue;
+    if (!byUser[r.user_id]) {
+      byUser[r.user_id] = { user_id: r.user_id, name: null, downs: 0, unexplained: 0, reasons: [], last_down_at: null, types: {} };
+    }
+    const u = byUser[r.user_id];
+    u.downs++;
+    if (r.reason) {
+      if (u.reasons.indexOf(r.reason) < 0) u.reasons.push(r.reason);
+    } else {
+      u.unexplained++;
+    }
+    const t = r.generation_type || "(unknown)";
+    u.types[t] = (u.types[t] || 0) + 1;
+    if (!u.last_down_at || r.created_at > u.last_down_at) u.last_down_at = r.created_at;
+  }
+  const out = Object.values(byUser);
+  for (const u of out) {
+    const p = profilesById[u.user_id];
+    u.name = (p && p.name) || null;
+  }
+  return out
+    .sort(function (a, b) {
+      if (b.downs !== a.downs) return b.downs - a.downs;
+      return String(b.last_down_at || "").localeCompare(String(a.last_down_at || ""));
+    })
+    .slice(0, 15);
+}
+
+// [REACTION-LOOP] Which reaction chips creators are actually tapping,
+// across all users. This is the fleet-wide read on the same signal each
+// creator's own prompts consume individually — if "Too formal" dominates
+// here, that's a default-voice problem to fix in the prompts, not
+// something to leave to per-creator correction.
+function reasonsBreakdown(rows) {
+  const out = {};
+  for (const r of rows) {
+    const reason = r && r.reason;
+    if (!reason) continue;
+    out[reason] = (out[reason] || 0) + 1;
   }
   return out;
 }
@@ -290,6 +370,8 @@ export default async function handler(req, res) {
     activation_30d:     activation(users, events, 30),
     active_users:       activeUsers(events),
     ratings_by_type:    ratingsByType(ratings),
+    rating_reasons:     reasonsBreakdown(ratings),
+    outreach_signals:   outreachSignals(ratings, profilesById, 30),
     plan_mix:           planMix(credits),
     churn_lifetime:     churnLifetime(credits),
     top_signup_sources: signupSources(users, 8),

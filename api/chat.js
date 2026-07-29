@@ -4,6 +4,7 @@ import {
   requiresImage,
   ALLOWED_MODELS,
   MODEL_SONNET,
+  VOICE_LEARNING_TYPES,
 } from "./_lib/prompts.js";
 import { loadPlaybook }              from "./_lib/playbook.js";
 import { loadComplianceRules, getComplianceForNiche, scrubCompliance, detectHealthcareProvider, attachWatchoutNotes } from "./_lib/compliance.js";
@@ -13,6 +14,7 @@ import { loadComplianceRules, getComplianceForNiche, scrubCompliance, detectHeal
 import { buildTrendContext, isValidTrendSnapshot } from "./_lib/trend-context.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
+import { fetchVoiceReactions }       from "./_lib/voice-reactions.js";
 import { fetchEditsForMining, mineDenylistFromEdits } from "./_lib/personal-denylist.js";
 import { sendEmail, hasSent }        from "./_lib/email-send.js";
 import { fetchListingContext }       from "./_lib/listing-research.js";
@@ -1279,21 +1281,35 @@ export default async function handler(req, res) {
   //     week take." Including them would add noise.
   //   - script: long-form video scripts have their own structure
   //     that doesn't map cleanly to short before/after card diffs.
-  const EDIT_LEARNING_TYPES = new Set([
-    "plan", "plan_partial",
-    "caption", "caption_remix",
-    "scan_image", "scan_video_frame",
-    // [LINKEDIN-LONG-POST] Long-form posts are voice-heavy by definition
-    // — feed in recent edits + the mined denylist so the model can hit
-    // THIS creator's register, not generic LinkedIn slop.
-    "long_post",
-    // [VIRL-POSTS-TAB] Blog posts are the longest single-artifact
-    // generation we produce; voice fidelity matters even more here.
-    "blog_post",
-  ]);
-  const recentEdits = (EDIT_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits)
+  // [VOICE-LEARNING] The set lives in prompts.js and is imported here, not
+  // redeclared. It used to be a local list that had to stay in agreement
+  // with what each builder consumed, and it silently didn't: long_post and
+  // blog_post were fetched for and then ignored by their builders. One
+  // list, one place, asserted by scripts/check-voice.mjs.
+  const recentEdits = (VOICE_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits)
     ? await fetchRecentEdits(userId)
     : [];
+
+  // [REACTION-LOOP] The one-tap chips after a thumbs-down ("Too formal",
+  // "Not my words", "Wrong energy") used to POST to the support inbox and
+  // die there, while the UI said "Noted — I'll learn from this." They now
+  // land on the rating row and arrive here, attached to the profile the
+  // way handleResearch is, so prompts.js can fold them in beside the edit
+  // diffs without changing eleven builder signatures.
+  //
+  // NOT gated on learnFromEdits. That toggle governs passive capture of
+  // revisions the creator made for their own reasons; a chip tap is the
+  // creator deliberately telling VIRL its output was wrong, and the tap
+  // is its own consent. Gating it would rebuild the exact silence this
+  // change exists to remove.
+  //
+  // Attached for the same generation types that consume edits, so the
+  // voice-learning surface stays one coherent set. Fail-open to [].
+  if (profile && VOICE_LEARNING_TYPES.has(generationType)) {
+    try {
+      profile.voiceReactions = await fetchVoiceReactions(userId);
+    } catch (e) { profile.voiceReactions = []; }
+  }
 
   // [PERSONAL-DENYLIST] Mine the user's broader edit history (up to 50
   // recent edits) for phrases they consistently strip out, and surface
@@ -1303,7 +1319,7 @@ export default async function handler(req, res) {
   // prompt block is omitted. Skipped entirely for generation types that
   // don't surface user-edited text (matches recentEdits gating above).
   let personalDenylist = [];
-  if (EDIT_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits) {
+  if (VOICE_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits) {
     try {
       const editsForMining = await fetchEditsForMining(userId);
       personalDenylist = mineDenylistFromEdits(editsForMining);
