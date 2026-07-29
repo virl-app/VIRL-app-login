@@ -71,12 +71,26 @@ async function fetchEvents(sinceIso) {
 
 async function fetchRatings() {
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/content_ratings?select=generation_type,rating,created_at&limit=20000`,
+    // [REACTION-LOOP] `reason` joins the select so the chip themes stay
+    // visible to the team. They used to land in the feedback inbox (badly
+    // — see migration 025); now they live on the rating row, and this is
+    // where they surface instead.
+    `${SUPABASE_URL}/rest/v1/content_ratings?select=generation_type,rating,reason,created_at&limit=20000`,
     { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
   );
   // Table is brand-new — if the migration hasn't been applied yet just
   // return an empty list rather than 500ing the whole dashboard.
-  if (!r.ok) return [];
+  // [REACTION-LOOP] Same reasoning now covers the `reason` column: a
+  // database still waiting on migration 025 400s on the unknown column,
+  // so retry once without it rather than blanking the ratings panel.
+  if (!r.ok) {
+    const retry = await fetch(
+      `${SUPABASE_URL}/rest/v1/content_ratings?select=generation_type,rating,created_at&limit=20000`,
+      { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    if (!retry.ok) return [];
+    return await retry.json();
+  }
   return await r.json();
 }
 
@@ -178,6 +192,21 @@ function ratingsByType(rows) {
     const tot = out[t].up + out[t].down;
     out[t].total = tot;
     out[t].up_rate = tot ? +(out[t].up / tot).toFixed(2) : 0;
+  }
+  return out;
+}
+
+// [REACTION-LOOP] Which reaction chips creators are actually tapping,
+// across all users. This is the fleet-wide read on the same signal each
+// creator's own prompts consume individually — if "Too formal" dominates
+// here, that's a default-voice problem to fix in the prompts, not
+// something to leave to per-creator correction.
+function reasonsBreakdown(rows) {
+  const out = {};
+  for (const r of rows) {
+    const reason = r && r.reason;
+    if (!reason) continue;
+    out[reason] = (out[reason] || 0) + 1;
   }
   return out;
 }
@@ -290,6 +319,7 @@ export default async function handler(req, res) {
     activation_30d:     activation(users, events, 30),
     active_users:       activeUsers(events),
     ratings_by_type:    ratingsByType(ratings),
+    rating_reasons:     reasonsBreakdown(ratings),
     plan_mix:           planMix(credits),
     churn_lifetime:     churnLifetime(credits),
     top_signup_sources: signupSources(users, 8),

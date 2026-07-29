@@ -13,6 +13,7 @@ import { loadComplianceRules, getComplianceForNiche, scrubCompliance, detectHeal
 import { buildTrendContext, isValidTrendSnapshot } from "./_lib/trend-context.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
+import { fetchVoiceReactions }       from "./_lib/voice-reactions.js";
 import { fetchEditsForMining, mineDenylistFromEdits } from "./_lib/personal-denylist.js";
 import { sendEmail, hasSent }        from "./_lib/email-send.js";
 import { fetchListingContext }       from "./_lib/listing-research.js";
@@ -1294,6 +1295,27 @@ export default async function handler(req, res) {
   const recentEdits = (EDIT_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits)
     ? await fetchRecentEdits(userId)
     : [];
+
+  // [REACTION-LOOP] The one-tap chips after a thumbs-down ("Too formal",
+  // "Not my words", "Wrong energy") used to POST to the support inbox and
+  // die there, while the UI said "Noted — I'll learn from this." They now
+  // land on the rating row and arrive here, attached to the profile the
+  // way handleResearch is, so prompts.js can fold them in beside the edit
+  // diffs without changing eleven builder signatures.
+  //
+  // NOT gated on learnFromEdits. That toggle governs passive capture of
+  // revisions the creator made for their own reasons; a chip tap is the
+  // creator deliberately telling VIRL its output was wrong, and the tap
+  // is its own consent. Gating it would rebuild the exact silence this
+  // change exists to remove.
+  //
+  // Attached for the same generation types that consume edits, so the
+  // voice-learning surface stays one coherent set. Fail-open to [].
+  if (profile && EDIT_LEARNING_TYPES.has(generationType)) {
+    try {
+      profile.voiceReactions = await fetchVoiceReactions(userId);
+    } catch (e) { profile.voiceReactions = []; }
+  }
 
   // [PERSONAL-DENYLIST] Mine the user's broader edit history (up to 50
   // recent edits) for phrases they consistently strip out, and surface

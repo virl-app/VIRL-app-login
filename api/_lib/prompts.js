@@ -414,6 +414,64 @@ function formatEditsForPrompt(diffs) {
     + " strongest available signal of how this creator actually sounds.";
 }
 
+// [REACTION-LOOP] What each chip actually instructs the model to do.
+//
+// The chip labels are written for the creator ("Too formal") and are far
+// too compressed to act on as-is — a model handed the bare string will
+// mostly ignore it. Each one is expanded here into the concrete change it
+// implies, so the block reads as a standing correction rather than a mood
+// report. The mapping lives next to the prompt copy, not next to the
+// storage layer, because it is prompt language: api/rate.js owns which
+// labels are legal, this owns what they mean.
+const REACTION_DIRECTIVES = {
+  "Too formal": "drop the register — shorter sentences, contractions, plainer words, no polish they didn't ask for",
+  "Not my words": "the vocabulary was wrong, not the structure — lean harder on their voice samples and their own edits for word choice, and stop reaching for phrasing they never use",
+  "Wrong energy": "the intensity was off — match their actual level rather than dialling up enthusiasm, urgency, or drama the creator does not perform",
+};
+
+// Recent reaction chips → prompt context.
+//
+// Weaker evidence than edit diffs and treated as such: a reaction says a
+// draft was wrong without showing what right looks like, so this block
+// gives DIRECTION while formatEditsForPrompt gives GROUND TRUTH. When the
+// two disagree, the edits win — that precedence is stated in the block
+// itself, since the model sees both.
+//
+// Repetition is the signal that matters. One tap is noise; the same
+// complaint three times is a voice instruction, so counts are surfaced
+// explicitly and singletons are labelled as the weak evidence they are.
+function formatReactionsForPrompt(reactions) {
+  if (!Array.isArray(reactions)) return "";
+  // fetchVoiceReactions already drops reasonless rows; this is the same
+  // belt-and-braces filter formatEditsForPrompt applies, and it matters
+  // more here — an entry with no label would otherwise render the literal
+  // string "undefined" into the prompt as a voice correction.
+  const usable = reactions.filter(function (r) {
+    return r && typeof r.reason === "string" && r.reason.trim();
+  });
+  if (usable.length === 0) return "";
+  const lines = usable.map(function (r) {
+    const directive = REACTION_DIRECTIVES[r.reason];
+    // An unmapped label (a chip added to the UI but not here) still gets
+    // reported rather than dropped — better a bare label the model can
+    // partially use than a silent hole in the creator's feedback.
+    const meaning = directive ? " — " + directive : "";
+    const weight = r.count > 1
+      ? "flagged " + r.count + " times"
+      : "flagged once (weak signal — apply gently)";
+    return "  \"" + r.reason + "\" (" + weight + ")" + meaning;
+  });
+  return "\n\nWHAT THIS CREATOR HAS FLAGGED AS OFF (their own one-tap reactions to recent VIRL drafts, strongest signal first):\n"
+    + lines.join("\n")
+    + "\n\nTreat these as STANDING CORRECTIONS, not one-off notes: the creator"
+    + " tapped these about drafts VIRL already gave them, so repeating the same"
+    + " miss is the one outcome to avoid. Apply them to everything you write here."
+    + " Where a reaction seems to conflict with the creator's own edits above, the"
+    + " EDITS WIN — those show what this creator actually wrote, while a reaction"
+    + " only says what they didn't want. Do not mention, apologize for, or"
+    + " reference this feedback in the output; just write differently.";
+}
+
 // Plan history → prompt context. Surfaces last 1-3 weeks' strategy + each
 // week's top performer (by views+likes×2+saves×4) + how many cards never
 // got logged. The LLM uses this to build narratively, double down on what
@@ -1049,7 +1107,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // own card edits, formatted as voice ground-truth examples. Empty
   // string when no diffs (toggle off, no edits yet, or fetch failed)
   // so concatenating below is a no-op.
-  const editsCtx    = formatEditsForPrompt(recentEdits);
+  // [REACTION-LOOP] Reactions ride alongside the edit diffs — same
+  // surfaces, same block position. profile.voiceReactions is attached by
+  // chat.js, mirroring how profile.handleResearch is threaded in, so the
+  // eleven builder signatures stay as they are.
+  const editsCtx    = formatEditsForPrompt(recentEdits) + formatReactionsForPrompt(profile.voiceReactions);
   const weekNumber  = (history && !Array.isArray(history) && history.weekNumber)
     ? history.weekNumber
     : (historyWeeks.length ? historyWeeks.length + 1 : 1);
@@ -1519,7 +1581,8 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
     // strategy, the new cards should still sound like the user —
     // they're going to sit alongside (and be edited the same way as)
     // the kept ones. Empty string when no edits / opt-out.
-    + formatEditsForPrompt(recentEdits);
+    + formatEditsForPrompt(recentEdits)
+    + formatReactionsForPrompt(profile.voiceReactions);
 
   return {
     systemPrompt: fullBuilt.systemPrompt,
@@ -1934,7 +1997,8 @@ function buildCaption(params, profile, vaultPatterns, playbook, trends, _history
     // Caption generation benefits as much as plan generation: the
     // hook + each caption variant should match the rewriting
     // patterns the user applies. Empty string when no edits.
-    + formatEditsForPrompt(recentEdits);
+    + formatEditsForPrompt(recentEdits)
+    + formatReactionsForPrompt(profile.voiceReactions);
   return {
     systemPrompt,
     userPrompt,
@@ -1964,7 +2028,8 @@ function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _
     // [LEARN-FROM-EDITS] Voice diffs as ground truth. Caption remix
     // is specifically about voice ("different angle, same voice") —
     // edits are the strongest signal we have for "same voice".
-    + formatEditsForPrompt(recentEdits);
+    + formatEditsForPrompt(recentEdits)
+    + formatReactionsForPrompt(profile.voiceReactions);
   return {
     systemPrompt,
     userPrompt,
@@ -2048,7 +2113,8 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
     // [LEARN-FROM-EDITS] Voice signal — the hook + caption fields
     // this scan emits are the same field types the user routinely
     // edits on plan cards, so the diffs apply directly.
-    + formatEditsForPrompt(recentEdits);
+    + formatEditsForPrompt(recentEdits)
+    + formatReactionsForPrompt(profile.voiceReactions);
   return {
     systemPrompt,
     userPrompt,
@@ -2070,7 +2136,8 @@ function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, 
     + SCAN_POST_TYPE_GUIDE
     + scanResultSchema(true)
     // [LEARN-FROM-EDITS] Same rationale as buildScanImage.
-    + formatEditsForPrompt(recentEdits);
+    + formatEditsForPrompt(recentEdits)
+    + formatReactionsForPrompt(profile.voiceReactions);
   return {
     systemPrompt,
     userPrompt,
