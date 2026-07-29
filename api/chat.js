@@ -1343,8 +1343,20 @@ export default async function handler(req, res) {
       // often completes and writes to cache anyway, warming subsequent
       // calls. The prewarm endpoint on profile save is the steady-state
       // path; this timeout protects the rare cold-cache chat call.
+      // [RESEARCH-VERIFY] researchCorrections is now part of the research
+      // cache key (a correction re-runs the research with itself as an
+      // input, instead of only overriding it downstream), so this call
+      // MUST pass the same value the Profile panel passes — otherwise
+      // every generation would compute a different hash than the one the
+      // prewarm wrote and re-fetch on every plan. The ground-truth fields
+      // ride along for the verification pass.
       const research = await Promise.race([
-        fetchHandleResearch(userId, profile.handles, profile.inspiration, profile.businessWebsite),
+        fetchHandleResearch(userId, profile.handles, profile.inspiration, profile.businessWebsite, {
+          corrections: profile.researchCorrections || "",
+          name:        profile.name || "",
+          offerings:   profile.offerings || "",
+          nicheDetail: profile.nicheDetail || "",
+        }),
         new Promise(function(resolve){ setTimeout(function(){ resolve(null); }, 2000); }),
       ]);
       if (research) {
