@@ -14080,6 +14080,54 @@ return (
                   </div>
                 )}
 
+                {/* [OUTREACH-SIGNAL] Who to go talk to.
+
+                    A bare thumbs-down is weak signal for the prompt — it
+                    says a draft was wrong without saying how, which is why
+                    generation only consumes the chip-annotated ones. It is
+                    strong signal for a founder: the output isn't meeting
+                    that customer's needs, and the way to find out why is to
+                    ask them. The un-annotated downs generation ignores are
+                    therefore the ones surfaced hardest here. */}
+                {bizStats.outreach_signals && bizStats.outreach_signals.length > 0 && (
+                  <div style={{marginBottom:18}}>
+                    <Eyebrow>Worth reaching out to (30d)</Eyebrow>
+                    <div style={{background:B.card,borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+                      {bizStats.outreach_signals.map(function(u){
+                        var when = u.last_down_at ? new Date(u.last_down_at).toLocaleDateString() : "";
+                        return (
+                          <div key={u.user_id} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,padding:"7px 0",borderBottom:"1px solid "+B.divider}}>
+                            <div style={{minWidth:0}}>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.ink}}>
+                                {u.name || u.user_id.slice(0,8)}
+                              </div>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.5}}>
+                                {u.reasons && u.reasons.length
+                                  ? u.reasons.join(", ")
+                                  : "no reason given"}
+                                {when ? " · last " + when : ""}
+                              </div>
+                            </div>
+                            <div style={{textAlign:"right",flexShrink:0}}>
+                              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:u.downs>=3?B.coral:B.ink,lineHeight:1.2}}>
+                                {u.downs}
+                              </div>
+                              {u.unexplained > 0 && (
+                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",color:B.coral}}>
+                                  {u.unexplained + " unexplained"}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted,fontStyle:"italic",marginTop:8}}>
+                        Unexplained down-rates are the ones VIRL can't learn from on its own — those are the conversations worth having.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Revenue mix: founding vs standard vs trial vs cancelled. */}
                 <div style={{marginBottom:18}}>
                   <Eyebrow>Revenue mix</Eyebrow>
