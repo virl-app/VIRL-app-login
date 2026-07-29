@@ -8,6 +8,7 @@
 // attempt resolves to "already sent, skip" instead of a second mail.
 
 import { Resend } from "resend";
+import { emailPaused } from "./email-paused.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -159,6 +160,14 @@ export async function hasSent(userId, template, dedupeKey) {
 //   marketing:  boolean — if true, skips when marketing_opt_out
 // }
 export async function sendEmail(opts) {
+  // [EMAIL PAUSE] Checked before the dedupe claim on purpose: a paused send
+  // must not burn its once-ever email_sends slot, or resuming would find the
+  // slot taken and silently skip the email forever.
+  if (emailPaused()) {
+    console.warn(`[email] PAUSED — would have sent ${opts.template} to user ${opts.userId}`);
+    return false;
+  }
+
   if (!emailEnabled()) {
     console.warn(`[email] skipped (${opts.template}) — Resend or Supabase env not configured`);
     return false;

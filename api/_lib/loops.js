@@ -9,6 +9,8 @@ import { claimSend, hasSent, isMarketingOptedOut } from "./email-send.js";
 
 const LOOPS_API_BASE = "https://app.loops.so/api/v1";
 
+import { emailPaused } from "./email-paused.js";
+
 function loopsApiKey() {
   return process.env.LOOPS_API_KEY || null;
 }
@@ -47,6 +49,7 @@ export function computeDaysIntoTrial(signupAtIso) {
 // userId or email, so callers should pass at least one. eventProperties
 // are exposed in Loops's email template variables.
 export async function sendLoopsEvent({ userId, email, eventName, properties }) {
+  if (emailPaused()) { console.warn(`[loops] PAUSED — would have fired ${eventName}`); return false; }
   const key = loopsApiKey();
   if (!key) {
     console.warn("[loops] LOOPS_API_KEY not set; skipping event:", eventName);
@@ -85,6 +88,7 @@ export async function sendLoopsEvent({ userId, email, eventName, properties }) {
 // email is required to identify the contact; everything else flows
 // through to Loops as user properties.
 export async function updateLoopsContact({ userId, email, properties }) {
+  if (emailPaused()) { console.warn(`[loops] PAUSED — skipping contact sync for ${userId}`); return false; }
   const key = loopsApiKey();
   if (!key) {
     console.warn("[loops] LOOPS_API_KEY not set; skipping contact update");
@@ -136,6 +140,7 @@ export async function updateLoopsContact({ userId, email, properties }) {
 //   cycleKey:  reset_at's YYYY-MM-DD (same key family weekly_reset uses)
 //   ctx:       { userId, email, name, plan, newBalance, weeklyAllowance, resetAt }
 export async function fireCreditNudge({ eventName, template, cycleKey, ctx }) {
+  if (emailPaused()) { console.warn(`[loops] PAUSED — would have fired ${eventName}`); return false; }
   try {
     if (!ctx || !ctx.userId) return;
     // [CREDIT-NUDGE] Server-side marketing opt-out guard. Both nudges are
@@ -194,6 +199,7 @@ export async function fireCreditNudge({ eventName, template, cycleKey, ctx }) {
 // Fail-open: if claimSend errors (Supabase down), the event still fires
 // — duplicate-risk is preferable to missed-event-on-infra-blip.
 export async function sendLoopsEventOnce({ userId, email, eventName, properties, dedupeKey }) {
+  if (emailPaused()) { console.warn(`[loops] PAUSED — would have fired ${eventName}`); return false; }
   if (!eventName) return { ok: false, note: "eventName required" };
   if (!userId)    return { ok: false, note: "userId required for dedupe" };
   if (!dedupeKey) return { ok: false, note: "dedupeKey required" };
