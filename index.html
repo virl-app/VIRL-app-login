@@ -2,8 +2,34 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <title>VIRL - Finally, a content strategy that sounds like you.</title>
+
+<!-- [PWA] Web app manifest + install meta tags. The manifest covers
+     Android Chrome, Edge, and modern Firefox (everything that respects
+     the Web App Manifest spec). The apple-* meta tags below cover iOS
+     Safari, which doesn't read manifest.json for "Add to Home Screen"
+     prompts. theme-color drives the chrome of the standalone app
+     window AND the status bar color on iOS / Android. -->
+<link rel="manifest" href="/manifest.json"/>
+<meta name="theme-color" content="#1F3A8A"/>
+<meta name="application-name" content="VIRL"/>
+<meta name="description" content="VIRL — content that sounds like you. AI plans, captions, scripts, and long-form posts in your voice."/>
+
+<!-- iOS PWA flags. apple-mobile-web-app-capable lets the user add
+     VIRL to their home screen and launch it in standalone mode (no
+     Safari chrome). apple-mobile-web-app-status-bar-style controls
+     the status bar appearance — black-translucent lets our navy hero
+     extend behind the status bar. apple-mobile-web-app-title is the
+     label that shows under the icon on the home screen. -->
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="VIRL"/>
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"/>
+<link rel="icon" type="image/svg+xml" href="/icons/icon.svg"/>
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png"/>
+<link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png"/>
+
 <script type="text/javascript" src="https://app.termly.io/resource-blocker/a8c380c9-9255-4beb-b922-7a884c5cc9e0?autoBlock=on"></script>
 <!-- Google tag (gtag.js) – Google Analytics 4. Loaded from googletagmanager.com,
      so Termly's auto-blocker categorizes and holds it until analytics/cookie
