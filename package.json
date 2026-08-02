@@ -10,6 +10,7 @@
     "check": "npm run check:index && npm run check:compliance && npm run check:voice"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "resend": "^4.0.0",
     "stripe": "^14.0.0"
   },
