@@ -459,7 +459,77 @@ spec a headline the data layer can never honestly earn.
   needs three Mondays, a 14-day trial cannot deliver it. 21 days, or
   calendar-align the trial.
 
+### Correction: the two core guarantees got demoted, and one is leaking today
+
+The council optimized for proving value and getting found. Both are right, and
+in taking their advice the revised order pushed the voice gate to last and never
+audited platform fidelity at all. Those two properties *are* the product. A
+per-surface audit of both:
+
+**Voice — near-universal.** `buildVoiceBlocks` reaches every generation surface;
+`plan_partial` inherits it through `fullBuilt.systemPrompt`. (`plan_strategy`
+sits outside `VOICE_LEARNING_TYPES`, which is correct — strategy prose is VIRL's
+register, not the creator's.) The one hole is the known one: Plan measures drift
+and never acts on it. It does not belong last.
+
+**Platform best practice — plan-heavy, and it falls off a cliff elsewhere.**
+
+| Mechanic | Plan | Partial regen | Strategy regen | Caption | Scan | Script / Long / Blog |
+|---|---|---|---|---|---|---|
+| Peak times | yes | no | no | no | no | no |
+| Hashtag count | yes | no | — | yes | no | — |
+| Caption limit | yes | — | — | yes | no | — |
+| Format priority | yes | no | no | no | yes | yes |
+| Cadence | yes | — | — | — | — | — |
+| Trends | yes | no | no | yes | yes | no |
+
+Four defects behind that table:
+
+1. **Partial regen obeys a playbook it cannot see.** `buildPlanPartial` writes
+   its own userPrompt with neither `playbookCtx` nor `trendsCtx`, while
+   instructing the model that *"Hashtag arrays still follow the platform's
+   playbook hashtag_count"* (`prompts.js:1627`). The parent plan's
+   `trendsSnapshot` is threaded into the builder, used to derive the cached
+   system prompt via `buildPlan`, and then dropped with that call's userPrompt.
+   Every regenerated card loses peak-time anchoring, format priority, hashtag
+   count, and trends. This is a bug, not a gap, and regen is a 1-credit action
+   creators use constantly.
+2. **`peak_times` reaches exactly one surface in the product** — rendered only
+   by `platformPlaybookBlock` (`prompts.js:204`) via `planPlaybookContext`. Scan
+   delivers a verdict ("I'd post this one — my call: Instagram") and never says
+   when, with the data sitting right there in the playbook.
+3. **Scan invents its own hashtag and caption rules.** Its schema asks for
+   hashtags *"count sized to post_type"* against a static in-prompt table
+   (`prompts.js:2118`); `scanPlaybookContext` passes only `top_signals` and
+   `format_priority`, so the live `hashtag_count` and `caption_limit` never
+   arrive.
+4. **`script`, `long_post`, and `blog_post` get no trend context** — and no
+   explicit empty state either, so nothing holds the model back from reaching
+   into stale training data. Plan's `TREND_SOURCE_RULE` pattern
+   (`prompts.js:320`) exists precisely to prevent this and isn't applied here.
+
+Also worth a decision rather than a default: the playbook's `cadence` is
+advisory, while the actual card count comes from `profile.postFreq × platform
+count` (`computeCardRange`). Respecting the creator's capacity over the
+platform's ideal is probably right — but it should be a stated call, since it
+means "cadence best practice" is the one mechanic the creator's own setting
+overrides.
+
 ### Revised order
+
+**Tier 0 — integrity fixes. Small, and they protect the promise on surfaces
+creators touch daily. These run alongside Gate 0, not after the roadmap.**
+
+- Thread `playbookCtx` + `trendsCtx` into `buildPlanPartial`'s userPrompt (the
+  data is already passed to the function and discarded) and into
+  `buildPlanStrategy`.
+- Feed `hashtagSlots`, `caption_limit`, and `peak_times` into Scan; add
+  `peak_times` to Caption.
+- Give `script` / `long_post` / `blog_post` either the trend block or the
+  explicit no-trends empty state.
+- Move the Plan voice repair (§5) up from last. It stays unmarketed — the
+  council is right that it's claim protection, not a feature — but claim
+  protection on the flagship surface is not a deferrable item.
 
 **Gate 0 — before any roadmap item. Days, not weeks.**
 
@@ -484,7 +554,7 @@ and drop most of §1/§3 as originally specced.
 | 4 | §2 weekly read, shareable permalink, VIRL grades its own bet | The retention surface and the sales collateral, same object |
 | 5 | §4 as a swap offer | Attacks execution rate, which multiplies everything else |
 | 6 | §3 on behavioral buckets first | Now has data to stand on |
-| 7 | §5 voice repair, unmarketed | Instrument the drift↔conversion correlation first; it's already logged |
+| — | §5 voice repair | Moved to Tier 0 above — see the correction section |
 
 The engineering-impact order in the table further up this document and the
 go-to-market order here disagree most violently on §7 (cheap, public, was last)
