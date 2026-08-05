@@ -316,6 +316,194 @@ argument.
 
 ---
 
+## MARKETING COUNCIL REVIEW — revisions before shipping
+
+Four seats reviewed the roadmap above: brand, head of content, SEO/demand-gen,
+and campaign/launch. They converged hard, and the priority table above does not
+survive contact with them. What follows supersedes it.
+
+### What the council changed my mind about
+
+**1. The sequencing is wrong, unanimously.** All four seats independently
+reached the same verdict: this roadmap improves month six and does nothing for
+day three. `TRIAL_DAYS = 14` (`api/chat.js:37`) means a free user gets **two
+Mondays**, and the first one has nothing logged — so the flagship Scorecard is
+structurally incapable of producing a real verdict before the credit-card
+decision. Items 1–4 make the product better for people who already paid, funded
+by people who haven't.
+
+**2. I built four recommendations on a loop whose throughput I never measured.**
+The current results-logging rate appears nowhere in this document. It is
+measurable *today*: `result_logged` (`index.html:11588`), `post_marked`
+(`index.html:4701`), and `plan_generated` (`index.html:11231`) all fire into the
+events table. `api/admin/business-stats.js` simply doesn't aggregate them. That's
+a query, not a project, and it decides whether items 1–4 are worth a cycle.
+
+**3. The logging loop may be broken, not merely unloved — and this is the most
+actionable finding in the review.** Posted state is localStorage-only
+(`index.html:2656-2668`), and the "Log results" button renders *only when
+`posted` is true* (`index.html:4930`). An agent who plans on desktop and posts
+from their phone sees "Mark as posted" instead — the state does not travel.
+`countPostedLastWeekUnlogged` scans localStorage too, so the Sunday nudge is
+device-local as well. **Today's logging rate may be measuring a device bug, not
+creator apathy**, and every insight built on top of it inherits the defect.
+
+**4. I under-ranked §7 by a wide margin.** Three of four seats moved the monthly
+algorithm note into the top three: no data dependency, visible to a day-1 user,
+small effort, and the only item that produces a *public* artifact. One
+correction the council caught that I missed — **a creator-facing Algorithm Intel
+tab already existed and was deliberately removed** ("strategic insights are
+moving inline," `index.html:9650`, JSX preserved commented at `13813`). So the
+right form is a public dated changelog plus an email, **not** a restored tab.
+
+**5. `robots.txt` blocks the crawlers that gate every AI-citation benefit these
+features could produce.** `OAI-SearchBot` and `ChatGPT-User` are both
+`Disallow: /` (`robots.txt:22-26`). The file's own header already articulates the
+correct principle for Perplexity — *"retrieval (search + answer), not model
+training"* — and then fails to apply it to OpenAI's retrieval agents.
+`Claude-SearchBot` / `Claude-User` aren't listed at all. This is a one-line
+inconsistency with the file's own stated policy, and it costs nothing to fix.
+(Confirmed for this repo's host; verify whatever serves the marketing pages.)
+
+### Where the council split — and the resolution
+
+§1 (business-outcome logging) drew the sharpest disagreement:
+
+- **Demand-gen:** the strongest marketable claim on the list. "Tracks DMs and
+  consults booked, not views" is a comparison row no competitor can check.
+- **Head of content:** agents structurally cannot attribute a close to a post —
+  that inability is *why* they can't justify content spend. The field will be
+  blank for everyone except power users who were never going to churn.
+- **Brand:** it is the first unfalsifiable number in the product. Every figure
+  VIRL states today is either OCR'd from the creator's own analytics or blocked.
+  This one is a human guess about causality, stored as an integer,
+  indistinguishable from a measurement downstream. And since creators log wins
+  and skip flops, the Scorecard would grade a biased sample and say "3 of 4 hit."
+
+**Resolution:** ship the field, never launder it. Store it flagged as
+creator-attested, quote it back in the creator's frame ("you logged 6
+conversations that started from social — your call, not my math"), render it
+visually distinct from OCR'd numbers, and never aggregate it into a VIRL causal
+claim. **Lock this now, before anyone writes a landing page: VIRL never says it
+caused a business outcome.** Not "VIRL got you 6 consults." Critically, do *not*
+make this field the foundation of the insight layer — see the next item.
+
+### Build the insight layer on behavior, not on typing
+
+The best constructive idea to come out of the council, and it fixes §3's real
+problem. VIRL already collects a complete per-card behavioral funnel, free, for
+100% of users: `vault_saved`, `script_generated` (costs 2 credits — a costly
+signal is an honest signal), `caption_generated`, `caption_remixed`,
+`post_marked`, `plan_partial_regen` (rejected this card), `draft_edited`
+(rewrote it), `plan_calendar_exported`.
+
+Bucket **those** by pillar / funnel stage / hook archetype. The buckets fill an
+order of magnitude faster than logged results, they work for every user
+including non-loggers, and the drop-off between stages is itself the insight —
+"you generate 14 cards a week and script 3" is more actionable than any view
+count. Engagement data overlays on top when it exists, rather than being the
+foundation.
+
+This also defuses a statistical problem the brand seat caught: dimensioning
+multiplies bucket count roughly tenfold against gates calibrated for two
+dimensions (`MIN_PER_FORMAT = 2`, `performance-insights.js:26-29`). At n=2 per
+bucket, §3 as written ships noise in a confident first-person voice. Raise the
+per-dimension floor, require a minimum effect size, and **drop the example claim
+at §3** — *"convert posts only land when a nurture post ran within 48 hours"* is
+an interaction effect a creator posting 5×/week will not power in a year. Don't
+spec a headline the data layer can never honestly earn.
+
+### Other binding revisions
+
+- **§2 must grade VIRL's bet, not the creator.** The `success_metric` thresholds
+  are model-invented (`prompts.js:1501`). Telling a creator on Monday that she
+  missed a target VIRL made up is both dishonest and off-persona. The Scorecard
+  must be able to say *"I set that target too high."* That version is what
+  actually sells the strategist positioning — the strategist owns the bet.
+  Also: my sample verdict copy in §2 violates `RATIONALE_RULES` (it invents a
+  causal mechanism and cites no input). The sample is the spec; fix it first.
+- **§2 needs its failure case and its empty state written in the same PR.** A
+  verdict never ships without the next move attached in the same sentence. A
+  Monday surface whose default is "not enough data" is a weekly reminder that
+  the product doesn't know.
+- **§4 should offer a swap, not ask a question.** "Why didn't you post this?"
+  gets a polite lie — *didn't fit my week* and *ran out of time* are the same
+  socially-costless answer and will absorb most clicks. Instead: when a card
+  goes unshipped, offer *"want me to swap this one?"* → b-roll version /
+  carousel / different topic. The choice **is** the skip reason, cleanly
+  labeled, with no admission required, and it produces a card they might
+  actually ship. Better still, infer the pattern and confirm it in one tap.
+- **§5: keep it, don't market it.** "Tightened 3 cards to your voice" advertises
+  that the flagship surface's first pass was off-voice. Disclose per-card
+  ("rewrote this one — it was drifting"), never as a plan-level banner, and keep
+  it off every landing page. It's claim protection, not claim creation.
+- **§6 cut to its defensible sliver.** Compounding-voice memory is contested
+  table stakes — competitors already market "knowledge base that compounds" and
+  "Content DNA" (council-sourced, not independently verified). The ownable part
+  is that VIRL's is **visible and editable**, and that's ~20% of the work. Seed
+  it on day 1 from `voiceSamples` + `handleResearch` rather than treating it as
+  a month-6 accumulator. Fold it into Creator Profile as a "What I've learned"
+  section — a second "Profile" the user didn't write is a support ticket.
+- **Naming: "Scorecard" and "Voice Profile" both die.** "Scorecard" is dashboard
+  vocabulary that grades the creator, on the axis this document argues is free
+  inside Instagram. Use an eyebrow — **Last week** — and let VIRL talk. Existing
+  convention: `VIRL <thing>` for surfaces where VIRL generates, plain nouns for
+  the creator's things. Everything here is the creator's, so none of it takes
+  the VIRL prefix.
+- **Make the artifacts shareable.** Three seats flagged this independently: the
+  weekly read is the most screenshot-worthy object this roadmap creates, and it
+  is trapped in-app. A public permalink with a "planned with VIRL" footer turns
+  a retention feature into a distribution one, and wires into the referral
+  engine (`api/_lib/referrals.js`) that already exists.
+- **Trial length is a config change against the actual bottleneck.** If value
+  needs three Mondays, a 14-day trial cannot deliver it. 21 days, or
+  calendar-align the trial.
+
+### Revised order
+
+**Gate 0 — before any roadmap item. Days, not weeks.**
+
+1. `robots.txt`: unblock `OAI-SearchBot`, `ChatGPT-User`, and add
+   `Claude-SearchBot` / `Claude-User`. Keep the training crawlers blocked — that
+   is the file's own stated policy, applied consistently.
+2. Server-side posted state. The logging funnel may be broken rather than
+   ignored, and nothing downstream is trustworthy until this is known.
+3. Query `result_logged : plan_generated` by week-of-tenure. Half a day.
+
+**Then re-decide.** If logging is healthy once posted state travels, items 1–4
+proceed as revised. If it isn't, pivot the insight layer to behavioral signal
+and drop most of §1/§3 as originally specced.
+
+**Then, in this order:**
+
+| Order | Item | Why here |
+|---|---|---|
+| 1 | §7 as a public dated changelog + email | No data dependency, day-1 visible, small, only public artifact on the list |
+| 2 | §6-lite — visible/editable, seeded day 1 | The only proof surface that works during a 14-day trial |
+| 3 | §1 fields, silent, creator-attested | Plumbing plus the strongest future claim; ships without a campaign |
+| 4 | §2 weekly read, shareable permalink, VIRL grades its own bet | The retention surface and the sales collateral, same object |
+| 5 | §4 as a swap offer | Attacks execution rate, which multiplies everything else |
+| 6 | §3 on behavioral buckets first | Now has data to stand on |
+| 7 | §5 voice repair, unmarketed | Instrument the drift↔conversion correlation first; it's already logged |
+
+The engineering-impact order in the table further up this document and the
+go-to-market order here disagree most violently on §7 (cheap, public, was last)
+and §6 (expensive, contested, was high). The council is right and the original
+table was ranked on the wrong axis: I sequenced by *depth of fix* and labelled
+it *subscription defensibility*, which are not the same thing.
+
+### Unverified claims carried from the council
+
+Flagged so they get checked before anything is built on them: competitor
+pricing and feature positioning, the absence of G2/Capterra profiles and
+third-party roundup placement, the provenance of the existing testimonial, and
+what `www.govirl.ai` serves (it returned 403 to the council's fetch; the
+`robots.txt` finding is confirmed for **this** repo's host only). The absence of
+any unauthenticated generation endpoint *is* verified — `api/config.js` and
+`api/version.js` are the only routes in `api/` without an auth check.
+
+---
+
 ## The through-line
 
 Every gap above is the same gap in a different costume:
