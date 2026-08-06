@@ -25,6 +25,8 @@
 import { dispatch, VOICE_LEARNING_TYPES } from "../api/_lib/prompts.js";
 import { computeVoiceDrift, FEATURE_NORMS } from "../api/_lib/voice-drift.js";
 import { selectVaultExemplars, formatExemplarsForPrompt, exemplarsAsVoiceText } from "../api/_lib/vault-exemplars.js";
+import { detectRegisterBleed } from "../api/_lib/register-check.js";
+import { extractVoiceText } from "../api/_lib/voice-drift.js";
 import { computePerformanceInsights } from "../api/_lib/performance-insights.js";
 import { readFileSync } from "node:fs";
 
@@ -103,6 +105,14 @@ const REQUIRED = [
   // are load-bearing lines from the C1 sheet (identity + the no-human clause).
   { name: "VIRL_PERSONA (identity line)",     re: /YOU ARE VIRL — the user's content strategist/ },
   { name: "VIRL_PERSONA (never-human clause)", re: /never pretend otherwise/ },
+  // [SELF-CHECK] Every surface reviews its own draft before emitting. Plan
+  // had this from the start; every other surface shipped without one, so a
+  // caption or a scan went out with no review pass at all. Anchoring on the
+  // opening line keeps the assertion stable across rubric wording changes.
+  { name: "self-check review pass",           re: /silently review your draft/ },
+  // The register item specifically — it is the one that catches VIRL's
+  // strategist voice leaking into copy the creator publishes.
+  { name: "self-check register item",         re: /is you talking in their feed/ },
 ];
 
 for (const s of SURFACES) {
@@ -331,6 +341,97 @@ try {
     assert(!text.includes(VIRL_VOICE),
       `${s.label} (${s.gt}): VIRL's strategist description reached the prompt as creator voice`);
   }
+}
+
+// ── Layer A4: the register boundary is checked, not just asserted ───────────
+//
+// [REGISTER-CHECK] The two-register rule was stated in every mixed-register
+// prompt and verified on no output field. These assertions cover the detector
+// that closes that gap. Precision is the property under test: a detector that
+// flags genuine creator copy gets ignored within a week, which is worse than
+// no detector, so the negative cases below matter more than the positive one.
+{
+  const bleed = detectRegisterBleed({
+    cards: [{
+      // VIRL's register in a field the creator publishes.
+      caption: "My call is Instagram for this one, it earns its slot on reach.",
+      hook:    "the floors took nine hours",
+      insight: "My call is Instagram — this post's job is reach.", // VIRL's own field, fine
+    }],
+  });
+  assert(bleed.flags.length === 1,
+    `register bleed in a caption should raise exactly one flag, got ${bleed.flags.length}`);
+  assert(bleed.flags[0] && /caption/.test(bleed.flags[0].path),
+    "register bleed flag should point at the offending creator-voice field");
+
+  // Precision: ordinary creator copy uses first person constantly. None of
+  // this is VIRL talking, and flagging it would train everyone to ignore
+  // the signal.
+  const clean = detectRegisterBleed({
+    cards: [{
+      caption: "I'd never do this again. my back hurts and the floors are still not level.",
+      hook:    "I'd tell you it was worth it but I'm too tired to lie",
+      body:    "your morning routine doesn't have to look like anyone else's.",
+      title:   "The floor situation",
+    }],
+  });
+  assert(clean.flags.length === 0,
+    `clean creator copy was flagged as register bleed: ${JSON.stringify(clean.flags)}`);
+
+  // VIRL's voice inside VIRL's own containers is correct, not a violation.
+  const virlFields = detectRegisterBleed({
+    strategy:    { thesis: "My call is to lean into the renovation arc." },
+    restDayTips: [{ title: "Reply to comments", body: "This post's job is community, so spend the hour in replies." }],
+    cards:       [{ caption: "we finally picked the tile" }],
+  });
+  assert(virlFields.flags.length === 0,
+    `VIRL's own register fields were flagged as bleed: ${JSON.stringify(virlFields.flags)}`);
+}
+
+// [REGISTER-FIELDS] The drift scorer's corpus must follow the same split.
+// `body` is the creator's field on a long-form card and VIRL's under
+// restDayTips — scoring the latter as creator prose dragged the one number
+// that decides whether a corrective retry fires toward VIRL's register.
+{
+  const corpus = extractVoiceText({
+    cards: [{
+      title:   "The floor situation",
+      caption: "we ripped out the floors at 6am",
+      frames:  [{ content: "wide shot of the mess", textOverlay: "hour nine" }],
+      insight: "STRATEGIST_ONLY_INSIGHT",
+    }],
+    restDayTips: [{ body: "STRATEGIST_ONLY_RESTDAY" }],
+    strategy:    { thesis: "STRATEGIST_ONLY_THESIS" },
+  });
+  assert(corpus.includes("we ripped out the floors"), "drift corpus is missing creator caption text");
+  assert(corpus.includes("The floor situation"),      "drift corpus is missing creator title text");
+  assert(corpus.includes("hour nine"),                "drift corpus is missing creator frame overlay text");
+  assert(!corpus.includes("STRATEGIST_ONLY_RESTDAY"), "drift corpus includes restDayTips[].body — VIRL's register");
+  assert(!corpus.includes("STRATEGIST_ONLY_THESIS"),  "drift corpus includes strategy prose — VIRL's register");
+  assert(!corpus.includes("STRATEGIST_ONLY_INSIGHT"), "drift corpus includes card insight — VIRL's register");
+}
+
+// ── Layer A5: verifier input contracts ──────────────────────────────────────
+//
+// [TREND-VERIFY-SHAPE] Coarse, source-level, and deliberately so. The trend
+// verifier died silently when the pipeline renamed its item field and
+// flattened its snapshot: the check kept running, matched nothing, and a
+// broken guard looked exactly like a clean plan. Neither side is importable
+// from the other — the client is a single-file browser app — so the cheapest
+// honest guard is asserting that both ends still name the same fields. If
+// this fails, someone changed one side of a contract with two ends.
+{
+  const trendCtx = readFileSync(new URL("../api/_lib/trend-context.js", import.meta.url), "utf8");
+  assert(/select=[^"'`]*last_seen/.test(trendCtx),
+    "trend-context.js no longer SELECTS last_seen — the 'as of' date silently falls back to today");
+  assert(/display_name/.test(trendCtx),
+    "trend-context.js no longer emits display_name — the client trend verifier keys on it");
+
+  const indexSrc = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert(/function collectKnownTrends/.test(indexSrc),
+    "index.html lost collectKnownTrends — the trend precision scrub has no allow-list");
+  assert(/collectKnownTrends[\s\S]{0,900}display_name/.test(indexSrc),
+    "collectKnownTrends no longer reads display_name — it would go inert against the live snapshot shape");
 }
 
 // ── Layer B: the drift scorer (powers the drift gate) behaves ───────────────

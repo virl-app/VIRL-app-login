@@ -24,6 +24,7 @@ import { estimateCostUSD }           from "./_lib/pricing.js";
 import { sendLoopsEvent, sendLoopsEventOnce, fireCreditNudge } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
 import { computeVoiceDrift, extractVoiceText, FEATURE_NORMS } from "./_lib/voice-drift.js";
+import { detectRegisterBleed }        from "./_lib/register-check.js";
 import { selectVaultExemplars, exemplarsAsVoiceText } from "./_lib/vault-exemplars.js";
 import { computeOptimalDays } from "./_lib/optimal-days.js";
 import { computePerformanceInsights } from "./_lib/performance-insights.js";
@@ -170,6 +171,27 @@ async function recordUsageEvent(userId, usage) {
   } catch (e) {
     console.warn("[usage_events] insert threw", e.message);
   }
+}
+
+// [REGISTER-CHECK] Report VIRL's strategist voice showing up in fields the
+// creator publishes. Detection-only by design — see register-check.js for why
+// a regex must not rewrite a creator's caption — so this emits telemetry and
+// nothing else. It runs on both the streaming and non-streaming paths because
+// register bleed is not specific to either, and it is wrapped so a detector
+// fault can never affect a generation the creator already received.
+function logRegisterBleed(generationType, model, parsed) {
+  try {
+    const { flags } = detectRegisterBleed(parsed);
+    if (!flags.length) return;
+    console.log('virl_register_bleed', JSON.stringify({
+      generationType,
+      model,
+      count:    flags.length,
+      patterns: flags.map(function (f) { return f.pattern; }),
+      paths:    flags.map(function (f) { return f.path; }).slice(0, 10),
+      excerpt:  flags[0].excerpt,
+    }));
+  } catch (e) { /* telemetry must never break a generation */ }
 }
 
 // [VOICE-DRIFT] Build the reference corpus the drift telemetry compares
@@ -605,6 +627,7 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
           deltas:    drift.deltas,
         }));
       }
+      logRegisterBleed(generationType, selectedModel, parsedForDrift);
     } catch (e) {
       // Same swallow rationale as compliance above — JSON parse failure here
       // surfaces as the existing client-side error UI; telemetry stays quiet.
@@ -1964,6 +1987,7 @@ export default async function handler(req, res) {
             deltas:    drift.deltas,
           }));
         }
+        logRegisterBleed(generationType, selectedModel, parsedForDrift);
       } catch (e) { /* telemetry-only; silent failure by design */ }
     }
 

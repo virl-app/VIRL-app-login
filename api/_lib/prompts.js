@@ -164,6 +164,7 @@ import {
   VIRL_PERSONA,
   RATIONALE_RULES,
   SELF_CHECK_RUBRIC,
+  selfCheckFor,
   registerSplitFor,
 } from "./virl-persona.js";
 // [NICHE-PLAYBOOK] Per-niche success models + per-goal tactics. Same
@@ -1004,7 +1005,14 @@ function composeSystemPrompt(profile, role, compliance, vaultPatterns, personalD
     ? "\n\n" + registerSplitFor(registers.virl, registers.creator)
     : "";
   return {
-    shared:  sp.shared + split + buildComplianceBlock(compliance),
+    // [SELF-CHECK] The review pass lands last in the shared tier, after the
+    // register split and the compliance rules, so the model reviews against
+    // everything above it. Plan composes its own pair and appends the
+    // multi-piece variant itself; this covers every other surface, which
+    // previously shipped with no review pass at all — including Scan, which
+    // emits publishable copy. It sits in the cached tier, so the steady-state
+    // token cost is the model's own review reasoning rather than the prompt.
+    shared:  sp.shared + split + buildComplianceBlock(compliance) + "\n\n" + selfCheckFor({}),
     perUser: sp.perUser,
   };
 }

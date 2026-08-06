@@ -79,15 +79,53 @@ export const RATIONALE_RULES = ""
 // the output match the required schema exactly?" has a schema to point at.
 // Implemented as embedded critique inside a single call — no second API round
 // trip. The model revises silently and emits only the final plan.
-export const SELF_CHECK_RUBRIC = ""
-  + "Before finalizing, silently review your draft against this checklist and revise anything that fails:\n"
-  + "1. VOICE: Does every post sound like it was written by this specific brand? Compare word choice, sentence rhythm, and energy against the voice profile. Flag and rewrite anything that could belong to any generic account in this niche.\n"
-  + "2. TRENDS: Is every trend reference traceable to the research provided in this conversation? Remove or replace any trend, statistic, or platform behavior you cannot point to in the source material. Never invent engagement claims.\n"
-  + "3. STRATEGY: Does each post have a stated job (reach, nurture, convert, community)? Cut anything that's content for content's sake.\n"
-  + "4. REPETITION: Do any two posts in the plan share the same hook structure or angle? Diversify.\n"
-  + "5. FORMAT: Does the output match the required schema exactly?\n"
-  + "6. PERSONA: Would VIRL say this? Rewrite anything a sharp human strategist wouldn't say out loud to a client.\n"
-  + "Output only the revised final plan. Do not show your review notes.";
+// [SELF-CHECK] Build the review pass for a surface.
+//
+// This is a review the model runs on itself inside a single completion — no
+// second round trip, so it costs output tokens and a little latency, not a
+// doubled bill. Worth being precise about what it can and cannot do: a
+// self-check only verifies the draft against what is already in the context
+// window. It catches CRAFT failures — repetition, register bleed, schema
+// drift, phrasing that could belong to any account. It cannot catch GROUNDING
+// failures, because a model has no way to know that a signal it was handed is
+// stale, mislabelled, or missing. Those need code checking the model
+// (scrubCompliance, the trend verifier, the drift gate), not the model
+// checking itself. Keep both; don't let this stand in for either.
+//
+// `artifact` is the noun the closing line uses so the instruction reads
+// naturally per surface. `multi` adds the cross-item repetition check, which
+// only means something where a surface emits several pieces at once.
+export function selfCheckFor(opts) {
+  const o = opts || {};
+  const artifact = o.artifact || "result";
+  const multi = !!o.multi;
+
+  const items = [
+    "VOICE: Does every published line sound like it was written by this specific creator? Compare word choice, sentence rhythm, contraction level, and energy against their own writing and fingerprint above. Rewrite anything that could belong to any generic account in this niche.",
+    "TRENDS: Is every trend, statistic, or claim about platform behavior traceable to source material provided in this conversation? Remove or replace anything you cannot point to. Never invent an engagement number.",
+    multi
+      ? "STRATEGY: Does each post have a stated job (reach, nurture, convert, community)? Cut anything that's content for content's sake."
+      : "STRATEGY: Does this have one clear job (reach, nurture, convert, community), and does every element serve it? Cut anything that's only there to fill space.",
+  ];
+  if (multi) {
+    items.push("REPETITION: Do any two pieces share the same hook structure or angle? Diversify.");
+  }
+  items.push(
+    // [REGISTER] The split is stated earlier in the prompt; this is the
+    // moment the model actually looks for violations. Register bleed is the
+    // failure a creator notices instantly — it is VIRL talking in their feed.
+    "REGISTER: Is every creator-voice field free of your strategist voice? A published line that says \"I'd lead with\" or \"my call is\" is you talking in their feed. Rewrite it as the creator.",
+    "FORMAT: Does the output match the required schema exactly?",
+    "PERSONA: Would VIRL say this? Rewrite anything a sharp human strategist wouldn't say out loud to a client.",
+  );
+
+  return "Before finalizing, silently review your draft against this checklist and revise anything that fails:\n"
+    + items.map(function (t, i) { return (i + 1) + ". " + t; }).join("\n") + "\n"
+    + "Output only the revised final " + artifact + ". Do not show your review notes.";
+}
+
+// The plan's variant: several pieces at once, so it gets the repetition check.
+export const SELF_CHECK_RUBRIC = selfCheckFor({ artifact: "plan", multi: true });
 
 // ── Register split ────────────────────────────────────────────────────────
 // [PERSONA] Boundary rule 2, enforced in-prompt. Every generation surface
@@ -108,6 +146,43 @@ export const REGISTER_SPLIT = ""
   + "Never let your strategist voice leak into publishable copy. A caption that says \"I'd lead with the carousel\" or \"my call is Instagram\" is a bug — that's you talking, in their feed. Equally, never write your commentary in the creator's casual voice; the creator should always be able to tell which of you is speaking.\n"
   + "\n"
   + "IMPORTANT: your OWN style rules (first person, no emojis, no exclamation points, short plain sentences) describe how YOU sound in your commentary. They do NOT govern the creator's published copy. In creator-voice fields, the creator's profile, samples, and fingerprint win completely — if this creator uses emojis, exclamation points, or a bubbly register, write their copy that way even though you'd never write yours that way. Do not flatten the creator into your voice.";
+
+// [REGISTER-FIELDS] The register split as DATA, not just prompt copy.
+//
+// The split is asserted to the model in every mixed-register prompt, and up
+// to now nothing ever checked an actual output field against it — so a
+// caption that says "my call is Instagram" shipped with nothing to catch it.
+// Anything that wants to inspect output by register (the runtime bleed
+// detector, the drift scorer's corpus) needs the same field lists the prompt
+// uses, from one place, or the two quietly diverge.
+//
+// Keyed by field NAME rather than full path because output shapes nest
+// differently per surface (slides[].headline, frames[].textOverlay) and a
+// name-keyed walk handles all of them. Containers that are wholly VIRL's
+// voice are listed separately so a recursive walk can skip them outright —
+// restDayTips[].body is VIRL talking, and a name-only rule would wrongly
+// read it as the creator's.
+export const CREATOR_VOICE_FIELDS = new Set([
+  "title", "hook", "caption", "onScreenText", "quote", "body", "closing",
+  "headline",                       // slides[].headline
+  "content", "textOverlay",         // frames[].content / .textOverlay
+  "text",                           // caption options
+  "overlay_text", "sticker_idea",   // scan
+  "script", "spokenLine", "voiceover", "remix",
+]);
+
+// Whole subtrees that belong to VIRL's register. A walk must not descend
+// into these when collecting the creator's words.
+export const VIRL_VOICE_CONTAINERS = new Set([
+  "strategy", "restDayTips", "alt_formats",
+]);
+
+// Fields that are VIRL's voice even though they sit beside creator fields.
+export const VIRL_VOICE_FIELDS = new Set([
+  "insight", "description", "repurpose", "why", "why_format", "analysis",
+  "tip", "thumbnailNote", "compositionTip", "photoDirection", "filmDirection",
+  "designDirection", "audioRecommendation", "compliance_note",
+]);
 
 // Builds the register-split block with the calling surface's actual field
 // names, so the model gets a literal mapping instead of a category. Empty
