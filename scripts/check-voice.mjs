@@ -24,6 +24,9 @@
 
 import { dispatch, VOICE_LEARNING_TYPES } from "../api/_lib/prompts.js";
 import { computeVoiceDrift, FEATURE_NORMS } from "../api/_lib/voice-drift.js";
+import { selectVaultExemplars, formatExemplarsForPrompt, exemplarsAsVoiceText } from "../api/_lib/vault-exemplars.js";
+import { computePerformanceInsights } from "../api/_lib/performance-insights.js";
+import { readFileSync } from "node:fs";
 
 let failures = 0;
 function assert(cond, msg) {
@@ -226,6 +229,107 @@ try {
     const text = flatten(built.systemPrompt) + "\n" + (built.userPrompt || "");
     assert(!/HOW THIS CREATOR REVISES VIRL DRAFTS/.test(text),
       "plan_strategy: excluded from VOICE_LEARNING_TYPES but still emitting the edit-diff block");
+  }
+}
+
+// ── Layer A3: exemplars carry the CREATOR's register, not VIRL's ────────────
+//
+// [EXEMPLAR-REGISTER] Every assertion above passed `null` for vaultPatterns,
+// so this gate could not observe the exemplar block or the performance block
+// on any surface — which is precisely how the bug below survived: the pool
+// builder read `description` (VIRL's strategic one-liner, listed in the VIRL
+// column of PLAN_REGISTER_SPLIT), rendered it to the model labelled
+// "Caption:", and fed it into the drift reference. The block whose entire job
+// is showing the model how the creator sounds was showing it how VIRL sounds,
+// and the drift gate was partly calibrated on VIRL's register.
+//
+// The fixtures below deliberately put DISTINCT, unmistakable text in each
+// register so a regression can't hide behind a plausible-looking string.
+{
+  const VIRL_VOICE   = "Spotlight the studio renovation to hook local first-timers.";
+  const CREATOR_VOICE = "we ripped out the old floors at 6am and i have never been so tired or so happy";
+  const CREATOR_HOOK  = "nobody warned me about the floor situation";
+
+  const VAULT_ROWS = [{
+    id: "card-1",
+    title: "Studio reveal",
+    platform: "Instagram",
+    format: "video",
+    savedAt: "2026-07-20T10:00:00Z",
+    description: VIRL_VOICE,     // VIRL's register — must never reach the model as voice
+    caption:     CREATOR_VOICE,  // the creator's register — this is the exemplar
+    hook:        CREATOR_HOOK,
+  }];
+  const RESULT_ROWS = [{
+    id: "card-1",
+    title: "Studio reveal",
+    platform: "Instagram",
+    format: "video",
+    loggedAt: "2026-07-22T10:00:00Z",
+    description: VIRL_VOICE,
+    caption:     CREATOR_VOICE,
+    hook:        CREATOR_HOOK,
+    result: { views: 4200, likes: 310, saves: 88 },
+  }];
+
+  const exemplars = selectVaultExemplars(VAULT_ROWS, RESULT_ROWS, 5);
+  assert(exemplars.length > 0, "exemplar pool came back empty for a fully-populated vault row");
+
+  const rendered = formatExemplarsForPrompt(exemplars);
+  assert(rendered.includes(CREATOR_VOICE),
+    "exemplar block does not render the creator's caption — the voice reference is empty or wrong-register");
+  assert(!rendered.includes(VIRL_VOICE),
+    "exemplar block renders VIRL's `description` as the creator's caption — the register inversion is back");
+
+  // The same text becomes the drift gate's ground truth via chat.js
+  // buildVoiceReference. If VIRL's register leaks here, the gate enforces
+  // TOWARD VIRL and every downstream voice fix makes output worse.
+  const driftCorpus = exemplarsAsVoiceText(exemplars);
+  assert(driftCorpus.includes(CREATOR_VOICE),
+    "drift reference corpus is missing the creator's own caption");
+  assert(!driftCorpus.includes(VIRL_VOICE),
+    "drift reference corpus contains VIRL's strategist prose — the gate would enforce toward VIRL's voice");
+
+  // A row carrying ONLY VIRL's description contributes nothing as voice.
+  // `description` is deliberately not a fallback: no exemplar is better than
+  // a wrong-register one.
+  const descOnly = selectVaultExemplars([{ id: "d1", description: VIRL_VOICE, savedAt: "2026-07-20T10:00:00Z" }], [], 5);
+  assert(descOnly.length === 0,
+    "a vault row with only VIRL's `description` produced an exemplar — description must not be a voice fallback");
+
+  // And the whole thing has to survive the trip through every surface that
+  // receives vaultPatterns, including Scan, which emits publishable creator
+  // copy and was excluded from the voice fetch entirely.
+  const VAULT_PATTERNS = {
+    count: 1,
+    topPlatform: "Instagram",
+    topFormat: "video",
+    exemplars,
+    optimalDays: {},
+    performanceInsights: computePerformanceInsights(VAULT_ROWS, RESULT_ROWS),
+  };
+  const EXEMPLAR_SURFACES = [
+    { label: "Plan",     gt: "plan",             params: { platforms: ["Instagram"], formats: ["video"], niche: "Wellness", goal: "growth" } },
+    { label: "Caption",  gt: "caption",          params: { platform: "Instagram", topic: "morning routines" } },
+    { label: "Script",   gt: "script",           params: { card: { title: "Morning reset", description: "a calm start", platform: "Instagram", format: "video" } } },
+    { label: "LinkedIn", gt: "long_post",        params: { topic: "morning routines", length: "medium" } },
+    { label: "Blog",     gt: "blog_post",        params: { topic: "morning routines", length: "medium" } },
+    { label: "Scan",     gt: "scan_image",       params: {} },
+    { label: "Scan (video)", gt: "scan_video_frame", params: {} },
+  ];
+  for (const s of EXEMPLAR_SURFACES) {
+    let text = "";
+    try {
+      const built = dispatch(s.gt, s.params, GOLDEN_PROFILE, VAULT_PATTERNS, {}, {}, [], null, null, null);
+      text = flatten(built.systemPrompt) + "\n" + (built.userPrompt || "");
+    } catch (e) {
+      assert(false, `${s.label} (${s.gt}): build threw with vaultPatterns supplied — ${e && e.message}`);
+      continue;
+    }
+    assert(text.includes(CREATOR_VOICE),
+      `${s.label} (${s.gt}): receives vaultPatterns but the creator's caption never reaches the prompt`);
+    assert(!text.includes(VIRL_VOICE),
+      `${s.label} (${s.gt}): VIRL's strategist description reached the prompt as creator voice`);
   }
 }
 

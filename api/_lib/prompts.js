@@ -2160,12 +2160,17 @@ function scanResultSchema(isVideo) {
     + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}";
 }
 
-function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
+function buildScanImage(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // Only the prompt-level block fires on scans; the post-generation scrub
   // stays wired to plan / script / caption paths.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist, SCAN_REGISTERS);
+  // [SCAN-VOICE] vaultPatterns is threaded through rather than nulled: the
+  // caption and hook this surface emits are creator-voice fields, so they
+  // need the same exemplars every other publishing surface gets, and the
+  // platform verdict should be informed by the creator's own logged
+  // platform performance rather than generic signals alone.
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS);
   const userPrompt = "The creator just handed you this image and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the image actually shows — then call the single best POST TYPE and write content sized to that type."
     + " Be honest about a weak asset. \"I'd reshoot this\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)
@@ -2186,10 +2191,11 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
   };
 }
 
-function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
+function buildScanVideoFrame(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   // [COMPLIANCE 1] Same scope as buildScanImage — prompt-level block only.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist, SCAN_REGISTERS);
+  // [SCAN-VOICE] Same rationale as buildScanImage.
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS);
   const userPrompt = "The creator just handed you this video frame and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the frame actually shows — then call the single best POST TYPE and write content sized to that type."
     + " Be honest about a weak frame. \"I'd pull a different frame\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)

@@ -1181,6 +1181,15 @@ export default async function handler(req, res) {
     "long_post",
     // [VIRL-POSTS-TAB] Blog posts get the same treatment.
     "blog_post",
+    // [SCAN-VOICE] Scan emits publishable creator copy — SCAN_REGISTERS
+    // assigns hook, caption, overlay_text, sticker_idea, slides and
+    // hashtags to the creator's voice — so it needs the same exemplar and
+    // performance signal as every other publishing surface. It was excluded
+    // on the theory that scan "doesn't generate creator voice", which its
+    // own register map contradicts. The performance block matters here for
+    // a second reason: scan renders a platform verdict, and the creator's
+    // own strongest-platform data is the most relevant input to that call.
+    "scan_image", "scan_video_frame",
   ]);
   // [POSTFREQ-OPTIMAL] targetPlatforms scopes the optimal-days computation
   // to the platforms in this request. Plan / plan_partial use the user's

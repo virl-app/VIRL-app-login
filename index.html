@@ -2695,6 +2695,43 @@ function countPostedLastWeekUnlogged(results) {
   return count;
 }
 
+// [TREND-VERIFY] Collect every trend name the server actually injected into
+// this generation, lowercased, for the precision scrub on plan cards.
+//
+// Handles BOTH snapshot shapes on purpose. The live pipeline emits v2 —
+// { v, block, segment, refreshedAt, items:[{ display_name, ... }] } — while
+// a plan replayed from an older stored job can still carry the legacy
+// per-platform map { [platform]: { items:[{ trend }] } }. Reading only one
+// shape is what broke this scrub before: the v2 migration renamed the field
+// and flattened the map, Object.keys() started walking scalars, and the
+// allow-list was empty on every plan with nothing to signal it.
+function collectKnownTrends(snapshot) {
+  var out = [];
+  if (!snapshot || typeof snapshot !== "object") return out;
+  function push(name) {
+    if (typeof name === "string" && name.trim()) out.push(name.toLowerCase());
+  }
+  try {
+    // v2: flat items array on the snapshot itself.
+    if (Array.isArray(snapshot.items)) {
+      snapshot.items.forEach(function(it){
+        if (it) push(it.display_name || it.trend);
+      });
+    }
+    // Legacy: { platform: { items: [...] } }. Guarded so v2's scalar
+    // fields (v, block, segment, refreshedAt) are skipped rather than
+    // walked.
+    Object.keys(snapshot).forEach(function(k){
+      var entry = snapshot[k];
+      if (!entry || typeof entry !== "object" || !Array.isArray(entry.items)) return;
+      entry.items.forEach(function(it){
+        if (it) push(it.display_name || it.trend);
+      });
+    });
+  } catch(e) {}
+  return out;
+}
+
 // [PREMIUM 3] Loops event helper. Fire-and-forget — never blocks the
 // caller, never throws. Built initially for the tenPlansMilestone
 // celebration; PREMIUM 7 will reuse this for the rest of the
@@ -11122,17 +11159,24 @@ function App() {
       // the "close paraphrase" the prompt allows). No snapshot → no
       // verification possible → leave cards untouched.
       if (parsedCards && freshSnapshot) {
-        var knownTrends = [];
-        try {
-          Object.keys(freshSnapshot).forEach(function(p){
-            var entry = freshSnapshot[p];
-            if (entry && Array.isArray(entry.items)) {
-              entry.items.forEach(function(it){
-                if (it && it.trend) knownTrends.push(String(it.trend).toLowerCase());
-              });
-            }
-          });
-        } catch(e) {}
+        var knownTrends = collectKnownTrends(freshSnapshot);
+        // [TREND-VERIFY-SHAPE] A snapshot that yields no known trends means
+        // the scrub is inert. That is almost always a shape drift, not a
+        // quiet week: the v2 pipeline renamed the item field `trend` ->
+        // `display_name` and flattened the per-platform map, and this scrub
+        // went silently dead for the whole life of that mismatch because a
+        // broken check and a clean plan look identical from the outside.
+        // A snapshot carrying a trends block but no parseable items is the
+        // exact signature, so say so loudly rather than skip in silence.
+        if (knownTrends.length === 0 && freshSnapshot.block) {
+          try {
+            console.warn("[TREND-VERIFY] snapshot present but no trend items parsed - scrub inert", freshSnapshot);
+            logEvent(window.__virlUserId || null, "trend_verify_inert", {
+              snapshotVersion: freshSnapshot.v || null,
+              snapshotKeys:    Object.keys(freshSnapshot).slice(0, 12),
+            });
+          } catch(e) {}
+        }
         if (knownTrends.length > 0) {
           var trendWords = function(s){
             return s.split(/[^a-z0-9']+/).filter(function(w){ return w.length > 3; });
@@ -11605,6 +11649,13 @@ function App() {
         format:      card.format||null,
         hook:        card.hook||null,
         description: card.description||card.caption||null,
+        // [EXEMPLAR-REGISTER] Creator-voice copy, stored separately from
+        // `description`. Logged results feed the few-shot voice exemplars
+        // and the drift reference, and `description` is VIRL's strategic
+        // one-liner — capturing only that taught the model VIRL's register
+        // as the creator's. `description` stays for the existing display
+        // paths; voice reads `caption` (see vault-exemplars.js).
+        caption:     card.caption||card.body||null,
         result,
         loggedAt:    fmtDate(),
       };
@@ -13134,7 +13185,7 @@ return (
                           <span aria-hidden="true">⚡</span>
                           {planTrendsSnapshot.refreshedAt
                             ? "Trend data refreshed " + planTrendsSnapshot.refreshedAt
-                            : "Built on live trend data pulled for this plan"}
+                            : "Built on current trend research"}
                         </div>
                       )}
                       {/* [REFERRAL] Share moment right where the plan pays

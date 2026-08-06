@@ -13,7 +13,7 @@
 //      qualify.
 //   2. Add result-only items (logged but never saved to vault) that carry
 //      voice-bearing fields — those are forward-only because logResult
-//      only started capturing hook/description after this PR ships.
+//      only started capturing hook/caption after this PR ships.
 //   3. Rank: (has_result, has_content_quality, saved_recently). Items the
 //      user both saved AND posted come first; result-only-with-content
 //      second; vault-only-no-result third.
@@ -49,6 +49,36 @@ function engagementScore(result) {
   return pick(result.views) || pick(result.likes) || pick(result.saves);
 }
 
+// [EXEMPLAR-REGISTER] Pull the CREATOR-voice prose off a vault or result row.
+//
+// This function exists because the obvious field is the wrong one. A saved
+// plan card carries both `description` — VIRL's strategic one-liner, "the
+// angle / why this post exists", listed in the VIRL column of
+// PLAN_REGISTER_SPLIT — and `caption`, the copy the creator actually
+// publishes. This module previously read `description`, rendered it to the
+// model labelled "Caption:", and fed it into the drift reference. So the
+// block whose whole job is showing the model how this creator sounds was
+// showing it how VIRL sounds, and the drift gate meant to protect the
+// creator's voice was partly calibrated on VIRL's register. Worse, it
+// compounded: the more a creator saved, the more of VIRL's voice came back
+// as theirs.
+//
+// The fields below are exactly the creator-voice column of
+// PLAN_REGISTER_SPLIT, plus `text` (how a saved caption-generator item
+// stores its body). `description` is deliberately NOT a fallback — it is
+// definitionally not the creator's voice, so an item with no creator-voice
+// content contributes nothing here rather than contributing noise. Rows
+// predating [VAULT-FULL-CARD] (which started capturing `caption`) still
+// contribute through `hook`, which is creator-voice too.
+function creatorVoiceText(row) {
+  if (!row) return null;
+  for (const field of ["caption", "body", "text", "quote", "closing"]) {
+    const v = row[field];
+    if (typeof v === "string" && v.trim()) return v;
+  }
+  return null;
+}
+
 // Build a flat exemplar pool from the (vault, results) pair. Each entry is
 // an object with: id, source ("vault" | "result" | "both"), title, platform,
 // format, hook, description, performanceTag ("well" | null), recencyTs
@@ -82,17 +112,17 @@ function buildExemplarPool(vault, results) {
     return engagementScore(result) > medianEngagement ? "well" : null;
   }
 
-  // Vault items first — they always have content (description/hook).
+  // Vault items first — they always have content (caption/hook).
   const seen = {};
   const pool = [];
   for (const v of safeVault) {
     if (!v || v.id == null) continue;
     const matchedResult = resultById[v.id];
-    const description = v.description || v.text || null;
-    const hook        = v.hook        || null;
+    const caption = creatorVoiceText(v);
+    const hook    = v.hook || null;
     // Skip vault items without ANY voice-bearing content. A title alone
     // tells the model nothing about voice.
-    if (!description && !hook) continue;
+    if (!caption && !hook) continue;
     pool.push({
       id:             v.id,
       source:         matchedResult ? "both" : "vault",
@@ -100,7 +130,7 @@ function buildExemplarPool(vault, results) {
       platform:       v.platform || null,
       format:         v.format   || null,
       hook,
-      description,
+      caption,
       performanceTag: matchedResult ? tagFor(matchedResult.result) : null,
       // Vault items use savedAt; fall back to current time so a missing
       // field doesn't push them to the epoch.
@@ -115,9 +145,9 @@ function buildExemplarPool(vault, results) {
   // the capture get skipped here and contribute only via the vault path.
   for (const r of safeResults) {
     if (!r || r.id == null || seen[r.id]) continue;
-    const description = r.description || null;
-    const hook        = r.hook        || null;
-    if (!description && !hook) continue;
+    const caption = creatorVoiceText(r);
+    const hook    = r.hook || null;
+    if (!caption && !hook) continue;
     pool.push({
       id:             r.id,
       source:         "result",
@@ -125,7 +155,7 @@ function buildExemplarPool(vault, results) {
       platform:       r.platform || null,
       format:         r.format   || null,
       hook,
-      description,
+      caption,
       performanceTag: tagFor(r.result),
       recencyTs:      Date.parse(r.loggedAt || "") || 0,
     });
@@ -185,8 +215,8 @@ export function formatExemplarsForPrompt(exemplars) {
     const perfBit     = e.performanceTag === "well" ? ", performed well" : "";
     const header = (i + 1) + ". " + (platformBit ? platformBit + " — " : "") + sourceBit + perfBit;
     const body   = [];
-    if (e.hook)        body.push("Hook: " + truncateForPrompt(e.hook, HOOK_MAX_CHARS));
-    if (e.description) body.push("Caption: " + truncateForPrompt(e.description, CAPTION_MAX_CHARS));
+    if (e.hook)    body.push("Hook: "    + truncateForPrompt(e.hook,    HOOK_MAX_CHARS));
+    if (e.caption) body.push("Caption: " + truncateForPrompt(e.caption, CAPTION_MAX_CHARS));
     return header + "\n   " + body.join("\n   ");
   });
   return lines.join("\n\n");
@@ -201,8 +231,8 @@ export function exemplarsAsVoiceText(exemplars) {
   if (!Array.isArray(exemplars) || exemplars.length === 0) return "";
   const parts = [];
   for (const e of exemplars) {
-    if (e.hook)        parts.push(e.hook);
-    if (e.description) parts.push(e.description);
+    if (e.hook)    parts.push(e.hook);
+    if (e.caption) parts.push(e.caption);
   }
   return parts.join("\n\n");
 }

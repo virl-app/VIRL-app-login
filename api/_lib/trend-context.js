@@ -148,7 +148,12 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
 
     const [trendRows, segRows, ...playbookRows] = await Promise.all([
       sbGet(
-        "trend_items?select=platform,type,display_name,external_url,status,context,suggested_angles,niche_scores" +
+        // `last_seen` is selected as well as filtered on: it is what dates
+        // the "as of" line below. It was previously filter-only, so every
+        // row came back without it and the date silently fell through to
+        // today — presenting a six-day-old trend to both the model and the
+        // creator as this morning's signal.
+        "trend_items?select=platform,type,display_name,external_url,status,context,suggested_angles,niche_scores,last_seen" +
         "&status=in.(rising,peaking)" +
         `&last_seen=gte.${encodeURIComponent(since)}` +
         `&platform=in.(${trendPlatforms.join(",")})` +
@@ -209,10 +214,14 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
         const d = t.last_seen || "";
         return d > mx ? d : mx;
       }, "");
-      refreshedAt = ymd(latest) || ymd(new Date().toISOString());
+      // No fallback to today. If we can't date the data, we say nothing
+      // about its age rather than claiming freshness we haven't verified —
+      // an unverifiable date is worse than no date, because the creator
+      // reads it as a guarantee.
+      refreshedAt = ymd(latest);
       const lines = scored.map((t, i) => renderTrendItem(i + 1, t, requested));
       sections.push(
-        `[CURRENT TRENDS as of ${refreshedAt}]\n` +
+        (refreshedAt ? `[CURRENT TRENDS as of ${refreshedAt}]\n` : "[CURRENT TRENDS]\n") +
         lines.join("\n") +
         "\n  Rules: use at most 2 of these trends, and only where they fit naturally. " +
         "Prefer RISING over peaking. Always name the exact sound or hashtag. " +
@@ -240,7 +249,10 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
       v: SNAPSHOT_VERSION,
       block,
       segment,
-      refreshedAt: refreshedAt || ymd(new Date().toISOString()),
+      // Empty when the data can't be dated — the UI already branches on
+      // this and falls back to undated wording. Same reason as above: do
+      // not stamp today's date on data whose age we don't know.
+      refreshedAt,
       items: scored.map(t => ({
         type: t.type, display_name: t.display_name, status: t.status,
         platform: t.platform, external_url: t.external_url || null,
