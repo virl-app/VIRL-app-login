@@ -574,6 +574,172 @@ any unauthenticated generation endpoint *is* verified — `api/config.js` and
 
 ---
 
+## PM AUDIT — supersedes the fix ordering above
+
+Run with `.claude/skills/virl-product-review`, one auditor per half of the
+promise, each told to treat this document as unverified and hunt for what it
+missed. Both found defects larger than anything above. **Answer to "will the
+fixes above make VIRL a true strategist that writes in the user's voice": no.**
+They are necessary, they are not sufficient, and they were not aimed at the
+three biggest problems — none of which appear anywhere earlier in this document.
+
+### The finding that changes the order: voice exemplars are in the wrong register
+
+`saveToVault` stores both fields on every vault row: `description` — VIRL's
+strategic one-liner — at `index.html:11500`, and `caption` — the creator's actual
+publishable copy — at `index.html:11525`. `buildExemplarPool` then reads:
+
+```js
+const description = v.description || v.text || null;   // vault-exemplars.js:91
+```
+
+`v.caption` is never read. `description` is always populated (the plan schema
+requires it, `prompts.js:1256`), so the fallback never fires. The renderer then
+labels it for the model:
+
+```js
+if (e.description) body.push("Caption: " + …);          // vault-exemplars.js:189
+```
+
+`description` is explicitly VIRL's register — it sits in the VIRL column of
+`PLAN_REGISTER_SPLIT` (`prompts.js:1090`) and is specified as *"ONE sentence
+pitch, MAX 20 words — the angle / why this post exists"* (`prompts.js:1503`).
+
+So the block introduced to the model as *"these tell you what 'sounds right' for
+THIS creator better than any abstract voice description"* (`prompts.js:46`) is
+feeding it **VIRL's own strategist prose, labelled as the creator's caption.**
+The creator's real caption is in the row and never read. Reach: every surface
+receiving `vaultPatterns` — plan, plan_partial, script, caption, caption_remix,
+long_post, blog_post. The results path repeats it (`index.html:11607`) and ranks
+those items *higher* (`vault-exemplars.js:135`), so the posted-and-logged
+exemplars — the strongest by design — are the most contaminated.
+
+It compounds with use. The more a creator saves, the more of VIRL's register is
+fed back as their voice. This is a mechanism by which output drifts toward VIRL
+and away from the creator, specifically for the most engaged users.
+
+**And it corrupts the enforcement.** `exemplarsAsVoiceText`
+(`vault-exemplars.js:200`) pulls the same `hook + description` pair into
+`buildVoiceReference` (`chat.js:187`), which is the reference corpus for
+`computeVoiceDrift` and therefore for the corrective-retry gate. The gate meant
+to protect the creator's voice is calibrated partly on VIRL's register.
+
+**Consequence for sequencing: do not ship the Tier 0 voice repair first.**
+Enforcing harder against a contaminated reference pushes output further toward
+VIRL. Fix `vault-exemplars.js:91` before any voice enforcement work. It is
+roughly two lines and it repairs the exemplar block, the drift reference, and
+the drift gate at once, across eight surfaces.
+
+### The finding that guts the strategist half: trend enforcement is dead code
+
+`[TREND-VERIFY]` (`index.html:11124-11157`) is the only place in the product
+where a model claim is checked against real data instead of trusted. It builds
+its allow-list by walking `Object.keys(freshSnapshot)` expecting the **legacy**
+shape `{ [platform]: { items: [{ trend }] } }`. The shape actually sent is v2
+(`trend-context.js:239`): `{ v, block, segment, refreshedAt, items }`. None of
+those values carries an `.items` array — `freshSnapshot.items` *is* the array,
+and arrays have no `.items`. So `knownTrends` is always empty, the
+`knownTrends.length > 0` guard never passes, and the scrub never runs. The item
+field was also renamed `trend` → `display_name`, so a shape fix alone wouldn't
+restore it.
+
+Nothing has stripped an invented trend from a plan since the v2 migration. The
+design rationale at `prompts.js:317` — *"a creator can verify a cited trend
+against the in-app trends list"* — is exactly what this code existed to
+guarantee.
+
+It fails twice over, because the list the creator would check is a **different
+dataset**. `cron/trends-refresh` still runs weekly into the legacy `trends`
+table; generation reads `trend_items` via `buildTrendContext`. The legacy
+table's only surviving consumer is the client's Algo tab. Live weekly vendor
+spend is buying a display-only artifact that disagrees with what grounded the
+plan.
+
+And the freshness date is fabricated: `last_seen` appears in the trend query's
+**filter** but not its **select** (`trend-context.js:151`), so `t.last_seen` is
+undefined on every row, `latest` reduces to `""`, and `refreshedAt` falls
+through to today (`:212`). A six-day-old trend is stamped as today's signal in
+both the prompt and the UI (`index.html:13135`).
+
+### Scan is the weakest surface in the product on both halves
+
+It emits publishable creator copy — `SCAN_REGISTERS` (`prompts.js:2138`) assigns
+hook, caption, overlay, slides, and hashtags to the creator — and:
+
+- Receives **two of five voice blocks**. Broken twice independently:
+  `scan_image`/`scan_video_frame` are absent from `VOICE_GEN_TYPES`
+  (`chat.js:1174`) so vault patterns are never fetched, *and* both builders pass
+  literal `null` for `vaultPatterns` anyway (`prompts.js:2168`, `:2192`) while
+  taking the real one as an unused `_vaultPatterns`.
+- Renders a platform verdict (*"My call: Instagram"*) with the creator's own
+  strongest-platform data structurally unreachable — the exact line
+  `performance-insights.js:152` produces.
+- Sizes hashtags and captions from a static in-prompt table
+  (`prompts.js:2114-2121`) while asserting *"within the platform's
+  caption_limit"* — a value never passed.
+- Solicits a trending-audio claim (`:2152`) with no trend-grounding rule, and
+  can be entirely trend-dark when `profile.myPlatforms` is unset
+  (`chat.js:780`).
+
+### Other verified leaks not in this document
+
+- **`TREND_SOURCE_RULE` reaches one surface.** It lives in `buildPlan`'s *user*
+  prompt (`:1528`), so nothing inherits it. `captionTrendsContext` (`:338`) and
+  `scanTrendsContext` (`:582`) render a block with no grounding rule and return
+  silence when empty — the failure mode the comment at `:324` says must never
+  happen. Tier 0 fixes script/long/blog and leaves caption and scan open.
+- **`plan_strategy` inverts a stated precedence rule.** It receives
+  `vaultPatterns`, discards it (`:1655`, `:1682`), and instructs that
+  success_metric values follow the tier baseline (`:1714`) — while `buildPlan`
+  (`:1501`) and the niche playbook (`niche-playbook.js:242`) both say logged
+  results always override baselines. Regenerating your strategy silently
+  replaces real targets with generic ones.
+- **`plan_partial` loses more than Tier 0 accounts for**: also the niche success
+  model, the industry format mix, and this week's business/listing context.
+  Regenerate the card built around the creator's open house and the replacement
+  doesn't know the open house exists.
+- **The niche/industry layer never leaves the plan.** `formatNichePlaybookForPrompt`
+  has two call sites, `getFormatGuidance` one. Nine surfaces have no
+  how-content-converts-in-this-vertical grounding beyond optional profile fields.
+- **The CI voice gate is blind to both voice leaks by construction.**
+  `check-voice.mjs` passes `null` for `vaultPatterns` on every assertion
+  (`:80`, `:133`, `:199`, `:225`), so it cannot observe the exemplar or
+  performance blocks on any surface.
+- **`plan_partial` is a second unenforced streaming surface** —
+  `chat.js:1637` routes both it and `plan` through `handleStreamingPlan`.
+- **The drift corpus mixes registers**: `VOICE_BEARING_KEYS`
+  (`voice-drift.js:27`) includes `body`, which matches VIRL-voice
+  `restDayTips[].body`, and omits creator-voice `title` and the `frames[]`
+  fields.
+- **The register split is asserted, never checked.** No runtime equivalent of
+  `scrubCompliance` exists for voice. A caption saying "my call is Instagram"
+  ships.
+- **Playbook staleness is unbounded and refresh failure is silent.** Nothing
+  reads `updated_at`; the admin email fires only on `drafted > 0`
+  (`cron/playbook-refresh.js:166`), so "no changes found" and "broken for four
+  months" are indistinguishable.
+
+### Consolidated fix order
+
+Ordered by promise impact. The first item is a hard prerequisite for the fifth.
+
+| # | Fix | Half | Size |
+|---|---|---|---|
+| 1 | `vault-exemplars.js:91` — read the creator's caption, not VIRL's description; same at `index.html:11607` | Voice | ~2 lines |
+| 2 | Revive `[TREND-VERIFY]` against the v2 snapshot shape + `display_name` | Strategist | 1 function |
+| 3 | Add `last_seen` to the trend select; stop substituting today's date | Strategist | 2 lines |
+| 4 | Give Scan the full voice stack — `VOICE_GEN_TYPES` + both builders | Both | 3 lines |
+| 5 | Post-stream voice repair on `plan` **and** `plan_partial` (after #1) | Voice | medium |
+| 6 | Make `TREND_SOURCE_RULE` structural so every prose surface gets the block or the named empty state | Strategist | small |
+| 7 | Thread the full plan context into `plan_partial`; give `plan_strategy` its logged results and `buildPlan`'s grounding rule | Strategist | small |
+| 8 | Extend `check-voice.mjs` to populated `vaultPatterns`, asserting the exemplar block renders creator-voice text | Voice | small |
+| 9 | Live playbook values over static tables on scan, long_post, blog_post | Strategist | small |
+| 10 | Compact niche playbook on caption, script, long_post, blog_post, scan | Strategist | small |
+| 11 | Surface playbook age; alert on `errored > 0`; reconcile or retire the legacy trend pipeline | Strategist | small |
+
+Items 1–4 are roughly a day and address the three defects that most directly
+break the promise. Nothing in the earlier roadmap outranks them.
+
 ## The through-line
 
 Every gap above is the same gap in a different costume:
