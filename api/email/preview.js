@@ -32,7 +32,10 @@ const TEMPLATES = {
   phase1_no_plan_24h:     (uid) => T.phase1NoPlan({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
   first_plan_generated:   (uid) => T.firstPlanGenerated({ name: "Lauren" }),
   inactive_7d:            (uid) => T.inactive7Day({ name: "Lauren", unsubscribeToken: makeUnsubToken(uid) }),
-  sunday_log:             (uid) => T.sundayLogNudge({ name: "Lauren", unloggedCount: 4, unsubscribeToken: makeUnsubToken(uid) }),
+  // [DEAD-CTA] Both variants are previewable because they are genuinely two
+  // different messages, and the expired one is the version most of the lapsed
+  // free base actually receives — it should be the easier of the two to check.
+  inactive_7d_expired:    (uid) => T.inactive7Day({ name: "Lauren", trialExpired: true, unsubscribeToken: makeUnsubToken(uid) }),
   posting_reminder:       (uid) => T.postingReminder({ name: "Lauren", cards: [
     { title: "3 morning habits that changed my routine", platform: "Instagram", postTime: "7:00 PM" },
     { title: "Behind the scenes of my workspace", platform: "TikTok", postTime: "6:00 PM" },

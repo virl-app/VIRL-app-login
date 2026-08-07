@@ -228,10 +228,42 @@ async function fetchTomorrowsCards(userId) {
   } catch (e) { return empty; }
 }
 
-// True when the user already received any OTHER lifecycle email today
-// (trial sequence, welcome, inactivity, etc). The evening reminder yields
-// to those — one conversion-critical email a day beats two nudges.
-async function userGotOtherEmailToday(userId) {
+// [REMINDER-YIELD] The exact set of templates that may silence tonight's
+// reminder, as an ALLOWLIST.
+//
+// This used to be a two-name denylist — "any template today except
+// posting_reminder and sunday_reset" — which meant every email in the system
+// outranked the reminder by default. A password-change confirmation, a
+// referral payout, a renewal receipt, an admin trend alert: each one muted the
+// single email that names the creator's actual posts for tomorrow. That is the
+// "not driving action" complaint with a mechanism: the most specific,
+// most actionable message in the program was the one that always lost.
+//
+// So the default flips. A template silences the reminder only if it is either
+// conversion-critical (the trial window is closing and one clear ask beats
+// two) or asks for THE SAME action, where two sends read as a duplicate:
+//   phase1_no_plan_24h + the no-plan Sunday reset are both "go generate".
+//   weekly_reset is the same ask on the same day.
+// Everything else — including anything added later — coexists, which is the
+// safe direction for a new template to default to.
+export const REMINDER_YIELDS_TO = new Set([
+  "welcome",             // day-zero inbox hygiene; the account is minutes old
+  "trial_day_11",
+  "trial_day_13",
+  "trial_expired",
+  "payment_failed",      // action needed on money beats action needed on content
+  "phase1_no_plan_24h",  // same ask as the no-plan Sunday reset
+  "weekly_reset",        // same ask, same day
+]);
+
+// True when the user already received an email today that outranks tonight's
+// reminder. See REMINDER_YIELDS_TO for what counts and why.
+//
+// Exported for scripts/check-email-program.mjs, which drives it against a
+// stubbed fetch. Asserting on the Set alone would only restate the constant;
+// the regression that matters is this predicate reverting to "anything except
+// the two reminder slugs", and only calling it can catch that.
+export async function userGotOtherEmailToday(userId) {
   try {
     const todayISO = new Date().toISOString().slice(0, 10);
     const res = await fetch(
@@ -241,11 +273,110 @@ async function userGotOtherEmailToday(userId) {
     if (!res.ok) return false; // fail open: a fetch blip shouldn't kill the reminder
     const rows = await res.json();
     return Array.isArray(rows) && rows.some(r => r && r.template &&
-      r.template !== "posting_reminder" && r.template !== "sunday_reset");
+      REMINDER_YIELDS_TO.has(r.template));
   } catch (e) { return false; }
 }
 
-// Per-user dispatch — figures out which (if any) trigger applies today.
+// [TRIAL-SUPERSESSION] Exactly one trial email is a candidate on any given
+// day: the latest milestone the account has reached.
+//
+// The four gates used to be independent `days >= N` checks, which is correct
+// on the happy path (each milestone claims its dedupe slot the day it lands,
+// so later runs no-op) and wrong in every recovery case. Any account that
+// arrives at day 14+ with none of the four claimed — signed up before the
+// sequence existed, EMAIL_VIA_LOOPS flipped true then back to false, a cron
+// outage longer than the trial — matched all four in a single pass and got the
+// whole sequence at once. Dedupe prevents RESENDS; it does nothing about four
+// simultaneous FIRST sends. The reader gets "you're halfway through your free
+// trial", "3 days left", "tomorrow's your last day", and "your trial has
+// ended" in one delivery.
+//
+// Supersession makes that unreachable rather than unlikely: day 20 resolves to
+// trial_expired and the three obsolete notes are never candidates at all. On
+// the happy path the behavior is byte-identical — day 7 resolves to day 7, day
+// 11 to day 11 — so the drip is unchanged for everyone it was already right
+// for.
+export function trialMilestone(days) {
+  if (days >= 14) return { template: "trial_expired", dedupeKey: "trial_expired", marketing: false };
+  if (days >= 13) return { template: "trial_day_13",  dedupeKey: "trial_day_13",  marketing: false };
+  if (days >= 11) return { template: "trial_day_11",  dedupeKey: "trial_day_11",  marketing: false };
+  if (days >= 7)  return { template: "trial_day_7",   dedupeKey: "trial_day_7",   marketing: true  };
+  return null;
+}
+
+// [ONE-A-DAY] The lifecycle pass's decision, as a pure function.
+//
+// Returns every email this user is eligible for today, highest priority first.
+// The caller sends the first one that actually claims and stops. Two things
+// this shape buys that a straight-line series of `if (…) await sendEmail(…)`
+// blocks could not:
+//
+//   1. A cap that cannot be bypassed by adding a trigger. The old body sent
+//      each eligible email unconditionally, so a single run could deliver
+//      trial_day_7 + weekly_reset + inactive_7d + phase1_no_plan_24h to one
+//      inbox — and the fix for that, in the old shape, was a `sent` flag that
+//      every future trigger has to remember to check. Here the cap is the
+//      control flow.
+//   2. Tests. The ordering and the eligibility windows are the part that
+//      breaks, and they are now checkable without Supabase, Resend, or a clock
+//      — see scripts/check-email-program.mjs.
+//
+// Priority is by what the reader most needs to know today, not by trigger age:
+//   welcome              — the account is new; nothing outranks orientation.
+//   phase1_no_plan_24h   — they have a profile and no plan. Activation is the
+//                          only thing that matters and it outranks a mid-trial
+//                          check-in on the one day (day 7) the two collide.
+//   trial milestone      — the conversion window.
+//   thirty_day_milestone — a once-ever celebration for paid users.
+//   weekly_reset         — recurring nudge for active accounts.
+//   inactive_7d/_30d     — win-back, the least time-sensitive thing here.
+//
+// `requiresNoPlan` defers an extra round trip: the caller only asks Supabase
+// whether a plan has ever existed if the walk actually reaches that candidate.
+export function lifecycleCandidates(ctx) {
+  const { days, isPaid, trialExpired, viaLoops, hasName,
+          resetAt, lastSignInDays, nowMs, weekKey, monthKey } = ctx;
+  const out = [];
+
+  if (days <= 7) {
+    out.push({ template: "welcome", dedupeKey: "welcome", marketing: false });
+  }
+
+  if (hasName && days >= 1 && days <= 7) {
+    out.push({ template: "phase1_no_plan_24h", dedupeKey: "phase1_no_plan_24h",
+               marketing: true, requiresNoPlan: true });
+  }
+
+  if (!viaLoops && !isPaid) {
+    const m = trialMilestone(days);
+    if (m) out.push(m);
+  }
+
+  if (isPaid && days >= 30) {
+    out.push({ template: "thirtyDayMilestone", dedupeKey: "thirtyDayMilestone",
+               loopsEvent: true });
+  }
+
+  const resetMs = resetAt ? Date.parse(resetAt) : NaN;
+  if (!trialExpired && days >= 7 && !Number.isNaN(resetMs) && nowMs >= resetMs) {
+    out.push({ template: "weekly_reset", dedupeKey: `weekly_reset_${resetAt.slice(0, 10)}`,
+               marketing: true });
+  }
+
+  if (lastSignInDays !== null && lastSignInDays >= 7 && lastSignInDays < 30 && days >= 14) {
+    out.push({ template: "inactive_7d", dedupeKey: `inactive_7d_${weekKey}`, marketing: true });
+  }
+
+  if (lastSignInDays !== null && lastSignInDays >= 30) {
+    out.push({ template: "inactive_30d", dedupeKey: `inactive_30d_${monthKey}`, marketing: true });
+  }
+
+  return out;
+}
+
+// Per-user dispatch for the lifecycle pass. Sends AT MOST ONE email per run
+// — see lifecycleCandidates for the ordering and why the cap lives in the
+// control flow rather than in a flag each trigger has to remember to check.
 async function processUser(user, todayIsSunday, weekKey) {
   const userId   = user.id;
   const email    = user.email;
@@ -283,174 +414,115 @@ async function processUser(user, todayIsSunday, weekKey) {
     },
   });
 
-  // Welcome safety-net: catches anyone the inline /api/email/welcome call
-  // missed (network errors, function cold-start timeouts, etc).
-  // The email_sends unique constraint makes the inline + cron pair safe.
-  // [STABILITY] Was gated on !EMAIL_VIA_LOOPS — removed. Even after the
-  // Loops cutover the cron safety-net stays useful: if Cowork's Loops
-  // automation breaks (mis-configured, rate-limited, dashboard glitch),
-  // the cron's Resend send still arrives.
-  // [CROSS-PATH-DEDUPE] The Loops inline path now pre-claims the same
-  // (template=welcome, dedupe_key=welcome) slot before firing the Loops
-  // event (see api/email/welcome.js), so the cron's claimSend here fails
-  // when Loops already delivered — no double welcome.
-  if (days <= 7) {
-    const tpl = T.welcome({ name });
-    await sendEmail({
-      userId, to: email, template: "welcome", dedupeKey: "welcome",
-      subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
-    });
-  }
+  const candidates = lifecycleCandidates({
+    days, isPaid, trialExpired,
+    viaLoops:       EMAIL_VIA_LOOPS,
+    hasName:        !!name,
+    resetAt,
+    lastSignInDays,
+    nowMs:          Date.now(),
+    weekKey,
+    monthKey:       new Date().toISOString().slice(0, 7), // YYYY-MM
+  });
 
-  // Trial reminders apply to free-plan users only.
-  // [EMAIL-CUTOVER] When EMAIL_VIA_LOOPS=true, the entire trial sequence is
-  // skipped here. Loops handles trial day 7/11/13/expired via audience
-  // filters keyed on `signupAt` (set during /api/email/welcome's
-  // updateLoopsContact call) — no backend cron event needed.
-  // [STABILITY] days bounds changed from === to >= so a missed cron day
-  // self-heals on the next run. email_sends dedupe (per template+key)
-  // prevents resends for users who already got the email at the right
-  // moment; users who would have missed the email entirely now catch up.
-  if (!EMAIL_VIA_LOOPS && !isPaid) {
-    if (days >= 7) {
-      const tpl = T.trialDay7({ name, unsubscribeToken: unsubToken });
-      await sendEmail({
-        userId, to: email, template: "trial_day_7", dedupeKey: "trial_day_7",
-        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
-      });
-    }
-    if (days >= 11) {
-      const tpl = T.trialDay11({ name, unsubscribeToken: unsubToken });
-      await sendEmail({
-        userId, to: email, template: "trial_day_11", dedupeKey: "trial_day_11",
-        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
-      });
-    }
-    if (days >= 13) {
-      const tpl = T.trialDay13({ name, unsubscribeToken: unsubToken });
-      await sendEmail({
-        userId, to: email, template: "trial_day_13", dedupeKey: "trial_day_13",
-        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
-      });
-    }
-    if (days >= 14) {
-      const tpl = T.trialExpired({ name, unsubscribeToken: unsubToken });
-      await sendEmail({
-        userId, to: email, template: "trial_expired", dedupeKey: "trial_expired",
-        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
-      });
-    }
-  }
-
-  // Weekly credit-reset reminder — marketing, opt-out-able. Anchored to the
-  // user's OWN reset cycle (credits.reset_at), NOT a global Monday.
-  //
-  // Source of truth: credits reset on a per-user 7-day window stored in
-  // credits.reset_at. handle_new_user seeds the first window, and the lazy
-  // reset in api/chat.js re-anchors reset_at to now()+7d on the first
-  // generation after the window expires — so an active user's reset day
-  // drifts to whatever day/time they generate, and is almost never a
-  // calendar Monday. Gating on Mondays therefore fired the reminder on the
-  // wrong day (a day early, every week) for anyone off the Monday cadence.
-  //
-  // We now fire once the user's window has actually rolled over
-  // (now >= reset_at), so the email lands on their real reset day. Deduped
-  // per cycle by the reset_at date: each new cycle gets a fresh reset_at
-  // (different date) → exactly one send; a frozen reset_at (a user who hasn't
-  // generated since expiry) keeps the same key → no resend on later runs.
-  // The days >= 7 floor keeps first-week users on the welcome track.
-  //
-  // [TRIAL-AWARE-EMAIL] Suppressed once the trial has expired. This email's
-  // whole CTA is "Generate this week's plan" — the exact action api/chat.js
-  // answers with a 402 for expired free users. Sending it created a closed
-  // loop: user clicks, gets blocked, gets the same mail next cycle. Paid and
-  // comped users are unaffected; only expired free accounts are skipped.
-  // (What these users SHOULD get is an upgrade-framed win-back — that needs
-  // new copy, so it is deliberately not bolted on here.)
-  const resetMs = resetAt ? Date.parse(resetAt) : NaN;
-  if (!trialExpired && days >= 7 && !Number.isNaN(resetMs) && Date.now() >= resetMs) {
-    const cycleKey = resetAt.slice(0, 10); // YYYY-MM-DD of this cycle's reset
-    const tpl = T.weeklyReset({ name, unsubscribeToken: unsubToken });
-    await sendEmail({
-      userId, to: email, template: "weekly_reset", dedupeKey: `weekly_reset_${cycleKey}`,
-      subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
-    });
-  }
-
-  // [PREMIUM 7] Day-30 milestone for paid users. Fires once per user.
-  // Email content + property merging happen in Loops; we just trip the
-  // event with the firstName so the template can address them.
-  // [LOOPS-DEDUPE] Audit finding #12. Previously relied on the comment
-  // "Loops dedupes a contact's events" — that's only true if Cowork
-  // configured per-contact dedupe in the dashboard, which we can't
-  // verify from here. Adding email_sends-side claim is belt-and-braces;
-  // also lets the gate change from days === 30 to days >= 30 self-heal
-  // (a missed cron day no longer skips the milestone — claim prevents
-  // a second fire).
-  if (isPaid && days >= 30) {
-    await sendLoopsEventOnce({
-      userId, email, eventName: "thirtyDayMilestone",
+  await runLifecycle(candidates, {
+    hasEverGeneratedPlan: () => userHasEverGeneratedPlan(userId),
+    fireLoopsEvent: (c) => sendLoopsEventOnce({
+      userId, email, eventName: c.template,
       properties: { firstName: name || "" },
-      dedupeKey: "thirtyDayMilestone",
-    });
-  }
-
-  // Tier 2 — Phase 1 saved but no plan after 24h. Account is between
-  // 1 and 7 days old, profile name is set (Phase 1 done), and no plans
-  // row exists. One-time per user (dedupeKey: phase1_no_plan_24h).
-  if (days >= 1 && days <= 7 && name) {
-    const hasPlan = await userHasEverGeneratedPlan(userId);
-    if (!hasPlan) {
-      const tpl = T.phase1NoPlan({ name, unsubscribeToken: unsubToken });
-      await sendEmail({
-        userId, to: email, template: "phase1_no_plan_24h", dedupeKey: "phase1_no_plan_24h",
-        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
+      dedupeKey: c.dedupeKey,
+    }),
+    send: (c) => {
+      const tpl = buildLifecycleTemplate(c.template, { name, unsubToken, trialExpired });
+      if (!tpl) return false;
+      return sendEmail({
+        userId, to: email, template: c.template, dedupeKey: c.dedupeKey,
+        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: c.marketing,
       });
+    },
+  });
+}
+
+// [ONE-A-DAY] The cap itself: walk the candidates highest-priority-first and
+// stop at the first email that actually goes out. Returns the slugs sent —
+// zero or one, never more.
+//
+// A candidate whose send returns false has either already been delivered (its
+// dedupe slot is claimed) or been opted out of, and in both cases the reader's
+// inbox is untouched — so the walk continues and the next-best message gets
+// its turn. That is what makes this a cap rather than a silencer: a day-20
+// free user whose trial_expired went out yesterday still reaches weekly_reset
+// today.
+//
+// Known trade: sendEmail also returns false when Resend itself errors, after
+// the dedupe row is already claimed. Such a run falls through to the next
+// candidate, so the reader gets the runner-up instead of nothing. That is the
+// better of the two failure modes, and the claim-then-send ordering it comes
+// from predates this walk.
+//
+// Dependencies are injected rather than imported so the cap is checkable
+// without Supabase, Resend, or a clock — the ordering and the stop-on-first
+// rule are the parts that break, and scripts/check-email-program.mjs drives
+// this function directly with counting fakes.
+export async function runLifecycle(candidates, deps) {
+  const sentSlugs = [];
+  for (const c of candidates) {
+    if (c.requiresNoPlan && await deps.hasEverGeneratedPlan()) continue;
+
+    // [PREMIUM 7] The day-30 milestone rides a different rail — Loops owns
+    // the copy and the merge; we only trip the event. It still takes a turn in
+    // the same walk so it counts against the cap, and still claims an
+    // email_sends slot (audit finding #12) so "Loops dedupes a contact's
+    // events" isn't the only thing standing between a paid user and a second
+    // congratulations.
+    //
+    // sendLoopsEventOnce always resolves to an object — `{ deduped: true }`
+    // when the slot was already claimed, otherwise the send result. Only a
+    // real fire consumes the day's slot; a deduped one lets the walk carry on
+    // to weekly_reset, which is what a paid user hits every day after their
+    // 30th.
+    if (c.loopsEvent) {
+      const r = await deps.fireLoopsEvent(c);
+      if (r && r.ok && !r.deduped) { sentSlugs.push(c.template); return sentSlugs; }
+      continue;
     }
-  }
 
-  // Tier 2 — 7-day inactivity re-engagement. Last sign-in was 7-30 days
-  // ago and the account is past the trial-warning windows. Weekly dedupe
-  // so we don't send daily.
-  //
-  // [OVERLAP-FIX] Upper bound was `<= 30`, which collided with the Tier 3
-  // rule below (`>= 30`) on the exact day a user hit 30 days idle — that
-  // user got BOTH win-back emails in the same cron run. Now `< 30`, so the
-  // two tiers partition cleanly.
-  //
-  // [KNOWN-ISSUE — needs a copy decision, deliberately not fixed here]
-  // The `days >= 14` floor means that for a FREE user this email only ever
-  // fires after the trial has expired. Its subject is "Your VIRL plan is
-  // waiting" and its CTA points at generation — which api/chat.js refuses
-  // with a 402 for exactly these users. Suppressing it was the other option
-  // and was rejected: this is currently the ONLY recurring touchpoint the
-  // lapsed free base receives, so silencing it would remove the last
-  // conversion surface rather than fix it. The real fix is an
-  // upgrade-framed variant for expired trials (new copy → Lauren's call).
-  if (lastSignInDays !== null && lastSignInDays >= 7 && lastSignInDays < 30 && days >= 14) {
-    const tpl = T.inactive7Day({ name, unsubscribeToken: unsubToken });
-    await sendEmail({
-      userId, to: email, template: "inactive_7d", dedupeKey: `inactive_7d_${weekKey}`,
-      subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
-    });
+    if (await deps.send(c)) { sentSlugs.push(c.template); return sentSlugs; }
   }
+  return sentSlugs;
+}
 
-  // Tier 3 — 30-day inactivity (deeper churn). Last sign-in 30+ days ago.
-  // Monthly dedupe key (year-month) so a long-dormant user gets at most
-  // one of these per month rather than weekly noise.
-  if (lastSignInDays !== null && lastSignInDays >= 30) {
-    const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM
-    const tpl = T.inactive30Day({ name, unsubscribeToken: unsubToken });
-    await sendEmail({
-      userId, to: email, template: "inactive_30d", dedupeKey: `inactive_30d_${monthKey}`,
-      subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
-    });
+// Template slug → rendered email. Split out so lifecycleCandidates can stay
+// pure (it decides WHICH email; this decides what it says) and so the walk
+// above has exactly one send call rather than one per trigger.
+//
+// Notes carried over from the per-trigger bodies this replaced:
+//   welcome            — safety net for anyone the inline /api/email/welcome
+//                        call missed. Deliberately NOT gated on
+//                        EMAIL_VIA_LOOPS: if the Loops automation breaks, the
+//                        Resend send still lands. The inline Loops path
+//                        pre-claims the same (welcome, "welcome") slot before
+//                        firing its event, so there is no double welcome.
+//   trial_*            — skipped entirely when EMAIL_VIA_LOOPS is true; Loops
+//                        drives the sequence off the contact's signupAt.
+//   weekly_reset       — suppressed for expired trials upstream, because its
+//                        whole CTA is the generate button api/chat.js answers
+//                        with a 402.
+//   inactive_7d        — takes trialExpired, which swaps it to the variant
+//                        that doesn't promise a plan the API will refuse.
+function buildLifecycleTemplate(slug, { name, unsubToken, trialExpired }) {
+  switch (slug) {
+    case "welcome":            return T.welcome({ name });
+    case "phase1_no_plan_24h": return T.phase1NoPlan({ name, unsubscribeToken: unsubToken });
+    case "trial_day_7":        return T.trialDay7({ name, unsubscribeToken: unsubToken });
+    case "trial_day_11":       return T.trialDay11({ name, unsubscribeToken: unsubToken });
+    case "trial_day_13":       return T.trialDay13({ name, unsubscribeToken: unsubToken });
+    case "trial_expired":      return T.trialExpired({ name, unsubscribeToken: unsubToken });
+    case "weekly_reset":       return T.weeklyReset({ name, unsubscribeToken: unsubToken });
+    case "inactive_7d":        return T.inactive7Day({ name, trialExpired, unsubscribeToken: unsubToken });
+    case "inactive_30d":       return T.inactive30Day({ name, unsubscribeToken: unsubToken });
+    default:                   return null;
   }
-
-  // NOTE: the posting reminder and Sunday log nudge moved to the evening
-  // pass (processReminderUser, job=reminders cron at 23:30 UTC). The
-  // Sunday-morning log nudge is retired — its content folded into the
-  // Sunday-evening reset email.
 }
 
 // Evening pass (23:30 UTC ≈ 6:30 PM CT) — the ONLY thing the

@@ -14,7 +14,7 @@
 // product ("a real person reads every reply") — that's VIRL naming the team,
 // not claiming to BE a person, so it stays on-persona.
 //   welcome-adjacent lifecycle: phase1NoPlan, firstPlanGenerated, weeklyReset,
-//   postingReminder, sundayReset, sundayLogNudge, inactive7Day,
+//   postingReminder, sundayReset, inactive7Day,
 //   trialDay7, trialDay11, trialDay13, trialExpired.
 //
 // Lauren voice — the founder, first person = Lauren, a human. Milestone and
@@ -34,6 +34,27 @@
 
 const APP_URL          = process.env.APP_URL || "https://app.govirl.ai";
 const UNSUBSCRIBE_BASE = `${APP_URL}/api/email/unsubscribe`;
+
+// [CADENCE-TRUTH] The one place any template is allowed to describe when a
+// creator's week rolls over.
+//
+// There is no Monday reset and there never was one for most accounts. Credits
+// and plan expiry both key off credits.reset_at, a per-user rolling window
+// that api/chat.js re-anchors to now()+7d on the first generation after the
+// old window lapses (api/chat.js:1184) — so it drifts to whatever day and
+// hour the creator happens to generate on, and lands on a Monday about one
+// week in seven. index.html computes plan expiry from the same column
+// (computePlanExpiry), and the weekly_reset cron send was already corrected
+// to fire on the user's own cycle rather than a calendar Monday.
+//
+// Three templates kept promising Monday anyway, which is the most damaging
+// kind of wrong: specific, checkable, and contradicted by the app the reader
+// is looking at. Fixing three strings would leave the fourth author to
+// reinvent the claim, so the claim lives here once and the templates compose
+// sentences around it. Anything that needs to say "when does my week reset"
+// uses this phrase; anything that says a weekday name is describing a real
+// calendar event (the Sunday reset email, the Monday trend cron) and not this.
+const WEEKLY_CYCLE_PHRASE = "your own 7-day cycle, not a fixed calendar day";
 
 // Footer links — pulled from govirl.ai. Privacy is the live Termly-hosted policy.
 const PRIVACY_URL   = "https://app.termly.io/policy-viewer/policy.html?policyUUID=bc2fc2c6-2e38-40d0-9d73-de9941f510d0";
@@ -248,7 +269,7 @@ export function subscriptionWelcome({ name, plan }) {
     <p style="margin:0 0 12px">${name ? name + ", thank" : "Thank"} you. Your subscription is live and 150 credits a week are now yours.</p>
     <p style="margin:0 0 12px">A few habits that compound on a paid plan:</p>
     <ul style="margin:0 0 16px;padding-left:18px">
-      <li>Generate a fresh plan every Monday morning.</li>
+      <li>Generate a fresh plan at the top of each week — credits refill on ${WEEKLY_CYCLE_PHRASE}.</li>
       <li>Run VIRL Scan on anything sitting in your camera roll before you delete it.</li>
       <li>Log results on every post — VIRL learns what's working for <em>your</em> audience.</li>
     </ul>
@@ -256,7 +277,7 @@ export function subscriptionWelcome({ name, plan }) {
   return {
     subject: `Welcome to ${planLabel}`,
     html:    layout({ eyebrow: "Welcome aboard", accent: "coral", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" } }),
-    text:    `${headline}\n\nThank you. Your subscription is live and 150 credits a week are now yours.\n\nGenerate a fresh plan every Monday, run VIRL Scan often, log results on every post.\n\n${APP_URL}`,
+    text:    `${headline}\n\nThank you. Your subscription is live and 150 credits a week are now yours.\n\nGenerate a fresh plan each week (credits refill on ${WEEKLY_CYCLE_PHRASE}), run VIRL Scan often, log results on every post.\n\n${APP_URL}`,
   };
 }
 
@@ -491,43 +512,58 @@ export function firstPlanGenerated({ name }) {
       <li><strong>Generate scripts</strong> from any plan card. The hook, sections, and CTA all stay in your voice.</li>
       <li><strong>Log results after you post</strong> (views, likes, saves). That's how I learn what's actually working for <em>your</em> audience, not generic best practices.</li>
     </ul>
-    <p style="margin:0">Plans reset Monday morning. Until then, this one's yours to refine and ship.</p>`;
+    <p style="margin:0">This plan is yours for the next seven days — credits refill on ${WEEKLY_CYCLE_PHRASE}. Until then, refine it and ship it.</p>`;
   return {
     subject: "Your first VIRL plan, decoded",
     html:    layout({ eyebrow: "Milestone", accent: "coral", headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Open the plan" } }),
-    text:    `${headline}\n\nIt's live. Save posts you love to your Vault, generate scripts from any card, and log results once you post.\n\nPlans reset Monday morning.\n\n${APP_URL}/?tab=plan`,
+    text:    `${headline}\n\nIt's live. Save posts you love to your Vault, generate scripts from any card, and log results once you post.\n\nThis plan is yours for the next seven days — credits refill on ${WEEKLY_CYCLE_PHRASE}.\n\n${APP_URL}/?tab=plan`,
   };
 }
 
 // 12. 7-day inactivity — re-engagement.
-export function inactive7Day({ name, unsubscribeToken }) {
-  const headline = "Your VIRL plan's been waiting.";
+//
+// [DEAD-CTA] Two variants, because one of them was pitching an action the API
+// refuses. The trigger's floor is `days >= 14`, so for a FREE user this email
+// can only ever arrive AFTER the trial has expired — and its ask was "give me
+// 60 seconds and I'll put a fresh week on your calendar", which api/chat.js
+// answers with a 402 for exactly that user. Click, blocked, same mail next
+// week. That is the "not driving action" complaint in its purest form: the
+// action was unavailable.
+//
+// Suppressing the send was the other option and stays rejected for the reason
+// recorded at the trigger — this is the only recurring touchpoint the lapsed
+// free base gets, and silence is not a fix. So the expired variant keeps the
+// warmth and the reply invitation, drops the promise it can't keep, and points
+// at the one button that does work for these accounts.
+export function inactive7Day({ name, unsubscribeToken, trialExpired }) {
+  const headline = trialExpired ? "Your work's still here." : "Your VIRL plan's been waiting.";
+  const opener = `${name ? "Hey " + name + " — it" : "It"}'s been a week since you signed in. Your plan, vault, and saved scripts are still here exactly as you left them.`;
+  const close = trialExpired
+    ? `Your free trial has ended, so new plans are paused until you upgrade. Everything you built stays yours either way — nothing gets deleted.`
+    : `Otherwise, your next reset is coming up on ${WEEKLY_CYCLE_PHRASE}. Give me 60 seconds and I'll put a fresh week on your calendar.`;
   const body = `
-    <p style="margin:0 0 12px">${name ? "Hey " + name + " — it" : "It"}'s been a week since you signed in. Your plan, vault, and saved scripts are still here exactly as you left them.</p>
+    <p style="margin:0 0 12px">${opener}</p>
     <p style="margin:0 0 12px">If life got in the way, no judgment. If something didn't click, reply and tell me — a real person reads every reply.</p>
-    <p style="margin:0">Otherwise, the Monday reset is right around the corner. Give me 60 seconds and I'll put a fresh week on your calendar.</p>`;
+    <p style="margin:0">${close}</p>`;
   return {
-    subject: "Your VIRL plan is waiting",
-    html:    layout({ eyebrow: "Check-in", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
-    text:    `${headline}\n\nA week since you signed in. Your plan, vault, and saved scripts are still here.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    subject: trialExpired ? "Your VIRL vault is still here" : "Your VIRL plan is waiting",
+    html:    layout({
+      eyebrow: "Check-in", headline, body,
+      primaryCta: trialExpired
+        ? { href: APP_URL + "/?tab=account", label: "See plans" }
+        : { href: APP_URL, label: "Open VIRL" },
+      unsubscribeToken,
+    }),
+    text:    `${headline}\n\n${opener}\n\n${close}\n\n${APP_URL}${trialExpired ? "/?tab=account" : ""}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
-// 13. Sunday batch-log nudge — mirrors the in-app SundayLogModal for users
-// who didn't open the app on Sunday. Marketing-opt-out-able.
-export function sundayLogNudge({ name, unloggedCount, unsubscribeToken }) {
-  const noun = unloggedCount === 1 ? "post" : "posts";
-  const headline = "How did this week land?";
-  const body = `
-    <p style="margin:0 0 12px">${name ? name + ", you" : "You"} have ${unloggedCount} ${noun} from this week's plan that ${unloggedCount === 1 ? "still needs" : "still need"} results logged. It takes 90 seconds.</p>
-    <p style="margin:0 0 12px">Why it's worth it: I learn what's working for <em>your</em> audience from these numbers. Tell me how it landed and next week's plan gets sharper in ways generic best practices can't.</p>
-    <p style="margin:0">Plans reset tomorrow morning, so this is the last good window to log this week.</p>`;
-  return {
-    subject: `Log this week's ${noun} — ${unloggedCount} pending`,
-    html:    layout({ eyebrow: "Weekly wrap", headline, body, primaryCta: { href: APP_URL + "/?tab=results", label: "Log results" }, unsubscribeToken }),
-    text:    `${headline}\n\nYou have ${unloggedCount} ${noun} from this week's plan that need results logged. Takes 90 seconds.\n\nTell me how they landed and next week's plan gets sharper.\n\n${APP_URL}/?tab=results${unsubscribeFooterText(unsubscribeToken)}`,
-  };
-}
+// 13. (retired) The standalone Sunday batch-log nudge lived here. It was
+// folded into sundayReset — which carries the same "N posts still need results
+// logged" ask on the same evening — and the builder sat unreferenced
+// afterwards. Deleted rather than left in place: an exported template with no
+// caller reads like a feature that ships, and it cost an audit of this file to
+// establish that it doesn't.
 
 // 13b. Daily posting reminder — today's scheduled posts from the creator's
 // active plan. Fired by the daily cron ONLY on days that actually have cards

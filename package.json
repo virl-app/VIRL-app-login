@@ -8,7 +8,8 @@
     "check:compliance": "node scripts/check-compliance.mjs",
     "check:voice": "node scripts/check-voice.mjs",
     "check:strategist": "node scripts/check-strategist.mjs",
-    "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist"
+    "check:email": "node scripts/check-email-program.mjs",
+    "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist && npm run check:email"
   },
   "dependencies": {
     "resend": "^4.0.0",
