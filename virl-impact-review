@@ -740,6 +740,40 @@ Ordered by promise impact. The first item is a hard prerequisite for the fifth.
 Items 1–4 are roughly a day and address the three defects that most directly
 break the promise. Nothing in the earlier roadmap outranks them.
 
+## OPEN — revisit 2026-08-21: drift enforcement on the streaming surfaces
+
+`plan` and `plan_partial` both stream (`chat.js`), and the corrective voice
+retry runs only on the non-streaming path. Drift is computed, written to
+`usage_events.drift_score_after`, and logged — then ignored.
+
+**Deliberately deferred, not forgotten.** On 2026-08-07 the exemplar register
+inversion was fixed, which means every drift score recorded before that date
+was measured against a reference corpus containing VIRL's own strategist prose.
+`DRIFT_RETRY_THRESHOLD = 55` was tuned on those numbers. Building enforcement
+on a threshold derived from a contaminated baseline is how you end up
+confidently rewriting good copy.
+
+From 2026-08-07 forward the scores are clean. Around **2026-08-21**:
+
+1. Pull `drift_score_after` from `usage_events` since the fix, split by
+   `generationType`. Compare the enforced surfaces (caption, script,
+   long_post, blog_post, scan) against the unenforced ones (plan,
+   plan_partial).
+2. Re-tune the threshold from the real distribution rather than inheriting 55.
+3. Then decide on post-stream repair. Budget client work as well as server:
+   `index.html`'s SSE parser handles only `text`, `meta`, `error`, `reset`. The
+   server already emits a `compliance` event that nothing listens to, so
+   accepting a post-stream correction needs a client handler, not just a
+   server change. The three options are a full re-stream (doubles latency and
+   cost on the most expensive surface), targeted per-card repair (cheapest,
+   needs the client work), or hold-and-check before streaming (kills the
+   perceived-latency win streaming exists for).
+
+Also still open and unstarted: `TREND_SOURCE_RULE` reaches only the plan
+surface; the niche/industry playbook never leaves the plan; static hashtag
+tables on long_post and blog_post; unbounded playbook staleness with silent
+refresh failure.
+
 ## The through-line
 
 Every gap above is the same gap in a different costume:
