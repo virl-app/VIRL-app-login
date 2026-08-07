@@ -80,7 +80,7 @@ function voiceCorrectionInstruction(drift) {
 }
 
 // [TREND-PIPELINE] Gen types that get DB-backed trend context. plan_partial /
-// plan_strategy / regen aren't listed: they inherit the parent plan's trend
+// plan_partial / regen aren't listed: they inherit the parent plan's trend
 // block via the client-supplied trendsSnapshot rather than rebuilding it, so a
 // single-card regen stays consistent with the rest of the plan.
 const FRESH_TRENDS_TYPE = {
@@ -996,7 +996,7 @@ export default async function handler(req, res) {
     imageType,
     token: bodyToken,
     // [TREND-PIPELINE] Client passes the parent plan's trend snapshot back on
-    // regen paths (plan_partial / plan_strategy / regen) so a single-card regen
+    // regen paths (plan_partial / regen) so a single-card regen
     // reuses the same trend block and stays consistent with the parent plan.
     // Untrusted input — validated by isValidTrendSnapshot before use.
     trendsSnapshot: bodyTrendsSnapshot,
@@ -1191,11 +1191,11 @@ export default async function handler(req, res) {
   // of content.
   // [VAULT-EXEMPLARS] Fetch vault patterns for any voice-producing
   // generation type — plan still uses the aggregate counts; caption,
-  // caption_remix, script, plan_partial, plan_strategy use the few-shot
+  // caption_remix, script, plan_partial use the few-shot
   // exemplars. Scan types (image/video frame) don't generate creator
   // voice and don't need either, so they still skip the read.
   const VOICE_GEN_TYPES = new Set([
-    "plan", "plan_partial", "plan_strategy",
+    "plan", "plan_partial",
     "caption", "caption_remix", "script",
     // [LINKEDIN-LONG-POST] Long-form is the heaviest voice-fidelity test
     // we have — pull every signal (vault exemplars, fingerprint, recent
@@ -1308,9 +1308,6 @@ export default async function handler(req, res) {
   //   - scan_image, scan_video_frame: scan tab
   //
   // Skipped intentionally:
-  //   - plan_strategy: regens the strategic thesis only, not card
-  //     content — voice diffs don't inform "what angle should this
-  //     week take." Including them would add noise.
   //   - script: long-form video scripts have their own structure
   //     that doesn't map cleanly to short before/after card diffs.
   // [VOICE-LEARNING] The set lives in prompts.js and is imported here, not
@@ -1427,7 +1424,7 @@ export default async function handler(req, res) {
   // Two paths:
   //   1. Client-supplied snapshot (regen paths) → reuse the parent plan's block
   //      verbatim so a single-card regen stays consistent with the rest of the
-  //      plan. plan_partial / plan_strategy / regen send `trendsSnapshot`.
+  //      plan. plan_partial / regen send `trendsSnapshot`.
   //   2. Fresh DB build → query the pipeline for this gen's platform(s) + the
   //      creator's segment. `trends` becomes the block string the prompt
   //      builders inject (see planTrendsContext / captionTrendsContext /

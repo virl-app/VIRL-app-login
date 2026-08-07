@@ -22,7 +22,7 @@
 // intentionally OUT of scope here — it's non-deterministic, costs money, and
 // needs an API key. Run that one nightly/manually, not as a PR gate.
 
-import { dispatch, VOICE_LEARNING_TYPES } from "../api/_lib/prompts.js";
+import { dispatch, VOICE_LEARNING_TYPES, isValidGenerationType } from "../api/_lib/prompts.js";
 import { computeVoiceDrift, FEATURE_NORMS } from "../api/_lib/voice-drift.js";
 import { selectVaultExemplars, formatExemplarsForPrompt, exemplarsAsVoiceText } from "../api/_lib/vault-exemplars.js";
 import { detectRegisterBleed } from "../api/_lib/register-check.js";
@@ -227,20 +227,26 @@ try {
 
   // The inverse: a type deliberately EXCLUDED must stay excluded, so the
   // exclusions in VOICE_LEARNING_TYPES stay decisions rather than drifting
-  // into accidents. plan_strategy emits strategic direction, never creator
-  // copy — learned voice signal has no business there.
-  assert(!VOICE_LEARNING_TYPES.has("plan_strategy"),
-    "plan_strategy should stay out of VOICE_LEARNING_TYPES — it emits strategy, not creator copy");
+  // into accidents. log_metrics reads pixels off a screenshot and writes no
+  // prose at all — learned voice signal has no business there.
+  assert(!VOICE_LEARNING_TYPES.has("log_metrics"),
+    "log_metrics should stay out of VOICE_LEARNING_TYPES — it extracts numbers, not copy");
   {
-    const built = dispatch("plan_strategy", {
-      platforms: ["Instagram"], niche: "Wellness", goal: "growth",
-      cards: [{ day: "Day 1 - Mon", title: "Morning reset", platform: "Instagram", format: "video" }],
-    }, PROFILE_WITH_REACTIONS, null, {}, {}, [], EDITS, null, null);
+    const built = dispatch("log_metrics", {}, PROFILE_WITH_REACTIONS, null, {}, {}, [], EDITS, null, null);
     const text = flatten(built.systemPrompt) + "\n" + (built.userPrompt || "");
     assert(!/HOW THIS CREATOR REVISES VIRL DRAFTS/.test(text),
-      "plan_strategy: excluded from VOICE_LEARNING_TYPES but still emitting the edit-diff block");
+      "log_metrics: excluded from VOICE_LEARNING_TYPES but still emitting the edit-diff block");
   }
 }
+
+// [NO-STRATEGY-REGEN] Strategy regeneration was removed on purpose: the
+// strategy is derived from the creator's goals, business and results, and a
+// reroll button turned it into a menu. Asserted here so it can't drift back
+// in unnoticed — the surface also had a live bug (generic follower-tier
+// targets overriding the creator's own logged results), so a silent
+// resurrection would restore that too.
+assert(!isValidGenerationType("plan_strategy"),
+  "plan_strategy is back as a generation type — strategy regeneration was removed deliberately");
 
 // ── Layer A3: exemplars carry the CREATOR's register, not VIRL's ────────────
 //
