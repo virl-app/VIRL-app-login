@@ -27,7 +27,7 @@
 // persona zones). Plain product voice, no first-person strategist, no
 // opinions. A strategist with opinions is alarming when confirming a charge.
 //   paymentFailed, renewalUpcoming, passwordChanged, accountDeleted,
-//   playbookRefreshReport (admin-internal).
+//   playbookRefreshReport, trendPipelineStale (admin-internal).
 //
 // When adding a template: classify it here first, then write it in that one
 // voice. If it doesn't fit a bucket, it's probably two messages.
@@ -376,6 +376,94 @@ export function playbookRefreshReport({ drafted, summaries, errored, errors, sta
       + (draftCount > 0 ? `Drafts staged:\n${summaryText}\n\n` : "")
       + (staleCount > 0 ? `${staleCount} draft(s) pending ${staleDays}+ days — an unapproved draft changes nothing.\n\n` : "")
       + `Open ${APP_URL} → Dashboard to review.`,
+  };
+}
+
+// 9b. Trend pipeline stale — admin-only, fired by the daily trend-health cron.
+//
+// [TREND-HEALTH] Written to be actionable at a glance from a phone: the
+// subject line carries the state, and the body leads with what creators are
+// experiencing right now rather than with which system failed. The eight-day
+// outage this exists to prevent was invisible precisely because the only
+// symptom lived in a log line.
+export function trendPipelineStale({
+  observedAge, legacyAge, observedStale, legacyStale, bothDark,
+  laggingPlatforms, totalPlatforms,
+  observedThreshold, legacyThreshold,
+}) {
+  const lagging = Array.isArray(laggingPlatforms) ? laggingPlatforms : [];
+  const allLagging = totalPlatforms ? lagging.length >= totalPlatforms : false;
+  const age = (d) => (d === null ? "no data at all" : d === 1 ? "1 day old" : `${d} days old`);
+
+  // A partial legacy outage names the platforms, because "LinkedIn stopped"
+  // and "everything stopped" need different reactions and the subject line is
+  // often all that gets read.
+  const headline = bothDark
+    ? "Both trend sources are stale — plans are running without trends."
+    : observedStale
+      ? "The trend ingest has stopped updating."
+      : allLagging || lagging.length === 0
+        ? "The weekly trend research has stopped updating."
+        : `Weekly trend research has stalled on ${lagging.join(", ")}.`;
+
+  const subject = bothDark
+    ? "VIRL: no trend data reaching plans"
+    : observedStale
+      ? `VIRL trend ingest stale (${age(observedAge)})`
+      : allLagging || lagging.length === 0
+        ? `VIRL trend research stale (${age(legacyAge)})`
+        : `VIRL trend research stalled: ${lagging.join(", ")}`;
+
+  // Creator impact first. Which pipeline broke is the second question.
+  const impact = bothDark
+    ? `<p style="margin:0 0 12px"><strong style="color:${COLOR.coral}">Every generation surface is currently showing the "no trends this week" state.</strong> Creators are getting plans, captions, and scans built with no trend grounding at all.</p>`
+    : observedStale
+      ? `<p style="margin:0 0 12px">Creators are still getting trends — the weekly research fallback is covering it. But the observed pipeline is the one that carries live platform signal, and it is not recovering on its own.</p>`
+      : (lagging.length && !allLagging)
+        ? `<p style="margin:0 0 12px">Creators on <strong>${esc(lagging.join(", "))}</strong> are the ones affected — their fallback trend data has stopped refreshing while the other platforms keep updating. Everyone else is unaffected.</p>`
+        : `<p style="margin:0 0 12px">The observed pipeline is still current, so plans are fine. The weekly research is the fallback behind it, and with it stale there is no safety net if the ingest stops too.</p>`;
+
+  const rows = [
+    `<li style="margin:6px 0"><strong>Observed ingest</strong> (trend_items, Mon + Thu): ${esc(age(observedAge))}${observedStale ? ` &mdash; past the ${observedThreshold}-day threshold` : " &mdash; healthy"}</li>`,
+    `<li style="margin:6px 0"><strong>Weekly research</strong> (trends, Mondays), oldest platform: ${esc(age(legacyAge))}${legacyStale ? ` &mdash; past the ${legacyThreshold}-day threshold` : " &mdash; healthy"}</li>`,
+    lagging.length
+      ? `<li style="margin:6px 0"><strong>Platforms not refreshing:</strong> ${esc(lagging.join(", "))}${totalPlatforms ? ` (${lagging.length} of ${totalPlatforms})` : ""}</li>`
+      : "",
+  ].join("");
+
+  const body = `${impact}
+    <ul style="margin:0 0 16px;padding-left:18px">${rows}</ul>
+    <p style="margin:0 0 12px">Generation refuses any trend older than 7 days, so the observed threshold is set to warn with roughly two days of runway before creators feel it.</p>
+    <p style="margin:0">Most likely causes: the trend vendor token expired or hit its quota, the scheduled job stopped firing, or the ingest function is erroring before it writes. Check the ingest logs first &mdash; an empty run logs "ALL ADAPTERS RETURNED EMPTY" and then exits without writing.</p>`;
+
+  const textLines = [
+    headline,
+    "",
+    bothDark
+      ? "Every generation surface is showing the no-trends state right now."
+      : observedStale
+        ? "Creators still have trends via the weekly research fallback, but the observed pipeline is not recovering."
+        : (lagging.length && !allLagging)
+          ? `Creators on ${lagging.join(", ")} are the ones affected — their fallback data has stopped refreshing while the other platforms keep updating.`
+          : "Plans are fine; the fallback behind them is stale.",
+    "",
+    `Observed ingest (trend_items, Mon + Thu): ${age(observedAge)}${observedStale ? ` — past the ${observedThreshold}-day threshold` : " — healthy"}`,
+    `Weekly research (trends, Mondays), oldest platform: ${age(legacyAge)}${legacyStale ? ` — past the ${legacyThreshold}-day threshold` : " — healthy"}`,
+    lagging.length ? `Platforms not refreshing: ${lagging.join(", ")}${totalPlatforms ? ` (${lagging.length} of ${totalPlatforms})` : ""}` : "",
+    "",
+    'Check the ingest logs first — an empty run logs "ALL ADAPTERS RETURNED EMPTY" and exits without writing.',
+  ].join("\n");
+
+  return {
+    subject,
+    html: layout({
+      eyebrow: "Admin",
+      headline,
+      body,
+      accent: bothDark ? "coral" : undefined,
+      primaryCta: { href: APP_URL + "/?tab=admin", label: "Open the dashboard" },
+    }),
+    text: textLines,
   };
 }
 

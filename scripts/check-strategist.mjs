@@ -480,6 +480,389 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     "the past-window indicator no longer renders on the card");
 }
 
+// ── Layer 6: the trend pipeline has a source ────────────────────────────────
+//
+// Two trend pipelines ran side by side and only one fed generation. The
+// observed one (`trend_items`) is written solely by the ingest-trends edge
+// function, whose only adapter does nothing without a paid token — so it sat
+// empty. The editorial one (`trends`) was researched and paid for weekly and
+// read by nothing on the server. Result: every surface got the "no trends"
+// empty state while the research bill kept arriving, and the trends the
+// creator saw on the Algo tab had no connection to their plan.
+//
+// trend-context.js reads env at module scope and talks to Supabase over
+// `fetch`, so this stubs both and imports it dynamically.
+{
+  process.env.SUPABASE_URL = process.env.SUPABASE_URL || "https://fixture.supabase.co";
+  process.env.SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "fixture-key";
+  const { buildTrendContext } = await import("../api/_lib/trend-context.js");
+
+  const isoDay = (d) => new Date(Date.now() - d * DAY).toISOString();
+
+  const OBSERVED_ROW = {
+    platform: "instagram", type: "sound", display_name: "OBSERVED_FIXTURE_SOUND",
+    status: "rising", context: "A rising audio.", suggested_angles: ["use it on a tour"],
+    niche_scores: { real_estate: 0.9 }, last_seen: isoDay(1), external_url: null,
+  };
+  const LEGACY_ROWS = [
+    { platform: "Instagram", fetched_at: isoDay(3), summary: "s", items: [
+      { trend: "LEGACY_IG_ONE", category: "format", source_url: "https://example.com/a", reason: "Because A." },
+      { trend: "LEGACY_IG_TWO", category: "hook",   source_url: "https://example.com/b", reason: "Because B." },
+      { trend: "LEGACY_IG_THREE", category: "topic" },
+      { trend: "LEGACY_IG_FOUR", category: "topic" },
+      { trend: "LEGACY_IG_FIVE", category: "topic" },
+      { trend: "LEGACY_IG_SIX", category: "topic" },
+    ] },
+    { platform: "TikTok", fetched_at: isoDay(4), summary: "s", items: [
+      { trend: "LEGACY_TT_ONE", category: "audio", source_url: "https://example.com/c" },
+    ] },
+  ];
+  const PLAYBOOK_ROW = [{ content: "IG playbook body", niche_notes: {}, version: 1 }];
+
+  // Records every path requested so a test can assert the legacy table is NOT
+  // hit on the healthy path.
+  function stubFetch({ observed, legacy, playbook }) {
+    const seen = [];
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      const body =
+        u.includes("/trend_items?")        ? observed :
+        u.includes("/trends?")             ? legacy :
+        u.includes("/platform_playbooks?") ? (playbook === false ? [] : PLAYBOOK_ROW) :
+        u.includes("/playbook_segments?")  ? [{ label: "Real Estate", compliance_overlay: "", platform_priority: [] }] :
+        [];
+      return { ok: true, json: async () => body };
+    };
+    return seen;
+  }
+  const realFetch = globalThis.fetch;
+  const opts = { platforms: ["Instagram"], niche: "Real Estate", profile: {} };
+
+  // 1. Observed data present → used, and the legacy table is never queried.
+  {
+    const seen = stubFetch({ observed: [OBSERVED_ROW], legacy: LEGACY_ROWS });
+    const ctx = await buildTrendContext(opts);
+    assert(ctx.block.includes("OBSERVED_FIXTURE_SOUND"),
+      "observed trend data no longer reaches the block");
+    assert(!ctx.block.includes("LEGACY_IG_ONE"),
+      "legacy research leaked into the block while observed data existed — this is a fallback, not a merge");
+    assert(!seen.some((u) => u.includes("/trends?")),
+      "the legacy table was queried even though observed data existed — the healthy path should pay no extra round trip");
+  }
+
+  // 2. Observed empty, legacy present → the paid-for research reaches the model.
+  {
+    stubFetch({ observed: [], legacy: LEGACY_ROWS });
+    const ctx = await buildTrendContext(opts);
+    assert(ctx.block.includes("LEGACY_IG_ONE"),
+      "observed pipeline is empty and the weekly research still never reaches the prompt — the connection is broken again");
+    assert(ctx.usedTrends === true,
+      "fallback trends reached the prompt but usedTrends says otherwise");
+    assert(/CURRENT TRENDS as of \d{4}-\d{2}-\d{2}/.test(ctx.block),
+      "the fallback block carries no 'as of' date, so the creator cannot judge its age");
+    assert(/PROVENANCE/.test(ctx.block),
+      "the fallback block does not state that it is editorial research rather than observed measurement");
+    assert(!/status rising|status peaking/.test(ctx.block),
+      "the fallback block asserts a lifecycle status the legacy rows do not carry — that is an invented claim");
+
+    // The snapshot contract. The client's verifier builds its allow-list from
+    // items[].display_name and strips any cited trend missing from it — so
+    // fallback items absent here would make the scrub delete the very trends
+    // this prompt supplied.
+    const names = (ctx.snapshot.items || []).map((i) => i.display_name);
+    assert(names.includes("LEGACY_IG_ONE"),
+      "fallback trends are in the block but not in snapshot.items — the client verifier would strip every one of them from the plan");
+    assert(ctx.snapshot.items.every((i) => i.status === null),
+      "fallback snapshot items claim a lifecycle status the source does not provide");
+    assert(ctx.snapshot.items.length <= 5,
+      `fallback returned ${ctx.snapshot.items.length} items — the block is capped at 5`);
+    // Unlike the observed path, the fallback does NOT add TikTok as an
+    // always-on cross-platform source: the legacy rows are platform-global
+    // editorial research with no niche scoring, so borrowing across platforms
+    // would stack a second layer of imprecision on the first.
+    assert(!names.includes("LEGACY_TT_ONE"),
+      "an Instagram-only request pulled a TikTok legacy row — the fallback should not borrow across platforms");
+  }
+
+  // 2b. Multi-platform request → both platforms represented, capped at 5.
+  //     Instagram alone offers six items, so a naive slice would bury TikTok.
+  {
+    stubFetch({ observed: [], legacy: LEGACY_ROWS });
+    const ctx = await buildTrendContext({ platforms: ["Instagram", "TikTok"], niche: "Real Estate", profile: {} });
+    const names = (ctx.snapshot.items || []).map((i) => i.display_name);
+    assert(names.length <= 5, `fallback returned ${names.length} items — capped at 5`);
+    assert(names.includes("LEGACY_TT_ONE"),
+      "the single TikTok item was crowded out by Instagram's six — items are not interleaved across platforms");
+    assert(names.includes("LEGACY_IG_ONE"),
+      "interleaving dropped the requested platform's own top item");
+  }
+
+  // 3. Both empty → the named empty state, not silence and not a false claim.
+  {
+    stubFetch({ observed: [], legacy: [] });
+    const ctx = await buildTrendContext(opts);
+    assert(/No current trend meets this creator's bar/.test(ctx.block),
+      "with both sources dry the block does not name the absence");
+    assert(ctx.usedTrends === false,
+      "usedTrends is true with no trends from either source");
+  }
+
+  // 4. A legacy row for a platform this request didn't ask for must not leak in.
+  {
+    stubFetch({ observed: [], legacy: [{ platform: "Pinterest", fetched_at: isoDay(2), items: [{ trend: "LEGACY_PIN", category: "topic" }] }] });
+    const ctx = await buildTrendContext(opts);
+    assert(!ctx.block.includes("LEGACY_PIN"),
+      "a legacy row for an unrequested platform reached an Instagram prompt");
+  }
+
+  globalThis.fetch = realFetch;
+}
+
+// The research prompt's own source list. Naming recap publications anchors the
+// model to them, and they aggregate each other — which is the mechanism behind
+// "every week's trends look the same."
+{
+  const researchSrc = readFileSync(new URL("../api/_lib/trends-research.js", import.meta.url), "utf8");
+  const hints = (researchSrc.match(/const SOURCE_HINTS_GENERAL = \[[\s\S]*?\];/) || [""])[0];
+  for (const pub of ["sproutsocial", "hootsuite", "buffer.com", "socialmediaexaminer"]) {
+    assert(!hints.includes(pub),
+      `${pub} is back in SOURCE_HINTS_GENERAL — recap publications anchor the research to the same trends every week`);
+  }
+  assert(/reddit\.com/.test(hints),
+    "the research prompt no longer points at primary venues where the niche conversation actually happens");
+  assert(/AVOID social-media-marketing recap publications/.test(researchSrc),
+    "the research prompt no longer tells the model to avoid recap publications as primary evidence");
+}
+
+// ── Layer 7: a dark trend pipeline reaches a human ─────────────────────────
+//
+// The observed ingest stopped writing on 2026-07-30 and nobody found out for
+// eight days. The edge function's fail-soft branch behaved as designed — log,
+// write nothing, return 200 — which is right for one bad run and silent for
+// eight in a row. Same defect class as the playbook cron alerting only on
+// success, and it cost a week of trend grounding.
+{
+  const healthSrc = readFileSync(new URL("../api/cron/trend-health.js", import.meta.url), "utf8");
+  const tplSrc    = readFileSync(new URL("../api/_lib/email-templates.js", import.meta.url), "utf8");
+  const vercelCfg = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+
+  // A check that never runs is not a check.
+  const cronPaths = (vercelCfg.crons || []).map((c) => c.path);
+  assert(cronPaths.includes("/api/cron/trend-health"),
+    "trend-health is not scheduled in vercel.json — the monitor exists but never runs");
+  const sched = (vercelCfg.crons || []).find((c) => c.path === "/api/cron/trend-health");
+  assert(sched && /^\S+ \S+ \* \* \*$/.test(sched.schedule),
+    `trend-health must run daily to catch a stale pipeline before the 7-day floor; schedule is "${sched && sched.schedule}"`);
+
+  assert(/export function trendPipelineStale/.test(tplSrc),
+    "the stale-pipeline email template is gone");
+
+  // The handler is importable, so these two are checked by RUNNING it rather
+  // than by matching source text. Both were text assertions first, and both
+  // survived their mutation — `false && cronAuthorized(...)` and
+  // `false && await sendEmail(...)` still contain the strings.
+  {
+    process.env.CRON_SECRET = process.env.CRON_SECRET || "fixture-cron-secret";
+    process.env.RESEND_API_KEY = process.env.RESEND_API_KEY || "fixture-resend-key";
+    const { default: trendHealth } = await import("../api/cron/trend-health.js");
+
+    const mockRes = () => {
+      const out = {};
+      const r = {
+        status(code) { out.code = code; return r; },
+        json(body) { out.body = body; return r; },
+      };
+      return { r, out };
+    };
+    const staleIso = new Date(Date.now() - 30 * DAY).toISOString();
+    const realFetch2 = globalThis.fetch;
+    const hits = [];
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      hits.push(u);
+      if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: staleIso }] };
+      if (u.includes("/trends?")) return { ok: true, json: async () =>
+        ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"]
+          .map((pf) => ({ platform: pf, fetched_at: staleIso })) };
+      if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+      // 409 = "already claimed" — proves sendEmail ran without reaching Resend.
+      if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
+      return { ok: true, json: async () => [] };
+    };
+
+    // Unauthorized request must be rejected outright.
+    {
+      const { r, out } = mockRes();
+      await trendHealth({ headers: {} }, r);
+      assert(out.code === 401,
+        `trend-health answered an unauthenticated request with ${out.code} — the CRON_SECRET gate is not enforced`);
+    }
+
+    // Authorized + both pipelines long dead → reports it AND actually sends.
+    {
+      hits.length = 0;
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.code === 200, `trend-health returned ${out.code} on an authorized request`);
+      assert(out.body && out.body.observedStale === true && out.body.legacyStale === true && out.body.bothDark === true,
+        `a 30-day-old pipeline was not reported stale: ${JSON.stringify(out.body)}`);
+      assert(hits.some((u) => u.includes("/email_sends")),
+        "trend-health detected a dark pipeline and never attempted an email — a monitor that only returns JSON repeats the exact failure it exists to fix");
+    }
+
+    // ONE platform lagging while the rest refresh. This is the case a global
+    // max(fetched_at) misses entirely — and the case the live data actually
+    // showed, with LinkedIn one weekly run behind every other platform.
+    // Creators on the lagging platform go dark; the monitor must not be
+    // reassured by the six healthy ones.
+    {
+      const freshIso = new Date(Date.now() - 1 * DAY).toISOString();
+      const lateIso  = new Date(Date.now() - 30 * DAY).toISOString();
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        hits.push(u);
+        if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+        if (u.includes("/trends?")) return { ok: true, json: async () => [
+          { platform: "TikTok", fetched_at: freshIso },
+          { platform: "Instagram", fetched_at: freshIso },
+          { platform: "Facebook", fetched_at: freshIso },
+          { platform: "YouTube", fetched_at: freshIso },
+          { platform: "X", fetched_at: freshIso },
+          { platform: "Pinterest", fetched_at: freshIso },
+          { platform: "LinkedIn", fetched_at: lateIso },
+        ] };
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+        if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
+        return { ok: true, json: async () => [] };
+      };
+      hits.length = 0;
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.body && out.body.legacyStale === true,
+        "one platform 30 days behind six fresh ones was reported healthy — the check is reading a global max instead of the worst platform");
+      assert(out.body && Array.isArray(out.body.laggingPlatforms) && out.body.laggingPlatforms.includes("LinkedIn"),
+        `the lagging platform is not named: ${JSON.stringify(out.body && out.body.laggingPlatforms)}`);
+      assert(out.body.laggingPlatforms.length === 1,
+        `a single lagging platform dragged ${out.body.laggingPlatforms.length} into the report`);
+      // The reported age must be the WORST platform, not the best. Reporting
+      // the freshest is how a global max hides a dark channel in the first
+      // place, and it would put a reassuring "1 day old" in the email.
+      assert(out.body.legacyAgeDays === 30,
+        `reported legacy age is ${out.body.legacyAgeDays} — it should be the worst platform (30), not the healthiest`);
+      assert(hits.some((u) => u.includes("/email_sends")),
+        "a platform going dark for 30 days sent no email");
+    }
+
+    // A platform absent from the table entirely is dark, not unknown.
+    {
+      const freshIso = new Date(Date.now() - 1 * DAY).toISOString();
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+        if (u.includes("/trends?")) return { ok: true, json: async () =>
+          ["TikTok", "Instagram", "Facebook", "YouTube", "X", "LinkedIn"]
+            .map((p) => ({ platform: p, fetched_at: freshIso })) };  // no Pinterest row at all
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+        if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
+        return { ok: true, json: async () => [] };
+      };
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.body && out.body.laggingPlatforms.includes("Pinterest"),
+        "a platform with no research rows at all was not reported — never-researched reads the same to a creator as long-stale");
+    }
+
+    // Healthy pipelines → no alert. A monitor that cries every day gets muted,
+    // and a muted monitor is the eight-day outage again.
+    {
+      const freshIso = new Date(Date.now() - 1 * DAY).toISOString();
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        hits.push(u);
+        if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+        if (u.includes("/trends?")) return { ok: true, json: async () =>
+          ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"]
+            .map((pf) => ({ platform: pf, fetched_at: freshIso })) };
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+        if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
+        return { ok: true, json: async () => [] };
+      };
+      hits.length = 0;
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.body && out.body.observedStale === false && out.body.legacyStale === false,
+        `fresh pipelines were reported stale: ${JSON.stringify(out.body)}`);
+      assert(!hits.some((u) => u.includes("/email_sends")),
+        "trend-health emailed about a healthy pipeline — a daily false alarm is how a real alert gets ignored");
+    }
+
+    globalThis.fetch = realFetch2;
+  }
+
+  // The load-bearing numeric relationship. Generation refuses trends older
+  // than 7 days (TREND_FRESHNESS_DAYS in trend-context.js). If the alert
+  // threshold were >= that, the email would only ever confirm an outage that
+  // had already reached creators. It has to fire with runway.
+  const trendCtxSrc = readFileSync(new URL("../api/_lib/trend-context.js", import.meta.url), "utf8");
+  const genFloor = Number((trendCtxSrc.match(/TREND_FRESHNESS_DAYS\s*=\s*(\d+)/) || [])[1]);
+  const observedThreshold = Number((healthSrc.match(/OBSERVED_STALE_DAYS\s*=\s*(\d+)/) || [])[1]);
+  const legacyThreshold = Number((healthSrc.match(/LEGACY_STALE_DAYS\s*=\s*(\d+)/) || [])[1]);
+  const legacyWindow = Number((trendCtxSrc.match(/LEGACY_TREND_FRESHNESS_DAYS\s*=\s*(\d+)/) || [])[1]);
+
+  assert(Number.isFinite(genFloor) && Number.isFinite(observedThreshold),
+    "could not read the freshness floor or the alert threshold — one of them was renamed");
+  assert(observedThreshold < genFloor,
+    `the observed alert fires at ${observedThreshold} days but generation already refuses trends at ${genFloor} — the warning would arrive after creators went dark`);
+  assert(Number.isFinite(legacyThreshold) && Number.isFinite(legacyWindow) && legacyThreshold < legacyWindow,
+    `the legacy alert fires at ${legacyThreshold} days but the fallback query stops returning rows at ${legacyWindow} — same problem on the fallback path`);
+
+  // An empty or unreadable table is the most severe form of this failure, not
+  // an unknown to be skipped. (Deliberately the opposite of playbookAge, where
+  // a missing timestamp means a schema gap on data that still exists.)
+  assert(/observedAge === null \|\| observedAge >= OBSERVED_STALE_DAYS/.test(healthSrc),
+    "an empty trend_items table does not count as stale — the worst case would go unreported");
+
+  // Both dry is the state creators actually feel, and the email has to say so
+  // rather than describing which internal pipeline broke.
+  const { trendPipelineStale } = await import("../api/_lib/email-templates.js");
+  const both = trendPipelineStale({
+    observedAge: 12, legacyAge: 15, observedStale: true, legacyStale: true,
+    bothDark: true, observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/no trend data reaching plans/i.test(both.subject),
+    "the both-dark subject line does not say that plans have no trends");
+  assert(/no trends this week|no trend grounding|showing the no-trends state/i.test(both.text),
+    "the both-dark email does not lead with creator impact");
+
+  const partial = trendPipelineStale({
+    observedAge: 2, legacyAge: 30, observedStale: false, legacyStale: true,
+    bothDark: false, laggingPlatforms: ["LinkedIn"], totalPlatforms: 7,
+    observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/LinkedIn/.test(partial.subject),
+    "one platform stalled and the subject line doesn't name it — 'research stale' reads as all seven and sends you looking in the wrong place");
+  assert(/LinkedIn/.test(partial.text),
+    "the lagging platform is not named in the email body");
+  const allStalled = trendPipelineStale({
+    observedAge: 2, legacyAge: 30, observedStale: false, legacyStale: true,
+    bothDark: false,
+    laggingPlatforms: ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"],
+    totalPlatforms: 7, observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(!/LinkedIn/.test(allStalled.subject),
+    "all seven platforms stalled but the subject enumerates them — that is the whole pipeline, and it should say so");
+
+  const observedOnly = trendPipelineStale({
+    observedAge: 8, legacyAge: 4, observedStale: true, legacyStale: false,
+    bothDark: false, observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/fallback/i.test(observedOnly.text),
+    "with only the observed pipeline stale, the email does not say the fallback is covering it — that difference decides how urgently to act");
+  assert(observedOnly.subject !== both.subject,
+    "a partial outage and a total one send the same subject line");
+}
+
 if (failures > 0) {
   console.error(`\nStrategist eval FAILED with ${failures} failure(s).`);
   process.exit(1);
