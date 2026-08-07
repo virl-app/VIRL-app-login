@@ -5,7 +5,12 @@ node_modules/
 .DS_Store
 
 # Local Claude preview/config — never commit
-.claude/
+# (Pattern is .claude/* rather than .claude/ so the exception below can apply —
+# git cannot re-include anything inside an excluded directory.)
+.claude/*
+# Exception: shared, versioned skills are project assets, not local config.
+# They ship with the repo so anyone working on VIRL gets them automatically.
+!.claude/skills/
 scripts/voice-eval-profiles.json
 scripts/voice-eval-history.jsonl
 # Persona eval: synthetic profiles ARE committed (reproducible golden set);

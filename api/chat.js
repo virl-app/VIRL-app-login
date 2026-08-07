@@ -24,6 +24,7 @@ import { estimateCostUSD }           from "./_lib/pricing.js";
 import { sendLoopsEvent, sendLoopsEventOnce, fireCreditNudge } from "./_lib/loops.js";
 import { fetchHandleResearch }       from "./_lib/handle-research.js";
 import { computeVoiceDrift, extractVoiceText, FEATURE_NORMS } from "./_lib/voice-drift.js";
+import { detectRegisterBleed }        from "./_lib/register-check.js";
 import { selectVaultExemplars, exemplarsAsVoiceText } from "./_lib/vault-exemplars.js";
 import { computeOptimalDays } from "./_lib/optimal-days.js";
 import { computePerformanceInsights } from "./_lib/performance-insights.js";
@@ -79,7 +80,7 @@ function voiceCorrectionInstruction(drift) {
 }
 
 // [TREND-PIPELINE] Gen types that get DB-backed trend context. plan_partial /
-// plan_strategy / regen aren't listed: they inherit the parent plan's trend
+// plan_partial / regen aren't listed: they inherit the parent plan's trend
 // block via the client-supplied trendsSnapshot rather than rebuilding it, so a
 // single-card regen stays consistent with the rest of the plan.
 const FRESH_TRENDS_TYPE = {
@@ -170,6 +171,27 @@ async function recordUsageEvent(userId, usage) {
   } catch (e) {
     console.warn("[usage_events] insert threw", e.message);
   }
+}
+
+// [REGISTER-CHECK] Report VIRL's strategist voice showing up in fields the
+// creator publishes. Detection-only by design — see register-check.js for why
+// a regex must not rewrite a creator's caption — so this emits telemetry and
+// nothing else. It runs on both the streaming and non-streaming paths because
+// register bleed is not specific to either, and it is wrapped so a detector
+// fault can never affect a generation the creator already received.
+function logRegisterBleed(generationType, model, parsed) {
+  try {
+    const { flags } = detectRegisterBleed(parsed);
+    if (!flags.length) return;
+    console.log('virl_register_bleed', JSON.stringify({
+      generationType,
+      model,
+      count:    flags.length,
+      patterns: flags.map(function (f) { return f.pattern; }),
+      paths:    flags.map(function (f) { return f.path; }).slice(0, 10),
+      excerpt:  flags[0].excerpt,
+    }));
+  } catch (e) { /* telemetry must never break a generation */ }
 }
 
 // [VOICE-DRIFT] Build the reference corpus the drift telemetry compares
@@ -605,6 +627,7 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
           deltas:    drift.deltas,
         }));
       }
+      logRegisterBleed(generationType, selectedModel, parsedForDrift);
     } catch (e) {
       // Same swallow rationale as compliance above — JSON parse failure here
       // surfaces as the existing client-side error UI; telemetry stays quiet.
@@ -973,7 +996,7 @@ export default async function handler(req, res) {
     imageType,
     token: bodyToken,
     // [TREND-PIPELINE] Client passes the parent plan's trend snapshot back on
-    // regen paths (plan_partial / plan_strategy / regen) so a single-card regen
+    // regen paths (plan_partial / regen) so a single-card regen
     // reuses the same trend block and stays consistent with the parent plan.
     // Untrusted input — validated by isValidTrendSnapshot before use.
     trendsSnapshot: bodyTrendsSnapshot,
@@ -1168,11 +1191,11 @@ export default async function handler(req, res) {
   // of content.
   // [VAULT-EXEMPLARS] Fetch vault patterns for any voice-producing
   // generation type — plan still uses the aggregate counts; caption,
-  // caption_remix, script, plan_partial, plan_strategy use the few-shot
+  // caption_remix, script, plan_partial use the few-shot
   // exemplars. Scan types (image/video frame) don't generate creator
   // voice and don't need either, so they still skip the read.
   const VOICE_GEN_TYPES = new Set([
-    "plan", "plan_partial", "plan_strategy",
+    "plan", "plan_partial",
     "caption", "caption_remix", "script",
     // [LINKEDIN-LONG-POST] Long-form is the heaviest voice-fidelity test
     // we have — pull every signal (vault exemplars, fingerprint, recent
@@ -1181,6 +1204,15 @@ export default async function handler(req, res) {
     "long_post",
     // [VIRL-POSTS-TAB] Blog posts get the same treatment.
     "blog_post",
+    // [SCAN-VOICE] Scan emits publishable creator copy — SCAN_REGISTERS
+    // assigns hook, caption, overlay_text, sticker_idea, slides and
+    // hashtags to the creator's voice — so it needs the same exemplar and
+    // performance signal as every other publishing surface. It was excluded
+    // on the theory that scan "doesn't generate creator voice", which its
+    // own register map contradicts. The performance block matters here for
+    // a second reason: scan renders a platform verdict, and the creator's
+    // own strongest-platform data is the most relevant input to that call.
+    "scan_image", "scan_video_frame",
   ]);
   // [POSTFREQ-OPTIMAL] targetPlatforms scopes the optimal-days computation
   // to the platforms in this request. Plan / plan_partial use the user's
@@ -1276,9 +1308,6 @@ export default async function handler(req, res) {
   //   - scan_image, scan_video_frame: scan tab
   //
   // Skipped intentionally:
-  //   - plan_strategy: regens the strategic thesis only, not card
-  //     content — voice diffs don't inform "what angle should this
-  //     week take." Including them would add noise.
   //   - script: long-form video scripts have their own structure
   //     that doesn't map cleanly to short before/after card diffs.
   // [VOICE-LEARNING] The set lives in prompts.js and is imported here, not
@@ -1395,7 +1424,7 @@ export default async function handler(req, res) {
   // Two paths:
   //   1. Client-supplied snapshot (regen paths) → reuse the parent plan's block
   //      verbatim so a single-card regen stays consistent with the rest of the
-  //      plan. plan_partial / plan_strategy / regen send `trendsSnapshot`.
+  //      plan. plan_partial / regen send `trendsSnapshot`.
   //   2. Fresh DB build → query the pipeline for this gen's platform(s) + the
   //      creator's segment. `trends` becomes the block string the prompt
   //      builders inject (see planTrendsContext / captionTrendsContext /
@@ -1955,6 +1984,7 @@ export default async function handler(req, res) {
             deltas:    drift.deltas,
           }));
         }
+        logRegisterBleed(generationType, selectedModel, parsedForDrift);
       } catch (e) { /* telemetry-only; silent failure by design */ }
     }
 

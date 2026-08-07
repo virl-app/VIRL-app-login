@@ -20,18 +20,18 @@
 // side to compute meaningful features. Callers must handle null.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// JSON keys in generated plan / caption / script payloads that carry the
-// user-facing prose. Everything else (designDirection, audioRecommendation,
-// slideNumber, format hints, etc.) is directorial metadata that doesn't
-// represent the user's voice and would skew the features.
-const VOICE_BEARING_KEYS = new Set([
-  // Plan card variants
-  "caption", "hook", "body", "closing", "headline", "quote",
-  "onScreenText",
-  // Script + remix
-  "script", "spokenLine", "voiceover", "remix",
-  // Carousel slides nest headline/body which are picked up by recursion.
-]);
+// [REGISTER-FIELDS] Which JSON keys carry the CREATOR's prose comes from the
+// register split itself (virl-persona.js), so the scorer and the prompt can't
+// disagree about whose words are whose. Everything else — designDirection,
+// audioRecommendation, slideNumber, format hints — is directorial metadata
+// that doesn't represent the creator's voice and would skew the features.
+//
+// The container skip-list matters as much as the field list. `body` is a
+// creator field on a long-form card and VIRL's field under restDayTips[];
+// scoring VIRL's rest-day copy as though the creator wrote it dragged the
+// measurement toward VIRL's register — on the one number that decides whether
+// a corrective retry fires.
+import { CREATOR_VOICE_FIELDS, VIRL_VOICE_CONTAINERS } from "./virl-persona.js";
 
 // Pull the prose-only text out of a parsed JSON output. Recurses into nested
 // objects / arrays so slides, cards, and array-of-strings shapes all flatten
@@ -44,7 +44,9 @@ export function extractVoiceText(parsed) {
   if (typeof parsed === "object") {
     const parts = [];
     for (const [k, v] of Object.entries(parsed)) {
-      if (VOICE_BEARING_KEYS.has(k)) {
+      // Never descend into a subtree that is wholly VIRL's register.
+      if (VIRL_VOICE_CONTAINERS.has(k)) continue;
+      if (CREATOR_VOICE_FIELDS.has(k)) {
         parts.push(extractVoiceText(v));
       } else if (v && typeof v === "object") {
         // Recurse into containers (cards array, slides array, etc.) without

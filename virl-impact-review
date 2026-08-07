@@ -1,0 +1,792 @@
+# VIRL — Impact & Subscription-Defensibility Review
+
+**Codebase review · Aug 2026 · reviewed at `83491cc` (main)**
+
+The promise under review:
+
+> Generate a strategy and content optimized for the user's goals, based on
+> platform and algorithm best practices for their niche — without losing the
+> user's voice.
+
+This is a critical review of how far the code actually delivers that, and where
+the gap between "generates good content" and "worth a monthly subscription"
+lives.
+
+---
+
+## Verdict in one paragraph
+
+The **input** side of the promise is genuinely strong and, in places, better
+than anything a competitor is shipping. The **output** side — proving the
+promise was kept — barely exists. VIRL builds a real strategy every week
+(thesis, bet, success metrics, niche funnel model, per-goal tactics), grounds
+it in a live trend + playbook pipeline, and defends the creator's voice with
+five stacked signals. Then it never checks whether any of it worked. The
+strategy is never graded. The success metrics it sets are not loggable. The
+results loop measures views/likes/saves — vanity numbers the niche playbook
+explicitly deprioritizes. And the flagship surface, Plan, is the one surface
+with no voice correction at all.
+
+The result: VIRL is a very good content generator wearing a strategist's
+promise. A generator is a one-month purchase. A strategist who shows their work
+against your real numbers is a renewal. **Closing the measurement loop is the
+single highest-leverage change available, and most of the data is already being
+collected and thrown away.**
+
+---
+
+## What the codebase gets right
+
+Worth stating plainly, because the critique below is calibrated against a high
+bar, not a low one:
+
+- **Voice is architecturally serious.** `buildVoiceBlocks` (`api/_lib/prompts.js:104`)
+  is a single source of truth stacking five signals in priority order — the
+  creator's own writing, saved/shipped exemplars, logged performance, a
+  stylometric fingerprint, and a mined denylist — so a voice signal can't be
+  live on one surface and silently missing on another. The `VOICE_ANCHOR`
+  recency placement and the `STYLE_GUARD` anti-AI-tell block are the right
+  instincts.
+- **The trend layer refuses to lie.** `TREND_SOURCE_RULE` (`prompts.js:320`)
+  bans trend claims outside the retrieved block *in all prose*, not just the
+  `trend` field, and there's an explicit named empty state. `GROUNDED-STATS`
+  killed fabricated reach projections. This honesty discipline is rare and it
+  is the reason the product can credibly claim "algorithm best practice."
+- **Niche strategy is real data, not model priors.** `niche-playbook.js`
+  encodes per-vertical success models, funnel mixes, KPIs, and follower-tier
+  baselines. `trend-context.js` is DB-backed with freshness (7d) and niche-fit
+  (≥0.6) floors and fails open to silence rather than to invention.
+- **Anti-sameness is handled explicitly.** `VARIETY_BLOCK` (`prompts.js:848`)
+  rotates hook archetypes and rations profile facts — a direct response to real
+  creator feedback, and correctly placed in the cacheable tier.
+- **`PRIOR ART — STRICT`** (`prompts.js:579`) fixed a genuinely product-killing
+  bug (week N+1 regenerating week N).
+
+The prompt layer is not the problem. The loop around it is.
+
+---
+
+## The seven gaps
+
+### 1. The measurement layer cannot measure what the strategy layer promises
+
+VIRL tells the model, every week, that success in real estate is *"DMs and
+profile visits (the real pipeline signal)… listing/buyer consult requests
+started from social"* (`niche-playbook.js:40-45`), and that at least one success
+metric *"must be a business signal tied to the PRIMARY goal… not raw reach"*
+(`prompts.js:1501`).
+
+Then the only thing a creator can log is **views, likes, saves**
+(`index.html:4657`):
+
+```js
+function saveResults() { onLog(card,{views:views,likes:likes,saves:saves2}); }
+```
+
+It's worse than an omission. The screenshot OCR **already extracts comments and
+shares** (`prompts.js:2246-2249`) and the client silently drops both
+(`index.html:4670-4674`). Data captured, parsed, and discarded at the point of
+capture.
+
+Every downstream consumer inherits the ceiling: `engagementScore` in
+`performance-insights.js:47`, `plan-history.js:98`, and `vault-exemplars.js:31`
+all define engagement as `views + likes×2 + saves×4`.
+
+**Consequence:** VIRL sets business-outcome goals and grades itself on vanity
+metrics. The renewal conversation is "you got 42,000 views" — which the creator
+can already see for free inside Instagram. The renewal conversation that wins is
+"you started 6 consult conversations from social in 60 days, 4 of them from
+market-data posts."
+
+**Fix:** extend the result shape to `comments`, `shares`, `follows`,
+`profileVisits`, `linkClicks` (OCR already returns two; the rest are visible in
+the same native insights panel), plus one manual, high-value field — *"business
+outcome from this post"* (DM inquiry / consult booked / sale / list signup),
+logged as a count with an optional note. Update the engagement weights, and let
+the niche playbook's own KPI list drive which fields are prompted per niche.
+
+**Effort:** small. **Impact:** this is the change that makes the subscription
+defensible.
+
+---
+
+### 2. The strategy is never graded
+
+Every plan opens with a `strategy` object: a thesis, a bet, and 3–4 concrete
+success metrics with thresholds (`prompts.js:1492-1502`). This is the product's
+most differentiated artifact.
+
+Nothing ever scores it. `plan-history.js:109-138` renders the prior weeks'
+strategy, top performer, and card list into the next prompt — but there is no
+comparison of last week's `success_metric` targets against actual logged
+numbers, no verdict field, and nothing the creator ever sees.
+
+So VIRL makes a specific, falsifiable prediction every single week and then
+quietly declines to check it. That's not a strategist. A strategist's entire
+value is the retrospective.
+
+**Fix:** a weekly **Scorecard**. On plan generation, compute last week's
+`success_metric` targets vs. logged actuals, have the model write a 2–3 sentence
+verdict in the VIRL persona ("The carousel bet paid — 3 of 4 metrics hit. The
+Thursday listing post underperformed your average, which tracks: convert posts
+need a nurture post ahead of them"), persist it on `plan_history`, feed it into
+the next prompt, **and show it to the creator as the first thing they see on
+Monday.**
+
+This is simultaneously the highest-value retention surface in the product (a
+weekly reason to open the app that isn't "generate more content") and the
+strongest possible proof the subscription is doing something. It also makes the
+history block dramatically more useful to the model — a graded bet is far better
+context than an ungraded one.
+
+**Effort:** medium. **Impact:** highest of anything in this document.
+
+---
+
+### 3. The results loop learns *format* and *platform* — never topic, angle, or funnel stage
+
+`computePerformanceInsights` (`performance-insights.js:76-104`) buckets logged
+results by exactly two dimensions: `format` and `platform`. That's what the
+"Proven for you" panel shows (`index.html:8491-8526`) and what
+`formatPerformanceForPrompt` feeds the model.
+
+But the strategy layer chooses along entirely different axes: content pillars,
+funnel stage (attract/nurture/convert, `niche-playbook.js:38`), hook archetype
+(`prompts.js:849`), and topic. VIRL can tell a real estate agent "carousels
+outperform your reels." It can never tell them *"your market-data posts
+outperform your lifestyle posts 3:1 — and your convert posts only land when a
+nurture post ran within 48 hours."*
+
+That second sentence is the product. It's the thing a creator genuinely cannot
+self-diagnose, and the reason to pay someone monthly.
+
+**Fix:** emit `pillar`, `funnelStage`, and `hookArchetype` on every card (schema
+addition; the model is already reasoning in these terms — `VARIETY_BLOCK` names
+the archetypes explicitly and the niche funnel targets are already in-prompt).
+Persist them on the vault row, bucket them in `performance-insights.js`, and
+raise the honesty gates per-dimension the same way the existing ones work.
+
+**Effort:** small-to-medium, and it compounds with #1. **Impact:** high — it's
+the difference between analytics and insight.
+
+---
+
+### 4. "Never posted" is treated as "didn't work"
+
+`prompts.js:577` instructs the model to *"avoid repeating themes that didn't
+land or that the creator never logged."* `plan-history.js:136` counts
+`unlogged`.
+
+But unlogged overwhelmingly means **unshipped**, and unshipped is the biggest
+value leak in the entire product: a plan the creator doesn't execute produces
+exactly zero impact no matter how good it is. Conflating the two teaches the
+model to retire ideas that may have been excellent but were too hard to make.
+
+Worse, the server can't even tell the two apart. Posted state is
+**localStorage-only** (`index.html:2656-2668`) — it doesn't survive a device
+change, and no server-side consumer can distinguish "posted, never measured"
+from "never made."
+
+The codebase already half-suspects the real constraint. `filmDirection` requires
+*"at least one option that works without the creator's face on camera (b-roll +
+voiceover) so camera-shy days still ship"* (`prompts.js:1282`). That's a good
+guess at a friction the product could simply **learn**.
+
+**Fix:** (a) persist posted state server-side; (b) when a card is skipped, ask
+one question — *too hard to film / didn't fit my week / didn't like the idea /
+ran out of time* — and feed the answer into the next plan. "You've skipped every
+card that needs you on camera three weeks running, so this week is b-roll and
+carousels" is a strategist noticing something about you. It converts the
+product's largest silent failure mode into its highest-value learning signal.
+
+**Effort:** small. **Impact:** high — it attacks execution rate, which multiplies
+every other improvement in this document.
+
+---
+
+### 5. Plan — the flagship surface — has no voice gate
+
+There is a real voice-correction mechanism: when drift exceeds
+`DRIFT_RETRY_THRESHOLD`, the generation is retried with a targeted per-axis
+correction (`chat.js:1798-1849`, `voiceCorrectionInstruction` at `chat.js:64`).
+It's well built.
+
+It only runs on **non-streaming** generations. Plan streams
+(`handleStreamingPlan`), so plan drift is computed and written to the usage row
+(`chat.js:490-502`) and logged as telemetry (`chat.js:594-612`) — and then
+nothing happens. The surface that costs 3 credits, produces ~14 cards, carries
+the week, and is the product's centerpiece is the one surface where "sounds like
+you" is measured and never enforced.
+
+The mechanism to fix it already exists: the post-stream `compliance` event
+(`chat.js:546-560`) parses the final text after the stream closes and pushes a
+corrected payload to the client. A voice pass can ride the same channel.
+
+**Fix:** after stream close, score drift per card; for the worst offenders only
+(cap at 2–3), run a cheap targeted rewrite and push them over the existing
+post-stream event path. Surface it honestly in the UI — *"tightened 3 cards to
+your voice"* — which turns an invisible quality gate into visible evidence the
+subscription is working.
+
+**Effort:** medium. **Impact:** high — this is the core promise on the core
+surface.
+
+---
+
+### 6. Voice learning is a rolling window, not an accumulating asset
+
+Everything VIRL "learns" about voice expires:
+
+- Edit diffs: last **8 diffs** from the last **12 events** (`edit-examples.js:29,49`)
+- Reaction chips: **60-day** window, **3-word** vocabulary (`voice-reactions.js:46-55`)
+- Voice fingerprint: computed **only** from user-authored samples, never updated
+  from anything VIRL observes (`prompts.js:137-151`)
+- Thumbs-**up** ratings: stored by `api/rate.js`, and read by exactly one
+  consumer — `api/admin/business-stats.js`. **Never fed back into generation.**
+
+Two consequences. First, the loop is asymmetric: VIRL learns only from what the
+creator *dislikes*. The single strongest voice exemplar available — a draft the
+creator explicitly marked as sounding right — is collected and discarded.
+Second, and more damaging to the business model: **month-six VIRL is not
+meaningfully smarter about your voice than month-one VIRL.** The window slides;
+nothing accumulates. That is precisely the thing a subscription is supposed to
+buy.
+
+**Fix:** a durable, versioned **Voice Profile** — a learned artifact distilled
+periodically (say monthly) from edits, reactions, up-rated drafts, and
+high-performing posts into a compact set of standing rules. Three properties
+matter: it *accumulates* (quality genuinely compounds), it's *visible* ("here's
+what I've learned about how you write" is the best possible proof of value), and
+it's *editable* (the creator can correct it, which makes it more accurate and
+makes it theirs). Feed up-rated drafts in as positive exemplars alongside vault
+saves.
+
+This also creates the only real switching cost the product has. A competitor can
+copy the prompts. They cannot copy nine months of your learned voice profile.
+
+**Effort:** medium-to-large. **Impact:** high, and it is the most direct answer
+to "why keep paying."
+
+---
+
+### 7. The algorithm research is invisible to the person paying for it
+
+`cron/playbook-refresh.js` runs monthly per-platform research against a
+trusted-source allowlist, produces a **per-field diff with source URLs and
+reasoning** (`playbook-refresh.js:41-56`), and stages it for admin approval.
+`trend-context.js` ingests trends twice weekly with lifecycle status and niche
+fit scoring. `research-verify.js` fact-checks channel research before it reaches
+the creator.
+
+All of it dies in the admin dashboard. The creator never learns that any of it
+happened.
+
+For a product whose promise is "based on platform and algorithm best practices,"
+invisible work is wasted work — it's paid for and never credited.
+
+**Fix:** a monthly creator-facing note built from data already collected and
+already structured: *"Instagram changed how Reels reach non-followers this
+month. Here's what I changed in your plans, and here's the source."* The `diff`,
+`reasoning`, and `sources` fields are sitting in `playbook_drafts` waiting to be
+read.
+
+**Effort:** small. **Impact:** medium-high, and disproportionate to the cost —
+it converts existing infrastructure into visible subscription value.
+
+---
+
+## Priority order
+
+Ranked by impact on the promise, weighted by evidence the gap is real and by
+implementation cost.
+
+| # | Change | Gap | Effort | Why now |
+|---|--------|-----|--------|---------|
+| 1 | Log what actually matters (business outcomes + the discarded OCR fields) | §1 | S | Prerequisite for everything below. Data is already being thrown away. |
+| 2 | Weekly Scorecard — grade last week's bet, show it Monday | §2 | M | Highest-value retention surface; makes the strategist promise real. |
+| 3 | Skip-reason loop + server-side posted state | §4 | S | Attacks execution rate, which multiplies every other gain. |
+| 4 | Dimension the results learning (pillar / funnel stage / hook archetype) | §3 | S-M | Turns analytics into insight a creator can't self-diagnose. |
+| 5 | Post-stream voice repair on Plan + read thumbs-up back into generation | §5, §6 | M | Core promise on the core surface; currently measured and ignored. |
+| 6 | Durable, visible, editable Voice Profile | §6 | M-L | The only real switching cost, and the answer to "why month six." |
+| 7 | Monthly "what changed in the algorithm" note | §7 | S | Credits work the product already does and pays for. |
+
+Items 1–4 are, together, roughly one focused cycle, and they convert the product
+from "generates content" to "shows you what worked and why." That is the whole
+argument.
+
+---
+
+## MARKETING COUNCIL REVIEW — revisions before shipping
+
+Four seats reviewed the roadmap above: brand, head of content, SEO/demand-gen,
+and campaign/launch. They converged hard, and the priority table above does not
+survive contact with them. What follows supersedes it.
+
+### What the council changed my mind about
+
+**1. The sequencing is wrong, unanimously.** All four seats independently
+reached the same verdict: this roadmap improves month six and does nothing for
+day three. `TRIAL_DAYS = 14` (`api/chat.js:37`) means a free user gets **two
+Mondays**, and the first one has nothing logged — so the flagship Scorecard is
+structurally incapable of producing a real verdict before the credit-card
+decision. Items 1–4 make the product better for people who already paid, funded
+by people who haven't.
+
+**2. I built four recommendations on a loop whose throughput I never measured.**
+The current results-logging rate appears nowhere in this document. It is
+measurable *today*: `result_logged` (`index.html:11588`), `post_marked`
+(`index.html:4701`), and `plan_generated` (`index.html:11231`) all fire into the
+events table. `api/admin/business-stats.js` simply doesn't aggregate them. That's
+a query, not a project, and it decides whether items 1–4 are worth a cycle.
+
+**3. The logging loop may be broken, not merely unloved — and this is the most
+actionable finding in the review.** Posted state is localStorage-only
+(`index.html:2656-2668`), and the "Log results" button renders *only when
+`posted` is true* (`index.html:4930`). An agent who plans on desktop and posts
+from their phone sees "Mark as posted" instead — the state does not travel.
+`countPostedLastWeekUnlogged` scans localStorage too, so the Sunday nudge is
+device-local as well. **Today's logging rate may be measuring a device bug, not
+creator apathy**, and every insight built on top of it inherits the defect.
+
+**4. I under-ranked §7 by a wide margin.** Three of four seats moved the monthly
+algorithm note into the top three: no data dependency, visible to a day-1 user,
+small effort, and the only item that produces a *public* artifact. One
+correction the council caught that I missed — **a creator-facing Algorithm Intel
+tab already existed and was deliberately removed** ("strategic insights are
+moving inline," `index.html:9650`, JSX preserved commented at `13813`). So the
+right form is a public dated changelog plus an email, **not** a restored tab.
+
+**5. `robots.txt` blocks the crawlers that gate every AI-citation benefit these
+features could produce.** `OAI-SearchBot` and `ChatGPT-User` are both
+`Disallow: /` (`robots.txt:22-26`). The file's own header already articulates the
+correct principle for Perplexity — *"retrieval (search + answer), not model
+training"* — and then fails to apply it to OpenAI's retrieval agents.
+`Claude-SearchBot` / `Claude-User` aren't listed at all. This is a one-line
+inconsistency with the file's own stated policy, and it costs nothing to fix.
+(Confirmed for this repo's host; verify whatever serves the marketing pages.)
+
+### Where the council split — and the resolution
+
+§1 (business-outcome logging) drew the sharpest disagreement:
+
+- **Demand-gen:** the strongest marketable claim on the list. "Tracks DMs and
+  consults booked, not views" is a comparison row no competitor can check.
+- **Head of content:** agents structurally cannot attribute a close to a post —
+  that inability is *why* they can't justify content spend. The field will be
+  blank for everyone except power users who were never going to churn.
+- **Brand:** it is the first unfalsifiable number in the product. Every figure
+  VIRL states today is either OCR'd from the creator's own analytics or blocked.
+  This one is a human guess about causality, stored as an integer,
+  indistinguishable from a measurement downstream. And since creators log wins
+  and skip flops, the Scorecard would grade a biased sample and say "3 of 4 hit."
+
+**Resolution:** ship the field, never launder it. Store it flagged as
+creator-attested, quote it back in the creator's frame ("you logged 6
+conversations that started from social — your call, not my math"), render it
+visually distinct from OCR'd numbers, and never aggregate it into a VIRL causal
+claim. **Lock this now, before anyone writes a landing page: VIRL never says it
+caused a business outcome.** Not "VIRL got you 6 consults." Critically, do *not*
+make this field the foundation of the insight layer — see the next item.
+
+### Build the insight layer on behavior, not on typing
+
+The best constructive idea to come out of the council, and it fixes §3's real
+problem. VIRL already collects a complete per-card behavioral funnel, free, for
+100% of users: `vault_saved`, `script_generated` (costs 2 credits — a costly
+signal is an honest signal), `caption_generated`, `caption_remixed`,
+`post_marked`, `plan_partial_regen` (rejected this card), `draft_edited`
+(rewrote it), `plan_calendar_exported`.
+
+Bucket **those** by pillar / funnel stage / hook archetype. The buckets fill an
+order of magnitude faster than logged results, they work for every user
+including non-loggers, and the drop-off between stages is itself the insight —
+"you generate 14 cards a week and script 3" is more actionable than any view
+count. Engagement data overlays on top when it exists, rather than being the
+foundation.
+
+This also defuses a statistical problem the brand seat caught: dimensioning
+multiplies bucket count roughly tenfold against gates calibrated for two
+dimensions (`MIN_PER_FORMAT = 2`, `performance-insights.js:26-29`). At n=2 per
+bucket, §3 as written ships noise in a confident first-person voice. Raise the
+per-dimension floor, require a minimum effect size, and **drop the example claim
+at §3** — *"convert posts only land when a nurture post ran within 48 hours"* is
+an interaction effect a creator posting 5×/week will not power in a year. Don't
+spec a headline the data layer can never honestly earn.
+
+### Other binding revisions
+
+- **§2 must grade VIRL's bet, not the creator.** The `success_metric` thresholds
+  are model-invented (`prompts.js:1501`). Telling a creator on Monday that she
+  missed a target VIRL made up is both dishonest and off-persona. The Scorecard
+  must be able to say *"I set that target too high."* That version is what
+  actually sells the strategist positioning — the strategist owns the bet.
+  Also: my sample verdict copy in §2 violates `RATIONALE_RULES` (it invents a
+  causal mechanism and cites no input). The sample is the spec; fix it first.
+- **§2 needs its failure case and its empty state written in the same PR.** A
+  verdict never ships without the next move attached in the same sentence. A
+  Monday surface whose default is "not enough data" is a weekly reminder that
+  the product doesn't know.
+- **§4 should offer a swap, not ask a question.** "Why didn't you post this?"
+  gets a polite lie — *didn't fit my week* and *ran out of time* are the same
+  socially-costless answer and will absorb most clicks. Instead: when a card
+  goes unshipped, offer *"want me to swap this one?"* → b-roll version /
+  carousel / different topic. The choice **is** the skip reason, cleanly
+  labeled, with no admission required, and it produces a card they might
+  actually ship. Better still, infer the pattern and confirm it in one tap.
+- **§5: keep it, don't market it.** "Tightened 3 cards to your voice" advertises
+  that the flagship surface's first pass was off-voice. Disclose per-card
+  ("rewrote this one — it was drifting"), never as a plan-level banner, and keep
+  it off every landing page. It's claim protection, not claim creation.
+- **§6 cut to its defensible sliver.** Compounding-voice memory is contested
+  table stakes — competitors already market "knowledge base that compounds" and
+  "Content DNA" (council-sourced, not independently verified). The ownable part
+  is that VIRL's is **visible and editable**, and that's ~20% of the work. Seed
+  it on day 1 from `voiceSamples` + `handleResearch` rather than treating it as
+  a month-6 accumulator. Fold it into Creator Profile as a "What I've learned"
+  section — a second "Profile" the user didn't write is a support ticket.
+- **Naming: "Scorecard" and "Voice Profile" both die.** "Scorecard" is dashboard
+  vocabulary that grades the creator, on the axis this document argues is free
+  inside Instagram. Use an eyebrow — **Last week** — and let VIRL talk. Existing
+  convention: `VIRL <thing>` for surfaces where VIRL generates, plain nouns for
+  the creator's things. Everything here is the creator's, so none of it takes
+  the VIRL prefix.
+- **Make the artifacts shareable.** Three seats flagged this independently: the
+  weekly read is the most screenshot-worthy object this roadmap creates, and it
+  is trapped in-app. A public permalink with a "planned with VIRL" footer turns
+  a retention feature into a distribution one, and wires into the referral
+  engine (`api/_lib/referrals.js`) that already exists.
+- **Trial length is a config change against the actual bottleneck.** If value
+  needs three Mondays, a 14-day trial cannot deliver it. 21 days, or
+  calendar-align the trial.
+
+### Correction: the two core guarantees got demoted, and one is leaking today
+
+The council optimized for proving value and getting found. Both are right, and
+in taking their advice the revised order pushed the voice gate to last and never
+audited platform fidelity at all. Those two properties *are* the product. A
+per-surface audit of both:
+
+**Voice — near-universal.** `buildVoiceBlocks` reaches every generation surface;
+`plan_partial` inherits it through `fullBuilt.systemPrompt`. (`plan_strategy`
+sits outside `VOICE_LEARNING_TYPES`, which is correct — strategy prose is VIRL's
+register, not the creator's.) The one hole is the known one: Plan measures drift
+and never acts on it. It does not belong last.
+
+**Platform best practice — plan-heavy, and it falls off a cliff elsewhere.**
+
+| Mechanic | Plan | Partial regen | Strategy regen | Caption | Scan | Script / Long / Blog |
+|---|---|---|---|---|---|---|
+| Peak times | yes | no | no | no | no | no |
+| Hashtag count | yes | no | — | yes | no | — |
+| Caption limit | yes | — | — | yes | no | — |
+| Format priority | yes | no | no | no | yes | yes |
+| Cadence | yes | — | — | — | — | — |
+| Trends | yes | no | no | yes | yes | no |
+
+Four defects behind that table:
+
+1. **Partial regen obeys a playbook it cannot see.** `buildPlanPartial` writes
+   its own userPrompt with neither `playbookCtx` nor `trendsCtx`, while
+   instructing the model that *"Hashtag arrays still follow the platform's
+   playbook hashtag_count"* (`prompts.js:1627`). The parent plan's
+   `trendsSnapshot` is threaded into the builder, used to derive the cached
+   system prompt via `buildPlan`, and then dropped with that call's userPrompt.
+   Every regenerated card loses peak-time anchoring, format priority, hashtag
+   count, and trends. This is a bug, not a gap, and regen is a 1-credit action
+   creators use constantly.
+2. **`peak_times` reaches exactly one surface in the product** — rendered only
+   by `platformPlaybookBlock` (`prompts.js:204`) via `planPlaybookContext`. Scan
+   delivers a verdict ("I'd post this one — my call: Instagram") and never says
+   when, with the data sitting right there in the playbook.
+3. **Scan invents its own hashtag and caption rules.** Its schema asks for
+   hashtags *"count sized to post_type"* against a static in-prompt table
+   (`prompts.js:2118`); `scanPlaybookContext` passes only `top_signals` and
+   `format_priority`, so the live `hashtag_count` and `caption_limit` never
+   arrive.
+4. **`script`, `long_post`, and `blog_post` get no trend context** — and no
+   explicit empty state either, so nothing holds the model back from reaching
+   into stale training data. Plan's `TREND_SOURCE_RULE` pattern
+   (`prompts.js:320`) exists precisely to prevent this and isn't applied here.
+
+Also worth a decision rather than a default: the playbook's `cadence` is
+advisory, while the actual card count comes from `profile.postFreq × platform
+count` (`computeCardRange`). Respecting the creator's capacity over the
+platform's ideal is probably right — but it should be a stated call, since it
+means "cadence best practice" is the one mechanic the creator's own setting
+overrides.
+
+### Revised order
+
+**Tier 0 — integrity fixes. Small, and they protect the promise on surfaces
+creators touch daily. These run alongside Gate 0, not after the roadmap.**
+
+- Thread `playbookCtx` + `trendsCtx` into `buildPlanPartial`'s userPrompt (the
+  data is already passed to the function and discarded) and into
+  `buildPlanStrategy`.
+- Feed `hashtagSlots`, `caption_limit`, and `peak_times` into Scan; add
+  `peak_times` to Caption.
+- Give `script` / `long_post` / `blog_post` either the trend block or the
+  explicit no-trends empty state.
+- Move the Plan voice repair (§5) up from last. It stays unmarketed — the
+  council is right that it's claim protection, not a feature — but claim
+  protection on the flagship surface is not a deferrable item.
+
+**Gate 0 — before any roadmap item. Days, not weeks.**
+
+1. `robots.txt`: unblock `OAI-SearchBot`, `ChatGPT-User`, and add
+   `Claude-SearchBot` / `Claude-User`. Keep the training crawlers blocked — that
+   is the file's own stated policy, applied consistently.
+2. Server-side posted state. The logging funnel may be broken rather than
+   ignored, and nothing downstream is trustworthy until this is known.
+3. Query `result_logged : plan_generated` by week-of-tenure. Half a day.
+
+**Then re-decide.** If logging is healthy once posted state travels, items 1–4
+proceed as revised. If it isn't, pivot the insight layer to behavioral signal
+and drop most of §1/§3 as originally specced.
+
+**Then, in this order:**
+
+| Order | Item | Why here |
+|---|---|---|
+| 1 | §7 as a public dated changelog + email | No data dependency, day-1 visible, small, only public artifact on the list |
+| 2 | §6-lite — visible/editable, seeded day 1 | The only proof surface that works during a 14-day trial |
+| 3 | §1 fields, silent, creator-attested | Plumbing plus the strongest future claim; ships without a campaign |
+| 4 | §2 weekly read, shareable permalink, VIRL grades its own bet | The retention surface and the sales collateral, same object |
+| 5 | §4 as a swap offer | Attacks execution rate, which multiplies everything else |
+| 6 | §3 on behavioral buckets first | Now has data to stand on |
+| — | §5 voice repair | Moved to Tier 0 above — see the correction section |
+
+The engineering-impact order in the table further up this document and the
+go-to-market order here disagree most violently on §7 (cheap, public, was last)
+and §6 (expensive, contested, was high). The council is right and the original
+table was ranked on the wrong axis: I sequenced by *depth of fix* and labelled
+it *subscription defensibility*, which are not the same thing.
+
+### Unverified claims carried from the council
+
+Flagged so they get checked before anything is built on them: competitor
+pricing and feature positioning, the absence of G2/Capterra profiles and
+third-party roundup placement, the provenance of the existing testimonial, and
+what `www.govirl.ai` serves (it returned 403 to the council's fetch; the
+`robots.txt` finding is confirmed for **this** repo's host only). The absence of
+any unauthenticated generation endpoint *is* verified — `api/config.js` and
+`api/version.js` are the only routes in `api/` without an auth check.
+
+---
+
+## PM AUDIT — supersedes the fix ordering above
+
+Run with `.claude/skills/virl-product-review`, one auditor per half of the
+promise, each told to treat this document as unverified and hunt for what it
+missed. Both found defects larger than anything above. **Answer to "will the
+fixes above make VIRL a true strategist that writes in the user's voice": no.**
+They are necessary, they are not sufficient, and they were not aimed at the
+three biggest problems — none of which appear anywhere earlier in this document.
+
+### The finding that changes the order: voice exemplars are in the wrong register
+
+`saveToVault` stores both fields on every vault row: `description` — VIRL's
+strategic one-liner — at `index.html:11500`, and `caption` — the creator's actual
+publishable copy — at `index.html:11525`. `buildExemplarPool` then reads:
+
+```js
+const description = v.description || v.text || null;   // vault-exemplars.js:91
+```
+
+`v.caption` is never read. `description` is always populated (the plan schema
+requires it, `prompts.js:1256`), so the fallback never fires. The renderer then
+labels it for the model:
+
+```js
+if (e.description) body.push("Caption: " + …);          // vault-exemplars.js:189
+```
+
+`description` is explicitly VIRL's register — it sits in the VIRL column of
+`PLAN_REGISTER_SPLIT` (`prompts.js:1090`) and is specified as *"ONE sentence
+pitch, MAX 20 words — the angle / why this post exists"* (`prompts.js:1503`).
+
+So the block introduced to the model as *"these tell you what 'sounds right' for
+THIS creator better than any abstract voice description"* (`prompts.js:46`) is
+feeding it **VIRL's own strategist prose, labelled as the creator's caption.**
+The creator's real caption is in the row and never read. Reach: every surface
+receiving `vaultPatterns` — plan, plan_partial, script, caption, caption_remix,
+long_post, blog_post. The results path repeats it (`index.html:11607`) and ranks
+those items *higher* (`vault-exemplars.js:135`), so the posted-and-logged
+exemplars — the strongest by design — are the most contaminated.
+
+It compounds with use. The more a creator saves, the more of VIRL's register is
+fed back as their voice. This is a mechanism by which output drifts toward VIRL
+and away from the creator, specifically for the most engaged users.
+
+**And it corrupts the enforcement.** `exemplarsAsVoiceText`
+(`vault-exemplars.js:200`) pulls the same `hook + description` pair into
+`buildVoiceReference` (`chat.js:187`), which is the reference corpus for
+`computeVoiceDrift` and therefore for the corrective-retry gate. The gate meant
+to protect the creator's voice is calibrated partly on VIRL's register.
+
+**Consequence for sequencing: do not ship the Tier 0 voice repair first.**
+Enforcing harder against a contaminated reference pushes output further toward
+VIRL. Fix `vault-exemplars.js:91` before any voice enforcement work. It is
+roughly two lines and it repairs the exemplar block, the drift reference, and
+the drift gate at once, across eight surfaces.
+
+### The finding that guts the strategist half: trend enforcement is dead code
+
+`[TREND-VERIFY]` (`index.html:11124-11157`) is the only place in the product
+where a model claim is checked against real data instead of trusted. It builds
+its allow-list by walking `Object.keys(freshSnapshot)` expecting the **legacy**
+shape `{ [platform]: { items: [{ trend }] } }`. The shape actually sent is v2
+(`trend-context.js:239`): `{ v, block, segment, refreshedAt, items }`. None of
+those values carries an `.items` array — `freshSnapshot.items` *is* the array,
+and arrays have no `.items`. So `knownTrends` is always empty, the
+`knownTrends.length > 0` guard never passes, and the scrub never runs. The item
+field was also renamed `trend` → `display_name`, so a shape fix alone wouldn't
+restore it.
+
+Nothing has stripped an invented trend from a plan since the v2 migration. The
+design rationale at `prompts.js:317` — *"a creator can verify a cited trend
+against the in-app trends list"* — is exactly what this code existed to
+guarantee.
+
+It fails twice over, because the list the creator would check is a **different
+dataset**. `cron/trends-refresh` still runs weekly into the legacy `trends`
+table; generation reads `trend_items` via `buildTrendContext`. The legacy
+table's only surviving consumer is the client's Algo tab. Live weekly vendor
+spend is buying a display-only artifact that disagrees with what grounded the
+plan.
+
+And the freshness date is fabricated: `last_seen` appears in the trend query's
+**filter** but not its **select** (`trend-context.js:151`), so `t.last_seen` is
+undefined on every row, `latest` reduces to `""`, and `refreshedAt` falls
+through to today (`:212`). A six-day-old trend is stamped as today's signal in
+both the prompt and the UI (`index.html:13135`).
+
+### Scan is the weakest surface in the product on both halves
+
+It emits publishable creator copy — `SCAN_REGISTERS` (`prompts.js:2138`) assigns
+hook, caption, overlay, slides, and hashtags to the creator — and:
+
+- Receives **two of five voice blocks**. Broken twice independently:
+  `scan_image`/`scan_video_frame` are absent from `VOICE_GEN_TYPES`
+  (`chat.js:1174`) so vault patterns are never fetched, *and* both builders pass
+  literal `null` for `vaultPatterns` anyway (`prompts.js:2168`, `:2192`) while
+  taking the real one as an unused `_vaultPatterns`.
+- Renders a platform verdict (*"My call: Instagram"*) with the creator's own
+  strongest-platform data structurally unreachable — the exact line
+  `performance-insights.js:152` produces.
+- Sizes hashtags and captions from a static in-prompt table
+  (`prompts.js:2114-2121`) while asserting *"within the platform's
+  caption_limit"* — a value never passed.
+- Solicits a trending-audio claim (`:2152`) with no trend-grounding rule, and
+  can be entirely trend-dark when `profile.myPlatforms` is unset
+  (`chat.js:780`).
+
+### Other verified leaks not in this document
+
+- **`TREND_SOURCE_RULE` reaches one surface.** It lives in `buildPlan`'s *user*
+  prompt (`:1528`), so nothing inherits it. `captionTrendsContext` (`:338`) and
+  `scanTrendsContext` (`:582`) render a block with no grounding rule and return
+  silence when empty — the failure mode the comment at `:324` says must never
+  happen. Tier 0 fixes script/long/blog and leaves caption and scan open.
+- **`plan_strategy` inverts a stated precedence rule.** It receives
+  `vaultPatterns`, discards it (`:1655`, `:1682`), and instructs that
+  success_metric values follow the tier baseline (`:1714`) — while `buildPlan`
+  (`:1501`) and the niche playbook (`niche-playbook.js:242`) both say logged
+  results always override baselines. Regenerating your strategy silently
+  replaces real targets with generic ones.
+- **`plan_partial` loses more than Tier 0 accounts for**: also the niche success
+  model, the industry format mix, and this week's business/listing context.
+  Regenerate the card built around the creator's open house and the replacement
+  doesn't know the open house exists.
+- **The niche/industry layer never leaves the plan.** `formatNichePlaybookForPrompt`
+  has two call sites, `getFormatGuidance` one. Nine surfaces have no
+  how-content-converts-in-this-vertical grounding beyond optional profile fields.
+- **The CI voice gate is blind to both voice leaks by construction.**
+  `check-voice.mjs` passes `null` for `vaultPatterns` on every assertion
+  (`:80`, `:133`, `:199`, `:225`), so it cannot observe the exemplar or
+  performance blocks on any surface.
+- **`plan_partial` is a second unenforced streaming surface** —
+  `chat.js:1637` routes both it and `plan` through `handleStreamingPlan`.
+- **The drift corpus mixes registers**: `VOICE_BEARING_KEYS`
+  (`voice-drift.js:27`) includes `body`, which matches VIRL-voice
+  `restDayTips[].body`, and omits creator-voice `title` and the `frames[]`
+  fields.
+- **The register split is asserted, never checked.** No runtime equivalent of
+  `scrubCompliance` exists for voice. A caption saying "my call is Instagram"
+  ships.
+- **Playbook staleness is unbounded and refresh failure is silent.** Nothing
+  reads `updated_at`; the admin email fires only on `drafted > 0`
+  (`cron/playbook-refresh.js:166`), so "no changes found" and "broken for four
+  months" are indistinguishable.
+
+### Consolidated fix order
+
+Ordered by promise impact. The first item is a hard prerequisite for the fifth.
+
+| # | Fix | Half | Size |
+|---|---|---|---|
+| 1 | `vault-exemplars.js:91` — read the creator's caption, not VIRL's description; same at `index.html:11607` | Voice | ~2 lines |
+| 2 | Revive `[TREND-VERIFY]` against the v2 snapshot shape + `display_name` | Strategist | 1 function |
+| 3 | Add `last_seen` to the trend select; stop substituting today's date | Strategist | 2 lines |
+| 4 | Give Scan the full voice stack — `VOICE_GEN_TYPES` + both builders | Both | 3 lines |
+| 5 | Post-stream voice repair on `plan` **and** `plan_partial` (after #1) | Voice | medium |
+| 6 | Make `TREND_SOURCE_RULE` structural so every prose surface gets the block or the named empty state | Strategist | small |
+| 7 | Thread the full plan context into `plan_partial`; give `plan_strategy` its logged results and `buildPlan`'s grounding rule | Strategist | small |
+| 8 | Extend `check-voice.mjs` to populated `vaultPatterns`, asserting the exemplar block renders creator-voice text | Voice | small |
+| 9 | Live playbook values over static tables on scan, long_post, blog_post | Strategist | small |
+| 10 | Compact niche playbook on caption, script, long_post, blog_post, scan | Strategist | small |
+| 11 | Surface playbook age; alert on `errored > 0`; reconcile or retire the legacy trend pipeline | Strategist | small |
+
+Items 1–4 are roughly a day and address the three defects that most directly
+break the promise. Nothing in the earlier roadmap outranks them.
+
+## OPEN — revisit 2026-08-21: drift enforcement on the streaming surfaces
+
+`plan` and `plan_partial` both stream (`chat.js`), and the corrective voice
+retry runs only on the non-streaming path. Drift is computed, written to
+`usage_events.drift_score_after`, and logged — then ignored.
+
+**Deliberately deferred, not forgotten.** On 2026-08-07 the exemplar register
+inversion was fixed, which means every drift score recorded before that date
+was measured against a reference corpus containing VIRL's own strategist prose.
+`DRIFT_RETRY_THRESHOLD = 55` was tuned on those numbers. Building enforcement
+on a threshold derived from a contaminated baseline is how you end up
+confidently rewriting good copy.
+
+From 2026-08-07 forward the scores are clean. Around **2026-08-21**:
+
+1. Pull `drift_score_after` from `usage_events` since the fix, split by
+   `generationType`. Compare the enforced surfaces (caption, script,
+   long_post, blog_post, scan) against the unenforced ones (plan,
+   plan_partial).
+2. Re-tune the threshold from the real distribution rather than inheriting 55.
+3. Then decide on post-stream repair. Budget client work as well as server:
+   `index.html`'s SSE parser handles only `text`, `meta`, `error`, `reset`. The
+   server already emits a `compliance` event that nothing listens to, so
+   accepting a post-stream correction needs a client handler, not just a
+   server change. The three options are a full re-stream (doubles latency and
+   cost on the most expensive surface), targeted per-card repair (cheapest,
+   needs the client work), or hold-and-check before streaming (kills the
+   perceived-latency win streaming exists for).
+
+Also still open and unstarted: `TREND_SOURCE_RULE` reaches only the plan
+surface; the niche/industry playbook never leaves the plan; static hashtag
+tables on long_post and blog_post; unbounded playbook staleness with silent
+refresh failure.
+
+## The through-line
+
+Every gap above is the same gap in a different costume:
+
+**VIRL is excellent at deciding what to do and has almost no mechanism for
+finding out whether it was right.**
+
+The strategy is unscored. The success metrics are unloggable. The results are
+one-dimensional. The skips are unexplained. The voice drift on the flagship
+surface is measured and ignored. The learning window slides instead of
+accumulating. The research is invisible.
+
+Fix the loop and the existing prompt quality — which is genuinely strong —
+starts compounding into something a creator can point at and justify. Leave it
+open and VIRL stays a very good generator, competing on output quality in a
+category where output quality is converging toward free.

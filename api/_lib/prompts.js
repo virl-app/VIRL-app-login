@@ -164,6 +164,7 @@ import {
   VIRL_PERSONA,
   RATIONALE_RULES,
   SELF_CHECK_RUBRIC,
+  selfCheckFor,
   registerSplitFor,
 } from "./virl-persona.js";
 // [NICHE-PLAYBOOK] Per-niche success models + per-goal tactics. Same
@@ -188,7 +189,7 @@ export const PLAN_MODEL       = MODEL_OPUS || MODEL_SONNET;
 export const ALLOWED_MODELS  = [MODEL_SONNET, PLAN_MODEL].filter((v, i, a) => v && a.indexOf(v) === i);
 
 // ── Credit costs (server is the source of truth) ──────────────────────────
-export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, plan_strategy: 1, long_post: 2, log_metrics: 0, voice_sample_extract: 0 };
+export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, long_post: 2, log_metrics: 0, voice_sample_extract: 0 };
 
 // ── Playbook helpers ──────────────────────────────────────────────────────
 // `playbook` is a map keyed by platform: { TikTok: {cadence, peak_times, ...} }.
@@ -345,9 +346,8 @@ function captionTrendsContext(trends, _platform) {
 // pre-bundle prompt shape) or an array of { value, label } objects (the
 // new structured shape that powers the stat-tile UI). This helper renders
 // both back to a single readable string so the formatters below — plan
-// history, plan_partial locked-strategy block, plan_strategy
-// previous-strategy block — show the model the same text regardless of
-// which shape was stored.
+// history and the plan_partial locked-strategy block — show the model the
+// same text regardless of which shape was stored.
 function renderSuccessMetric(sm) {
   if (Array.isArray(sm)) {
     return sm
@@ -433,8 +433,6 @@ function formatEditsForPrompt(diffs) {
 //
 // Exclusions are deliberate and belong here rather than being an
 // accident of which builder someone remembered to wire:
-//   plan_strategy        — emits strategic direction, not creator copy.
-//                          Nothing it writes is published in their voice.
 //   log_metrics          — OCR of a screenshot. No prose.
 //   voice_sample_extract — reads the creator's own words back; learning
 //                          from our drafts would be circular.
@@ -630,7 +628,7 @@ const CAPTION_LENGTH_GUIDE = {
 };
 
 const GENERATION_TYPES = [
-  "plan", "plan_partial", "plan_strategy", "script", "caption", "caption_remix", "scan_image", "scan_video_frame", "long_post", "blog_post",
+  "plan", "plan_partial", "script", "caption", "caption_remix", "scan_image", "scan_video_frame", "long_post", "blog_post",
   // [LOG-METRICS] Screenshot → performance metrics. Not a content generation —
   // a structured vision extraction that lets a creator log a post's results by
   // snapping the platform's native insights panel instead of typing numbers.
@@ -1004,7 +1002,14 @@ function composeSystemPrompt(profile, role, compliance, vaultPatterns, personalD
     ? "\n\n" + registerSplitFor(registers.virl, registers.creator)
     : "";
   return {
-    shared:  sp.shared + split + buildComplianceBlock(compliance),
+    // [SELF-CHECK] The review pass lands last in the shared tier, after the
+    // register split and the compliance rules, so the model reviews against
+    // everything above it. Plan composes its own pair and appends the
+    // multi-piece variant itself; this covers every other surface, which
+    // previously shipped with no review pass at all — including Scan, which
+    // emits publishable copy. It sits in the cached tier, so the steady-state
+    // token cost is the model's own review reasoning rather than the prompt.
+    shared:  sp.shared + split + buildComplianceBlock(compliance) + "\n\n" + selfCheckFor({}),
     perUser: sp.perUser,
   };
 }
@@ -1646,96 +1651,15 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   };
 }
 
-// Strategy-only regeneration. The user has the cards they want and the
-// week-plan structure they like — they just disagree with how VIRL
-// framed it. This generates a *different but equally accurate* strategy
-// object for the same cards. The new framing must fit what's actually
-// on screen, not propose a different week — otherwise the banner
-// would lie about the user's plan.
-function buildPlanStrategy(params, profile, _vaultPatterns, _playbook, _trends, _history, _recentEdits, compliance, personalDenylist) {
-  const cards    = Array.isArray(params.cards) ? params.cards : [];
-  const previous = (params.strategy && typeof params.strategy === "object") ? params.strategy : {};
-  // [NICHE-PLAYBOOK] Strategy regen gets the compact niche + goal grounding
-  // (success model + tier baseline + goal tactics, minus the funnel/KPI
-  // detail) so a re-framed strategy still describes winning in THIS niche
-  // for THIS goal, not a generically different angle. All optional — older
-  // clients that don't send these params get the pre-playbook prompt.
-  const goal          = typeof params.goal          === "string" ? params.goal          : "";
-  const goalSecondary = typeof params.goalSecondary === "string" ? params.goalSecondary : "";
-  const niche         = typeof params.niche         === "string" ? params.niche         : "";
-  const followers     = typeof params.followers     === "string" ? params.followers     : "";
-  const nichePlaybookCtx = (niche || goal)
-    ? formatNichePlaybookForPrompt(niche, goal, goalSecondary, followers, { compact: true })
-    : "";
-
-  if (cards.length < 1) {
-    throw new Error("plan_strategy needs the existing plan's cards as context.");
-  }
-
-  // [COMPLIANCE 1] Per-niche guardrails ride the cached system prefix
-  // alongside the base role prompt. Empty string for out-of-scope niches.
-  // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  // [PERSONA] Pure VIRL voice — the strategy block is entirely you talking to
-  // the creator about their week. Nothing here gets published, so there is no
-  // creator-voice field to protect. It DOES need the rationale rules: `the_bet`
-  // is the single most slop-prone field in the product.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and creative director", compliance, null, personalDenylist, {
-    virl:    ["thesis", "optimizing_for", "audience_read", "success_metric[].label", "the_bet"],
-    creator: [],
-  });
-  systemPrompt.shared += "\n\n" + RATIONALE_RULES;
-
-  // Condensed per-card line — enough signal for the model to find a
-  // through-line, no card bodies/hashtags that would inflate tokens.
-  const cardLines = cards.map(function (c) {
-    if (!c) return null;
-    const day      = c.day      || "?";
-    const platform = c.platform || "?";
-    const format   = c.format   || "?";
-    const title    = c.title    || "untitled";
-    return "  " + day + " | " + platform + " | " + format + " | \"" + title + "\"";
-  }).filter(Boolean).join("\n");
-
-  const previousLines = [];
-  if (previous.thesis)         previousLines.push("Thesis: "         + previous.thesis);
-  if (previous.optimizing_for) previousLines.push("Optimizing for: " + previous.optimizing_for);
-  if (previous.audience_read)  previousLines.push("Audience read: "  + previous.audience_read);
-  const previousSm = renderSuccessMetric(previous.success_metric);
-  if (previousSm)              previousLines.push("Success metric: " + previousSm);
-  if (previous.the_bet)        previousLines.push("The bet: "        + previous.the_bet);
-  const previousBlock = previousLines.length ? previousLines.join("\n") : "(no previous strategy on file)";
-
-  const userPrompt = ""
-    + "Re-frame this week's plan with a DIFFERENT strategic angle."
-    + "\n\nTHIS WEEK'S CARDS (already finalized — do NOT propose changes to them):\n" + cardLines
-    + "\n\nPREVIOUS STRATEGY (the user disagreed with this — find a different lens that still genuinely describes the same cards):\n" + previousBlock
-    + nichePlaybookCtx
-    + (nichePlaybookCtx
-        ? "\n\nThe new framing must still serve the PRIMARY goal above — a different lens on the same cards, grounded in how success actually works in this niche. success_metric values follow the FOLLOWER-TIER BASELINE (conservative, achievable) and at least one metric must tie to the primary goal's watch-metrics."
-        : "")
-    + "\n\nRules — every field has a strict length cap; the UI breaks on overruns:"
-    + "\n  - The new framing must honestly describe what is ON THE PLAN. Do not invent posts that aren't there."
-    + "\n  - The new thesis and bet must be MEANINGFULLY DIFFERENT from the previous ones — not a paraphrase."
-    + "\n  - thesis: ONE sentence, MAX 15 words. Sharp, specific, no preamble."
-    + "\n  - optimizing_for: MAX 8 words naming the dominant signals."
-    + "\n  - audience_read: ONE sentence, MAX 25 words."
-    + "\n  - success_metric: ARRAY of 3-4 objects, each {\"value\":\"<number or threshold>\",\"label\":\"<3-6 word descriptor>\"}. Concrete numbers only — no prose, no commas inside a single label. Example: [{\"value\":\"5\",\"label\":\"posts past 1K views\"},{\"value\":\"60+\",\"label\":\"saves on carousels\"},{\"value\":\"+100\",\"label\":\"net followers\"}]."
-    + "\n  - the_bet: ONE sentence, MAX 25 words. The specific lean and why — new information vs the thesis, not a paraphrase."
-    + "\n\nReturn ONLY this JSON shape — no markdown, no preamble:"
-    + "\n{\"thesis\":\"...\",\"optimizing_for\":\"...\",\"audience_read\":\"...\",\"success_metric\":[{\"value\":\"...\",\"label\":\"...\"}],\"the_bet\":\"...\"}";
-
-  return {
-    systemPrompt,
-    userPrompt,
-    model:     PLAN_MODEL, // [OPUS-FLAG] strategy regen follows the plan model
-    // Strategy output is ~5 short fields. 800 is plenty of headroom; no
-    // retry path needed because non-streaming generations don't run
-    // through handleStreamingPlan.
-    maxTokens: 800,
-    cost:      CREDIT_COSTS.plan_strategy,
-  };
-}
-
+// [NO-STRATEGY-REGEN] There was a `plan_strategy` builder here that re-framed
+// an existing week with a different strategic angle. It was removed, not
+// feature-flagged: VIRL's premise is that the strategy is derived from the
+// creator's goals, business, and results, and a reroll button reframed it as
+// one option among several — inviting the creator to shop for a thesis they
+// liked over the one their data supports. It also inverted a rule the rest of
+// this file states twice, setting success metrics from generic follower-tier
+// baselines while ignoring the creator's own logged results.
+// Restore from git history if the product position ever changes.
 function buildScript(params, profile, vaultPatterns, playbook, _trends, _history, recentEdits, compliance, personalDenylist) {
   const card = params.card || {};
   const platform = card.platform || "TikTok";
@@ -2160,12 +2084,17 @@ function scanResultSchema(isVideo) {
     + "\"compliance_note\":\"OPTIONAL — short disclosure the creator should add when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}";
 }
 
-function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
+function buildScanImage(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // Only the prompt-level block fires on scans; the post-generation scrub
   // stays wired to plan / script / caption paths.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist, SCAN_REGISTERS);
+  // [SCAN-VOICE] vaultPatterns is threaded through rather than nulled: the
+  // caption and hook this surface emits are creator-voice fields, so they
+  // need the same exemplars every other publishing surface gets, and the
+  // platform verdict should be informed by the creator's own logged
+  // platform performance rather than generic signals alone.
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS);
   const userPrompt = "The creator just handed you this image and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the image actually shows — then call the single best POST TYPE and write content sized to that type."
     + " Be honest about a weak asset. \"I'd reshoot this\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)
@@ -2186,10 +2115,11 @@ function buildScanImage(params, profile, _vaultPatterns, playbook, trends, _hist
   };
 }
 
-function buildScanVideoFrame(params, profile, _vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
+function buildScanVideoFrame(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   // [COMPLIANCE 1] Same scope as buildScanImage — prompt-level block only.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, null, personalDenylist, SCAN_REGISTERS);
+  // [SCAN-VOICE] Same rationale as buildScanImage.
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS);
   const userPrompt = "The creator just handed you this video frame and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the frame actually shows — then call the single best POST TYPE and write content sized to that type."
     + " Be honest about a weak frame. \"I'd pull a different frame\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)
@@ -2286,7 +2216,6 @@ function buildVoiceSampleExtract() {
 const BUILDERS = {
   plan:             buildPlan,
   plan_partial:     buildPlanPartial,
-  plan_strategy:    buildPlanStrategy,
   script:           buildScript,
   caption:          buildCaption,
   caption_remix:    buildCaptionRemix,
