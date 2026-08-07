@@ -682,7 +682,9 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
       const u = String(url);
       hits.push(u);
       if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: staleIso }] };
-      if (u.includes("/trends?"))      return { ok: true, json: async () => [{ fetched_at: staleIso }] };
+      if (u.includes("/trends?")) return { ok: true, json: async () =>
+        ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"]
+          .map((pf) => ({ platform: pf, fetched_at: staleIso })) };
       if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
       // 409 = "already claimed" — proves sendEmail ran without reaching Resend.
       if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
@@ -709,6 +711,68 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
         "trend-health detected a dark pipeline and never attempted an email — a monitor that only returns JSON repeats the exact failure it exists to fix");
     }
 
+    // ONE platform lagging while the rest refresh. This is the case a global
+    // max(fetched_at) misses entirely — and the case the live data actually
+    // showed, with LinkedIn one weekly run behind every other platform.
+    // Creators on the lagging platform go dark; the monitor must not be
+    // reassured by the six healthy ones.
+    {
+      const freshIso = new Date(Date.now() - 1 * DAY).toISOString();
+      const lateIso  = new Date(Date.now() - 30 * DAY).toISOString();
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        hits.push(u);
+        if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+        if (u.includes("/trends?")) return { ok: true, json: async () => [
+          { platform: "TikTok", fetched_at: freshIso },
+          { platform: "Instagram", fetched_at: freshIso },
+          { platform: "Facebook", fetched_at: freshIso },
+          { platform: "YouTube", fetched_at: freshIso },
+          { platform: "X", fetched_at: freshIso },
+          { platform: "Pinterest", fetched_at: freshIso },
+          { platform: "LinkedIn", fetched_at: lateIso },
+        ] };
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+        if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
+        return { ok: true, json: async () => [] };
+      };
+      hits.length = 0;
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.body && out.body.legacyStale === true,
+        "one platform 30 days behind six fresh ones was reported healthy — the check is reading a global max instead of the worst platform");
+      assert(out.body && Array.isArray(out.body.laggingPlatforms) && out.body.laggingPlatforms.includes("LinkedIn"),
+        `the lagging platform is not named: ${JSON.stringify(out.body && out.body.laggingPlatforms)}`);
+      assert(out.body.laggingPlatforms.length === 1,
+        `a single lagging platform dragged ${out.body.laggingPlatforms.length} into the report`);
+      // The reported age must be the WORST platform, not the best. Reporting
+      // the freshest is how a global max hides a dark channel in the first
+      // place, and it would put a reassuring "1 day old" in the email.
+      assert(out.body.legacyAgeDays === 30,
+        `reported legacy age is ${out.body.legacyAgeDays} — it should be the worst platform (30), not the healthiest`);
+      assert(hits.some((u) => u.includes("/email_sends")),
+        "a platform going dark for 30 days sent no email");
+    }
+
+    // A platform absent from the table entirely is dark, not unknown.
+    {
+      const freshIso = new Date(Date.now() - 1 * DAY).toISOString();
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+        if (u.includes("/trends?")) return { ok: true, json: async () =>
+          ["TikTok", "Instagram", "Facebook", "YouTube", "X", "LinkedIn"]
+            .map((p) => ({ platform: p, fetched_at: freshIso })) };  // no Pinterest row at all
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+        if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
+        return { ok: true, json: async () => [] };
+      };
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.body && out.body.laggingPlatforms.includes("Pinterest"),
+        "a platform with no research rows at all was not reported — never-researched reads the same to a creator as long-stale");
+    }
+
     // Healthy pipelines → no alert. A monitor that cries every day gets muted,
     // and a muted monitor is the eight-day outage again.
     {
@@ -717,7 +781,9 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
         const u = String(url);
         hits.push(u);
         if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
-        if (u.includes("/trends?"))      return { ok: true, json: async () => [{ fetched_at: freshIso }] };
+        if (u.includes("/trends?")) return { ok: true, json: async () =>
+          ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"]
+            .map((pf) => ({ platform: pf, fetched_at: freshIso })) };
         if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
         if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
         return { ok: true, json: async () => [] };
@@ -768,6 +834,24 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     "the both-dark subject line does not say that plans have no trends");
   assert(/no trends this week|no trend grounding|showing the no-trends state/i.test(both.text),
     "the both-dark email does not lead with creator impact");
+
+  const partial = trendPipelineStale({
+    observedAge: 2, legacyAge: 30, observedStale: false, legacyStale: true,
+    bothDark: false, laggingPlatforms: ["LinkedIn"], totalPlatforms: 7,
+    observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/LinkedIn/.test(partial.subject),
+    "one platform stalled and the subject line doesn't name it — 'research stale' reads as all seven and sends you looking in the wrong place");
+  assert(/LinkedIn/.test(partial.text),
+    "the lagging platform is not named in the email body");
+  const allStalled = trendPipelineStale({
+    observedAge: 2, legacyAge: 30, observedStale: false, legacyStale: true,
+    bothDark: false,
+    laggingPlatforms: ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"],
+    totalPlatforms: 7, observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(!/LinkedIn/.test(allStalled.subject),
+    "all seven platforms stalled but the subject enumerates them — that is the whole pipeline, and it should say so");
 
   const observedOnly = trendPipelineStale({
     observedAge: 8, legacyAge: 4, observedStale: true, legacyStale: false,

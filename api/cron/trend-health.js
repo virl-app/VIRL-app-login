@@ -30,6 +30,12 @@ const ADMIN_EMAIL          = "laurenannedoty@gmail.com";
 
 const DAY_MS = 86400000;
 
+// [TREND-HEALTH] The platforms VIRL supports, mirroring the PLATFORMS array in
+// cron/trends-refresh.js. Kept as its own list because this file asks a
+// different question of it — not "which platforms do we research?" but "which
+// platforms must have current research for a creator on them to be served?"
+const PLATFORMS = ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"];
+
 // [TREND-HEALTH] Thresholds are set to warn BEFORE the data stops being
 // usable, which is the whole point of catching this early.
 //
@@ -57,6 +63,11 @@ const SUPABASE_HEADERS = {
 // Best-effort by design: a failed probe must not fail the whole check, because
 // a half-answer ("the observed pipeline is stale, couldn't read the legacy
 // one") is still worth sending.
+//
+// Used for `trend_items` only, which is single-platform today — every row the
+// ingest writes is `platform: "tiktok"`, since its one adapter reads a TikTok
+// endpoint. A global max is therefore the whole story there. The legacy table
+// genuinely spans seven platforms and gets the per-platform probe below.
 async function newestTimestamp(table, column) {
   try {
     const res = await fetch(
@@ -75,6 +86,48 @@ async function newestTimestamp(table, column) {
   }
 }
 
+// [TREND-HEALTH] Per-platform freshness for the weekly research.
+//
+// A global `max(fetched_at)` is the wrong question for a multi-platform table
+// and this monitor originally asked it. Six platforms refreshing on schedule
+// while a seventh silently stops still produces a fresh-looking global max, so
+// the creators on that seventh platform go dark and the monitor stays quiet.
+// That is not hypothetical: LinkedIn currently has one fewer row than every
+// other platform, because `cron/trends-refresh` counts an `errored` platform
+// and returns the count in a JSON body nobody reads — the same
+// alert-only-on-success shape this whole file exists to close.
+//
+// So health is the OLDEST platform, not the newest row — the same "oldest
+// entry wins" rule playbookAge uses, and for the same reason: a creator on the
+// lagging platform experiences the lag in full, no matter how current the
+// others are. A platform absent from the table entirely counts as lagging.
+//
+// Note this deliberately does NOT alert on trends-refresh's per-run `errored`
+// count. One failed platform that self-corrects on the next weekly run is not
+// worth an email; a platform that keeps failing crosses the threshold here and
+// is. Monitoring the outcome absorbs the transient and keeps the persistent.
+async function legacyFreshnessByPlatform() {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/trends?select=platform,fetched_at&order=fetched_at.desc&limit=500`,
+      { headers: SUPABASE_HEADERS },
+    );
+    if (!res.ok) return { newestByPlatform: new Map(), unreadable: true };
+    const rows = await res.json();
+    const newestByPlatform = new Map();
+    for (const r of Array.isArray(rows) ? rows : []) {
+      if (!r || !r.platform || !r.fetched_at) continue;
+      if (newestByPlatform.has(r.platform)) continue; // rows are desc-sorted
+      const t = Date.parse(r.fetched_at);
+      if (!Number.isNaN(t)) newestByPlatform.set(r.platform, t);
+    }
+    return { newestByPlatform, unreadable: false };
+  } catch (e) {
+    console.error("[cron/trend-health] legacy per-platform probe failed", e && e.message);
+    return { newestByPlatform: new Map(), unreadable: true };
+  }
+}
+
 function ageDays(ts, now) {
   if (ts == null) return null;
   return Math.max(0, Math.floor((now - ts) / DAY_MS));
@@ -89,13 +142,30 @@ export default async function handler(req, res) {
   }
 
   const now = Date.now();
-  const [observedTs, legacyTs] = await Promise.all([
+  const [observedTs, legacy] = await Promise.all([
     newestTimestamp("trend_items", "last_seen"),
-    newestTimestamp("trends", "fetched_at"),
+    legacyFreshnessByPlatform(),
   ]);
 
   const observedAge = ageDays(observedTs, now);
-  const legacyAge   = ageDays(legacyTs, now);
+
+  // Per-platform ages, with a missing platform reported as null rather than
+  // skipped — "we have never researched Pinterest" and "Pinterest is 20 days
+  // stale" are both states a creator on Pinterest feels identically.
+  const legacyPlatformAges = {};
+  const laggingPlatforms = [];
+  for (const p of PLATFORMS) {
+    const age = ageDays(legacy.newestByPlatform.get(p), now);
+    legacyPlatformAges[p] = age;
+    if (age === null || age >= LEGACY_STALE_DAYS) laggingPlatforms.push(p);
+  }
+
+  // The reportable legacy age is the WORST platform, so a single lagging
+  // channel can't hide behind six healthy ones.
+  const knownAges = PLATFORMS.map(p => legacyPlatformAges[p]).filter(a => a !== null);
+  const legacyAge = (legacy.unreadable || knownAges.length === 0)
+    ? null
+    : Math.max(...knownAges);
 
   // A null age means the table is empty or unreadable. That is NOT healthy —
   // it is the most severe version of the same problem — so it counts as stale
@@ -104,7 +174,7 @@ export default async function handler(req, res) {
   // gap on data that still exists, whereas no trend row at all means the
   // pipeline has produced nothing, ever or recently.
   const observedStale = observedAge === null || observedAge >= OBSERVED_STALE_DAYS;
-  const legacyStale   = legacyAge   === null || legacyAge   >= LEGACY_STALE_DAYS;
+  const legacyStale   = laggingPlatforms.length > 0;
 
   // Both dry is the state creators actually feel: no observed data AND no
   // fallback means every surface renders the "no trends" empty state.
@@ -130,6 +200,8 @@ export default async function handler(req, res) {
   if ((observedStale || legacyStale) && adminUserId) {
     const tpl = trendPipelineStale({
       observedAge, legacyAge, observedStale, legacyStale, bothDark,
+      laggingPlatforms,
+      totalPlatforms:    PLATFORMS.length,
       observedThreshold: OBSERVED_STALE_DAYS,
       legacyThreshold:   LEGACY_STALE_DAYS,
     });
@@ -153,6 +225,8 @@ export default async function handler(req, res) {
     observedStale,
     legacyStale,
     bothDark,
+    laggingPlatforms,
+    legacyPlatformAges,
     emailed,
   });
 }
