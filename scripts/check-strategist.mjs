@@ -635,6 +635,150 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     "the research prompt no longer tells the model to avoid recap publications as primary evidence");
 }
 
+// ── Layer 7: a dark trend pipeline reaches a human ─────────────────────────
+//
+// The observed ingest stopped writing on 2026-07-30 and nobody found out for
+// eight days. The edge function's fail-soft branch behaved as designed — log,
+// write nothing, return 200 — which is right for one bad run and silent for
+// eight in a row. Same defect class as the playbook cron alerting only on
+// success, and it cost a week of trend grounding.
+{
+  const healthSrc = readFileSync(new URL("../api/cron/trend-health.js", import.meta.url), "utf8");
+  const tplSrc    = readFileSync(new URL("../api/_lib/email-templates.js", import.meta.url), "utf8");
+  const vercelCfg = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+
+  // A check that never runs is not a check.
+  const cronPaths = (vercelCfg.crons || []).map((c) => c.path);
+  assert(cronPaths.includes("/api/cron/trend-health"),
+    "trend-health is not scheduled in vercel.json — the monitor exists but never runs");
+  const sched = (vercelCfg.crons || []).find((c) => c.path === "/api/cron/trend-health");
+  assert(sched && /^\S+ \S+ \* \* \*$/.test(sched.schedule),
+    `trend-health must run daily to catch a stale pipeline before the 7-day floor; schedule is "${sched && sched.schedule}"`);
+
+  assert(/export function trendPipelineStale/.test(tplSrc),
+    "the stale-pipeline email template is gone");
+
+  // The handler is importable, so these two are checked by RUNNING it rather
+  // than by matching source text. Both were text assertions first, and both
+  // survived their mutation — `false && cronAuthorized(...)` and
+  // `false && await sendEmail(...)` still contain the strings.
+  {
+    process.env.CRON_SECRET = process.env.CRON_SECRET || "fixture-cron-secret";
+    process.env.RESEND_API_KEY = process.env.RESEND_API_KEY || "fixture-resend-key";
+    const { default: trendHealth } = await import("../api/cron/trend-health.js");
+
+    const mockRes = () => {
+      const out = {};
+      const r = {
+        status(code) { out.code = code; return r; },
+        json(body) { out.body = body; return r; },
+      };
+      return { r, out };
+    };
+    const staleIso = new Date(Date.now() - 30 * DAY).toISOString();
+    const realFetch2 = globalThis.fetch;
+    const hits = [];
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      hits.push(u);
+      if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: staleIso }] };
+      if (u.includes("/trends?"))      return { ok: true, json: async () => [{ fetched_at: staleIso }] };
+      if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+      // 409 = "already claimed" — proves sendEmail ran without reaching Resend.
+      if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
+      return { ok: true, json: async () => [] };
+    };
+
+    // Unauthorized request must be rejected outright.
+    {
+      const { r, out } = mockRes();
+      await trendHealth({ headers: {} }, r);
+      assert(out.code === 401,
+        `trend-health answered an unauthenticated request with ${out.code} — the CRON_SECRET gate is not enforced`);
+    }
+
+    // Authorized + both pipelines long dead → reports it AND actually sends.
+    {
+      hits.length = 0;
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.code === 200, `trend-health returned ${out.code} on an authorized request`);
+      assert(out.body && out.body.observedStale === true && out.body.legacyStale === true && out.body.bothDark === true,
+        `a 30-day-old pipeline was not reported stale: ${JSON.stringify(out.body)}`);
+      assert(hits.some((u) => u.includes("/email_sends")),
+        "trend-health detected a dark pipeline and never attempted an email — a monitor that only returns JSON repeats the exact failure it exists to fix");
+    }
+
+    // Healthy pipelines → no alert. A monitor that cries every day gets muted,
+    // and a muted monitor is the eight-day outage again.
+    {
+      const freshIso = new Date(Date.now() - 1 * DAY).toISOString();
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        hits.push(u);
+        if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+        if (u.includes("/trends?"))      return { ok: true, json: async () => [{ fetched_at: freshIso }] };
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+        if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
+        return { ok: true, json: async () => [] };
+      };
+      hits.length = 0;
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.body && out.body.observedStale === false && out.body.legacyStale === false,
+        `fresh pipelines were reported stale: ${JSON.stringify(out.body)}`);
+      assert(!hits.some((u) => u.includes("/email_sends")),
+        "trend-health emailed about a healthy pipeline — a daily false alarm is how a real alert gets ignored");
+    }
+
+    globalThis.fetch = realFetch2;
+  }
+
+  // The load-bearing numeric relationship. Generation refuses trends older
+  // than 7 days (TREND_FRESHNESS_DAYS in trend-context.js). If the alert
+  // threshold were >= that, the email would only ever confirm an outage that
+  // had already reached creators. It has to fire with runway.
+  const trendCtxSrc = readFileSync(new URL("../api/_lib/trend-context.js", import.meta.url), "utf8");
+  const genFloor = Number((trendCtxSrc.match(/TREND_FRESHNESS_DAYS\s*=\s*(\d+)/) || [])[1]);
+  const observedThreshold = Number((healthSrc.match(/OBSERVED_STALE_DAYS\s*=\s*(\d+)/) || [])[1]);
+  const legacyThreshold = Number((healthSrc.match(/LEGACY_STALE_DAYS\s*=\s*(\d+)/) || [])[1]);
+  const legacyWindow = Number((trendCtxSrc.match(/LEGACY_TREND_FRESHNESS_DAYS\s*=\s*(\d+)/) || [])[1]);
+
+  assert(Number.isFinite(genFloor) && Number.isFinite(observedThreshold),
+    "could not read the freshness floor or the alert threshold — one of them was renamed");
+  assert(observedThreshold < genFloor,
+    `the observed alert fires at ${observedThreshold} days but generation already refuses trends at ${genFloor} — the warning would arrive after creators went dark`);
+  assert(Number.isFinite(legacyThreshold) && Number.isFinite(legacyWindow) && legacyThreshold < legacyWindow,
+    `the legacy alert fires at ${legacyThreshold} days but the fallback query stops returning rows at ${legacyWindow} — same problem on the fallback path`);
+
+  // An empty or unreadable table is the most severe form of this failure, not
+  // an unknown to be skipped. (Deliberately the opposite of playbookAge, where
+  // a missing timestamp means a schema gap on data that still exists.)
+  assert(/observedAge === null \|\| observedAge >= OBSERVED_STALE_DAYS/.test(healthSrc),
+    "an empty trend_items table does not count as stale — the worst case would go unreported");
+
+  // Both dry is the state creators actually feel, and the email has to say so
+  // rather than describing which internal pipeline broke.
+  const { trendPipelineStale } = await import("../api/_lib/email-templates.js");
+  const both = trendPipelineStale({
+    observedAge: 12, legacyAge: 15, observedStale: true, legacyStale: true,
+    bothDark: true, observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/no trend data reaching plans/i.test(both.subject),
+    "the both-dark subject line does not say that plans have no trends");
+  assert(/no trends this week|no trend grounding|showing the no-trends state/i.test(both.text),
+    "the both-dark email does not lead with creator impact");
+
+  const observedOnly = trendPipelineStale({
+    observedAge: 8, legacyAge: 4, observedStale: true, legacyStale: false,
+    bothDark: false, observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/fallback/i.test(observedOnly.text),
+    "with only the observed pipeline stale, the email does not say the fallback is covering it — that difference decides how urgently to act");
+  assert(observedOnly.subject !== both.subject,
+    "a partial outage and a total one send the same subject line");
+}
+
 if (failures > 0) {
   console.error(`\nStrategist eval FAILED with ${failures} failure(s).`);
   process.exit(1);
