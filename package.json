@@ -7,7 +7,8 @@
     "check:index": "node scripts/check-index-syntax.mjs",
     "check:compliance": "node scripts/check-compliance.mjs",
     "check:voice": "node scripts/check-voice.mjs",
-    "check": "npm run check:index && npm run check:compliance && npm run check:voice"
+    "check:strategist": "node scripts/check-strategist.mjs",
+    "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist"
   },
   "dependencies": {
     "resend": "^4.0.0",

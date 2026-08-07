@@ -25,3 +25,5 @@ jobs:
         run: npm run check:compliance
       - name: voice stack present on all surfaces + drift scorer sane
         run: npm run check:voice
+      - name: strategist grounding present on all surfaces
+        run: npm run check:strategist

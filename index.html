@@ -2468,7 +2468,41 @@ function createStreamingPlanParser(opts) {
 function buildClientNow() {
   var d = new Date();
   var iso = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
-  return { iso: iso, weekday: d.getDay(), year: d.getFullYear() };
+  // [SCHEDULE-REALISM] Time of day, not just the date. This used to send the
+  // weekday and nothing else, so the server knew a plan generated at 10am was
+  // a Thursday and had no idea it was already mid-morning. Day 1 is today, the
+  // prompt says to put postTime inside the platform's peak window, and the
+  // model dutifully scheduled 7:00 AM - three hours into the past. Nothing
+  // downstream could have caught it, because the fact was never sent.
+  var hh = d.getHours();
+  var mm = d.getMinutes();
+  var h12 = hh % 12; if (h12 === 0) h12 = 12;
+  var localTime = h12 + ":" + String(mm).padStart(2,"0") + " " + (hh < 12 ? "AM" : "PM");
+  var tz = "";
+  try { tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || ""; } catch (e) { tz = ""; }
+  return { iso: iso, weekday: d.getDay(), year: d.getFullYear(),
+           hour: hh, minute: mm, localTime: localTime, tz: tz };
+}
+
+// [SCHEDULE-REALISM] Deterministic backstop for the rule above. The prompt is
+// the real fix - it stops bad times being generated - but this catches two
+// things a prompt cannot: plans generated before that fix that are still in a
+// creator's vault, and the model simply slipping. It never rewrites postTime,
+// because the time carries a strategic call (the platform's peak window) and
+// silently moving it would make VIRL disagree with its own reasoning. It just
+// says the window has gone, which is what a strategist would say out loud.
+//
+// Only Day 1 can be in the past: Day 1 is today by construction, every later
+// label is a future date.
+// `nowDate` is injectable so the check in scripts/check-strategist.mjs can
+// pin a clock and assert the real reported case (plan made at 10am, card says
+// 7am today) rather than matching on source text. Callers pass nothing.
+function postTimeHasPassed(card, nowDate) {
+  if (!card || !card.postTime) return false;
+  if (!/^Day 1\b/.test(String(card.day || ""))) return false;
+  var t = parsePostTimeHM(card.postTime);
+  var now = nowDate || new Date();
+  return (t.h * 60 + t.m) < (now.getHours() * 60 + now.getMinutes());
 }
 
 // [COMPLIANCE 1] Read the user's last-selected niche from localStorage so
@@ -4824,6 +4858,14 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
           {card.postTime && (
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.ink,letterSpacing:"0.01em",lineHeight:1.1,flexShrink:0}}>{card.postTime}</div>
           )}
+          {/* [SCHEDULE-REALISM] Today's slot has already gone by. Says so
+              instead of quietly moving the time - the hour is a strategic
+              call, and the creator is the one who decides whether to post
+              late or let it ride to tomorrow. */}
+          {card.postTime && postTimeHasPassed(card) && (
+            <span title="This posting window has already passed today"
+              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.coral,background:B.coralSoft,borderRadius:99,padding:"3px 9px",lineHeight:1,flexShrink:0}}>{"window passed"}</span>
+          )}
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{card.day + " · " + card.platform}</div>
           {saved && (
             <span aria-label="Saved to vault" title="Saved"
@@ -6501,6 +6543,12 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
               <ScanExtra label="On screen" value={r.overlay_text}/>
               <ScanExtra label="Sticker" value={r.sticker_idea}/>
               <ScanExtra label="Audio" value={r.audio_idea}/>
+              {/* [LIVE-PLAYBOOK] The other half of the verdict. Scan called the
+                  platform and never the timing, while peak_times sat in the
+                  playbook reaching only the full plan. Omitted by the server
+                  when the playbook has no peak window for the chosen platform,
+                  so ScanExtra's empty guard is the whole empty state. */}
+              <ScanExtra label="Post when" value={r.post_when}/>
               {Array.isArray(r.slides)&&r.slides.filter(function(s){return typeof s==="string"&&s.trim();}).length>0&&(
                 <div style={{background:B.bg,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>Carousel slides</div>
@@ -10911,6 +10959,11 @@ function App() {
       followers:    followers,
       context:      context || "",
       weekContext:  weekContext || "",
+      // [REGEN-CONTEXT] The featured link travels with the regen so a
+      // replacement card built for the open-house slot still knows the open
+      // house exists. The server re-fetches it; the client never sends the
+      // fetched text.
+      listingUrl:   (listingUrl || "").trim() || undefined,
       strategy:     strategy || null,
       keptCards:    keptCards,
       replaceDayLabels: replaceDayLabels,

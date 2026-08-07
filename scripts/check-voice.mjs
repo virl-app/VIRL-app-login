@@ -149,10 +149,13 @@ for (const s of SURFACES) {
   assert(/RATIONALE VOICE/.test(planSys),          "Plan: missing RATIONALE_RULES");
   assert(/rides the POV-tour trend/.test(planSys), "Plan: missing the ON-VOICE calibration example");
   assert(/silently review your draft/.test(planSys), "Plan: missing SELF_CHECK_RUBRIC");
-  // The structural trend rule rides the USER prompt (via planTrendsContext),
-  // and with no trends passed it must emit the explicit empty-state form.
-  assert(/TREND GROUNDING — STRUCTURAL/.test(planUser), "Plan: missing structural trend-grounding rule");
-  assert(/no trend research is available/.test(planUser), "Plan: missing trend empty-state (no-research) instruction");
+  // Trend grounding moved out of the plan's user prompt and into the shared
+  // system tier so every surface inherits it — the full matrix (rule present,
+  // data rendered, absence named) now lives in scripts/check-strategist.mjs.
+  // What stays here is the plan-specific half: with no trends passed, the plan
+  // must still be told to omit the `trend` field rather than fill it.
+  assert(/TREND GROUNDING — STRUCTURAL/.test(planSys), "Plan: trend-grounding rule is not in the system prompt");
+  assert(/omit the `trend` field on every card/i.test(planUser), "Plan: missing the trend empty-state instruction for cards");
 }
 
 // Empty-safe: a brand-new profile with no voice reference must still build a

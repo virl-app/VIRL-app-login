@@ -27,7 +27,7 @@
 // persona zones). Plain product voice, no first-person strategist, no
 // opinions. A strategist with opinions is alarming when confirming a charge.
 //   paymentFailed, renewalUpcoming, passwordChanged, accountDeleted,
-//   playbookDraftsReady (admin-internal).
+//   playbookRefreshReport (admin-internal).
 //
 // When adding a template: classify it here first, then write it in that one
 // voice. If it doesn't fit a bucket, it's probably two messages.
@@ -304,26 +304,78 @@ export function weeklyReset({ name, unsubscribeToken }) {
   };
 }
 
-// 9. Playbook drafts ready — admin-only notification fired by the monthly
-// playbook-refresh cron when one or more drafts are pending review.
-export function playbookDraftsReady({ count, summaries }) {
-  const headline = count === 1
-    ? "One playbook draft is ready for review."
-    : `${count} playbook drafts are ready for review.`;
+// 9. Playbook refresh report — admin-only notification fired by the monthly
+// playbook-refresh cron.
+//
+// [PLAYBOOK-ALERT] This used to be a drafts-only email, sent only when
+// `drafted > 0`. `errored` was counted, returned in the cron's JSON response,
+// and never shown to a human — so from outside, "research found no changes
+// this month" and "research has been broken since April" produced exactly the
+// same observable: no email. The playbook is the strategist half's whole
+// platform layer, and it could rot for a year without anyone noticing.
+//
+// So the email is now a RUN REPORT, and silence means the run genuinely had
+// nothing to say. Three things can put it in the inbox, in the order the
+// subject line reflects: a platform errored, drafts are waiting, or drafts
+// have been waiting too long. Failures lead, because a failure is the one
+// state nobody would otherwise go looking for.
+export function playbookRefreshReport({ drafted, summaries, errored, errors, stalePending, stalePendingDays }) {
+  const draftCount  = drafted || 0;
+  const errorCount  = errored || 0;
+  const staleCount  = stalePending || 0;
+  const staleDays   = stalePendingDays || 0;
+
+  const headline = errorCount > 0
+    ? (errorCount === 1
+        ? "One platform failed this month's playbook research."
+        : `${errorCount} platforms failed this month's playbook research.`)
+    : (draftCount > 0
+        ? (draftCount === 1
+            ? "One playbook draft is ready for review."
+            : `${draftCount} playbook drafts are ready for review.`)
+        : "Playbook drafts are still waiting on you.");
+
+  const subject = errorCount > 0
+    ? `VIRL playbook research failed on ${errorCount} platform${errorCount === 1 ? "" : "s"}`
+    : (draftCount > 0
+        ? `${draftCount} VIRL playbook draft${draftCount === 1 ? "" : "s"} pending`
+        : `${staleCount} VIRL playbook draft${staleCount === 1 ? "" : "s"} waiting ${staleDays}+ days`);
+
+  const errorList = (errors || [])
+    .map(e => `<li style="margin:6px 0"><strong>${esc(e.platform)}:</strong> ${esc(e.reason || "research returned nothing usable")}</li>`)
+    .join("");
+  const errorText = (errors || [])
+    .map(e => `  - ${e.platform}: ${e.reason || "research returned nothing usable"}`)
+    .join("\n");
   const summaryList = (summaries || [])
-    .map(s => `<li style="margin:6px 0"><strong>${s.platform}:</strong> ${s.summary || "Updates proposed."}</li>`)
+    .map(s => `<li style="margin:6px 0"><strong>${esc(s.platform)}:</strong> ${esc(s.summary || "Updates proposed.")}</li>`)
     .join("");
   const summaryText = (summaries || [])
     .map(s => `  - ${s.platform}: ${s.summary || "Updates proposed."}`)
     .join("\n");
-  const body = `
-    <p style="margin:0 0 12px">VIRL's monthly playbook research surfaced ${count === 1 ? "a change" : "changes"} from trusted sources you should review before ${count === 1 ? "it" : "they"} reach the LLM.</p>
-    ${summaryList ? `<ul style="margin:0 0 16px;padding-left:18px">${summaryList}</ul>` : ""}
+
+  const errorBlock = errorCount > 0 ? `
+    <p style="margin:0 0 8px"><strong style="color:${COLOR.coral}">Research failed on ${errorCount} platform${errorCount === 1 ? "" : "s"}.</strong> Those platforms kept their existing playbook rows, which now go another month unverified. Prompts stop calling a row authoritative once it passes 90 days.</p>
+    ${errorList ? `<ul style="margin:0 0 16px;padding-left:18px">${errorList}</ul>` : ""}` : "";
+
+  const draftBlock = draftCount > 0 ? `
+    <p style="margin:0 0 8px">${draftCount === 1 ? "One change was" : `${draftCount} changes were`} surfaced from trusted sources and staged for review before reaching the LLM.</p>
+    ${summaryList ? `<ul style="margin:0 0 16px;padding-left:18px">${summaryList}</ul>` : ""}` : "";
+
+  const staleBlock = staleCount > 0 ? `
+    <p style="margin:0 0 12px"><strong>${staleCount} draft${staleCount === 1 ? " has" : "s have"} been pending for ${staleDays}+ days.</strong> An unapproved draft changes nothing — the live playbook keeps serving the old values and ages toward the staleness threshold as if the research never ran.</p>` : "";
+
+  const body = `${errorBlock}${draftBlock}${staleBlock}
     <p style="margin:0">Open the Dashboard to approve or reject each draft. Drafts that aren't approved stay archived without affecting the live playbook.</p>`;
+
   return {
-    subject: count === 1 ? "1 VIRL playbook draft pending" : `${count} VIRL playbook drafts pending`,
-    html:    layout({ eyebrow: "Admin", headline, body, primaryCta: { href: APP_URL + "/?tab=admin", label: "Review drafts" } }),
-    text:    `${headline}\n\nVIRL's monthly playbook research surfaced ${count === 1 ? "a change" : "changes"} from trusted sources.\n\n${summaryText}\n\nOpen ${APP_URL} → Dashboard to review.`,
+    subject,
+    html: layout({ eyebrow: "Admin", headline, body, primaryCta: { href: APP_URL + "/?tab=admin", label: "Review drafts" } }),
+    text: `${headline}\n\n`
+      + (errorCount > 0 ? `Research failed on ${errorCount} platform(s) — those rows go another month unverified:\n${errorText}\n\n` : "")
+      + (draftCount > 0 ? `Drafts staged:\n${summaryText}\n\n` : "")
+      + (staleCount > 0 ? `${staleCount} draft(s) pending ${staleDays}+ days — an unapproved draft changes nothing.\n\n` : "")
+      + `Open ${APP_URL} → Dashboard to review.`,
   };
 }
 

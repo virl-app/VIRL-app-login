@@ -12,8 +12,9 @@
 
 import { researchPlatform } from "../_lib/playbook-research.js";
 import { sendEmail }        from "../_lib/email-send.js";
-import { playbookDraftsReady } from "../_lib/email-templates.js";
+import { playbookRefreshReport } from "../_lib/email-templates.js";
 import { cronAuthorized }   from "../_lib/cron-auth.js";
+import { PLAYBOOK_STALE_DAYS } from "../_lib/playbook.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -70,6 +71,35 @@ function buildProposed(currentEntry, proposedChanges) {
   return next;
 }
 
+// [PLAYBOOK-ALERT] How long a pending draft may sit before the run report
+// nags about it. A draft nobody approves is indistinguishable, from the live
+// playbook's point of view, from research that never ran: the old row keeps
+// serving and keeps aging toward PLAYBOOK_STALE_DAYS, at which point the
+// prompts withdraw its authority. The cron is monthly, so 30 days means the
+// nag fires on the first run after a draft was skipped — one reminder per
+// missed cycle, which is the slowest cadence that still catches it before the
+// staleness window closes.
+const PENDING_DRAFT_NAG_DAYS = 30;
+
+// Count drafts still sitting in `pending` past the nag window. Best-effort: a
+// failed count must never block the run report the errors above depend on, so
+// it returns 0 rather than throwing.
+async function countStalePendingDrafts(nowMs) {
+  const cutoff = new Date(nowMs - PENDING_DRAFT_NAG_DAYS * 86400000).toISOString();
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/playbook_drafts?status=eq.pending&created_at=lt.${encodeURIComponent(cutoff)}&select=id`,
+      { headers: Object.assign({}, SUPABASE_HEADERS, { Prefer: "count=exact" }) }
+    );
+    if (!res.ok) return 0;
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows.length : 0;
+  } catch (e) {
+    console.error("[cron/playbook-refresh] stale-draft count failed", e && e.message);
+    return 0;
+  }
+}
+
 async function insertDraft(platform, proposed, diff, reasoning, sources) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/playbook_drafts`, {
     method:  "POST",
@@ -107,9 +137,21 @@ export default async function handler(req, res) {
   }
 
   const summaries = []; // for the admin notification email
+  // [PLAYBOOK-ALERT] Failures are now collected with a reason, not just
+  // tallied. `errored` was already counted and returned in the JSON response —
+  // which nothing reads — so the number existed and the signal didn't. The
+  // reasons make the email actionable: "web_search returned nothing" and
+  // "Supabase insert rejected the row" are different outages with different
+  // fixes, and a bare count can't tell them apart.
+  const errors = [];
   let drafted = 0;
   let skipped = 0;
   let errored = 0;
+
+  function recordError(platform, reason) {
+    errored++;
+    errors.push({ platform, reason });
+  }
 
   for (const platform of PLATFORMS) {
     const currentEntry = playbook[platform];
@@ -123,11 +165,11 @@ export default async function handler(req, res) {
     try { result = await researchPlatform(platform, currentEntry); }
     catch (e) {
       console.error("[cron/playbook-refresh] research threw for", platform, e.message);
-      errored++;
+      recordError(platform, "research threw: " + (e && e.message ? e.message : "unknown error"));
       continue;
     }
 
-    if (!result) { errored++; continue; }
+    if (!result) { recordError(platform, "research returned no usable result"); continue; }
     if (result.no_changes_needed === true) { skipped++; continue; }
 
     const proposedChanges = result.proposed_changes || {};
@@ -143,9 +185,15 @@ export default async function handler(req, res) {
       drafted++;
       summaries.push({ platform, summary: reasoning });
     } else {
-      errored++;
+      recordError(platform, "changes were researched but staging the draft failed");
     }
   }
+
+  // [PLAYBOOK-ALERT] Approval is the last link in this chain and the only one
+  // with a human in it, so it gets the same treatment as the automated links:
+  // a draft that has sat unapproved for a month is reported, not assumed
+  // handled.
+  const stalePending = await countStalePendingDrafts(Date.now());
 
   // Resolve admin user id so the email send dedupe is tied to that account.
   let adminUserId = null;
@@ -162,14 +210,29 @@ export default async function handler(req, res) {
 
   // Notification email — one per cron run, dedupe-keyed by the run date so
   // re-running the cron the same day is a no-op.
+  //
+  // [PLAYBOOK-ALERT] The gate was `drafted > 0`, which made a total research
+  // outage look exactly like a quiet month: no drafts, no email, no signal.
+  // It now fires on any of the three states worth a human's attention —
+  // something failed, something is staged, or something staged has been
+  // ignored too long. A run where research succeeded and proposed no changes
+  // still sends nothing, which is the only case where silence is honest.
+  const shouldNotify = drafted > 0 || errored > 0 || stalePending > 0;
   let emailed = false;
-  if (drafted > 0 && adminUserId) {
-    const tpl = playbookDraftsReady({ count: drafted, summaries });
-    const dedupeKey = "playbook_drafts_" + new Date().toISOString().slice(0, 10);
+  if (shouldNotify && adminUserId) {
+    const tpl = playbookRefreshReport({
+      drafted,
+      summaries,
+      errored,
+      errors,
+      stalePending,
+      stalePendingDays: PENDING_DRAFT_NAG_DAYS,
+    });
+    const dedupeKey = "playbook_refresh_" + new Date().toISOString().slice(0, 10);
     emailed = await sendEmail({
       userId:    adminUserId,
       to:        ADMIN_EMAIL,
-      template:  "playbook_drafts_ready",
+      template:  "playbook_refresh_report",
       dedupeKey,
       subject:   tpl.subject,
       html:      tpl.html,
@@ -178,5 +241,8 @@ export default async function handler(req, res) {
     });
   }
 
-  return res.status(200).json({ ok: true, drafted, skipped, errored, emailed });
+  // `errors` rides the response too. It is still not a substitute for the
+  // email — nothing polls this endpoint's body — but when someone IS looking
+  // at a run, the reasons beat a bare count.
+  return res.status(200).json({ ok: true, drafted, skipped, errored, errors, stalePending, staleDays: PLAYBOOK_STALE_DAYS, emailed });
 }
