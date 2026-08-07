@@ -83,11 +83,24 @@ function voiceCorrectionInstruction(drift) {
 // plan_partial / regen aren't listed: they inherit the parent plan's trend
 // block via the client-supplied trendsSnapshot rather than rebuilding it, so a
 // single-card regen stays consistent with the rest of the plan.
+// [TREND-GROUNDING] script / long_post / blog_post were absent here, so no
+// trend data was ever COLLECTED for them — while their prompts still emitted
+// prose that could assert what was trending. Uncollected read as unavailable,
+// and unavailable read as "answer from memory." They are eligible now; the
+// prompt builders render the named empty state on any week the pipeline comes
+// back dry, so the failure mode is a stated absence rather than silence.
+//
+// caption_remix stays out deliberately: the request carries only the text to
+// rewrite, with no platform to query the pipeline with (see
+// pickInlinePlatforms). Its builder renders the empty state unconditionally.
 const FRESH_TRENDS_TYPE = {
   plan:             'plan',
   scan_image:       'scan',
   scan_video_frame: 'scan',
   caption:          'caption',
+  script:           'script',
+  long_post:        'long_post',
+  blog_post:        'blog_post',
 };
 
 // Rate-limit ceilings for /api/chat. Tunable; the credit cap is the wallet
@@ -789,9 +802,15 @@ async function checkChatRateLimit(userId) {
 // DB trend pipeline for, per gen type:
 //   - plan / plan_partial:    user's selected platforms in this request
 //   - caption:                the single platform being captioned
-//   - scan_image / video:     user's profile.myPlatforms (no per-request
-//                             platform list — scan is multi-platform by
-//                             design). Empty → no trend context built.
+//   - script:                 the platform of the card being scripted
+//   - long_post:              LinkedIn — the only channel this surface writes for
+//   - blog_post / scan:       user's profile.myPlatforms (no per-request
+//                             platform list). A blog has no platform of its
+//                             own, but "what is moving in this creator's niche"
+//                             is still topic-level signal for it, and the block
+//                             is platform-labelled so any reference the article
+//                             makes stays checkable. Empty → no trend context
+//                             built, and the builder states the absence.
 function pickInlinePlatforms(generationType, params, profile) {
   if (generationType === 'plan' || generationType === 'plan_partial') {
     return Array.isArray(params && params.platforms) ? params.platforms : [];
@@ -799,7 +818,15 @@ function pickInlinePlatforms(generationType, params, profile) {
   if (generationType === 'caption') {
     return (params && params.platform) ? [params.platform] : [];
   }
-  if (generationType === 'scan_image' || generationType === 'scan_video_frame') {
+  if (generationType === 'script') {
+    const p = params && params.card && params.card.platform;
+    return p ? [p] : [];
+  }
+  if (generationType === 'long_post') {
+    return ['LinkedIn'];
+  }
+  if (generationType === 'blog_post'
+      || generationType === 'scan_image' || generationType === 'scan_video_frame') {
     return Array.isArray(profile && profile.myPlatforms) ? profile.myPlatforms : [];
   }
   return [];
@@ -1231,10 +1258,15 @@ export default async function handler(req, res) {
     // v1). Loader returns {} on any infra failure so the get-for-niche
     // call below falls through to the hardcoded safe-defaults floor.
     loadComplianceRules(),
-    // [LISTING-INTAKE] Server-side fetch of the creator's pasted link
-    // (plan generation only). Fail-open null — a dead link never blocks
-    // the plan; the UI told the user it's best-effort.
-    (generationType === "plan" && params && params.listingUrl)
+    // [LISTING-INTAKE] Server-side fetch of the creator's pasted link.
+    // Fail-open null — a dead link never blocks the plan; the UI told the
+    // user it's best-effort.
+    // [REGEN-CONTEXT] plan_partial fetches it too. It used to be plan-only,
+    // so regenerating the card built around the creator's open house produced
+    // a replacement that had never heard of the open house. Costs one extra
+    // fetch per regen; the alternative is trusting the client to hand back the
+    // fetched text, which this path deliberately never does.
+    ((generationType === "plan" || generationType === "plan_partial") && params && params.listingUrl)
       ? fetchListingContext(params.listingUrl)
       : Promise.resolve(null),
   ]);

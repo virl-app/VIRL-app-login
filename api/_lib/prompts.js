@@ -10,6 +10,11 @@ import { formatPerformanceForPrompt } from "./performance-insights.js";
 import { formatObservancesForPrompt } from "./holidays.js";
 import { computeVoiceFingerprint, formatFingerprintForPrompt } from "./voice-drift.js";
 import { formatDenylistForPrompt } from "./personal-denylist.js";
+// [PLAYBOOK-AGE] Staleness of the live playbook rows. Every prompt block that
+// quotes the playbook introduces it through playbookAuthorityFraming below, so
+// the authority a block claims is derived from `updated_at` rather than
+// hardcoded into the copy.
+import { playbookAge, PLAYBOOK_STALE_DAYS } from "./playbook.js";
 
 // [POSTFREQ-OPTIMAL] Maps the user's profile postFreq selection +
 // selected-platforms count into a target card range for the plan. Old
@@ -171,7 +176,7 @@ import {
 // circular-import shape as compliance.js (niche-playbook.js imports
 // nicheCategory back from this module) — safe because both sides only
 // reference the other's exports at call time, never at module eval.
-import { formatNichePlaybookForPrompt } from "./niche-playbook.js";
+import { formatNichePlaybookForPrompt, formatNicheModelForPrompt } from "./niche-playbook.js";
 
 // ── Models ─────────────────────────────────────────────────────────────────
 export const MODEL_SONNET    = "claude-sonnet-4-6";
@@ -198,6 +203,43 @@ export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1,
 // a compact, LLM-friendly block.
 function arr(v) { return Array.isArray(v) ? v : []; }
 
+// [PLAYBOOK-AGE] How every playbook block introduces itself to the model.
+//
+// The framing used to be a constant — longPostPlaybookContext called the entry
+// "current best practice from monthly research — treat these as authoritative",
+// and planPlaybookContext said "Follow these per-platform rules", with nothing
+// anywhere reading `updated_at`. A row that had not been touched in two years
+// made exactly the same claim as one approved yesterday, and the model has no
+// way to tell them apart. So the claim is now a function of the age of the
+// slice being quoted:
+//
+//   fresh   — state the age and keep the authority claim
+//   stale   — state the age, name the threshold, and WITHDRAW the claim: past
+//             90 days these are directional history, and asserting them to the
+//             creator as today's rule is the failure mode
+//   unknown — neutral. No authority claim, no warning. See playbookAge on why
+//             a missing timestamp must not read as an old one.
+//
+// Lives in the user prompt on every surface that uses it, so the day-by-day
+// wording change costs nothing at the cache tier.
+function playbookAuthorityFraming(playbook, platforms) {
+  const age = playbookAge(playbook, platforms);
+  if (!age.known) return "per-platform mechanics from VIRL's playbook";
+  if (!age.stale) {
+    return "verified " + age.days + " day" + (age.days === 1 ? "" : "s") + " ago by VIRL's monthly platform research — treat as authoritative where it conflicts with generic social-media advice";
+  }
+  return "STALE — last verified " + age.days + " days ago on " + age.date + ", past VIRL's " + PLAYBOOK_STALE_DAYS + "-day freshness window. Use as a directional starting point, NOT as current best practice, and never state any number here to the creator as today's rule";
+}
+
+// Compact staleness suffix for the one-line playbook blocks (script, caption)
+// that never made an authority claim to withdraw. Empty when the slice is
+// fresh or its age is unknown, so the healthy path costs zero tokens.
+function playbookStaleNote(playbook, platforms) {
+  const age = playbookAge(playbook, platforms);
+  if (!age.known || !age.stale) return "";
+  return " (these numbers were last verified " + age.days + " days ago — directional, not current)";
+}
+
 function platformPlaybookBlock(entry) {
   if (!entry) return "";
   const lines = [];
@@ -223,7 +265,7 @@ function planPlaybookContext(playbook, selectedPlatforms) {
     if (block) blocks.push("PLATFORM PLAYBOOK FOR " + p + ":\n" + block);
   }
   if (!blocks.length) return "";
-  return "\n\nFollow these per-platform rules when picking post counts, posting times, hashtag counts, formats, and what each post optimises for:\n\n" + blocks.join("\n\n");
+  return "\n\nPer-platform rules for post counts, posting times, hashtag counts, formats, and what each post optimises for — " + playbookAuthorityFraming(playbook, selectedPlatforms) + ":\n\n" + blocks.join("\n\n");
 }
 
 function scriptPlaybookContext(playbook, platform) {
@@ -235,7 +277,7 @@ function scriptPlaybookContext(playbook, platform) {
   if (arr(entry.top_signals).length)     lines.push("Optimise for these signals: " + entry.top_signals.join(", "));
   if (arr(entry.format_priority).length) lines.push("Preferred formats: "          + entry.format_priority.join(", "));
   if (!lines.length) return "";
-  return " " + platform.toUpperCase() + " PLAYBOOK: " + lines.join(" | ") + ".";
+  return " " + platform.toUpperCase() + " PLAYBOOK: " + lines.join(" | ") + "." + playbookStaleNote(playbook, [platform]);
 }
 
 function captionPlaybookContext(playbook, platform) {
@@ -246,21 +288,48 @@ function captionPlaybookContext(playbook, platform) {
   if (entry.hashtag_count)             lines.push(entry.hashtag_count + " hashtags" + (entry.hashtag_mix ? " (" + entry.hashtag_mix + ")" : ""));
   if (arr(entry.top_signals).length)   lines.push("optimise for " + entry.top_signals.join(", "));
   if (!lines.length) return "";
-  return " " + platform.toUpperCase() + " PLAYBOOK: " + lines.join("; ") + ".";
+  return " " + platform.toUpperCase() + " PLAYBOOK: " + lines.join("; ") + "." + playbookStaleNote(playbook, [platform]);
 }
 
+// [LIVE-PLAYBOOK] long_post used to state its own hashtag count ("3-5
+// LinkedIn hashtags") and its own see-more fold ("~210 characters") in the
+// schema line, while the playbook — the thing monthly research actually
+// refreshes — sat in scope unread. Two numbers claiming to be the same fact,
+// and the stale one won. Everything numeric this surface asserts now comes
+// from the entry below, with the old constants demoted to fallbacks for the
+// cold-start case where the playbook table is empty.
 function longPostPlaybookContext(playbook) {
   const entry = playbook && playbook.LinkedIn;
   if (!entry) return "";
   const lines = [];
   if (entry.hook_window)                 lines.push("Hook window: " + entry.hook_window);
+  if (entry.caption_limit)               lines.push("Body character limit: " + entry.caption_limit + " chars (past this LinkedIn truncates)");
+  if (entry.hashtag_count)               lines.push("Hashtags: " + entry.hashtag_count + (entry.hashtag_mix ? " (" + entry.hashtag_mix + ")" : ""));
+  if (entry.peak_times)                  lines.push("Peak posting times: " + entry.peak_times);
   if (arr(entry.top_signals).length)     lines.push("Optimise for these signals: " + entry.top_signals.join(", "));
   if (arr(entry.format_priority).length) lines.push("Preferred formats: "          + entry.format_priority.join(", "));
   if (entry.notes)                       lines.push("Notes: "                      + entry.notes);
   if (!lines.length) return "";
-  return "\n\nLINKEDIN PLAYBOOK (current best practice from monthly research — treat these as authoritative when they conflict with generic long-form advice): " + lines.join(" | ") + ".";
+  return "\n\nLINKEDIN PLAYBOOK (" + playbookAuthorityFraming(playbook, ["LinkedIn"]) + "): " + lines.join(" | ") + ".";
 }
 
+// [LIVE-PLAYBOOK] The see-more fold long_post writes its hook against. The
+// playbook's `hook_window` is the researched value; the literal character
+// count is only the fallback for an empty playbook table. Returned as a
+// phrase so the caller can drop it straight into the structure copy.
+const LONG_POST_FOLD_FALLBACK = "around 210 characters";
+function longPostFold(playbook) {
+  const entry = playbook && playbook.LinkedIn;
+  const hw = entry && entry.hook_window;
+  return (typeof hw === "string" && hw.trim()) ? hw.trim() : LONG_POST_FOLD_FALLBACK;
+}
+
+// [LIVE-PLAYBOOK] Scan picks its own platform, so it needs every platform's
+// numbers, not just one — and it needs the numbers, not only the signals.
+// It previously got signals + formats here while its own in-prompt sizing
+// table asserted "within the platform's caption_limit", a value this
+// function never passed. `peak_times` is the other half: Scan renders a
+// verdict ("I'd post this — my call: Instagram") and had no way to say when.
 function scanPlaybookContext(playbook) {
   if (!playbook) return "";
   const platforms = Object.keys(playbook);
@@ -269,11 +338,18 @@ function scanPlaybookContext(playbook) {
   for (const p of platforms) {
     const entry = playbook[p];
     if (!entry) continue;
+    const parts = [];
     const signals = arr(entry.top_signals).join(", ");
     const formats = arr(entry.format_priority).join(", ");
-    lines.push("- " + p + ": rewards " + (signals || "engagement") + (formats ? "; favours " + formats : "") + ".");
+    parts.push("rewards " + (signals || "engagement"));
+    if (formats)             parts.push("favours " + formats);
+    if (entry.hashtag_count) parts.push("hashtags: " + entry.hashtag_count + (entry.hashtag_mix ? " (" + entry.hashtag_mix + ")" : ""));
+    if (entry.caption_limit) parts.push("caption limit: " + entry.caption_limit + " chars");
+    if (entry.peak_times)    parts.push("peak times: " + entry.peak_times);
+    lines.push("- " + p + ": " + parts.join("; ") + ".");
   }
-  return "\n\nPLATFORM SIGNALS (use to inform your best-platform recommendation):\n" + lines.join("\n");
+  if (!lines.length) return "";
+  return "\n\nPLATFORM PLAYBOOK (" + playbookAuthorityFraming(playbook, platforms) + ") — use it to pick the best platform AND to size what you write for it:\n" + lines.join("\n");
 }
 
 // Hashtag count for the prompt's JSON schema. Falls back to a sensible
@@ -318,28 +394,47 @@ function hashtagSchema(slots) {
 // creator can verify a cited trend against the in-app trends list; they cannot
 // verify a vibe, and an invented trend is the single fastest way to lose the
 // "my strategist actually watches my niche" premise.
-const TREND_SOURCE_RULE = "TREND GROUNDING — STRUCTURAL. The TRENDS block below is your ONLY source for what is trending. Do NOT draw on your own background knowledge of platform trends, sounds, formats, or algorithm behavior — your training data is months old and this creator's week is not. This applies to ALL text you emit, not just the `trend` field: never assert in an insight, description, or hook that something is 'trending right now', 'having a moment', or 'what the algorithm is favoring' unless it appears below. Never invent an engagement statistic.";
+// The rule is deliberately SELF-SUFFICIENT: it states what to do when no
+// TRENDS block appears, so it holds even on a surface whose data render is
+// missing. That is what makes it safe to put in the shared system tier, which
+// is where it now lives — appended by composeSystemPrompt and by buildPlan's
+// own shared block, so every surface in BUILDERS carries it and no future one
+// can be added without it. Its previous home was buildPlan's USER prompt, so
+// it reached exactly one surface: plan_partial (which reuses only the system
+// prompt), caption, script, long_post, blog_post and both scan surfaces all
+// emitted prose with no grounding rule at all, and Scan's schema went as far
+// as soliciting a trending-audio claim it had no basis for.
+//
+// Shared tier is correct on cache grounds too: byte-identical for every user
+// and every surface, so it is paid for once per cache window rather than per
+// request.
+const TREND_SOURCE_RULE = "TREND GROUNDING — STRUCTURAL. A TRENDS block may appear in your task prompt. If it does, it is your ONLY admissible source for what is trending. If it does NOT appear, or it says there is no trend data, then you have nothing trending to cite and must cite nothing. Either way: do NOT draw on your own background knowledge of platform trends, sounds, formats, or algorithm behavior — your training data is months old and this creator's week is not. This applies to ALL text you emit, not just a dedicated `trend` field: never assert in a caption, hook, insight, description, script line, slide, or body paragraph that something is 'trending right now', 'having a moment', 'blowing up', or 'what the algorithm is favoring' unless it appears in that block. Never name a trending sound or trending audio you cannot point at there. Never invent an engagement statistic.";
 
-function planTrendsContext(trends, _selectedPlatforms) {
+// [TREND-GROUNDING] ONE renderer for every surface's trend DATA. The RULE is
+// structural (TREND_SOURCE_RULE, shared system tier); this supplies the data
+// the rule points at and — when there is none — the NAMED empty state.
+//
+// Silence is the failure mode, which is why this never returns "". The three
+// per-surface renderers this replaces (plan / caption / scan) had drifted into
+// three different answers to the same question: only plan named its empty
+// state, while caption and scan returned nothing at all, so on a quiet week
+// their prompts simply had no trend section — which reads to a model as an
+// omission it should helpfully fill from memory. That is the exact failure the
+// rule exists to prevent, arriving through the gap where the rule wasn't.
+//
+// `lead` frames how this surface should USE trends; `emptyTail` says what to
+// do INSTEAD on this surface when there are none. Both optional — the defaults
+// are correct for any prose surface.
+function trendsContext(trends, opts) {
   const block = (typeof trends === "string") ? trends.trim() : "";
-  // [TREND-GROUNDING] Explicit empty state instead of silence. When the trend
-  // pipeline has nothing for this creator (fetch failed, cold niche, quiet
-  // week), the prompt must NAME the absence — otherwise the grounding rule
-  // references "the TRENDS block below" with no such block, which reads as an
-  // oversight and invites the model to fill the gap from stale memory.
+  const o = opts || {};
   if (!block) {
-    return "\n\n" + TREND_SOURCE_RULE
-      + "\n\nTRENDS: no trend research is available for this week. That means NO card may cite a trend. Omit the `trend` field on every card and make zero claims about what is currently trending. Build the week on the creator's own strategy, cadence, and logged results instead — a plan with no trend hooks is fine; an invented one is not.";
+    return "\n\nTRENDS: NONE. No trend research reached this prompt, so you have no data on what is currently trending for this creator. Make ZERO claims about trends, trending sounds, trending audio, trending formats, or what the algorithm is currently favoring, in any field."
+      + (o.emptyTail ? " " + o.emptyTail : "");
   }
-  return "\n\n" + TREND_SOURCE_RULE
-    + "\n\nWeave the current trends below into the plan where they fit naturally. Don't force them — skip a trend rather than retrofit it onto an off-brand post.\n\n"
-    + block;
-}
-
-function captionTrendsContext(trends, _platform) {
-  const block = (typeof trends === "string") ? trends.trim() : "";
-  if (!block) return "";
-  return "\n\n" + block + "\n\nIf any of these naturally apply to the topic, lean into them. Otherwise ignore.";
+  return "\n\n" + (o.lead || "CURRENT TRENDS — the only trends you may cite. Lean into one where it genuinely fits this piece; skip it rather than retrofit it onto off-brand content.")
+    + "\n\n" + block
+    + (o.tail ? "\n\n" + o.tail : "");
 }
 
 // Strategy `success_metric` can be either a string (legacy plans + the
@@ -578,11 +673,14 @@ function planHistoryContext(history) {
 }
 
 function scanTrendsContext(trends) {
-  const block = (typeof trends === "string") ? trends.trim() : "";
-  if (!block) return "";
   // Scan already reads platform signals from the playbook context, so trends
-  // are a supplementary tie-breaker layer here.
-  return "\n\n" + block + "\n\n(Use these signals to break ties when picking the best platform.)";
+  // are a supplementary tie-breaker layer here — but the empty case still has
+  // to be named, because this surface's schema asks for `audio_idea` and an
+  // unstated absence is what let it be answered from training data.
+  return trendsContext(trends, {
+    lead:      "CURRENT TRENDS — the only trends you may cite. Use them to break ties when picking the best platform, and as the ONLY source for a specific trending sound in `audio_idea`:",
+    emptyTail: "In particular, `audio_idea` must describe the KIND of audio that fits (energy, tempo, genre) — it may not name a sound or claim anything is trending.",
+  });
 }
 
 // [SCAN-DETAILS] Optional free-text the creator types before scanning — any
@@ -996,7 +1094,15 @@ function buildSystemPrompt(profile, role, vaultPatterns, personalDenylist) {
 // creator gets byte-identical text, so it caches like the rest of the block.
 // Omit it only for surfaces with genuinely one register (see buildLogMetrics,
 // which has no persona at all).
-function composeSystemPrompt(profile, role, compliance, vaultPatterns, personalDenylist, registers) {
+// [NICHE-EVERYWHERE] `niche` is the user-facing label (params.niche — the
+// client injects it on every non-plan call, same as it does for compliance).
+// It lands in the SHARED tier: formatNicheModelForPrompt depends on nothing
+// but the niche bucket, so every request from every creator in that bucket
+// gets byte-identical text and it caches exactly like the compliance block
+// beside it. Threading it through this ONE helper is what makes the niche
+// layer structural — every surface built here inherits it, and a surface added
+// later cannot be wired up without it.
+function composeSystemPrompt(profile, role, compliance, vaultPatterns, personalDenylist, registers, niche) {
   const sp = buildSystemPrompt(profile, role, vaultPatterns, personalDenylist);
   const split = registers
     ? "\n\n" + registerSplitFor(registers.virl, registers.creator)
@@ -1009,7 +1115,13 @@ function composeSystemPrompt(profile, role, compliance, vaultPatterns, personalD
     // previously shipped with no review pass at all — including Scan, which
     // emits publishable copy. It sits in the cached tier, so the steady-state
     // token cost is the model's own review reasoning rather than the prompt.
-    shared:  sp.shared + split + buildComplianceBlock(compliance) + "\n\n" + selfCheckFor({}),
+    // [TREND-GROUNDING] The trend rule is structural: it rides the SHARED tier
+    // here so every surface built through this helper carries it, whether or
+    // not that surface renders a trend block. Putting it in a user prompt is
+    // how it came to reach exactly one surface — see TREND_SOURCE_RULE.
+    shared:  sp.shared + "\n\n" + TREND_SOURCE_RULE
+             + formatNicheModelForPrompt(niche)
+             + split + buildComplianceBlock(compliance) + "\n\n" + selfCheckFor({}),
     perUser: sp.perUser,
   };
 }
@@ -1150,7 +1262,10 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     ? formatOptimalDaysForPrompt(vaultPatterns.optimalDays)
     : "";
   const playbookCtx = planPlaybookContext(playbook, platformsArr);
-  const trendsCtx   = planTrendsContext(trends,   platformsArr);
+  const trendsCtx   = trendsContext(trends, {
+    lead:      "CURRENT TRENDS — the only trends any card may cite. Weave them into the plan where they fit naturally. Don't force them: skip a trend rather than retrofit it onto an off-brand post.",
+    emptyTail: "No card may cite a trend: omit the `trend` field on every card. Build the week on the creator's own strategy, cadence, and logged results instead — a plan with no trend hooks is fine; an invented one is not.",
+  });
   // [WEEK-NUMBER] plan-history.js now returns { weeks, weekNumber }.
   // weekNumber is calendar-based (weeks since the user's first plan week
   // + 1) — counting the returned summaries saturated at the fetch limit
@@ -1233,6 +1348,12 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   const sharedSystemPrompt = VIRL_PERSONA + "\n\n"
     + PLAN_REGISTER_SPLIT + "\n\n"
     + RATIONALE_RULES + "\n\n"
+    // [TREND-GROUNDING] Plan composes its own shared tier, so it needs the rule
+    // stated here as well — composeSystemPrompt covers every other surface. The
+    // trend DATA still arrives per-request via trendsCtx in the user prompt;
+    // only the rule is cached. plan_partial inherits this block verbatim, which
+    // is why the rule had to leave the user prompt to reach it at all.
+    + TREND_SOURCE_RULE + "\n\n"
     + "On this surface you're building the creator's week: a highly personalized 7-day social media content plan that builds on the weeks before it. "
     + "Always return valid JSON only — no markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
@@ -1616,6 +1737,32 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   const platformsLine = platformsArr.length ? platformsArr.join(", ") : "(the creator's selected platforms only)";
   const formatsLine   = formatsArr.length   ? formatsArr.join(", ")   : "(the creator's selected formats only)";
 
+  // [REGEN-CONTEXT] Everything below lives in buildPlan's USER prompt, and this
+  // builder reuses only buildPlan's SYSTEM prompt — so every one of these was
+  // silently absent from the replacement cards while the shared system block
+  // went on instructing the model to follow "the platform's playbook
+  // hashtag_count". The regenerated card was being judged against rules it
+  // could not see, on a 1-credit action creators use constantly.
+  //
+  // The business/listing context is the one a creator would actually notice:
+  // regenerate the card built around their open house and, without this, the
+  // replacement does not know the open house exists.
+  const partialNiche       = params.niche || "";
+  const partialPlaybookCtx = planPlaybookContext(playbook, platformsArr);
+  const partialNicheCtx    = formatNichePlaybookForPrompt(
+    partialNiche,
+    params.goal || "",
+    typeof params.goalSecondary === "string" ? params.goalSecondary : "",
+    params.followers || ""
+  );
+  const partialFormatMix   = getFormatGuidance(partialNiche);
+  const partialWeekContext = String(params.weekContext || "").trim().slice(0, 1200);
+  const partialListingCtx  = String(params.listingContext || "").trim().slice(0, 4000);
+  const partialTrendsCtx   = trendsContext(trends, {
+    lead:      "CURRENT TRENDS — the only trends a replacement card may cite. Same rule as the rest of this week's plan.",
+    emptyTail: "Omit the `trend` field on every replacement card.",
+  });
+
   const userPrompt = ""
     + "PARTIAL REGENERATION — you are rewriting specific cards within an EXISTING weekly plan."
     + "\n\nLOCKED STRATEGY (do not change this; do not re-emit it in your output):\n" + strategyBlock
@@ -1630,6 +1777,24 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
     + "\n  - Fit the locked strategy thesis and bet. The new cards should feel like they belong to the SAME week as the kept cards."
     + "\n  - Follow ALL the same per-card field rules from the system prompt (universal fields + format-specific fields based on the card's `format`)."
     + "\n  - Hashtag arrays still follow the platform's playbook hashtag_count. Strings still omit the '#' prefix."
+    // [REGEN-CONTEXT] Niche success model first — it says what winning looks
+    // like in this vertical, which the replacement card has to serve just as
+    // much as the card it swaps out did. Same order as buildPlan: what winning
+    // means, then how to format for it.
+    + partialNicheCtx
+    + "\n\nFORMAT MIX FOR THIS CREATOR'S INDUSTRY: " + partialFormatMix
+    + (partialWeekContext
+        ? "\n\n## WHAT IS HAPPENING IN THE CREATOR'S BUSINESS THIS WEEK\n"
+          + partialWeekContext
+          + "\n\nThe kept cards were built with this in view. A replacement card must fit the same week — if the slot it takes over was serving this context, the new card still serves it."
+        : "")
+    + (partialListingCtx
+        ? "\n\n## FEATURED THIS WEEK (from the creator's link)\n"
+          + partialListingCtx
+          + "\n\nIf the slot being replaced was built around this feature, the replacement stays built around it — a fresh angle on the same feature, not a different subject. Describe the property/product/event itself; NEVER describe or imply who should buy or attend (no demographic, family-status, religion, disability, or lifestyle targeting language)."
+        : "")
+    + partialPlaybookCtx
+    + partialTrendsCtx
     + "\n\nOutput ONLY this JSON shape — NO strategy field, NO stats field, NO preamble:"
     + "\n{\"cards\":[{...}, {...}]}"
     // [LEARN-FROM-EDITS] Voice signal from the user's recent diffs.
@@ -1660,7 +1825,7 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
 // this file states twice, setting success metrics from generic follower-tier
 // baselines while ignoring the creator's own logged results.
 // Restore from git history if the product position ever changes.
-function buildScript(params, profile, vaultPatterns, playbook, _trends, _history, recentEdits, compliance, personalDenylist) {
+function buildScript(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   const card = params.card || {};
   const platform = card.platform || "TikTok";
   const guide = SCRIPT_PLATFORM_GUIDE[platform] || "short-form social video 60 seconds.";
@@ -1674,10 +1839,19 @@ function buildScript(params, profile, vaultPatterns, playbook, _trends, _history
   const systemPrompt = composeSystemPrompt(profile, "content scriptwriter", compliance, vaultPatterns, personalDenylist, {
     virl:    ["sections[].tip", "shotList[]", "audioSuggestion"],
     creator: ["hook", "sections[].script", "cta", "onScreenText[]"],
-  });
+  }, params.niche);
   const userPrompt = "Write a complete ready-to-film script for this post: " + (card.title || "") + ". "
     + "Platform: " + platform + " — format guide: " + guide
-    + scriptPlaybookContext(playbook, platform) + " "
+    + scriptPlaybookContext(playbook, platform)
+    // [TREND-GROUNDING] A script is the surface where an invented trend does
+    // the most damage — the creator says it out loud, on camera, as their own
+    // claim. It took `_trends` and discarded it, and chat.js didn't collect
+    // trends for it at all, so "this sound is everywhere right now" could only
+    // ever have come from training data.
+    + trendsContext(trends, {
+        lead:      "CURRENT TRENDS — the only trends this script may reference. Build on one where it genuinely fits the post; skip it otherwise.",
+        emptyTail: "The creator says these words out loud as their own claim, so an invented trend costs them credibility with their audience, not just accuracy.",
+      }) + " "
     + "Return ONLY valid JSON: {\"duration\":\"estimated runtime\",\"hook\":\"exact opening 1-2 sentences in creator voice\",\"sections\":[{\"title\":\"section name\",\"script\":\"full word-for-word script in creator voice\",\"tip\":\"one CAPTURE direction for this section: what to film, where, and how to frame it — specific enough to shoot from, not generic advice\"}],\"cta\":\"closing call to action in creator voice\",\"onScreenText\":[\"overlay text 1\"],\"audioSuggestion\":\"music vibe that matches creator aesthetic\",\"shotList\":[\"3-6 shots to capture BEFORE filming the talking parts — each item is one clip: subject + location + action + framing (e.g. 'b-roll: hands pouring coffee, kitchen counter, morning light, close-up'). Phone-shootable. Include at least one no-face b-roll option usable with voiceover for camera-shy days. Order them so the creator can batch-film in one pass.\"],\"compliance_note\":\"OPTIONAL — short disclosure / disclaimer the creator should add to the post, only when one of the COMPLIANCE GUARDRAILS situations applies; omit the field otherwise\"}"
     // [VOICE-LEARNING] Was fetched by chat.js and then dropped on the
     // floor here (the param arrived as `_recentEdits`). See
@@ -1715,7 +1889,7 @@ function buildScript(params, profile, vaultPatterns, playbook, _trends, _history
 // generated posts above 3000 chars will still flow, just truncated
 // on the platform unless the user trims them. We let the model lean
 // long so creators have material to cut from, not stretch.
-function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _history, recentEdits, compliance, personalDenylist) {
+function buildLongPost(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   const card = params.card || {};
   // Length target. Users can specify "short" (~350 words / under
   // LinkedIn's see-more cutoff), "medium" (~600 words, default),
@@ -1740,7 +1914,7 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
   const systemPrompt = composeSystemPrompt(profile, "long-form LinkedIn writer", compliance, vaultPatterns, personalDenylist, {
     virl:    [],
     creator: ["hook", "body", "closing"],
-  });
+  }, params.niche);
 
   // [VIRL-POSTS-TAB] Two seed modes — plan-card seed (existing flow:
   // "Write Full Post" on a long_form_text plan card) OR standalone
@@ -1791,11 +1965,18 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
     + "Write a complete LinkedIn long-form text post that builds on the seed below. "
     + "This is a STANDALONE LinkedIn post — no image, no video, narrative writing only. "
     + "Target length: " + targetWords + " words. " + lengthHint
-    + longPostPlaybookContext(playbook) + "\n\n"
+    + longPostPlaybookContext(playbook)
+    // [TREND-GROUNDING] Long-form is where "everyone is talking about X right
+    // now" reads as the writer's own market read, so an unsourced one is a
+    // credibility claim the creator can't back if asked.
+    + trendsContext(trends, {
+        lead:      "CURRENT TRENDS — the only trends this post may reference as current. Use one where it strengthens the argument; a post that stands on its own is better than one propped on a forced trend.",
+        emptyTail: "Make the argument on specifics the creator can actually stand behind instead.",
+      }) + "\n\n"
     + seedBlock + guidanceBlock + "\n\n"
     + "FORMAT — LinkedIn-native long-form. The body is a single string with line breaks (\\n) between paragraphs and (occasionally) before a punch line. Do NOT use markdown headers, bold/italics, or bullet styling — LinkedIn strips most of it. White space between paragraphs IS the formatting.\n\n"
     + "Structure:\n"
-    + "  - HOOK: 1-2 sentences. First line MUST land before LinkedIn's 'see more' fold (~210 characters). Pattern-interrupt the feed; specific over clever. No emoji-heavy openers, no \"in today's world\" framings (already banned in STYLE_GUARD).\n"
+    + "  - HOOK: 1-2 sentences. First line MUST land before LinkedIn's 'see more' fold (" + longPostFold(playbook) + "). Pattern-interrupt the feed; specific over clever. No emoji-heavy openers, no \"in today's world\" framings (already banned in STYLE_GUARD).\n"
     + "  - BODY: 3-5 short paragraphs (1-3 sentences each) of substance. Specific examples, real numbers, a story beat, a contrarian take — earn the length. Don't pad with throat-clearing or rhetorical questions designed to pivot. Insert a one-line punch every 2-3 paragraphs to keep the eye moving.\n"
     + "  - CLOSING: 1-2 sentences. Resolve the through-line OR invite the reader's take in a way that's specific to THIS post, not generic (\"What's your take?\" is dead). If a CTA fits the creator's voice and the post's intent (e.g. a service-business closing pointing to their site), include it — otherwise skip it.\n\n"
     + "Voice fidelity is non-negotiable. Read the creator context, vault exemplars, voice fingerprint, and personal denylist above before drafting — every paragraph should sound like THIS creator, not generic thought-leadership LinkedIn slop.\n\n"
@@ -1803,9 +1984,13 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
     + "\"hook\":\"opening 1-2 sentences in creator voice — must hook before LinkedIn's see-more fold\","
     + "\"body\":\"the full body with \\n separating paragraphs\","
     + "\"closing\":\"final 1-2 sentences in creator voice\","
-    + "\"hashtags\":[\"3-5 LinkedIn hashtags, plain words no # prefix\"],"
+    // [LIVE-PLAYBOOK] Hashtag count comes from the playbook entry (via
+    // hashtagSlots, the same helper buildCaption uses) instead of the literal
+    // "3-5" this line used to carry. 5 is the cold-start fallback only.
+    + "\"hashtags\":" + hashtagSchema(hashtagSlots(playbook, "LinkedIn", 5)) + ","
     + "\"compliance_note\":\"OPTIONAL short disclosure; omit field entirely otherwise\""
     + "}"
+    + " Hashtag strings MUST NOT include the '#' prefix — plain words only."
     // [VOICE-LEARNING] Was fetched by chat.js and then dropped on the
     // floor here (the param arrived as `_recentEdits`). See
     // VOICE_LEARNING_TYPES — this surface is in the set, so it
@@ -1847,7 +2032,26 @@ function buildLongPost(params, profile, vaultPatterns, playbook, _trends, _histo
 // Cap at 5000 output tokens — bigger than long_post because blog
 // targets are 1000-2500 words. Cost matches long_post (2 credits)
 // since the per-token billing carries the actual variance.
-function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _history, recentEdits, compliance, personalDenylist) {
+//
+// [LIVE-PLAYBOOK] DECISION: blog_post uses NO platform playbook data, and the
+// `_playbook` parameter name says so at the call boundary rather than leaving
+// a received-and-ignored argument that reads like an oversight.
+//
+// The playbook table is keyed by social platform (TikTok, Instagram, Facebook,
+// YouTube, LinkedIn, X, Pinterest) and its fields describe feed mechanics —
+// hashtag counts an algorithm indexes, caption limits a composer enforces, peak
+// windows a ranking system rewards. A blog post lives on the creator's own CMS.
+// None of those mechanics apply, and there is no "Blog" row to read: borrowing
+// LinkedIn's numbers would be inventing a platform constraint, which is the
+// same defect as the stale static tables this pass removed, pointed the other
+// way.
+//
+// So the `hashtags` field below stays a fixed 3-5 on purpose. Those are CMS tag
+// words for the creator's own taxonomy, not platform hashtags — nothing
+// external ranks them, so there is no live value they could be shadowing. If a
+// blog-side signal ever earns a playbook row (SEO tag counts, canonical meta
+// lengths), wire it here; until then, absence is the correct state.
+function buildBlogPost(params, profile, vaultPatterns, _playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   const topic = (params.topic && typeof params.topic === "string") ? params.topic.trim() : "";
   const points = Array.isArray(params.supportingPoints)
     ? params.supportingPoints.map(s => String(s || "").trim()).filter(Boolean)
@@ -1878,7 +2082,7 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
   const systemPrompt = composeSystemPrompt(profile, "long-form blog writer", compliance, vaultPatterns, personalDenylist, {
     virl:    [],
     creator: ["title", "subtitle", "intro", "sections[].heading", "sections[].body", "conclusion"],
-  });
+  }, params.niche);
 
   const seedBlock = [
     "## TOPIC & SUPPORTING POINTS",
@@ -1889,7 +2093,17 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
 
   const userPrompt = ""
     + "Write a complete blog post on the topic below in the creator's voice. "
-    + "Target length: " + targetWords + " words. " + lengthHint + "\n\n"
+    + "Target length: " + targetWords + " words. " + lengthHint
+    // [TREND-GROUNDING] Blog takes no platform playbook (see the decision note
+    // above) but it DOES take trends: the block is what is moving in this
+    // creator's niche right now, which is topic-level signal a blog post uses
+    // the same way a caption does. It is platform-labelled, so any reference
+    // stays traceable — "this is picking up on TikTok" is a checkable claim in
+    // a way that "everyone is talking about this" is not.
+    + trendsContext(trends, {
+        lead:      "CURRENT TRENDS in this creator's niche — the only trends this article may present as current. Use one where it sharpens the argument; a blog post outlives a trend cycle, so don't build the piece on one.",
+        emptyTail: "Write the piece on the creator's own expertise and specifics instead.",
+      }) + "\n\n"
     + seedBlock + guidanceBlock + "\n\n"
     + "FORMAT — long-form blog post. Use clean structural elements: a punchy title, an opening intro paragraph that earns the click, 4-6 sections each with a short heading + 2-4 paragraphs of substance, and a closing conclusion that resolves the through-line. No markdown styling inside the body strings (no **bold** or *italic*) — the creator's CMS will handle styling. Paragraph breaks via \\n between paragraphs. Headings live in their own `heading` field per section, never inline.\n\n"
     + "Structure rules:\n"
@@ -1906,7 +2120,9 @@ function buildBlogPost(params, profile, vaultPatterns, playbook, _trends, _histo
     + "\"sections\":[{\"heading\":\"3-7 word section heading\",\"body\":\"section body, paragraphs separated by \\n\"}],"
     + "\"conclusion\":\"closing 1-2 paragraphs in creator voice\","
     + "\"meta_description\":\"150-160 character SEO summary\","
-    + "\"hashtags\":[\"OPTIONAL 3-5 tag words for the creator's CMS; omit if not useful\"],"
+    // [LIVE-PLAYBOOK] Fixed on purpose — CMS taxonomy tags, not platform
+    // hashtags. See the decision note above buildBlogPost.
+    + "\"hashtags\":[\"OPTIONAL 3-5 tag words for the creator's own CMS taxonomy — these are NOT social platform hashtags; omit if not useful\"],"
     + "\"compliance_note\":\"OPTIONAL short disclosure; omit field entirely otherwise\""
     + "}"
     // [VOICE-LEARNING] Was fetched by chat.js and then dropped on the
@@ -1973,13 +2189,16 @@ function buildCaption(params, profile, vaultPatterns, playbook, trends, _history
   const systemPrompt = composeSystemPrompt(profile, "caption writer and content strategist", compliance, vaultPatterns, personalDenylist, {
     virl:    [],
     creator: ["hook", "captions[].text", "hashtags[]"],
-  });
+  }, params.niche);
   const userPrompt = "Generate 3 caption options for a " + platform + " post about: " + topic + ". "
     + "Every word of all three options is the CREATOR's voice, not yours — you are choosing the angles, they are speaking. Do not narrate your reasoning anywhere in the output. "
     + "Tone: " + tone + ". Length: " + length + " — " + lengthRule + " "
     + "Platform style: " + platformCtx
     + captionPlaybookContext(playbook, platform)
-    + captionTrendsContext(trends, platform) + " "
+    + trendsContext(trends, {
+        lead:      "CURRENT TRENDS — the only trends these captions may cite. If any naturally applies to the topic, lean into it. Otherwise ignore them; a forced trend reference reads worse than none.",
+        emptyTail: "Write the three options on the strength of the topic and the creator's voice alone.",
+      }) + " "
     + "Reply ONLY with JSON: {\"hook\":\"punchy opening line under 10 words in creator voice\",\"captions\":[{\"label\":\"Option A\",\"text\":\"caption\"},{\"label\":\"Option B\",\"text\":\"caption\"},{\"label\":\"Option C\",\"text\":\"caption\"}],\"hashtags\":" + hashtagSchema(slots) + ",\"compliance_note\":\"OPTIONAL — short disclosure the creator should add to the post when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"}"
     + " Hashtag strings MUST NOT include the '#' prefix — plain words only."
     // [LEARN-FROM-EDITS] Voice diffs from recent plan-card edits.
@@ -1996,7 +2215,7 @@ function buildCaption(params, profile, vaultPatterns, playbook, trends, _history
   };
 }
 
-function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _history, recentEdits, compliance, personalDenylist) {
+function buildCaptionRemix(params, profile, vaultPatterns, _playbook, trends, _history, recentEdits, compliance, personalDenylist) {
   const text = params.text || "";
   // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
   // [VAULT-EXEMPLARS] Caption remix gets exemplars too — the user is asking
@@ -2008,11 +2227,21 @@ function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _
   const systemPrompt = composeSystemPrompt(profile, "caption writer and remixer", compliance, vaultPatterns, personalDenylist, {
     virl:    [],
     creator: ["shorter.text", "hook.text", "story.text"],
-  });
+  }, params.niche);
   const userPrompt = "Rewrite this caption 3 ways. Keep the core message but vary the angle. "
     + "Each version must sound like the creator — same voice, different approach. "
     + "Reply ONLY with JSON: {\"shorter\":{\"label\":\"Shorter & punchier\",\"text\":\"version\"},\"hook\":{\"label\":\"Different hook\",\"text\":\"version\"},\"story\":{\"label\":\"More story-driven\",\"text\":\"version\"},\"compliance_note\":\"OPTIONAL — short disclosure when a COMPLIANCE GUARDRAILS situation applies; omit otherwise\"} "
-    + "Caption to remix: " + text
+    // [TREND-GROUNDING] Remix is the one prose surface chat.js deliberately
+    // does NOT collect trends for: the caption's topic is already fixed, and
+    // the request only has the text to rewrite — no platform to query the
+    // pipeline with. So this renders the named empty state every time, which
+    // is the honest statement of what the prompt holds. Rendering it rather
+    // than staying silent is the point: the "different hook" variant is
+    // exactly where a model reaches for "this format is everywhere right now."
+    + trendsContext(trends, {
+        emptyTail: "Vary the angle using the creator's own material — a different entry point, a different beat of the same story — never by claiming something is trending.",
+      })
+    + "\n\nCaption to remix: " + text
     // [LEARN-FROM-EDITS] Voice diffs as ground truth. Caption remix
     // is specifically about voice ("different angle, same voice") —
     // edits are the strongest signal we have for "same voice".
@@ -2035,14 +2264,24 @@ function buildCaptionRemix(params, profile, vaultPatterns, _playbook, _trends, _
 // use the same asset without paying for full content on each. Shared by the
 // image and video-frame builders (they differ only in the noun and the
 // video-only thumbnailNote field).
+//
+// [LIVE-PLAYBOOK] The counts below are the POST-TYPE shape rule — a Story and
+// a Feed post differ from each other on the SAME platform, which is a
+// distinction the playbook does not carry and cannot replace. What they must
+// not do is override the platform's live numbers, which is exactly what
+// happened before: this table asserted "within the platform's caption_limit"
+// while scanPlaybookContext passed neither caption_limit nor hashtag_count, so
+// the only numbers Scan ever saw were these static ones. Now the playbook
+// block carries both, and the precedence line below says which wins.
 const SCAN_POST_TYPE_GUIDE =
   "\n\nPOST-TYPE SIZING — pick ONE best post_type for this asset on the chosen platform, then size every field to it:\n"
   + "- Story (IG/FB): ephemeral, vertical. overlay_text = a few words max to put ON the visual; sticker_idea = one poll/question/quiz prompt; caption = ONE short line or empty; hashtags 0-3. NEVER a paragraph.\n"
-  + "- Reel / Video / Short (IG/TikTok/YouTube): hook = the first-2-seconds on-screen line; overlay_text = optional short on-screen beat; audio_idea = a trending-sound or audio direction; caption = 1-2 lines; hashtags 3-6.\n"
-  + "- Feed post (IG/FB single image): caption = 2-4 sentences within the platform's caption_limit; hashtags 5-8. This is the only type that gets a fuller caption.\n"
+  + "- Reel / Video / Short (IG/TikTok/YouTube): hook = the first-2-seconds on-screen line; overlay_text = optional short on-screen beat; audio_idea = an audio direction; caption = 1-2 lines; hashtags 3-6.\n"
+  + "- Feed post (IG/FB single image): caption = 2-4 sentences; hashtags 5-8. This is the only type that gets a fuller caption.\n"
   + "- Carousel (IG/LinkedIn): slides = 3-5 short slide headlines; caption = 1-2 lines; hashtags 3-6.\n"
   + "- LinkedIn post: hook + a short professional caption (2-3 sentences); hashtags 0-3.\n"
-  + "Omit any field that does not apply to the chosen post_type (e.g. no sticker_idea unless it's a Story).";
+  + "Omit any field that does not apply to the chosen post_type (e.g. no sticker_idea unless it's a Story).\n"
+  + "PRECEDENCE — the ranges above are static shape defaults. Where the PLATFORM PLAYBOOK above gives a hashtag count or a caption limit for the platform you picked, THAT number wins: it is live data refreshed from research, and these ranges are not. Never exceed the platform's caption limit, and never claim a limit or count the playbook does not state.";
 
 // [PERSONA] Scan is where the persona is most visible to the creator: they
 // hand over a photo and want a verdict, not a report. Every judgment field
@@ -2060,7 +2299,9 @@ const SCAN_POST_TYPE_GUIDE =
 // [PERSONA] Shared by both scan builders so the image and video-frame paths
 // can't drift apart on which fields carry which voice.
 const SCAN_REGISTERS = {
-  virl:    ["why_format", "tip", "analysis", "alt_formats[].note", "thumbnailNote"],
+  // `post_when` is a direction TO the creator (when to hit post), never words
+  // that appear in the post — same side of the line as `tip` and `why_format`.
+  virl:    ["why_format", "tip", "analysis", "alt_formats[].note", "thumbnailNote", "post_when"],
   creator: ["hook", "caption", "overlay_text", "sticker_idea", "slides[]", "hashtags[]"],
 };
 
@@ -2073,10 +2314,21 @@ function scanResultSchema(isVideo) {
     + "\"hook\":\"scroll-stopping opening line under 10 words — the CREATOR's voice, this gets published\","
     + "\"overlay_text\":\"OPTIONAL short on-screen text for Story/Reel — a few words; omit for Feed/Carousel\","
     + "\"sticker_idea\":\"OPTIONAL Story only — one poll/question/quiz sticker prompt; omit otherwise\","
-    + "\"audio_idea\":\"OPTIONAL Reel/Video only — a trending-audio or sound direction; omit otherwise\","
+    // [TREND-GROUNDING] This field used to solicit "a trending-audio ... direction"
+    // on a surface with no trend-grounding rule and, half the time, no trend
+    // block at all — the prompt actively asking the model to make the one claim
+    // it has no basis for. It may still name a real sound, but only one the
+    // TRENDS block actually lists.
+    + "\"audio_idea\":\"OPTIONAL Reel/Video only — sound direction. Name a SPECIFIC sound only if it appears in the TRENDS block; otherwise describe the KIND of audio that fits (energy, tempo, genre, spoken vs music) and claim nothing about what is trending. Omit otherwise\","
     + "\"slides\":[\"OPTIONAL Carousel only — 3-5 short slide headlines; omit otherwise\"],"
-    + "\"caption\":\"caption SIZED to post_type per the sizing rules above — never a 3-paragraph caption on a Story\","
-    + "\"hashtags\":[\"count sized to post_type; plain words, NO '#' prefix\"],"
+    + "\"caption\":\"caption SIZED to post_type per the sizing rules above, and within the chosen platform's caption limit from the PLATFORM PLAYBOOK — never a 3-paragraph caption on a Story\","
+    + "\"hashtags\":[\"count from the chosen platform's playbook hashtag_count when it states one, otherwise sized to post_type; plain words, NO '#' prefix\"],"
+    // [LIVE-PLAYBOOK] Scan gave a verdict on WHERE to post and never on WHEN.
+    // `peak_times` existed in the playbook the whole time and reached only the
+    // full plan; scanPlaybookContext now carries it, so the verdict can be
+    // complete. Grounded-only — no playbook peak window, no field, rather than
+    // a plausible-sounding hour the creator cannot check.
+    + "\"post_when\":\"OPTIONAL — the posting window for the platform you picked, taken VERBATIM from that platform's peak times in the PLATFORM PLAYBOOK above. Omit the field entirely if the playbook states no peak times for it; never guess a time.\","
     + "\"alt_formats\":[{\"post_type\":\"another way to use this asset\",\"note\":\"YOUR voice: one line on how you'd post it that way instead\"}],"
     + "\"tip\":\"YOUR voice, first person: the one thing you'd do to make this land on the chosen platform + post type. Specific to THIS asset — not a tip that would fit any photo.\","
     + "\"analysis\":\"YOUR voice, first person — this is your verdict and the creator reads it first. 2-3 short sentences. OPEN with the call ('I'd post this one.' / 'I'd sit on this one.' / 'I'd reshoot before this goes up.'), then say what in the image drove it — the light, the framing, what it reads as. CLOSE by naming the platform ('My call: Instagram.'). Be honest: if the asset is weak, say so and say why. No hedging, no cheerleading.\","
@@ -2094,7 +2346,7 @@ function buildScanImage(params, profile, vaultPatterns, playbook, trends, _histo
   // need the same exemplars every other publishing surface gets, and the
   // platform verdict should be informed by the creator's own logged
   // platform performance rather than generic signals alone.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS);
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS, params.niche);
   const userPrompt = "The creator just handed you this image and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the image actually shows — then call the single best POST TYPE and write content sized to that type."
     + " Be honest about a weak asset. \"I'd reshoot this\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)
@@ -2119,7 +2371,7 @@ function buildScanVideoFrame(params, profile, vaultPatterns, playbook, trends, _
   // [COMPLIANCE 1] Same scope as buildScanImage — prompt-level block only.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
   // [SCAN-VOICE] Same rationale as buildScanImage.
-  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS);
+  const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS, params.niche);
   const userPrompt = "The creator just handed you this video frame and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the frame actually shows — then call the single best POST TYPE and write content sized to that type."
     + " Be honest about a weak frame. \"I'd pull a different frame\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)

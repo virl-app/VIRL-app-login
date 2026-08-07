@@ -6501,6 +6501,12 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
               <ScanExtra label="On screen" value={r.overlay_text}/>
               <ScanExtra label="Sticker" value={r.sticker_idea}/>
               <ScanExtra label="Audio" value={r.audio_idea}/>
+              {/* [LIVE-PLAYBOOK] The other half of the verdict. Scan called the
+                  platform and never the timing, while peak_times sat in the
+                  playbook reaching only the full plan. Omitted by the server
+                  when the playbook has no peak window for the chosen platform,
+                  so ScanExtra's empty guard is the whole empty state. */}
+              <ScanExtra label="Post when" value={r.post_when}/>
               {Array.isArray(r.slides)&&r.slides.filter(function(s){return typeof s==="string"&&s.trim();}).length>0&&(
                 <div style={{background:B.bg,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>Carousel slides</div>
@@ -10896,6 +10902,11 @@ function App() {
       followers:    followers,
       context:      context || "",
       weekContext:  weekContext || "",
+      // [REGEN-CONTEXT] The featured link travels with the regen so a
+      // replacement card built for the open-house slot still knows the open
+      // house exists. The server re-fetches it; the client never sends the
+      // fetched text.
+      listingUrl:   (listingUrl || "").trim() || undefined,
       strategy:     strategy || null,
       keptCards:    keptCards,
       replaceDayLabels: replaceDayLabels,

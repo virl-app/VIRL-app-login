@@ -143,7 +143,14 @@ const NICHE_MODELS = {
 // rendered line tells the model these are starting baselines that LOGGED
 // RESULTS always override.
 function followerTier(followers) {
-  const f = String(followers || "").toLowerCase();
+  const f = String(followers || "").trim().toLowerCase();
+  // Missing is not smallest. This used to fall through to "nano" for an empty
+  // string, so any surface that didn't carry a followers value would have been
+  // told "Under 1K followers: a strong week is showing up, not blowing up" —
+  // asserting a fact about the creator's account from the absence of one. No
+  // tier at all is the correct rendering of no data; the caller skips the
+  // baseline line entirely.
+  if (!f) return "";
   if (f.indexOf("100k") >= 0) return "large";
   if (f.indexOf("20k") >= 0)  return "mid";
   if (f.indexOf("5k") >= 0)   return "established";
@@ -221,7 +228,38 @@ const GOAL_TACTICS = {
   },
 };
 
-// ── Renderer ───────────────────────────────────────────────────────────────
+// ── Renderers ──────────────────────────────────────────────────────────────
+//
+// [NICHE-EVERYWHERE] The per-NICHE half of the playbook, with the per-REQUEST
+// half (follower tier, goal tactics) deliberately left out.
+//
+// That cut is what lets this reach every surface. It depends on nothing but
+// the niche label, so it is byte-identical for every request from every
+// creator in a bucket — which puts it in the shared system tier next to the
+// compliance block, cached per niche rather than paid per request. The full
+// renderer below stays where the per-request inputs actually exist: the plan
+// wizard, which is the only place a creator states a goal and a follower tier.
+//
+// Until this existed, `formatNichePlaybookForPrompt` had exactly one call site
+// and `getFormatGuidance` one, both inside buildPlan. So caption, caption_remix,
+// script, long_post, blog_post and both scan surfaces carried no model of how
+// content converts in the creator's vertical at all — what survived was
+// buildProfileCtx's offerings / service area / ideal-client fields, every one
+// of which is optional. A real estate agent who picked "Real Estate" and left
+// them blank got a caption with zero industry grounding.
+//
+// Funnel percentages are reframed here as intents rather than a weekly mix: a
+// 40/40/20 allocation is a statement about a week of posts and means nothing
+// to a single caption, but WHICH of the three jobs this piece is doing means a
+// great deal.
+export function formatNicheModelForPrompt(niche) {
+  const model = NICHE_MODELS[nicheCategory(niche)] || NICHE_MODELS.creator;
+  return "\n\nNICHE SUCCESS MODEL (" + model.label + ") — how content in this creator's vertical actually turns into business. Ground what you write in this, not in generic social-media advice:"
+    + "\nHow success works here: " + model.success_model
+    + "\nWhat the three post intents mean in THIS vertical — this piece should clearly do ONE of these jobs, not all three: " + model.funnel
+    + "\nThe numbers that predict business results here (write toward these, not raw reach): " + model.kpis.join("; ") + ".";
+}
+
 // Returns a prompt-ready block, or "" when there's nothing to say (no
 // niche and no goal). `compact` drops the funnel + KPI detail for the
 // strategy-regen surface where the full block would dominate the prompt.
