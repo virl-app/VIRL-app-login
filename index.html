@@ -9637,19 +9637,20 @@ function App() {
   // tab so users can still log results / mark posted / save to vault
   // on past cards after the current week's cards rotate in. Fail-soft:
   // empty when RLS blocks the read or the user has no history.
-  const [lastWeekPlan,setLastWeekPlan] = useState(null);
+  const [planHistoryRows,setPlanHistoryRows] = useState(null);
   const [lastWeekExpanded,setLastWeekExpanded] = useState(false);
 
-  // [RESULTS-OVERHAUL] Fetch last week's plan from plan_history so the
-  // "Last week's plan" collapsible at the bottom of the Plan tab can
-  // render past cards with the same PlanCard component. We pull the
-  // two most recent rows (descending by week_start) and take index 1,
-  // since index 0 is the current week. RLS lets each user read their
-  // own rows; if it doesn't or the table is empty, we fail-soft and
-  // the collapsible stays hidden.
+  // [RESULTS-OVERHAUL] Fetch recent plan_history rows so the "Last
+  // week's plan" collapsible on the Plan tab can render past cards with
+  // the same PlanCard component. We keep the rows as fetched (descending
+  // by week_start) and pick the right one at render time — see
+  // lastWeekPlan below — because which row counts as "last week"
+  // depends on whether an active plan is on screen. RLS lets each user
+  // read their own rows; if it doesn't or the table is empty, we
+  // fail-soft and the collapsible stays hidden.
   useEffect(function(){
     if (!session || !session.user || !session.user.id) {
-      setLastWeekPlan(null);
+      setPlanHistoryRows(null);
       return;
     }
     var cancelled = false;
@@ -9657,21 +9658,12 @@ function App() {
       .select("week_start,strategy,cards")
       .eq("user_id", session.user.id)
       .order("week_start", { ascending: false })
-      .limit(2)
+      .limit(3)
       .then(function(out){
         if (cancelled) return;
-        if (!out || !Array.isArray(out.data) || out.data.length < 2) {
-          setLastWeekPlan(null);
-          return;
-        }
-        var row = out.data[1];
-        if (!row || !Array.isArray(row.cards) || !row.cards.length) {
-          setLastWeekPlan(null);
-          return;
-        }
-        setLastWeekPlan(row);
+        setPlanHistoryRows(out && Array.isArray(out.data) ? out.data : null);
       })
-      .catch(function(){ if (!cancelled) setLastWeekPlan(null); });
+      .catch(function(){ if (!cancelled) setPlanHistoryRows(null); });
     return function(){ cancelled = true; };
   }, [session]);
 
@@ -9794,6 +9786,29 @@ function App() {
     } catch(e){}
     return null;
   });
+  // [PRIOR-WEEK] The most recent plan_history row that isn't the plan
+  // currently on screen. With an active plan the newest row IS that plan,
+  // so we skip it and land on the week before; with no active plan (the
+  // pre-generation setup state) the newest row already is the prior week
+  // and we show it as-is. Matching on the row's first card rather than on
+  // week_start keeps this right when a plan carries over a calendar week
+  // boundary, and when the fetched rows predate an in-session generation.
+  const lastWeekPlan = useMemo(function(){
+    var rows = Array.isArray(planHistoryRows) ? planHistoryRows : [];
+    var active = Array.isArray(cards) && cards.length ? cards[0] : null;
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (!row || !Array.isArray(row.cards) || !row.cards.length) continue;
+      var first = row.cards[0] || {};
+      var isActivePlan = active
+        && (first.title || "") === (active.title || "")
+        && (first.day || "") === (active.day || "");
+      if (isActivePlan) continue;
+      return row;
+    }
+    return null;
+  }, [planHistoryRows, cards]);
+
   const [stats,setStats] = useState(function(){
     try {
       if (stored.planStats && stored.planExpiresAt && Date.now() < stored.planExpiresAt) {
@@ -13578,14 +13593,20 @@ return (
                  Sits below the current plan and is collapsed by default.
                  Hidden entirely if the user has no history.
 
+                 [PRIOR-WEEK] Also renders in the pre-generation state —
+                 below the setup wizard, above the empty state — so the
+                 week that just ended is reviewable before committing
+                 credits to a new one. Same trigger, same cards, same
+                 per-card actions; only the surrounding state differs.
+
                  [LAST-WEEK-BUTTON] Upgraded from a tertiary muted card
                  to a secondary-blue treatment so creators can actually
                  see it. The "still to log" count is the actionable
                  piece (last week's posts the user hasn't tracked yet),
                  so we surface it as a navy badge when > 0 — pulls the
                  eye to the part of the trigger that warrants action. */}
-            {!loading && cards && lastWeekPlan && Array.isArray(lastWeekPlan.cards) && lastWeekPlan.cards.length > 0 && (
-              <div style={{marginTop:32}}>
+            {!loading && lastWeekPlan && Array.isArray(lastWeekPlan.cards) && lastWeekPlan.cards.length > 0 && (
+              <div style={{marginTop:cards?32:20}}>
                 <button
                   onClick={function(){ setLastWeekExpanded(function(v){ return !v; }); }}
                   style={{
