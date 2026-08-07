@@ -480,6 +480,161 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     "the past-window indicator no longer renders on the card");
 }
 
+// ── Layer 6: the trend pipeline has a source ────────────────────────────────
+//
+// Two trend pipelines ran side by side and only one fed generation. The
+// observed one (`trend_items`) is written solely by the ingest-trends edge
+// function, whose only adapter does nothing without a paid token — so it sat
+// empty. The editorial one (`trends`) was researched and paid for weekly and
+// read by nothing on the server. Result: every surface got the "no trends"
+// empty state while the research bill kept arriving, and the trends the
+// creator saw on the Algo tab had no connection to their plan.
+//
+// trend-context.js reads env at module scope and talks to Supabase over
+// `fetch`, so this stubs both and imports it dynamically.
+{
+  process.env.SUPABASE_URL = process.env.SUPABASE_URL || "https://fixture.supabase.co";
+  process.env.SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "fixture-key";
+  const { buildTrendContext } = await import("../api/_lib/trend-context.js");
+
+  const isoDay = (d) => new Date(Date.now() - d * DAY).toISOString();
+
+  const OBSERVED_ROW = {
+    platform: "instagram", type: "sound", display_name: "OBSERVED_FIXTURE_SOUND",
+    status: "rising", context: "A rising audio.", suggested_angles: ["use it on a tour"],
+    niche_scores: { real_estate: 0.9 }, last_seen: isoDay(1), external_url: null,
+  };
+  const LEGACY_ROWS = [
+    { platform: "Instagram", fetched_at: isoDay(3), summary: "s", items: [
+      { trend: "LEGACY_IG_ONE", category: "format", source_url: "https://example.com/a", reason: "Because A." },
+      { trend: "LEGACY_IG_TWO", category: "hook",   source_url: "https://example.com/b", reason: "Because B." },
+      { trend: "LEGACY_IG_THREE", category: "topic" },
+      { trend: "LEGACY_IG_FOUR", category: "topic" },
+      { trend: "LEGACY_IG_FIVE", category: "topic" },
+      { trend: "LEGACY_IG_SIX", category: "topic" },
+    ] },
+    { platform: "TikTok", fetched_at: isoDay(4), summary: "s", items: [
+      { trend: "LEGACY_TT_ONE", category: "audio", source_url: "https://example.com/c" },
+    ] },
+  ];
+  const PLAYBOOK_ROW = [{ content: "IG playbook body", niche_notes: {}, version: 1 }];
+
+  // Records every path requested so a test can assert the legacy table is NOT
+  // hit on the healthy path.
+  function stubFetch({ observed, legacy, playbook }) {
+    const seen = [];
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      seen.push(u);
+      const body =
+        u.includes("/trend_items?")        ? observed :
+        u.includes("/trends?")             ? legacy :
+        u.includes("/platform_playbooks?") ? (playbook === false ? [] : PLAYBOOK_ROW) :
+        u.includes("/playbook_segments?")  ? [{ label: "Real Estate", compliance_overlay: "", platform_priority: [] }] :
+        [];
+      return { ok: true, json: async () => body };
+    };
+    return seen;
+  }
+  const realFetch = globalThis.fetch;
+  const opts = { platforms: ["Instagram"], niche: "Real Estate", profile: {} };
+
+  // 1. Observed data present → used, and the legacy table is never queried.
+  {
+    const seen = stubFetch({ observed: [OBSERVED_ROW], legacy: LEGACY_ROWS });
+    const ctx = await buildTrendContext(opts);
+    assert(ctx.block.includes("OBSERVED_FIXTURE_SOUND"),
+      "observed trend data no longer reaches the block");
+    assert(!ctx.block.includes("LEGACY_IG_ONE"),
+      "legacy research leaked into the block while observed data existed — this is a fallback, not a merge");
+    assert(!seen.some((u) => u.includes("/trends?")),
+      "the legacy table was queried even though observed data existed — the healthy path should pay no extra round trip");
+  }
+
+  // 2. Observed empty, legacy present → the paid-for research reaches the model.
+  {
+    stubFetch({ observed: [], legacy: LEGACY_ROWS });
+    const ctx = await buildTrendContext(opts);
+    assert(ctx.block.includes("LEGACY_IG_ONE"),
+      "observed pipeline is empty and the weekly research still never reaches the prompt — the connection is broken again");
+    assert(ctx.usedTrends === true,
+      "fallback trends reached the prompt but usedTrends says otherwise");
+    assert(/CURRENT TRENDS as of \d{4}-\d{2}-\d{2}/.test(ctx.block),
+      "the fallback block carries no 'as of' date, so the creator cannot judge its age");
+    assert(/PROVENANCE/.test(ctx.block),
+      "the fallback block does not state that it is editorial research rather than observed measurement");
+    assert(!/status rising|status peaking/.test(ctx.block),
+      "the fallback block asserts a lifecycle status the legacy rows do not carry — that is an invented claim");
+
+    // The snapshot contract. The client's verifier builds its allow-list from
+    // items[].display_name and strips any cited trend missing from it — so
+    // fallback items absent here would make the scrub delete the very trends
+    // this prompt supplied.
+    const names = (ctx.snapshot.items || []).map((i) => i.display_name);
+    assert(names.includes("LEGACY_IG_ONE"),
+      "fallback trends are in the block but not in snapshot.items — the client verifier would strip every one of them from the plan");
+    assert(ctx.snapshot.items.every((i) => i.status === null),
+      "fallback snapshot items claim a lifecycle status the source does not provide");
+    assert(ctx.snapshot.items.length <= 5,
+      `fallback returned ${ctx.snapshot.items.length} items — the block is capped at 5`);
+    // Unlike the observed path, the fallback does NOT add TikTok as an
+    // always-on cross-platform source: the legacy rows are platform-global
+    // editorial research with no niche scoring, so borrowing across platforms
+    // would stack a second layer of imprecision on the first.
+    assert(!names.includes("LEGACY_TT_ONE"),
+      "an Instagram-only request pulled a TikTok legacy row — the fallback should not borrow across platforms");
+  }
+
+  // 2b. Multi-platform request → both platforms represented, capped at 5.
+  //     Instagram alone offers six items, so a naive slice would bury TikTok.
+  {
+    stubFetch({ observed: [], legacy: LEGACY_ROWS });
+    const ctx = await buildTrendContext({ platforms: ["Instagram", "TikTok"], niche: "Real Estate", profile: {} });
+    const names = (ctx.snapshot.items || []).map((i) => i.display_name);
+    assert(names.length <= 5, `fallback returned ${names.length} items — capped at 5`);
+    assert(names.includes("LEGACY_TT_ONE"),
+      "the single TikTok item was crowded out by Instagram's six — items are not interleaved across platforms");
+    assert(names.includes("LEGACY_IG_ONE"),
+      "interleaving dropped the requested platform's own top item");
+  }
+
+  // 3. Both empty → the named empty state, not silence and not a false claim.
+  {
+    stubFetch({ observed: [], legacy: [] });
+    const ctx = await buildTrendContext(opts);
+    assert(/No current trend meets this creator's bar/.test(ctx.block),
+      "with both sources dry the block does not name the absence");
+    assert(ctx.usedTrends === false,
+      "usedTrends is true with no trends from either source");
+  }
+
+  // 4. A legacy row for a platform this request didn't ask for must not leak in.
+  {
+    stubFetch({ observed: [], legacy: [{ platform: "Pinterest", fetched_at: isoDay(2), items: [{ trend: "LEGACY_PIN", category: "topic" }] }] });
+    const ctx = await buildTrendContext(opts);
+    assert(!ctx.block.includes("LEGACY_PIN"),
+      "a legacy row for an unrequested platform reached an Instagram prompt");
+  }
+
+  globalThis.fetch = realFetch;
+}
+
+// The research prompt's own source list. Naming recap publications anchors the
+// model to them, and they aggregate each other — which is the mechanism behind
+// "every week's trends look the same."
+{
+  const researchSrc = readFileSync(new URL("../api/_lib/trends-research.js", import.meta.url), "utf8");
+  const hints = (researchSrc.match(/const SOURCE_HINTS_GENERAL = \[[\s\S]*?\];/) || [""])[0];
+  for (const pub of ["sproutsocial", "hootsuite", "buffer.com", "socialmediaexaminer"]) {
+    assert(!hints.includes(pub),
+      `${pub} is back in SOURCE_HINTS_GENERAL — recap publications anchor the research to the same trends every week`);
+  }
+  assert(/reddit\.com/.test(hints),
+    "the research prompt no longer points at primary venues where the niche conversation actually happens");
+  assert(/AVOID social-media-marketing recap publications/.test(researchSrc),
+    "the research prompt no longer tells the model to avoid recap publications as primary evidence");
+}
+
 if (failures > 0) {
   console.error(`\nStrategist eval FAILED with ${failures} failure(s).`);
   process.exit(1);

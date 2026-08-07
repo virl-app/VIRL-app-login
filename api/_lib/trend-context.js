@@ -29,6 +29,28 @@ const SNAPSHOT_VERSION     = 2;   // bump if the snapshot shape changes
 // input for an Instagram (Reels) target, per the brief's fallback rule.
 const FALLBACK_PLATFORM = "tiktok";
 
+// [TREND-FALLBACK] The weekly editorial research in the legacy `trends` table
+// as a second source when the observed pipeline has nothing.
+//
+// Two pipelines have been running side by side and only one of them fed
+// generation. `cron/trends-refresh` researches every platform weekly via
+// Perplexity and writes dated, cited rows into `trends`; the observed pipeline
+// (this file's primary path) reads `trend_items`, which is written only by the
+// ingest-trends edge function — and that function has exactly one adapter,
+// EnsembleData, which does nothing without a token. So `trend_items` can be
+// empty while `trends` is full, and until now that combination produced the
+// "no trends" empty state on every surface while the research bill kept
+// arriving. The creator saw those trends on the Algo tab, which reads `trends`
+// directly, and got a plan built from none of them.
+//
+// This is a fallback, not a merge: observed data wins whenever it exists,
+// because a measured rising sound beats a publication's claim. The block below
+// labels the difference rather than hiding it — these items carry no lifecycle
+// signal, so the model is told to cite them as what is being discussed, never
+// as what is peaking.
+const LEGACY_TREND_FRESHNESS_DAYS = 14;  // the cron is weekly; two cycles of slack
+const LEGACY_TREND_CATEGORIES = new Set(["topic", "audio", "format", "hook", "hashtag"]);
+
 // ── Segment resolution ─────────────────────────────────────────────────────
 // The app keys generation off a user-facing `niche` label (17 values) which
 // nicheCategory() collapses into 7 format-mix buckets — neither matches the 9
@@ -94,6 +116,86 @@ function normPlatform(p) {
 
 function ymd(iso) {
   try { return new Date(iso).toISOString().slice(0, 10); } catch (_e) { return ""; }
+}
+
+// [TREND-FALLBACK] Most-recent legacy research row per requested platform,
+// flattened into items. Called ONLY when the observed pipeline came back
+// empty, so the healthy path pays no extra round trip.
+//
+// Platform names differ between the two tables — `trends` stores the app's
+// Title-case labels ("TikTok"), `trend_items` stores lowercase keys — so the
+// match is done on the normalized form.
+async function loadLegacyTrends(requestedPlatforms) {
+  const since = new Date(Date.now() - LEGACY_TREND_FRESHNESS_DAYS * 86400000).toISOString();
+  const rows = await sbGet(
+    "trends?select=platform,summary,items,fetched_at" +
+    `&fetched_at=gte.${encodeURIComponent(since)}` +
+    "&order=fetched_at.desc&limit=100",
+  ).catch(() => []);
+  if (!Array.isArray(rows) || !rows.length) return { items: [], asOf: "" };
+
+  const want = new Set(requestedPlatforms.map(normPlatform));
+  const newestByPlatform = new Map();
+  for (const r of rows) {
+    if (!r || !r.platform) continue;
+    const key = normPlatform(r.platform);
+    if (!want.has(key)) continue;
+    if (!newestByPlatform.has(key)) newestByPlatform.set(key, r); // rows are desc-sorted
+  }
+  if (!newestByPlatform.size) return { items: [], asOf: "" };
+
+  const items = [];
+  let asOf = "";
+  for (const [key, row] of newestByPlatform) {
+    if (row.fetched_at && row.fetched_at > asOf) asOf = row.fetched_at;
+    const list = Array.isArray(row.items) ? row.items : [];
+    for (const it of list) {
+      const name = it && typeof it.trend === "string" ? it.trend.trim() : "";
+      if (!name) continue;
+      const cat = it.category && LEGACY_TREND_CATEGORIES.has(String(it.category))
+        ? String(it.category)
+        : "topic";
+      items.push({
+        platform:     key,
+        type:         cat,
+        display_name: name,
+        reason:       (typeof it.reason === "string" && it.reason.trim()) ? it.reason.trim() : "",
+        external_url: (typeof it.source_url === "string" && /^https?:\/\//.test(it.source_url))
+          ? it.source_url : null,
+      });
+    }
+  }
+
+  // Interleave across platforms before capping, so a single chatty platform
+  // can't crowd the others out of the 5 slots.
+  const byPlatform = new Map();
+  for (const it of items) {
+    const list = byPlatform.get(it.platform) || [];
+    list.push(it);
+    byPlatform.set(it.platform, list);
+  }
+  const interleaved = [];
+  for (let i = 0; interleaved.length < items.length; i++) {
+    let took = false;
+    for (const list of byPlatform.values()) {
+      if (i < list.length) { interleaved.push(list[i]); took = true; }
+    }
+    if (!took) break;
+  }
+
+  return { items: interleaved.slice(0, MAX_TRENDS), asOf };
+}
+
+// [TREND-FALLBACK] Deliberately NOT renderTrendItem. That renderer prints a
+// lifecycle status ("status rising") which the legacy rows simply do not have —
+// reusing it would mean inventing one, and an invented "rising" is exactly the
+// kind of unfalsifiable claim the trend-grounding rule exists to stop.
+function renderLegacyTrendItem(idx, t) {
+  const parts = [`${idx}. ${String(t.type).toUpperCase()}: ${t.display_name}`];
+  if (t.reason) parts.push(t.reason);
+  let line = "  " + parts.join(" ");
+  if (t.external_url) line += `\n     Source: ${t.external_url}`;
+  return line;
 }
 
 // ── block assembly ──────────────────────────────────────────────────────────
@@ -207,6 +309,14 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
       sections.push(`[COMPLIANCE OVERLAY — HARD RULES, non-negotiable]\n${String(overlay).trim()}`);
     }
 
+    // [TREND-FALLBACK] Only reached when the observed pipeline is dry, so the
+    // healthy path costs nothing. Observed data always wins — this is a
+    // second source, never a merge.
+    let legacy = { items: [], asOf: "" };
+    if (scored.length === 0) {
+      legacy = await loadLegacyTrends(requested).catch(() => ({ items: [], asOf: "" }));
+    }
+
     let refreshedAt = "";
     if (scored.length) {
       // The "as of" date is the freshest trend we're actually showing.
@@ -227,6 +337,15 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
         "Prefer RISING over peaking. Always name the exact sound or hashtag. " +
         "Never use a trend older than 7 days.",
       );
+    } else if (legacy.items.length) {
+      refreshedAt = ymd(legacy.asOf);
+      const lines = legacy.items.map((t, i) => renderLegacyTrendItem(i + 1, t));
+      sections.push(
+        (refreshedAt ? `[CURRENT TRENDS as of ${refreshedAt}]\n` : "[CURRENT TRENDS]\n") +
+        lines.join("\n") +
+        "\n  PROVENANCE: these come from VIRL's weekly trend research of published sources (each cited above), NOT from live measurement of the platforms. They are real, dated, and checkable — but they carry no rising-or-peaking lifecycle signal, so refer to them as what is being talked about in this niche right now, never as what is 'peaking' or 'blowing up'. Do not attach an engagement number to any of them." +
+        "\n  Rules: use at most 2 of these, and only where they fit naturally. Always name the exact hashtag, sound, format, or angle as written above.",
+      );
     } else {
       sections.push(
         "[CURRENT TRENDS]\nNo current trend meets this creator's bar this week. " +
@@ -242,7 +361,7 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
     // If we got literally nothing useful (no playbook, no trends), signal empty
     // so the builder's own empty-state takes over cleanly.
     const hasPlaybook = sections.some(s => s.startsWith("[PLATFORM PLAYBOOK"));
-    if (!hasPlaybook && scored.length === 0) return empty;
+    if (!hasPlaybook && scored.length === 0 && legacy.items.length === 0) return empty;
 
     const block = sections.join("\n\n");
     const snapshot = {
@@ -253,13 +372,26 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
       // this and falls back to undated wording. Same reason as above: do
       // not stamp today's date on data whose age we don't know.
       refreshedAt,
-      items: scored.map(t => ({
-        type: t.type, display_name: t.display_name, status: t.status,
-        platform: t.platform, external_url: t.external_url || null,
-      })),
+      // [TREND-FALLBACK] Fallback items ride the SAME snapshot shape. This is
+      // load-bearing, not cosmetic: the client's trend verifier builds its
+      // allow-list from `items[].display_name` and strips any cited trend it
+      // can't find there. Omitting them would make the scrub delete the very
+      // trends the prompt just supplied. `status` is null rather than a
+      // plausible-looking "rising" — these rows carry no lifecycle signal and
+      // inventing one here would launder a guess into the snapshot the
+      // creator's UI reads back.
+      items: scored.length
+        ? scored.map(t => ({
+            type: t.type, display_name: t.display_name, status: t.status,
+            platform: t.platform, external_url: t.external_url || null,
+          }))
+        : legacy.items.map(t => ({
+            type: t.type, display_name: t.display_name, status: null,
+            platform: t.platform, external_url: t.external_url,
+          })),
     };
 
-    return { block, snapshot, usedTrends: scored.length > 0 };
+    return { block, snapshot, usedTrends: scored.length > 0 || legacy.items.length > 0 };
   } catch (_e) {
     return empty;
   }

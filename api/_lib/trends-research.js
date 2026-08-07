@@ -29,16 +29,26 @@
 
 import { callPerplexity, tryParseJSON } from "./perplexity.js";
 
-// [TRENDS-VARIETY] Trusted-source preference removed from a HARD constraint
-// to a SOFT bias. The old allowlist pushed Perplexity toward marketing
-// recap publications that report the same top-of-mind trends every week,
-// which is the main reason VIRL users kept seeing identical trends. Now
-// these sources are surfaced as "you may use" examples, not "prefer."
+// [TRENDS-SOURCES] Where to look — and, by omission, where not to.
+//
+// This list used to be sproutsocial / hootsuite / buffer / socialmediaexaminer.
+// Demoting them from "prefer" to "you may use" (the prior fix) was the right
+// direction and not enough: naming four recap publications in the prompt still
+// anchors the model to them, and those four recap the same handful of trends
+// every week from each other. That is the mechanism behind "every week's
+// trends look the same" — the sources are downstream aggregators reporting on
+// each other, so the output is a recap of a recap.
+//
+// The replacement points at PRIMARY venues: places where the conversation is
+// actually happening rather than being summarized a week later. Reddit and
+// niche forums are where a creator's own audience asks questions in public,
+// which is the signal most likely to be usable in a caption. The per-platform
+// hints below stay — those are first-party newsrooms, primary by definition.
 const SOURCE_HINTS_GENERAL = [
-  "sproutsocial.com/insights",
-  "blog.hootsuite.com",
-  "buffer.com/resources",
-  "socialmediaexaminer.com",
+  "reddit.com (subreddits for the niche and for the creators serving it)",
+  "the platform itself — actual posts, comment sections, and creator commentary",
+  "niche trade press and practitioner newsletters",
+  "YouTube and podcast discussion within the niche",
 ];
 
 const SOURCE_HINTS_PLATFORM = {
@@ -92,7 +102,8 @@ function buildTrendsPrompt(platform, opts) {
     excludeBlock,
     "",
     "Constraints:",
-    "1. Sources: anything publicly visible — actual posts on the platform, Reddit/Discord discussions, niche newsletters, individual creator commentary. These industry pubs are OK signal too but should not dominate: " + hintList.join(", "),
+    "1. Sources: anything publicly visible. Prefer PRIMARY venues where the conversation is actually happening over publications that summarize it: " + hintList.join(", "),
+    "1b. AVOID social-media-marketing recap publications (Sprout Social, Hootsuite, Buffer, Social Media Examiner, and their equivalents) as your PRIMARY evidence for an item. They aggregate each other, which means the same handful of trends resurfaces there every week — if every item you return traces back to one of those, the research has failed even when each item is individually true. Use them only to corroborate something you found at the source.",
     "2. Each item MUST cite an exact source URL — use the full https:// URL, not a citation marker like [1]. If the source is a TikTok / Reel / post, link to the post itself.",
     "3. Skip anything older than 14 days — we want THIS WEEK's signal.",
     "4. STRICT exclusion of evergreen advice. 'Use trending audio,' 'post consistently,' 'engage with your audience' — these are rules, not trends. ONLY return specific named items.",
