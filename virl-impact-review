@@ -769,10 +769,85 @@ From 2026-08-07 forward the scores are clean. Around **2026-08-21**:
    needs the client work), or hold-and-check before streaming (kills the
    perceived-latency win streaming exists for).
 
-Also still open and unstarted: `TREND_SOURCE_RULE` reaches only the plan
-surface; the niche/industry playbook never leaves the plan; static hashtag
-tables on long_post and blog_post; unbounded playbook staleness with silent
-refresh failure.
+Items 6, 7, 9, 10 and 11 of the fix order above are **closed** — see the
+section below. Item 5 (post-stream voice repair) is the only thing this dated
+revisit still gates.
+
+## SHIPPED 2026-08-07 — the four remaining grounding gaps
+
+Fix-order items 6, 7, 9, 10 and 11. Regression cover for all of it lives in
+`scripts/check-strategist.mjs`, wired into `npm run check` and CI; every
+assertion in it was verified to fail with its fix reverted before shipping.
+
+**Trend grounding is structural.** `TREND_SOURCE_RULE` moved from `buildPlan`'s
+user prompt to the SHARED system tier — appended by `composeSystemPrompt` and
+by `buildPlan`'s own shared block — so all nine prose surfaces carry it and one
+added later cannot skip it. It was rewritten to be self-sufficient ("if no
+TRENDS block appears, you have nothing to cite"), which is what makes shared-tier
+placement safe: the old wording pointed at "the TRENDS block below" and dangled
+on any surface that rendered none. The three divergent data renderers collapsed
+into one `trendsContext`, which never returns silence — `captionTrendsContext`
+and `scanTrendsContext` used to return `""`, so on a quiet week those prompts
+simply had no trend section. `script`, `long_post` and `blog_post` joined
+`FRESH_TRENDS_TYPE` and `pickInlinePlatforms`, so trends are now collected for
+them rather than merely discussed. Scan's `audio_idea` no longer solicits a
+trending-sound claim: it may name a sound only if the block lists one.
+`caption_remix` stays uncollected on purpose (no platform in the request) and
+renders the named empty state unconditionally.
+
+**The niche layer left the plan.** `formatNicheModelForPrompt` splits the
+per-NICHE half of the playbook (success model, funnel intent, KPIs) from the
+per-REQUEST half (follower tier, goal tactics). That cut is what makes it
+structural: depending on nothing but the niche bucket, it rides
+`composeSystemPrompt`'s shared tier — cached per niche beside the compliance
+block — so all seven non-plan surfaces inherit it without per-surface wiring.
+`plan_partial` regained the full niche playbook, the industry format mix, this
+week's business context and the featured listing (`chat.js` now fetches
+`listingUrl` for it, and the client sends it), all of which it lost by reusing
+only the system prompt. `followerTier` no longer reads an unstated follower
+count as "under 1K".
+
+**Live playbook values beat static tables.** `hashtagSlots` gained a second
+call site in `buildLongPost`; the LinkedIn see-more fold comes from the
+playbook's `hook_window` rather than a literal `~210 characters`. Scan's
+`scanPlaybookContext` now passes `hashtag_count`, `caption_limit` and
+`peak_times` — it had asserted a `caption_limit` rule while being passed no
+such value — and a `PRECEDENCE` line states that live numbers outrank the
+static post-type ranges, which stay because Story-vs-Feed sizing is a
+distinction the playbook does not carry. A new `post_when` field (VIRL's
+register, rendered in `index.html`) completes the verdict: Scan called the
+platform and never the timing.
+
+**`blog_post` takes no platform playbook — recorded as a decision.** The table
+is keyed by social platform and its fields describe feed mechanics; a blog
+lives on the creator's CMS and has no row. Borrowing LinkedIn's numbers would
+invent a constraint, which is the same defect as a stale static table pointed
+the other way. The parameter is named `_playbook` so the decision is visible at
+the call boundary, its fixed 3-5 tags are documented as CMS taxonomy rather
+than platform hashtags, and a check asserts no playbook block reaches it. It
+does take trends — those are niche-level signal, and the block is
+platform-labelled so any reference stays checkable.
+
+**Playbook staleness is bounded.** `playbookAge` (in `playbook.js`, which owns
+the table) derives the age of the slice a surface is about to quote from its
+OLDEST entry — a plan spanning five platforms is only as current as its
+least-recently-verified row. `playbookAuthorityFraming` makes the authority
+claim a function of that age: fresh states the age and keeps the claim, past 90
+days it states the age and withdraws it, unknown stays neutral (a missing
+timestamp must not read as an old one). 90 days is three consecutive missed
+monthly cycles — past any single innocent explanation, short enough to catch a
+mechanic that actually moved. The refresh cron now notifies on `errored > 0`
+and on drafts left unapproved for 30+ days, not only on `drafted > 0`, and
+records WHY each platform failed rather than only counting; `playbookDraftsReady`
+became `playbookRefreshReport`.
+
+**Deliberately not done.** Goal tactics and the follower-tier baseline stay on
+the plan surface only. They are per-request inputs that exist solely in the plan
+wizard; putting them on caption or scan would mean either per-surface user-prompt
+wiring for a signal this audit never flagged as missing, or asserting a follower
+tier from a stale localStorage value. `peak_times` on caption was likewise
+skipped: a caption's deliverable is the copy, and there is no output field a
+posting window could reach the creator through.
 
 ## The through-line
 

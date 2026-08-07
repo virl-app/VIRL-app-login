@@ -21,7 +21,10 @@ A map, not a source of truth. Verify against the code; line numbers drift.
   orchestrator; `api/_lib/prompts.js` builds every prompt.
 - `api/_lib/` — the signal modules. Each one owns one input to the prompt.
 - `migrations/` — Supabase schema.
-- Checks: `npm run check` (index parse, compliance, voice).
+- Checks: `npm run check` (index parse, compliance, voice, strategist).
+  `check-voice.mjs` guards the voice half; `check-strategist.mjs` guards the
+  strategist half (trend grounding, niche layer, live playbook values,
+  staleness bounds) across every prose surface.
 
 ## Generation surfaces
 
@@ -32,7 +35,6 @@ Dispatch table is `BUILDERS` in `api/_lib/prompts.js`. Each builder returns
 |---|---|---|
 | `plan` | `buildPlan` | Flagship. Streams. Highest credit cost. |
 | `plan_partial` | `buildPlanPartial` | Regenerates N cards. Reuses plan's *system* prompt only. |
-| `plan_strategy` | `buildPlanStrategy` | Regenerates the strategy block alone. |
 | `script` | `buildScript` | |
 | `long_post` | `buildLongPost` | |
 | `blog_post` | `buildBlogPost` | |
@@ -43,11 +45,23 @@ Dispatch table is `BUILDERS` in `api/_lib/prompts.js`. Each builder returns
 | `log_metrics` | `buildLogMetrics` | Extraction, not generation. No voice needed. |
 | `voice_sample_extract` | `buildVoiceSampleExtract` | Extraction. No voice needed. |
 
+`plan_strategy` was removed deliberately (see the note above `buildScript`);
+`check-voice.mjs` asserts it stays gone.
+
 The critical structural fact: **the system prompt is shared and cacheable; the
-user prompt is per-request.** Several signals (playbook, trends, niche playbook)
-live in the *user* prompt. So a builder that reuses another's system prompt does
-**not** inherit those. This is the single most common source of false "yes" cells
-in a coverage matrix.
+user prompt is per-request.** Signals that live in the *user* prompt are NOT
+inherited by a builder that reuses another's system prompt. This is the single
+most common source of false "yes" cells in a coverage matrix.
+
+Two rules that used to live in a user prompt were moved to the shared tier
+precisely because of it, and both are now inherited by every surface built
+through `composeSystemPrompt` (plus `buildPlan`, which composes its own pair):
+`TREND_SOURCE_RULE`, and `formatNicheModelForPrompt`'s per-niche success model.
+The pattern is worth copying: split a signal's per-niche/per-surface half (→
+shared) from its per-request half (→ user), rather than choosing one tier for
+all of it. What still rides the user prompt: the trend BLOCK itself, the
+platform playbook, the full niche playbook with goal tactics and follower tier,
+and everything week-specific.
 
 ## The strategist signal stack
 
@@ -62,14 +76,26 @@ in a coverage matrix.
     `planPlaybookContext`.
   - `scriptPlaybookContext` — duration, hook window, signals, formats.
   - `captionPlaybookContext` — caption limit, hashtag count, signals.
-  - `scanPlaybookContext` — signals and formats only.
-  - `hashtagSlots` — derives the schema's hashtag array length.
+  - `scanPlaybookContext` — every platform: signals, formats, hashtag count,
+    caption limit, peak times.
+  - `hashtagSlots` — derives the schema's hashtag array length (caption,
+    long_post).
+  - `playbookAuthorityFraming` / `playbookStaleNote` — how a block introduces
+    itself, derived from `playbookAge(entry.updated_at)`. Past
+    `PLAYBOOK_STALE_DAYS` (90) the authority claim is withdrawn. `blog_post`
+    takes no playbook at all, by recorded decision.
 - `_lib/trend-context.js` — DB-backed trends (`trend_items`), freshness floor 7
   days, niche-fit floor 0.6, max 5 items, TikTok as cross-platform fallback.
-  Fails open to an empty block; builders are expected to supply an explicit
-  "no trends" state rather than silence.
-- `_lib/niche-playbook.js` — per-vertical success model, funnel mix, KPIs,
-  follower-tier baselines, per-goal tactics.
+  Fails open to an empty block. One renderer, `trendsContext` in prompts.js,
+  serves every surface and never returns "" — the empty state is named, not
+  silent. `FRESH_TRENDS_TYPE` + `pickInlinePlatforms` in chat.js decide which
+  surfaces COLLECT; `caption_remix` is the one deliberate exclusion.
+- `_lib/niche-playbook.js` — two renderers.
+  `formatNicheModelForPrompt` is per-niche only (success model, funnel intent,
+  KPIs) and rides the shared tier on every non-plan surface.
+  `formatNichePlaybookForPrompt` adds the per-request layer (follower-tier
+  baseline, per-goal tactics) and stays on plan / plan_partial, the only
+  surfaces whose params carry a goal and a follower count.
 - `_lib/optimal-days.js` — best posting weekday from the creator's own results.
 - `_lib/holidays.js`, `_lib/listing-research.js` — opt-in observances, fetched
   link context.
@@ -144,6 +170,8 @@ Inverting any of these is promise-critical:
 - A signal measured and recorded but never acted on.
 - Static in-prompt tables duplicating live playbook values, so the surface uses
   the stale copy.
+- A signal with no freshness bound, framed as authoritative forever.
+- An alert whose only trigger is the success path, so failure is silent.
 - Missing data interpreted as negative data ("never logged" read as "didn't
   work").
 - Consent gates nulling a signal upstream, so a surface that looks wired is dark

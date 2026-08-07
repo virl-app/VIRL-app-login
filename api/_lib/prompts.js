@@ -2347,7 +2347,7 @@ function buildScanImage(params, profile, vaultPatterns, playbook, trends, _histo
   // platform verdict should be informed by the creator's own logged
   // platform performance rather than generic signals alone.
   const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS, params.niche);
-  const userPrompt = "The creator just handed you this image and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the image actually shows — then call the single best POST TYPE and write content sized to that type."
+  const userPrompt = "The creator just handed you this image and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the PLATFORM PLAYBOOK below — match the visual to the platform that rewards what the image actually shows — then call the single best POST TYPE and write content sized to that type."
     + " Be honest about a weak asset. \"I'd reshoot this\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
@@ -2372,7 +2372,7 @@ function buildScanVideoFrame(params, profile, vaultPatterns, playbook, trends, _
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
   // [SCAN-VOICE] Same rationale as buildScanImage.
   const systemPrompt = composeSystemPrompt(profile, "content strategist and viral potential analyst", compliance, vaultPatterns, personalDenylist, SCAN_REGISTERS, params.niche);
-  const userPrompt = "The creator just handed you this video frame and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the platform-signals reference below — match the visual to the platform that rewards what the frame actually shows — then call the single best POST TYPE and write content sized to that type."
+  const userPrompt = "The creator just handed you this video frame and wants your read on it. Give them a verdict, not a report: would you post it, where, and how. Pick the platform using the PLATFORM PLAYBOOK below — match the visual to the platform that rewards what the frame actually shows — then call the single best POST TYPE and write content sized to that type."
     + " Be honest about a weak frame. \"I'd pull a different frame\" is a more useful answer than a generous score, and the creator can tell the difference."
     + scanPlaybookContext(playbook)
     + scanTrendsContext(trends)
