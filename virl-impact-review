@@ -841,6 +841,34 @@ and on drafts left unapproved for 30+ days, not only on `drafted > 0`, and
 records WHY each platform failed rather than only counting; `playbookDraftsReady`
 became `playbookRefreshReport`.
 
+**Day 1 cards could be scheduled into a time that had already passed.**
+Reported from use: a plan generated at 10am produced a card saying to post at
+7:00 AM that same morning. Root cause was upstream of every prompt —
+`buildClientNow` sent `{ iso, weekday, year }` and no time of day, so the
+server knew it was Thursday and had no idea it was mid-morning. Day 1 is today
+by construction, the prompt said to place `postTime` inside the platform's peak
+window, and the model complied. Collected: no. Nothing downstream could have
+caught it.
+
+The client now sends `hour`, `minute`, a formatted `localTime` and the IANA
+timezone. `SCHEDULE_REALISM_RULE` (constant → `buildPlan`'s shared system tier,
+which is also how `plan_partial` inherits it) requires every Day 1 `postTime` to
+land at least 60 minutes out, and says to use a later peak window or move the
+card to another day when today's has closed. `nowContext` renders the clock into
+both plan user prompts. The pre-existing "set postTime to fall within each
+platform's peak window" sentence was qualified — left unqualified it is an
+absolute order sitting in the same prompt, and it outranks the rule at the exact
+moment the model picks a time.
+
+A prompt rule is the model policing itself, so there is a deterministic backstop:
+`postTimeHasPassed` flags a Day 1 card whose time has gone, and the card renders
+a "window passed" pill. It does not rewrite `postTime` — the hour carries a
+strategic call, and silently moving it would make VIRL disagree with its own
+reasoning; the creator decides whether to post late or let it ride. This also
+covers plans generated before the fix that are still in a vault. The helper
+takes an injectable clock so `check-strategist.mjs` evaluates its real behavior
+rather than matching source text.
+
 **Deliberately not done.** Goal tactics and the follower-tier baseline stay on
 the plan surface only. They are per-request inputs that exist solely in the plan
 wizard; putting them on caption or scan would mean either per-surface user-prompt

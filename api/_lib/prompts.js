@@ -947,6 +947,23 @@ const VARIETY_BLOCK = " VARIETY — a week where every post sounds the same is a
   + " STRUCTURAL VARIETY: vary caption and copy shape across the week — some one-liners, some story builds, some list-shaped, some conversational asks. If three cards in a row have the same paragraph count and rhythm, restructure one.\n"
   + " FRESH ANGLES: when OBSERVED POSTING PATTERNS or vault exemplars show a series, format, or topic the creator already runs, continue and evolve it (new episode, next chapter) rather than inventing a parallel lookalike — and mine those observed topics for angles the profile fields alone would never suggest.";
 
+// [SCHEDULE-REALISM] A card scheduled into a window that has already closed is
+// a card the creator cannot act on, and it is the first thing they notice: a
+// plan generated at 10am telling them to post at 7am today reads as VIRL not
+// knowing what day it is.
+//
+// The root cause was upstream of any prompt — buildClientNow sent the weekday
+// and no time of day, so the server genuinely did not know. With the time now
+// arriving, this is the rule that uses it. Constant text, so it rides the
+// shared (cached) tier of buildPlan's system prompt; the time itself is
+// per-request and lands in the user prompt. That split is what gets the rule to
+// plan_partial, which inherits the system prompt and composes its own user one.
+//
+// 60 minutes of headroom, not zero: a card due in five minutes is not
+// actionable either — the creator still has to shoot it, write it, or at
+// minimum find the photo.
+const SCHEDULE_REALISM_RULE = "SCHEDULING REALISM — Day 1 is TODAY, so a Day 1 card can be scheduled into a time that has already passed. Never do it. When the user prompt states the creator's current local time, every Day 1 card's `postTime` MUST fall at least 60 minutes AFTER that time, so there is room to actually make and publish the post. If the platform's peak window for today has already closed, do NOT schedule into it anyway: use a later peak window today when the playbook lists one, and when it does not, move that card to a later day and let today be lighter — a real strategist reschedules rather than handing over a slot that is already gone. Days 2 and later are unconstrained; every day label after Day 1 is a future date.";
+
 // [VOICE-ANCHOR] Single sentence appended to the END of the per-user
 // system prompt block — right before the user prompt arrives. Sits at
 // the point of highest model attention (recency in the system context
@@ -1218,6 +1235,24 @@ const PLAN_REGISTER_SPLIT = registerSplitFor(
 
 // ── Builders, one per generation type ──────────────────────────────────────
 
+// [SCHEDULE-REALISM] Renders the creator's current local time for the user
+// prompt, or "" when the client is too old to send it (the rule is written to
+// activate only when a time is actually stated, so an older client degrades to
+// the previous behavior rather than to a confidently wrong one).
+function nowContext(params) {
+  const cn = params && params.clientNow;
+  if (!cn) return "";
+  const hasHour = typeof cn.hour === "number" && cn.hour >= 0 && cn.hour <= 23;
+  const label = (typeof cn.localTime === "string" && cn.localTime.trim())
+    ? cn.localTime.trim()
+    : (hasHour ? (cn.hour + ":" + String(typeof cn.minute === "number" ? cn.minute : 0).padStart(2, "0")) : "");
+  if (!label) return "";
+  const tz = (typeof cn.tz === "string" && cn.tz.trim()) ? " (" + cn.tz.trim() + ")" : "";
+  return "\n\nRIGHT NOW it is " + label + tz + " for this creator, and Day 1 is today."
+    + " Apply the SCHEDULING REALISM rule to every Day 1 card: its postTime must be at least 60 minutes from now, or the card moves to a later day."
+    + " Today's earlier peak windows are gone — do not schedule into them.";
+}
+
 function buildPlan(params, profile, vaultPatterns, playbook, trends, history, recentEdits, compliance, personalDenylist) {
   const platformsArr = params.platforms || [];
   const platforms = platformsArr.join(",");
@@ -1354,6 +1389,10 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // only the rule is cached. plan_partial inherits this block verbatim, which
     // is why the rule had to leave the user prompt to reach it at all.
     + TREND_SOURCE_RULE + "\n\n"
+    // [SCHEDULE-REALISM] Same shape: cached rule here, per-request clock in the
+    // user prompt. plan_partial regenerates a Day 1 slot as readily as the full
+    // plan does, so it needs the rule just as much.
+    + SCHEDULE_REALISM_RULE + "\n\n"
     + "On this surface you're building the creator's week: a highly personalized 7-day social media content plan that builds on the weeks before it. "
     + "Always return valid JSON only — no markdown, no preamble, no explanation outside the JSON. "
     + GUARD_LINE + " "
@@ -1562,6 +1601,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
         : "")
     + historyCtx
     + rejectedCtx
+    + nowContext(params)
     + " The week starts TODAY (" + startWeekday + "). When you assign a `day` to a card, use one of these exact day labels: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday. You do NOT have to use all 7 labels — the card count below tells you how many posts to actually produce, and the remaining days are rest days."
     // [DAY-NAME-GUARD] The model occasionally names a weekday inside the
     // card copy that doesn't match the card's scheduled day — e.g. a
@@ -1603,7 +1643,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
               : base + " None of the platforms selected THIS week is a long-form-native channel, so place them on whichever SELECTED platform best carries narrative text (e.g. a caption-led Instagram post) — do NOT add LinkedIn or Facebook to satisfy this.";
           })()
         : "")
-    + " Create " + effectiveCardRange.min + "-" + effectiveCardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window. Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + " Create " + effectiveCardRange.min + "-" + effectiveCardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window — except on Day 1, where a window that has already passed is not available (see SCHEDULING REALISM). Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
     + (isLightWeek ? " LIGHT WEEK: The creator deliberately chose a light week. Treat 3-5 posts as the COMPLETE strategy, not a reduced one — never apologize for volume or suggest they should post more. Choose only the highest-leverage ideas, spread them across the week with intentional rest days, and make each post carry more strategic weight. If Stories are among the selected formats, prefer 1-2 low-effort Story prompts inside the range over additional feed posts."
     : "")
     + (optimalDaysCtx ? "\n\n" + optimalDaysCtx + "\n\nWhen distributing cards across the week, weight the optimal days above heavily — they're either the creator's own best-performing days (when 'performs best on' is shown) or industry rule-of-thumb for the platform (when 'general best days' is shown). The user-history signal is the stronger one when present." : "")
@@ -1758,6 +1798,11 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
   const partialFormatMix   = getFormatGuidance(partialNiche);
   const partialWeekContext = String(params.weekContext || "").trim().slice(0, 1200);
   const partialListingCtx  = String(params.listingContext || "").trim().slice(0, 4000);
+  // [SCHEDULE-REALISM] The rule arrives via the inherited system prompt; the
+  // clock is per-request and has to be restated here. Regenerating this
+  // morning's card at 3pm is the single most likely way to land a postTime in
+  // the past, because the slot being replaced already has today's date.
+  const partialNowCtx      = nowContext(params);
   const partialTrendsCtx   = trendsContext(trends, {
     lead:      "CURRENT TRENDS — the only trends a replacement card may cite. Same rule as the rest of this week's plan.",
     emptyTail: "Omit the `trend` field on every replacement card.",
@@ -1795,6 +1840,7 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
         : "")
     + partialPlaybookCtx
     + partialTrendsCtx
+    + partialNowCtx
     + "\n\nOutput ONLY this JSON shape — NO strategy field, NO stats field, NO preamble:"
     + "\n{\"cards\":[{...}, {...}]}"
     // [LEARN-FROM-EDITS] Voice signal from the user's recent diffs.

@@ -382,6 +382,104 @@ for (const s of PROSE_SURFACES) {
     "cron/playbook-refresh counts failures without recording why, so the alert cannot say what broke");
 }
 
+// ── Layer 5: a plan card can be acted on when the creator reads it ─────────
+//
+// Day 1 is today, the prompt said to put postTime inside the platform's peak
+// window, and nothing told the model what time it was — buildClientNow sent
+// the weekday and stopped there. So a plan generated at 10am scheduled a 7:00
+// AM card for that same morning. A link-1 break: the fact never left the
+// browser, so no prompt rule could have saved it.
+const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute: 20, localTime: "3:20 PM", tz: "America/Chicago" };
+
+{
+  const planParams    = Object.assign({}, PROSE_SURFACES[0].params, { clientNow: CLIENT_NOW });
+  const partialParams = Object.assign({}, PROSE_SURFACES[1].params, { clientNow: CLIENT_NOW });
+  const plan    = build("plan",         planParams,    { playbook: playbookFixture() });
+  const partial = build("plan_partial", partialParams, { playbook: playbookFixture() });
+
+  // The rule is constant text, so it belongs in the cached system tier — and
+  // that placement is also the only thing that gets it to plan_partial, which
+  // inherits the system prompt and writes its own user prompt.
+  for (const [label, built] of [["plan", plan], ["plan_partial", partial]]) {
+    assert(/SCHEDULING REALISM/.test(sharedOf(built)),
+      `${label}: no scheduling-realism rule in the shared system tier — nothing stops a Day 1 card landing in the past`);
+    assert(/at least 60 minutes/.test(sharedOf(built)),
+      `${label}: the rule states no headroom, so "five minutes from now" counts as schedulable`);
+  }
+
+  // The clock is per-request, so it has to reach BOTH user prompts. The rule
+  // is written to activate only when a time is actually stated; without this
+  // line it is inert.
+  for (const [label, built] of [["plan", plan], ["plan_partial", partial]]) {
+    const user = built.userPrompt || "";
+    assert(user.includes("3:20 PM"),
+      `${label}: the creator's current local time never reaches the prompt — the scheduling rule has nothing to compare against`);
+    assert(user.includes("America/Chicago"),
+      `${label}: the creator's timezone is dropped, so "3:20 PM" is ambiguous`);
+  }
+
+  // The pre-existing peak-window instruction is an unqualified order sitting
+  // in the same prompt. Left as-is it outranks the rule at the exact moment
+  // the model picks a time for Day 1.
+  assert(/peak window — except on Day 1/.test(plan.userPrompt || ""),
+    "plan: the peak-window instruction is unqualified, so it still tells the model to use a window that has already closed");
+
+  // An older client that sends no time must degrade to the previous behavior,
+  // not to a confidently wrong one. Asserting no time is claimed when none was
+  // given — inventing "RIGHT NOW it is 12:00 AM" would be worse than silence.
+  const noClock = build("plan", PROSE_SURFACES[0].params, { playbook: playbookFixture() });
+  assert(!/RIGHT NOW it is/.test(noClock.userPrompt || ""),
+    "plan: a request with no clientNow still asserts a current time — that is invented data");
+}
+
+// The browser end of the same chain, plus the deterministic backstop.
+{
+  const indexSrc = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const clientNowFn = (indexSrc.match(/function buildClientNow\(\)[\s\S]*?\n\}/) || [""])[0];
+  assert(/hour:/.test(clientNowFn) && /localTime:/.test(clientNowFn),
+    "buildClientNow no longer sends the time of day — the server is back to knowing the weekday and nothing else");
+  assert(/tz:/.test(clientNowFn),
+    "buildClientNow no longer sends the timezone, so the hour it sends is ambiguous");
+
+  // index.html is one Babel-compiled file and cannot be imported, but these
+  // two helpers are plain JS with no JSX and no DOM. Lifting their source and
+  // evaluating it tests the actual behavior instead of matching on text — a
+  // text match is what let three earlier versions of these assertions survive
+  // the bug being reintroduced.
+  const lift = (name) =>
+    (indexSrc.match(new RegExp("function " + name + "\\([\\s\\S]*?\\n\\}")) || [""])[0];
+  const parseSrc  = lift("parsePostTimeHM");
+  const passedSrc = lift("postTimeHasPassed");
+  assert(parseSrc && passedSrc,
+    "index.html lost parsePostTimeHM or postTimeHasPassed — plans generated before the prompt fix have no backstop at all");
+  if (parseSrc && passedSrc) {
+    const hasPassed = new Function(
+      parseSrc + "\n" + passedSrc + "\nreturn postTimeHasPassed;"
+    )();
+    const at = (h, m) => { const d = new Date(2026, 7, 7, h, m, 0, 0); return d; };
+
+    // The exact case Lauren reported: plan generated at 10am, card says 7am
+    // today.
+    assert(hasPassed({ day: "Day 1 - Fri", postTime: "7:00 AM" }, at(10, 0)) === true,
+      "a Day 1 card scheduled for 7am is not flagged at 10am — the reported bug is unguarded");
+    assert(hasPassed({ day: "Day 1 - Fri", postTime: "7:00 PM" }, at(10, 0)) === false,
+      "a Day 1 card later today is wrongly flagged as passed");
+    // Only Day 1 can be in the past; every later label is a future date, and
+    // flagging those would make the indicator noise within a day.
+    assert(hasPassed({ day: "Day 3 - Sun", postTime: "7:00 AM" }, at(10, 0)) === false,
+      "a future day's card is flagged as passed — the indicator would fire on most of the week");
+    assert(hasPassed({ day: "Day 1 - Fri" }, at(10, 0)) === false,
+      "a card with no postTime is flagged as passed");
+  }
+
+  // And the result has to reach the screen. Pinned to the actual render guard:
+  // a looser match survived `false && postTimeHasPassed(card)`.
+  assert(/card\.postTime && postTimeHasPassed\(card\)/.test(indexSrc),
+    "the card no longer renders postTimeHasPassed's result — measured is not surfaced");
+  assert(/window passed/.test(indexSrc),
+    "the past-window indicator no longer renders on the card");
+}
+
 if (failures > 0) {
   console.error(`\nStrategist eval FAILED with ${failures} failure(s).`);
   process.exit(1);
