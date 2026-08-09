@@ -118,6 +118,86 @@ const EVERGREEN_PATTERNS = [
   /\buser[- ]generated content (is|remains)\b/i,
 ];
 
+// ── [TREND-RELEVANCE] Is this item about the creator's business at all? ────
+//
+// The metric this file was missing, and the omission was not cosmetic. Run
+// against eight weeks of production data, every other measure here reported a
+// healthy pipeline — zero repeat rate, every item sourced, specific named
+// artifacts — while the rows being served to real estate agents were "the
+// Microwave Challenge" and "the Puerto Rico Song lip-sync format". Those items
+// are specific, dated and correctly cited. They are simply not about her
+// business. A specificity test cannot see that, because the failure is not a
+// vague item; it is a precise item about the wrong subject.
+//
+// So relevance is measured three ways, deliberately from different angles,
+// because each one alone is fooled by something:
+//
+//   VOCABULARY   does the item contain any word from the segment's domain?
+//                Interpretable, and bounded by whatever is in the list below.
+//   CULTURE      does it read as general platform culture (challenges,
+//                lip-syncs, memes) rather than an industry subject? Catches
+//                the observed failure directly.
+//   DIVERGENCE   how different is a segment's research from the GLOBAL
+//                research for the same platform? Needs no vocabulary at all,
+//                so it is the one measure that cannot be gamed by an
+//                incomplete word list — and it is the direct test of whether
+//                passing `niche` to researchTrends changed anything. Segment
+//                rows that closely resemble global rows mean the parameter is
+//                being ignored, however good the items look.
+//
+// The vocabulary is EDITABLE and expected to be edited. It is a floor, not an
+// oracle: a low hit rate is worth investigating, a high one is not proof.
+
+const SEGMENT_VOCAB = {
+  real_estate: `listing listings realtor realtors agent agents home homes house houses buyer buyers
+    seller sellers mortgage escrow closing walkthrough staging openhouse property properties broker
+    appraisal offer contract curb neighborhood relocation inventory equity refinance zillow mls
+    condo townhome renovation remodel inspection`,
+  coach: `client clients coaching session sessions mindset framework transformation program discovery
+    breakthrough accountability curriculum enrollment cohort mastermind consult consulting`,
+  creator: `creator creators audience engagement algorithm monetize monetization subscriber
+    subscribers analytics ugc sponsorship affiliate newsletter podcast`,
+  personal_brand: `authority positioning keynote speaking speaker executive credibility industry
+    linkedin thought leadership founder consultant expertise`,
+  small_business: `owner customer customers storefront local revenue staff pricing invoice shop
+    boutique inventory retail smallbusiness payroll vendor`,
+  fitness: `workout workouts training gym reps nutrition macros mobility lifting cardio strength
+    trainer athlete recovery physique conditioning`,
+  healthcare: `patient patients clinic nurse nurses doctor doctors physician symptom symptoms
+    diagnosis treatment medical practice care therapy dental surgery`,
+  beauty: `skin skincare facial lash lashes brow brows esthetician glow serum botox filler spa
+    acne routine makeup wax microblading`,
+  hair: `hair stylist stylists salon color colour balayage blonde brunette cut extensions curl
+    curls blowout toner highlights bleach barber`,
+};
+
+// General platform culture: real trends, wrong axis. An item can be perfectly
+// specific and perfectly sourced and still be one of these — which is exactly
+// how the production data passed every other test in this file.
+const CULTURE_PATTERNS = [
+  /\bchallenge\b/i, /\blip[- ]?sync/i, /\bdance\b/i, /\bmeme\b/i, /\bprank\b/i,
+  /\bcelebrit(y|ies)\b/i, /\breality tv\b/i, /\bfan ?cam\b/i, /\bcosplay\b/i,
+  /\bduet(ting)?\b/i, /\bstitch(ing)?\b/i, /\bpov trend\b/i, /\bfilter trend\b/i,
+  /\bgot me (like|acting)\b/i, /\bsound is going viral\b/i,
+];
+
+function segmentVocabSet(segment) {
+  const raw = SEGMENT_VOCAB[segment];
+  if (!raw) return null;
+  return new Set(raw.split(/\s+/).map(w => w.trim().toLowerCase()).filter(Boolean));
+}
+
+/** Does the item name anything from this segment's domain? */
+function hasSegmentVocab(text, vocab) {
+  if (!vocab) return null; // unknown segment — report as unmeasurable, not as a miss
+  const words = String(text || "").toLowerCase().split(/[^a-z0-9]+/);
+  return words.some(w => w.length > 2 && vocab.has(w));
+}
+
+function isPlatformCulture(text) {
+  return CULTURE_PATTERNS.some(re => re.test(String(text || "")));
+}
+
 // Words carrying no discriminating power when comparing two trend blurbs.
 const STOPWORDS = new Set(`a an and are as at be been being but by for from has
 have how in into is it its of on or that the their there these this to was were
@@ -275,7 +355,7 @@ async function main() {
 
   const since = new Date(Date.now() - WEEKS * 7 * 86400000).toISOString();
   let query =
-    "trends?select=id,platform,summary,items,sources,fetched_at" +
+    "trends?select=id,platform,segment,summary,items,sources,fetched_at" +
     `&fetched_at=gte.${encodeURIComponent(since)}` +
     "&order=fetched_at.desc&limit=1000";
   if (PLATFORM_FILTER) query += `&platform=eq.${encodeURIComponent(PLATFORM_FILTER)}`;
@@ -295,6 +375,11 @@ async function main() {
       if (!text) continue;
       items.push({
         platform: r.platform,
+        // [TREND-RELEVANCE] NULL is the platform-wide tier, not a missing
+        // value — see migration 026. Every row predating that migration is
+        // global, which is precisely why the baseline below is worth taking
+        // before the first niche-researched run lands.
+        segment: r.segment || null,
         week: isoWeek(r.fetched_at),
         fetchedAt: r.fetched_at,
         trend: String((it && it.trend) || "").trim(),
@@ -428,6 +513,70 @@ async function main() {
     };
   }
 
+  // ── 4b. Relevance ────────────────────────────────────────────────────────
+  // Computed over the whole window rather than per platform, because the
+  // question is about the SEGMENT the research targeted, and one segment's
+  // rows span several platforms.
+
+  const globalItems = items.filter(i => i.segment === null);
+  const bySegment = new Map();
+  for (const it of items) {
+    if (it.segment === null) continue;
+    if (!bySegment.has(it.segment)) bySegment.set(it.segment, []);
+    bySegment.get(it.segment).push(it);
+  }
+
+  // Baseline: how the platform-wide rows score. This is the number to beat,
+  // and taking it BEFORE any niche-researched rows exist is the whole point —
+  // "the research got more relevant" is not a claim you can make later
+  // without it.
+  function scoreGroup(list, vocab) {
+    const measurable = vocab ? list.length : 0;
+    return {
+      items: list.length,
+      vocabHits: vocab ? list.filter(i => hasSegmentVocab(i.text, vocab)).length : null,
+      measurable,
+      culture: list.filter(i => isPlatformCulture(i.text)).length,
+    };
+  }
+
+  // Divergence: mean best-match similarity between a segment's items and the
+  // global items on the SAME platform. Vocabulary-free, so it is immune to
+  // gaps in SEGMENT_VOCAB — and it is the direct test of whether passing
+  // `niche` changed the output at all. High similarity means it did not.
+  function divergence(segmentList) {
+    const scores = [];
+    for (const it of segmentList) {
+      const pool = globalItems.filter(g => g.platform === it.platform);
+      if (!pool.length) continue;
+      let best = 0;
+      for (const g of pool) best = Math.max(best, jaccard(it.tokens, g.tokens));
+      scores.push(best);
+    }
+    if (!scores.length) return null;
+    return scores.reduce((a, b) => a + b, 0) / scores.length;
+  }
+
+  const relevance = { baseline: {}, segments: {}, haveSegmentRows: bySegment.size > 0 };
+
+  // The baseline is scored against every segment's vocabulary in turn, since
+  // a global row belongs to no segment — "would a real estate creator have
+  // found anything of theirs in this?" is the question.
+  for (const seg of Object.keys(SEGMENT_VOCAB)) {
+    const vocab = segmentVocabSet(seg);
+    relevance.baseline[seg] = scoreGroup(globalItems, vocab);
+  }
+
+  for (const [seg, list] of bySegment) {
+    const vocab = segmentVocabSet(seg);
+    relevance.segments[seg] = {
+      ...scoreGroup(list, vocab),
+      divergenceFromGlobal: divergence(list),
+      unknownSegment: !vocab,
+    };
+  }
+  report.relevance = relevance;
+
   // ── 5. Link integrity (opt-in) ───────────────────────────────────────────
   if (CHECK_LINKS) {
     const urls = [...new Set(items.map((i) => i.sourceUrl).filter(Boolean))];
@@ -545,6 +694,53 @@ async function main() {
     }
   } else {
     console.log("\n(Link integrity not checked. Re-run with --check-links to probe source URLs.)");
+  }
+
+  heading("RELEVANCE — is the item about the creator's business?");
+  console.log("The measure every other test in this file is blind to. A trend can be");
+  console.log("specific, dated and correctly cited while being about the wrong subject.\n");
+
+  const rel = report.relevance;
+  const cultureGlobal = globalItems.filter(i => isPlatformCulture(i.text)).length;
+
+  console.log(`PLATFORM-WIDE rows (the baseline): ${globalItems.length} items`);
+  console.log(`  reads as general platform culture: ${pct(cultureGlobal, globalItems.length)} (${cultureGlobal}/${globalItems.length})`);
+  console.log("  would a creator in each segment find their own subject matter in these?");
+  for (const seg of Object.keys(SEGMENT_VOCAB)) {
+    const b = rel.baseline[seg];
+    console.log(`    ${seg.padEnd(16)} ${bar(b.vocabHits, b.items, 18)} ${pct(b.vocabHits, b.items).padStart(4)}`);
+  }
+
+  if (!rel.haveSegmentRows) {
+    console.log("\n  NO PER-SEGMENT ROWS IN THIS WINDOW.");
+    console.log("  Everything above is the pre-fix baseline — every row here is");
+    console.log("  platform-wide research, which is what the whole table was before");
+    console.log("  migration 026. Re-run after the next weekly cron and the segment");
+    console.log("  tier will appear below for comparison.");
+  } else {
+    console.log("\nPER-SEGMENT rows (niche-researched):");
+    console.log("segment          items  own-vocab  culture  similarity-to-global");
+    for (const seg of Object.keys(rel.segments).sort()) {
+      const g = rel.segments[seg];
+      const base = rel.baseline[seg];
+      const delta = (g.vocabHits !== null && base && base.items)
+        ? Math.round((g.vocabHits / g.items - base.vocabHits / base.items) * 100)
+        : null;
+      const deltaStr = delta === null ? "" : ` (${delta >= 0 ? "+" : ""}${delta}pp vs baseline)`;
+      const sim = g.divergenceFromGlobal === null ? "n/a" : `${Math.round(g.divergenceFromGlobal * 100)}%`;
+      console.log(
+        `${seg.padEnd(16)} ${String(g.items).padStart(5)}  ` +
+        `${pct(g.vocabHits, g.items).padStart(8)}  ${pct(g.culture, g.items).padStart(7)}  ${sim.padStart(8)}${deltaStr}`,
+      );
+      if (g.unknownSegment) console.log(`    (no vocabulary defined for '${seg}' — own-vocab is unmeasurable, not zero)`);
+    }
+    console.log("\n  own-vocab   ↑ better. Items naming this segment's subject matter.");
+    console.log("  culture     ↓ better. Items reading as general platform culture.");
+    console.log("  similarity  ↓ better. How much the niche research resembles the");
+    console.log("              platform-wide research for the same platform. Above");
+    console.log("              ~50% means passing `niche` barely changed the output,");
+    console.log("              whatever the other two columns say — and that reading");
+    console.log("              needs no vocabulary, so a thin word list can't fake it.");
   }
 
   heading("HOW TO READ THIS");
