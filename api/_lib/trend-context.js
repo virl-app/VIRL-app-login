@@ -100,6 +100,98 @@ export function resolveSegment(niche, profile) {
   return segmentFromProfileHints(profile) || "creator";
 }
 
+// ── [TREND-PERSONALIZATION] Creator fit beyond the niche score ─────────────
+//
+// Trend selection used exactly one input: `niche_scores[segment] >= 0.6`,
+// then rising-first, then best fit, then take 5. Niche is one of the three
+// things VIRL claims to personalize on; goals and voice reached the writing
+// of a trend but never the CHOOSING of one. Two real-estate creators — one
+// working listing appointments, one building a personal brand, one who has
+// told VIRL never to touch a subject — received the identical five trends.
+//
+// The split below is deliberate about what is measurable and what is not:
+//
+//   OFF-LIMITS is a hard exclusion, applied in code. A creator who wrote
+//   "never talk about politics" has stated a boundary, and a boundary
+//   enforced by asking a model nicely is not enforced. This also runs over
+//   the legacy fallback items, which are not niche-scored at all and so had
+//   no filtering of any kind before now.
+//
+//   TOPIC OVERLAP is a ranking nudge, applied in code. Whether a trend's
+//   words overlap the creator's stated pillars is a fact about two strings.
+//
+//   GOAL is stated to the model, NOT scored in code. Building a
+//   goal→trend-type mapping ("hashtag trends suit awareness, formats suit
+//   conversion") would mean inventing a rule nothing here can check —
+//   precisely the unfalsifiable claim the trend-grounding rules exist to
+//   stop. The model gets the goal and picks among trends already filtered
+//   for fit and safety.
+
+const OFF_LIMITS_MIN_TERM = 4;   // below this a term matches half the language
+const TOPIC_BONUS         = 0.15; // tiebreak only; never outranks a fit gap
+
+// Creators write boundaries in whatever number happens to come out — "no
+// politics, elections" against a trend that says "election day". Plain
+// substring matching misses that, and a boundary that fails on a plural is
+// not a boundary. Crudely folding a trailing "s" off every word on BOTH
+// sides makes the comparison agree with itself; it does not need to be
+// linguistically right ("business" → "busines" on both sides still matches),
+// only applied identically to the term and the text.
+function foldPlurals(s) {
+  return s.replace(/\b([a-z0-9']{4,})s\b/g, "$1");
+}
+
+// Free-text "don't go near this" from the profile, split into matchable
+// terms. Short fragments are dropped: a two-letter term would silently
+// filter out most of the trend table.
+function offLimitsTerms(profile) {
+  const raw = profile && typeof profile.offLimits === "string" ? profile.offLimits : "";
+  if (!raw.trim()) return [];
+  return raw
+    .toLowerCase()
+    .split(/[,;\n•]+|\band\b/)
+    .map(s => s.replace(/^\s*(no|never|avoid|don'?t (?:talk about|mention|post about))\b/, "").trim())
+    .map(s => s.replace(/[^a-z0-9 '-]/g, "").trim())
+    .filter(s => s.length >= OFF_LIMITS_MIN_TERM)
+    .map(foldPlurals);
+}
+
+// The creator's own subject matter, as a token set. Sourced from what they
+// typed rather than anything inferred, so an empty profile yields an empty
+// set and the bonus simply never fires.
+function creatorTopicTokens(profile) {
+  if (!profile) return new Set();
+  const hay = [profile.pillars, profile.topics, profile.knownFor, profile.offerings, profile.loveToReference]
+    .map(v => Array.isArray(v) ? v.join(" ") : v)
+    .filter(v => typeof v === "string")
+    .join(" ")
+    .toLowerCase();
+  const stop = new Set(["and","the","for","with","that","this","your","from","about","content","video","posts","tips"]);
+  return new Set(hay.split(/[^a-z0-9]+/).filter(w => w.length > 3 && !stop.has(w)));
+}
+
+// True when a trend touches a stated boundary. Checks the display name AND
+// the enrichment context, because the trend's title is often a bare sound or
+// hashtag while the reason it is trending is where the subject actually
+// shows up.
+function violatesOffLimits(trend, terms) {
+  if (!terms.length) return false;
+  const hay = foldPlurals(
+    [trend.display_name, trend.context, trend.reason]
+      .filter(v => typeof v === "string")
+      .join(" ")
+      .toLowerCase(),
+  );
+  if (!hay) return false;
+  return terms.some(t => hay.includes(t));
+}
+
+function topicOverlapBonus(trend, topicTokens) {
+  if (!topicTokens.size) return 0;
+  const words = String(trend.display_name || "").toLowerCase().split(/[^a-z0-9]+/);
+  return words.some(w => w.length > 3 && topicTokens.has(w)) ? TOPIC_BONUS : 0;
+}
+
 // ── low-level fetch ─────────────────────────────────────────────────────────
 
 async function sbGet(pathAndQuery) {
@@ -231,7 +323,7 @@ function renderTrendItem(idx, t, targetPlatforms) {
  * @param {object}   [opts.profile]  profile (for segment hint recovery)
  * @returns {Promise<{ block: string, snapshot: object|null, usedTrends: boolean }>}
  */
-export async function buildTrendContext({ platforms, niche, profile } = {}) {
+export async function buildTrendContext({ platforms, niche, profile, goal, goalSecondary } = {}) {
   const empty = { block: "", snapshot: null, usedTrends: false };
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return empty;
 
@@ -277,14 +369,23 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
     // Score + rank trends: fit = niche_scores[segment] >= floor, rising first,
     // then by fit desc. (Done in JS — PostgREST can't cast jsonb->>seg to float
     // for filter+order without a custom RPC, and this keeps the query simple.)
+    // [TREND-PERSONALIZATION] Boundaries and subject matter the creator
+    // stated, resolved once and reused for both the observed and legacy paths.
+    const banned      = offLimitsTerms(profile);
+    const topicTokens = creatorTopicTokens(profile);
+
     const scored = (Array.isArray(trendRows) ? trendRows : [])
       .map(t => ({ ...t, fit: Number(t.niche_scores && t.niche_scores[segment]) }))
       .filter(t => Number.isFinite(t.fit) && t.fit >= FIT_FLOOR)
+      // Hard exclusion, before ranking — a trend the creator has ruled out is
+      // not a low-ranked option, it is not an option.
+      .filter(t => !violatesOffLimits(t, banned))
+      .map(t => ({ ...t, rank_score: t.fit + topicOverlapBonus(t, topicTokens) }))
       .sort((a, b) => {
         const ar = a.status === "rising" ? 1 : 0;
         const br = b.status === "rising" ? 1 : 0;
         if (ar !== br) return br - ar;      // rising ahead of peaking
-        return b.fit - a.fit;               // then best fit
+        return b.rank_score - a.rank_score; // then best fit, nudged by overlap
       })
       .slice(0, MAX_TRENDS);
 
@@ -315,6 +416,14 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
     let legacy = { items: [], asOf: "" };
     if (scored.length === 0) {
       legacy = await loadLegacyTrends(requested).catch(() => ({ items: [], asOf: "" }));
+      // [TREND-PERSONALIZATION] The same boundary check the observed path
+      // gets. These rows were previously the LEAST filtered thing in the
+      // system — no niche score, no fit floor, nothing — while being the
+      // path that runs precisely when the observed pipeline is dark. A
+      // creator's stated boundary should not depend on which pipeline is up.
+      if (banned.length) {
+        legacy = { ...legacy, items: legacy.items.filter(t => !violatesOffLimits(t, banned)) };
+      }
     }
 
     let refreshedAt = "";
@@ -350,6 +459,23 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
       sections.push(
         "[CURRENT TRENDS]\nNo current trend meets this creator's bar this week. " +
         "Do NOT cite any trend — build on the playbook, the creator's strategy, and logged results instead.",
+      );
+    }
+
+    // [TREND-PERSONALIZATION] The goal, stated rather than scored. Placed
+    // immediately after the trend list so it reads as a selection instruction
+    // over the items just supplied, not as a general aspiration. Only emitted
+    // when a goal exists — an empty directive is worse than none, because it
+    // invites the model to invent what the creator is optimizing for.
+    const goalText = [goal, goalSecondary && goalSecondary !== goal ? goalSecondary : ""]
+      .filter(g => typeof g === "string" && g.trim())
+      .join(", then ");
+    if (goalText) {
+      sections.push(
+        `[TREND SELECTION — THIS CREATOR'S GOAL]\nTheir stated goal is: ${goalText}. ` +
+        "Of the trends above, prefer the ones that can plausibly move THAT goal, and angle whichever you use toward it. " +
+        "A trend that fits the niche but does nothing for this goal is worth skipping — using fewer trends is allowed and often better. " +
+        "Do not claim a trend serves the goal in a way the trend data above does not support.",
       );
     }
 

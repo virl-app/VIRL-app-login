@@ -16,33 +16,92 @@
 const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_KEY;
 const ENDPOINT           = "https://api.perplexity.ai/chat/completions";
 
+// [SEARCH-CONTROLS] Perplexity enforces recency, source selection, and search
+// depth as REQUEST PARAMETERS. Until now this wrapper sent none of them, so
+// every one of those constraints was expressed in prose inside the prompt and
+// left to the model's discretion — see constraints #1, #1b and #3 in
+// trends-research.js, which ask in English for exactly what the three options
+// below enforce at the search layer. Asking a model to restrict its own search
+// results is not the same as restricting them.
+//
+//   searchRecency     → search_recency_filter: "day" | "week" | "month"
+//   searchDomains     → search_domain_filter: allow-list, or deny-list when an
+//                       entry is prefixed with "-". Documented cap is 10
+//                       entries; callers must pre-trim.
+//   searchContextSize → web_search_options.search_context_size:
+//                       "low" | "medium" | "high"
+//
+// All three are optional and omitted entirely when not supplied, so existing
+// callers are unaffected.
+function buildBody({ prompt, model, maxTokens, system, searchRecency, searchDomains, searchContextSize }) {
+  const body = {
+    model: model || "sonar",
+    max_tokens: maxTokens || 3500,
+    messages: [
+      ...(system ? [{ role: "system", content: system }] : []),
+      { role: "user", content: prompt },
+    ],
+  };
+  if (searchRecency) body.search_recency_filter = searchRecency;
+  if (Array.isArray(searchDomains) && searchDomains.length) {
+    body.search_domain_filter = searchDomains.slice(0, 10);
+  }
+  if (searchContextSize) body.web_search_options = { search_context_size: searchContextSize };
+  return body;
+}
+
+async function post(body) {
+  return fetch(ENDPOINT, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + PERPLEXITY_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 // Wraps one Perplexity chat completion. `prompt` is the user message; the
 // returned object exposes the model's text reply, citations (URLs Perplexity
 // pulled from during search), and token usage for cost telemetry parity with
 // the rest of the stack.
-export async function callPerplexity({ prompt, model, maxTokens, system }) {
+export async function callPerplexity(opts) {
   if (!PERPLEXITY_API_KEY) return null;
+  const { prompt, model, maxTokens, system, searchRecency, searchDomains, searchContextSize } = opts || {};
+  const full = buildBody({ prompt, model, maxTokens, system, searchRecency, searchDomains, searchContextSize });
+  const usedSearchOpts = !!(searchRecency || searchContextSize ||
+    (Array.isArray(searchDomains) && searchDomains.length));
+
   let res;
   try {
-    res = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + PERPLEXITY_API_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: model || "sonar",
-        max_tokens: maxTokens || 3500,
-        messages: [
-          ...(system ? [{ role: "system", content: system }] : []),
-          { role: "user", content: prompt },
-        ],
-      }),
-    });
+    res = await post(full);
   } catch (e) {
     console.error("[perplexity] fetch threw", e.message);
     return null;
   }
+
+  // [SEARCH-CONTROLS] `search_domain_filter` has historically been gated to
+  // certain usage tiers, and parameter names drift between API versions. A
+  // 400 caused by one of these options would otherwise take out the entire
+  // weekly research run — a strictly worse outcome than the un-filtered
+  // search we had before. So on a 4xx, retry ONCE without them and log
+  // loudly: degraded search beats no trends row, but a silent downgrade is
+  // how you end up believing a filter is on when it never applied.
+  if (!res.ok && usedSearchOpts && res.status >= 400 && res.status < 500) {
+    const errText = await res.text().catch(() => "");
+    console.error(
+      "[perplexity] search options rejected (" + res.status + ") — retrying WITHOUT " +
+      "recency/domain/context filters. Search is now unfiltered for this call.",
+      errText.slice(0, 300),
+    );
+    try {
+      res = await post(buildBody({ prompt, model, maxTokens, system }));
+    } catch (e) {
+      console.error("[perplexity] retry threw", e.message);
+      return null;
+    }
+  }
+
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
     console.error("[perplexity] error", res.status, errText);

@@ -11,6 +11,9 @@
 // runtime without provisioning secrets first.
 
 import { ensembleDataSource } from "./adapters/ensembledata.ts";
+import { HASHTAG_CONFIG } from "./adapters/hashtags.ts";
+import { buildUrl, httpSourceConfigFromEnv, httpTrendSource } from "./adapters/http-source.ts";
+import { extractPosts } from "./adapters/tiktok-normalize.ts";
 import { scoreLifecycle } from "./lifecycle.ts";
 import { LIFECYCLE_CASES } from "./lifecycle.cases.ts";
 import {
@@ -167,6 +170,7 @@ async function runIngest() {
   // enrichment skipped?" obvious from the run summary alone.
   summary.keys = {
     ensemble: !!ENSEMBLE_TOKEN,
+    httpSource: !!Deno.env.get("TREND_HTTP_TOKEN"),
     anthropic: !!ANTHROPIC_API_KEY,
     perplexity: !!PERPLEXITY_API_KEY,
   };
@@ -177,6 +181,35 @@ async function runIngest() {
     sources.push(ensembleDataSource({ token: ENSEMBLE_TOKEN, log: (m, e) => log(`ensembledata: ${m}`, e) }));
   } else {
     log("ENSEMBLE_TOKEN missing — ensembledata adapter disabled");
+  }
+
+  // Vendor-agnostic pay-as-you-go source. Runs ALONGSIDE EnsembleData rather
+  // than replacing it — the dedupe below already collapses a trend seen by two
+  // sources into one row keeping the richer view, so a cutover can overlap for
+  // a week and be compared rather than switched blind.
+  try {
+    const httpCfg = httpSourceConfigFromEnv((k) => Deno.env.get(k));
+    if (httpCfg) {
+      sources.push(httpTrendSource({
+        urlTemplate: httpCfg.urlTemplate,
+        token: httpCfg.token,
+        header: httpCfg.header,
+        prefix: httpCfg.prefix,
+        name: httpCfg.name,
+        maxCalls: httpCfg.maxCalls,
+        hashtags: HASHTAG_CONFIG,
+        log: (m, e) => log(`${httpCfg.name}: ${m}`, e),
+      }));
+      summary.httpSource = httpCfg.name;
+    } else {
+      log("TREND_HTTP_URL / TREND_HTTP_TOKEN unset — http-source adapter disabled");
+    }
+  } catch (e) {
+    // Half-configured is a deploy mistake, and the whole point of this change
+    // is that a misconfigured source stops looking like a quiet week.
+    const error = e instanceof Error ? e.message : String(e);
+    log("http-source CONFIG ERROR — adapter not registered", error);
+    summary.httpSourceConfigError = error;
   }
 
   const fetched: NormalizedTrend[] = [];
@@ -208,9 +241,29 @@ async function runIngest() {
 
   // 2. Fail-soft. An empty run says something about the adapters, not the
   //    trends — so do nothing at all rather than cascading everything to dead.
+  //
+  //    [SOURCE-HEALTH] The fail-soft behaviour is unchanged and correct. What
+  //    changes is what the summary CALLS it. "Every adapter was refused by its
+  //    vendor" and "every adapter searched and found nothing" both landed here
+  //    and both printed the same line, so the summary read as a quiet week
+  //    during a nine-day billing outage. The two now report separately, and
+  //    the failure case names the adapter and its error rather than sending
+  //    the reader to the logs to reconstruct it.
   if (emptyRun) {
-    log("ALL ADAPTERS RETURNED EMPTY — no writes, no lifecycle transitions. Check adapter health.");
-    summary.note = "empty run: no writes performed, no fading/dead transitions applied";
+    const failed = sourceReport.filter((s) => !s.ok);
+    summary.sourcesFailed = failed.length;
+    if (failed.length > 0) {
+      const detail = failed.map((s) => `${s.name}: ${s.error}`).join(" | ");
+      log(`ALL ADAPTERS FAILED — this is NOT an empty week. ${detail}`);
+      summary.note =
+        `empty run caused by ADAPTER FAILURE, not absent trends — no writes performed. ${detail}`;
+    } else if (sources.length === 0) {
+      log("NO ADAPTERS ENABLED — every source is missing its credentials.");
+      summary.note = "empty run: no adapters enabled (missing credentials); no writes performed";
+    } else {
+      log("ALL ADAPTERS RETURNED EMPTY — no writes, no lifecycle transitions. Check adapter health.");
+      summary.note = "empty run: adapters ran and returned nothing; no writes performed";
+    }
     return summary;
   }
 
@@ -393,6 +446,62 @@ Deno.serve(async (req: Request) => {
   // that still lack context — no EnsembleData, no tagging. Costs up to 10
   // Perplexity calls. Useful to top up context without spending the daily
   // EnsembleData budget (e.g. after fixing the Perplexity key).
+  // Secret-gated single-call probe against the configured http-source.
+  //
+  // The one thing that cannot be known about a new provider without spending a
+  // call is the shape it replies in — and a wrong guess presents as "returned
+  // no posts", which is indistinguishable from a quiet week until you go
+  // reading logs. This spends ONE call on ONE hashtag and reports the envelope
+  // directly: the status, the top-level keys, whether extractPosts() found the
+  // array, and the field names on the first post. Enough to either confirm the
+  // adapter works or to add the right path to extractPosts() and retry.
+  //
+  // The token is never echoed, only its presence and the redacted URL.
+  if (url.searchParams.get("sourcetest") === "1") {
+    try {
+      const cfg = httpSourceConfigFromEnv((k) => Deno.env.get(k));
+      if (!cfg) {
+        return json({ error: "http-source is not configured (TREND_HTTP_URL / TREND_HTTP_TOKEN unset)." }, 400);
+      }
+      const tag = url.searchParams.get("tag") || HASHTAG_CONFIG[0].tag;
+      const probeUrl = buildUrl(cfg.urlTemplate, tag, cfg.token);
+      const headers: Record<string, string> = { accept: "application/json" };
+      if (cfg.header) headers[cfg.header] = `${cfg.prefix ?? ""}${cfg.token}`;
+
+      const res = await fetch(probeUrl, { headers });
+      const bodyText = await res.text();
+      let payload: unknown = null;
+      try { payload = JSON.parse(bodyText); } catch { /* keep as text */ }
+
+      const posts = payload ? extractPosts(payload) : [];
+      const firstPost = posts[0];
+
+      return json({
+        mode: "sourcetest",
+        provider: cfg.name,
+        tag,
+        // Redact the token wherever it appears (query string or header).
+        url: probeUrl.split(encodeURIComponent(cfg.token)).join("<TOKEN>"),
+        authHeader: cfg.header ? `${cfg.header}: ${cfg.prefix ?? ""}<TOKEN>` : "(none — token in query string)",
+        httpStatus: res.status,
+        parsedAsJson: payload !== null,
+        topLevelKeys: payload && typeof payload === "object" ? Object.keys(payload as object).slice(0, 40) : [],
+        postsFound: posts.length,
+        firstPostKeys: firstPost && typeof firstPost === "object" ? Object.keys(firstPost as object).slice(0, 60) : [],
+        // The two fields the pipeline actually needs off each post.
+        firstPostHasMusic: !!(firstPost && typeof firstPost === "object" && "music" in (firstPost as object)),
+        bodyPreview: payload === null ? bodyText.slice(0, 500) : undefined,
+        verdict: posts.length > 0
+          ? "OK — envelope recognized, adapter should work."
+          : res.ok
+            ? "RESPONDED BUT NO POSTS FOUND — the envelope is not in extractPosts()'s candidate list. Add the correct path from topLevelKeys above."
+            : "REQUEST REJECTED — check the URL template, auth header, and token.",
+      });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  }
+
   if (url.searchParams.get("enrichonly") === "1") {
     try {
       return json({ mode: "enrichonly", ...(await enrichMissingContext()) });

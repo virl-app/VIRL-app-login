@@ -254,7 +254,20 @@ Respond with ONLY JSON: {"explanation": "2-3 sentences", "angles": ["way 1", "wa
         body: JSON.stringify({
           model: "sonar",
           messages: [{ role: "user", content: prompt }],
-          web_search_options: { search_context_size: "low" },
+          // [SEARCH-CONTROLS] Was "low". This call writes the `context` string
+          // and the `suggested_angles` that get injected into generation
+          // prompts and rendered to the creator as the reason a trend matters
+          // — the most-read output of the whole ingest. "low" was buying less
+          // grounding on the one string here that a creator actually reads.
+          // "medium" rather than "high": this is capped at 10 calls per run
+          // and the question ("why is X trending, give 3 angles") is narrow,
+          // so the marginal source has less to add than it does on the
+          // open-ended weekly research.
+          web_search_options: { search_context_size: "medium" },
+          // Matches the trend it is explaining: the ingest only enriches
+          // trends observed in the last few days, so a source from six months
+          // ago is describing a different moment.
+          search_recency_filter: "week",
         }),
       });
 
