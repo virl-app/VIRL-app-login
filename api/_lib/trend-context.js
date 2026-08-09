@@ -100,6 +100,98 @@ export function resolveSegment(niche, profile) {
   return segmentFromProfileHints(profile) || "creator";
 }
 
+// ── [TREND-PERSONALIZATION] Creator fit beyond the niche score ─────────────
+//
+// Trend selection used exactly one input: `niche_scores[segment] >= 0.6`,
+// then rising-first, then best fit, then take 5. Niche is one of the three
+// things VIRL claims to personalize on; goals and voice reached the writing
+// of a trend but never the CHOOSING of one. Two real-estate creators — one
+// working listing appointments, one building a personal brand, one who has
+// told VIRL never to touch a subject — received the identical five trends.
+//
+// The split below is deliberate about what is measurable and what is not:
+//
+//   OFF-LIMITS is a hard exclusion, applied in code. A creator who wrote
+//   "never talk about politics" has stated a boundary, and a boundary
+//   enforced by asking a model nicely is not enforced. This also runs over
+//   the legacy fallback items, which are not niche-scored at all and so had
+//   no filtering of any kind before now.
+//
+//   TOPIC OVERLAP is a ranking nudge, applied in code. Whether a trend's
+//   words overlap the creator's stated pillars is a fact about two strings.
+//
+//   GOAL is stated to the model, NOT scored in code. Building a
+//   goal→trend-type mapping ("hashtag trends suit awareness, formats suit
+//   conversion") would mean inventing a rule nothing here can check —
+//   precisely the unfalsifiable claim the trend-grounding rules exist to
+//   stop. The model gets the goal and picks among trends already filtered
+//   for fit and safety.
+
+const OFF_LIMITS_MIN_TERM = 4;   // below this a term matches half the language
+const TOPIC_BONUS         = 0.15; // tiebreak only; never outranks a fit gap
+
+// Creators write boundaries in whatever number happens to come out — "no
+// politics, elections" against a trend that says "election day". Plain
+// substring matching misses that, and a boundary that fails on a plural is
+// not a boundary. Crudely folding a trailing "s" off every word on BOTH
+// sides makes the comparison agree with itself; it does not need to be
+// linguistically right ("business" → "busines" on both sides still matches),
+// only applied identically to the term and the text.
+function foldPlurals(s) {
+  return s.replace(/\b([a-z0-9']{4,})s\b/g, "$1");
+}
+
+// Free-text "don't go near this" from the profile, split into matchable
+// terms. Short fragments are dropped: a two-letter term would silently
+// filter out most of the trend table.
+function offLimitsTerms(profile) {
+  const raw = profile && typeof profile.offLimits === "string" ? profile.offLimits : "";
+  if (!raw.trim()) return [];
+  return raw
+    .toLowerCase()
+    .split(/[,;\n•]+|\band\b/)
+    .map(s => s.replace(/^\s*(no|never|avoid|don'?t (?:talk about|mention|post about))\b/, "").trim())
+    .map(s => s.replace(/[^a-z0-9 '-]/g, "").trim())
+    .filter(s => s.length >= OFF_LIMITS_MIN_TERM)
+    .map(foldPlurals);
+}
+
+// The creator's own subject matter, as a token set. Sourced from what they
+// typed rather than anything inferred, so an empty profile yields an empty
+// set and the bonus simply never fires.
+function creatorTopicTokens(profile) {
+  if (!profile) return new Set();
+  const hay = [profile.pillars, profile.topics, profile.knownFor, profile.offerings, profile.loveToReference]
+    .map(v => Array.isArray(v) ? v.join(" ") : v)
+    .filter(v => typeof v === "string")
+    .join(" ")
+    .toLowerCase();
+  const stop = new Set(["and","the","for","with","that","this","your","from","about","content","video","posts","tips"]);
+  return new Set(hay.split(/[^a-z0-9]+/).filter(w => w.length > 3 && !stop.has(w)));
+}
+
+// True when a trend touches a stated boundary. Checks the display name AND
+// the enrichment context, because the trend's title is often a bare sound or
+// hashtag while the reason it is trending is where the subject actually
+// shows up.
+function violatesOffLimits(trend, terms) {
+  if (!terms.length) return false;
+  const hay = foldPlurals(
+    [trend.display_name, trend.context, trend.reason]
+      .filter(v => typeof v === "string")
+      .join(" ")
+      .toLowerCase(),
+  );
+  if (!hay) return false;
+  return terms.some(t => hay.includes(t));
+}
+
+function topicOverlapBonus(trend, topicTokens) {
+  if (!topicTokens.size) return 0;
+  const words = String(trend.display_name || "").toLowerCase().split(/[^a-z0-9]+/);
+  return words.some(w => w.length > 3 && topicTokens.has(w)) ? TOPIC_BONUS : 0;
+}
+
 // ── low-level fetch ─────────────────────────────────────────────────────────
 
 async function sbGet(pathAndQuery) {
@@ -125,22 +217,77 @@ function ymd(iso) {
 // Platform names differ between the two tables — `trends` stores the app's
 // Title-case labels ("TikTok"), `trend_items` stores lowercase keys — so the
 // match is done on the normalized form.
-async function loadLegacyTrends(requestedPlatforms) {
+// [TRENDS-SEGMENT] `segment` selects the tier. The weekly cron now writes both
+// a global row per platform (segment NULL, what this table always held) and a
+// per-segment row researched with that vertical's niche label. Rows for the
+// creator's segment WIN over global rows for the same platform, because the
+// whole defect this addresses is a real estate agent being handed general
+// TikTok culture — a segment row that is a few days older is still about her
+// business, and a global row published this morning still isn't.
+//
+// Both tiers are bounded by the same freshness window, so "older" here means
+// "older but still inside 14 days", not "stale".
+async function loadLegacyTrends(requestedPlatforms, segment, fallbackPlatform) {
   const since = new Date(Date.now() - LEGACY_TREND_FRESHNESS_DAYS * 86400000).toISOString();
+  // One round trip for both tiers. `segment.is.null` is the global row; the
+  // eq clause is only added when we have a segment to ask for.
+  const tierFilter = segment
+    ? `&or=(segment.eq.${encodeURIComponent(segment)},segment.is.null)`
+    : "&segment=is.null";
   const rows = await sbGet(
-    "trends?select=platform,summary,items,fetched_at" +
+    "trends?select=platform,segment,summary,items,fetched_at" +
     `&fetched_at=gte.${encodeURIComponent(since)}` +
-    "&order=fetched_at.desc&limit=100",
+    tierFilter +
+    "&order=fetched_at.desc&limit=200",
   ).catch(() => []);
   if (!Array.isArray(rows) || !rows.length) return { items: [], asOf: "" };
 
   const want = new Set(requestedPlatforms.map(normPlatform));
+  // [TRENDS-SEGMENT] The cross-platform fallback is conditional, and the
+  // condition is the reason check-strategist's assertion still holds.
+  //
+  // That assertion exists because legacy rows were platform-global editorial
+  // research with no niche scoring, so borrowing one across platforms stacked
+  // a second layer of imprecision on the first. That is still exactly true of
+  // a GLOBAL row: TikTok culture served to a YouTube creator is wrong about
+  // the industry AND wrong about the platform.
+  //
+  // It is not true of a SEGMENT row, which is researched for this creator's
+  // industry — borrowing that costs one layer, the platform, which is the same
+  // trade the observed path has always made deliberately. So the fallback
+  // platform is admitted here, and rows arriving on it are dropped below
+  // unless they are segment rows.
+  const fallback = normPlatform(fallbackPlatform || "");
+  const borrowed = fallback && !want.has(fallback) ? fallback : "";
+  if (borrowed) want.add(borrowed);
   const newestByPlatform = new Map();
+  const segmentHit = new Set();
   for (const r of rows) {
     if (!r || !r.platform) continue;
     const key = normPlatform(r.platform);
     if (!want.has(key)) continue;
-    if (!newestByPlatform.has(key)) newestByPlatform.set(key, r); // rows are desc-sorted
+    // Belt and braces against the query. The `or=(segment.eq.X,segment.is.null)`
+    // filter should already exclude other segments' rows, but if that filter
+    // is ever wrong the failure is silent and specific: a fitness row has no
+    // marker distinguishing it from a global one, so it would be served to a
+    // real estate agent as though it were platform-wide research. Rejecting
+    // here makes the guarantee a property of this function rather than of a
+    // URL built elsewhere in the same file.
+    const rowSegment = r.segment || null;
+    if (rowSegment !== null && rowSegment !== segment) continue;
+    const isSegmentRow = !!(segment && rowSegment === segment);
+    // A borrowed platform earns its slot only by being niche-researched.
+    if (key === borrowed && !isSegmentRow) continue;
+    // Rows arrive desc by fetched_at, so the first row seen for a platform is
+    // the newest of whichever tier it belongs to. A segment row displaces a
+    // global one already held; a global row never displaces a segment one.
+    if (!newestByPlatform.has(key)) {
+      newestByPlatform.set(key, r);
+      if (isSegmentRow) segmentHit.add(key);
+    } else if (isSegmentRow && !segmentHit.has(key)) {
+      newestByPlatform.set(key, r);
+      segmentHit.add(key);
+    }
   }
   if (!newestByPlatform.size) return { items: [], asOf: "" };
 
@@ -157,6 +304,12 @@ async function loadLegacyTrends(requestedPlatforms) {
         : "topic";
       items.push({
         platform:     key,
+        // [TRENDS-SEGMENT] Which tier this specific item came from. Once the
+        // TikTok fallback can add off-platform rows, one batch can mix
+        // niche-researched and platform-wide items, and a single blanket
+        // PROVENANCE claim over the mix would be the same overclaim this
+        // sequence started with — just harder to spot.
+        segmented:    !!(segment && row.segment === segment),
         type:         cat,
         display_name: name,
         reason:       (typeof it.reason === "string" && it.reason.trim()) ? it.reason.trim() : "",
@@ -168,12 +321,20 @@ async function loadLegacyTrends(requestedPlatforms) {
 
   // Interleave across platforms before capping, so a single chatty platform
   // can't crowd the others out of the 5 slots.
+  // Seed the map in priority order — the creator's OWN platforms first, the
+  // TikTok fallback last — because Map preserves insertion order and the
+  // interleave below walks it. Without this the lead item is whichever
+  // platform happened to publish most recently, which on a thin week means a
+  // YouTube creator opens on a TikTok trend.
   const byPlatform = new Map();
+  for (const p of requestedPlatforms.map(normPlatform)) byPlatform.set(p, []);
+  if (borrowed) byPlatform.set(borrowed, []); // last: the fallback fills after own platforms
   for (const it of items) {
     const list = byPlatform.get(it.platform) || [];
     list.push(it);
     byPlatform.set(it.platform, list);
   }
+  for (const [k, v] of [...byPlatform]) if (v.length === 0) byPlatform.delete(k);
   const interleaved = [];
   for (let i = 0; interleaved.length < items.length; i++) {
     let took = false;
@@ -183,16 +344,44 @@ async function loadLegacyTrends(requestedPlatforms) {
     if (!took) break;
   }
 
-  return { items: interleaved.slice(0, MAX_TRENDS), asOf };
+  // `segmented` drives the PROVENANCE wording below: claiming these items
+  // are "what is being talked about in this niche" is only true when they
+  // actually came from niche-targeted research. Computed over the items
+  // ACTUALLY SERVED, not over what was fetched — a segment row that lost its
+  // slot to the MAX_TRENDS cap must not license a niche claim about items
+  // that did make the cut.
+  const served = interleaved.slice(0, MAX_TRENDS);
+  return {
+    items: served,
+    asOf,
+    segmented: served.some(i => i.segmented),
+    allSegmented: served.length > 0 && served.every(i => i.segmented),
+  };
 }
 
 // [TREND-FALLBACK] Deliberately NOT renderTrendItem. That renderer prints a
 // lifecycle status ("status rising") which the legacy rows simply do not have —
 // reusing it would mean inventing one, and an invented "rising" is exactly the
 // kind of unfalsifiable claim the trend-grounding rule exists to stop.
-function renderLegacyTrendItem(idx, t) {
+function renderLegacyTrendItem(idx, t, targetPlatforms) {
   const parts = [`${idx}. ${String(t.type).toUpperCase()}: ${t.display_name}`];
   if (t.reason) parts.push(t.reason);
+
+  // [TRENDS-SEGMENT] Cross-platform framing, mirroring renderTrendItem's — but
+  // NOT its wording. That one says "peaking on TikTok now", and "peaking" is a
+  // lifecycle claim these rows categorically do not carry. Borrowing the
+  // phrasing would launder a guess into the prompt, which is the specific
+  // thing the comment above this function exists to prevent.
+  const platform = normPlatform(t.platform);
+  if (!targetPlatforms.includes(platform) && platform === FALLBACK_PLATFORM) {
+    parts.push("(from TikTok research, not this creator's platform — adapt the idea; do not state it is trending where they post.)");
+  }
+
+  // When a batch mixes tiers, say which items are the general ones. An
+  // unmarked platform-wide item sitting beside niche-researched ones reads as
+  // though it were equally specific to the creator's industry.
+  if (!t.segmented) parts.push("(platform-wide, not industry-specific.)");
+
   let line = "  " + parts.join(" ");
   if (t.external_url) line += `\n     Source: ${t.external_url}`;
   return line;
@@ -231,7 +420,7 @@ function renderTrendItem(idx, t, targetPlatforms) {
  * @param {object}   [opts.profile]  profile (for segment hint recovery)
  * @returns {Promise<{ block: string, snapshot: object|null, usedTrends: boolean }>}
  */
-export async function buildTrendContext({ platforms, niche, profile } = {}) {
+export async function buildTrendContext({ platforms, niche, profile, goal, goalSecondary } = {}) {
   const empty = { block: "", snapshot: null, usedTrends: false };
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return empty;
 
@@ -277,14 +466,23 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
     // Score + rank trends: fit = niche_scores[segment] >= floor, rising first,
     // then by fit desc. (Done in JS — PostgREST can't cast jsonb->>seg to float
     // for filter+order without a custom RPC, and this keeps the query simple.)
+    // [TREND-PERSONALIZATION] Boundaries and subject matter the creator
+    // stated, resolved once and reused for both the observed and legacy paths.
+    const banned      = offLimitsTerms(profile);
+    const topicTokens = creatorTopicTokens(profile);
+
     const scored = (Array.isArray(trendRows) ? trendRows : [])
       .map(t => ({ ...t, fit: Number(t.niche_scores && t.niche_scores[segment]) }))
       .filter(t => Number.isFinite(t.fit) && t.fit >= FIT_FLOOR)
+      // Hard exclusion, before ranking — a trend the creator has ruled out is
+      // not a low-ranked option, it is not an option.
+      .filter(t => !violatesOffLimits(t, banned))
+      .map(t => ({ ...t, rank_score: t.fit + topicOverlapBonus(t, topicTokens) }))
       .sort((a, b) => {
         const ar = a.status === "rising" ? 1 : 0;
         const br = b.status === "rising" ? 1 : 0;
         if (ar !== br) return br - ar;      // rising ahead of peaking
-        return b.fit - a.fit;               // then best fit
+        return b.rank_score - a.rank_score; // then best fit, nudged by overlap
       })
       .slice(0, MAX_TRENDS);
 
@@ -312,9 +510,25 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
     // [TREND-FALLBACK] Only reached when the observed pipeline is dry, so the
     // healthy path costs nothing. Observed data always wins — this is a
     // second source, never a merge.
-    let legacy = { items: [], asOf: "" };
+    let legacy = { items: [], asOf: "", segmented: false, allSegmented: false };
     if (scored.length === 0) {
-      legacy = await loadLegacyTrends(requested).catch(() => ({ items: [], asOf: "" }));
+      // [TRENDS-SEGMENT] `trendPlatforms`, not `requested`. The observed query
+      // has always included the TikTok fallback (line ~392) and the legacy
+      // query never did — so a YouTube creator got YouTube rows and nothing
+      // else, on the one path that is actually running while the observed
+      // pipeline is dark. Niche research covers TikTok for all nine segments,
+      // so this is what carries niche-specific signal to creators on the four
+      // platforms that have no segment rows of their own.
+      legacy = await loadLegacyTrends(requested, segment, FALLBACK_PLATFORM)
+        .catch(() => ({ items: [], asOf: "", segmented: false, allSegmented: false }));
+      // [TREND-PERSONALIZATION] The same boundary check the observed path
+      // gets. These rows were previously the LEAST filtered thing in the
+      // system — no niche score, no fit floor, nothing — while being the
+      // path that runs precisely when the observed pipeline is dark. A
+      // creator's stated boundary should not depend on which pipeline is up.
+      if (banned.length) {
+        legacy = { ...legacy, items: legacy.items.filter(t => !violatesOffLimits(t, banned)) };
+      }
     }
 
     let refreshedAt = "";
@@ -339,17 +553,52 @@ export async function buildTrendContext({ platforms, niche, profile } = {}) {
       );
     } else if (legacy.items.length) {
       refreshedAt = ymd(legacy.asOf);
-      const lines = legacy.items.map((t, i) => renderLegacyTrendItem(i + 1, t));
+      const lines = legacy.items.map((t, i) => renderLegacyTrendItem(i + 1, t, requested));
       sections.push(
         (refreshedAt ? `[CURRENT TRENDS as of ${refreshedAt}]\n` : "[CURRENT TRENDS]\n") +
         lines.join("\n") +
-        "\n  PROVENANCE: these come from VIRL's weekly trend research of published sources (each cited above), NOT from live measurement of the platforms. They are real, dated, and checkable — but they carry no rising-or-peaking lifecycle signal, so refer to them as what is being talked about in this niche right now, never as what is 'peaking' or 'blowing up'. Do not attach an engagement number to any of them." +
+        // [TRENDS-SEGMENT] This line used to assert "what is being talked
+        // about IN THIS NICHE" unconditionally, while the cron researched
+        // every platform niche-agnostically — so the prompt was claiming a
+        // relevance the data did not have, and the model repeated the claim
+        // downstream in good faith. The wording now follows the actual
+        // provenance of the rows being shown.
+        // [TRENDS-SEGMENT] Three states, not two. Once the TikTok fallback can
+        // add off-platform rows, a batch can be all niche-researched, all
+        // platform-wide, or a mix — and the mixed case is the one a blanket
+        // claim gets wrong, because the general items inherit the specific
+        // items' credibility. Items are individually marked by the renderer;
+        // this line says which situation the reader is in.
+        "\n  PROVENANCE: these come from VIRL's weekly trend research of published sources (each cited above), NOT from live measurement of the platforms. They are real, dated, and checkable — but they carry no rising-or-peaking lifecycle signal. " +
+        (legacy.allSegmented
+          ? "This batch is researched for this creator's industry, so refer to it as what is being talked about in their niche right now"
+          : legacy.segmented
+            ? "This batch is MIXED: items marked 'platform-wide' are general to the platform and are NOT industry signal — treat only the unmarked ones as being about this creator's field, and do not describe a marked item as an industry trend"
+            : "This batch is PLATFORM-WIDE research, not specific to this creator's industry — refer to it as what is being talked about on the platform generally, and do not present any of it as an industry trend") +
+        ", never as what is 'peaking' or 'blowing up'. Do not attach an engagement number to any of them." +
         "\n  Rules: use at most 2 of these, and only where they fit naturally. Always name the exact hashtag, sound, format, or angle as written above.",
       );
     } else {
       sections.push(
         "[CURRENT TRENDS]\nNo current trend meets this creator's bar this week. " +
         "Do NOT cite any trend — build on the playbook, the creator's strategy, and logged results instead.",
+      );
+    }
+
+    // [TREND-PERSONALIZATION] The goal, stated rather than scored. Placed
+    // immediately after the trend list so it reads as a selection instruction
+    // over the items just supplied, not as a general aspiration. Only emitted
+    // when a goal exists — an empty directive is worse than none, because it
+    // invites the model to invent what the creator is optimizing for.
+    const goalText = [goal, goalSecondary && goalSecondary !== goal ? goalSecondary : ""]
+      .filter(g => typeof g === "string" && g.trim())
+      .join(", then ");
+    if (goalText) {
+      sections.push(
+        `[TREND SELECTION — THIS CREATOR'S GOAL]\nTheir stated goal is: ${goalText}. ` +
+        "Of the trends above, prefer the ones that can plausibly move THAT goal, and angle whichever you use toward it. " +
+        "A trend that fits the niche but does nothing for this goal is worth skipping — using fewer trends is allowed and often better. " +
+        "Do not claim a trend serves the goal in a way the trend data above does not support.",
       );
     }
 

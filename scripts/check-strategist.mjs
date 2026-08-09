@@ -581,6 +581,15 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     // always-on cross-platform source: the legacy rows are platform-global
     // editorial research with no niche scoring, so borrowing across platforms
     // would stack a second layer of imprecision on the first.
+    //
+    // [TRENDS-SEGMENT] Still true, and now for a sharper reason. The weekly
+    // cron writes per-segment rows as well as global ones, and a SEGMENT row
+    // IS niche-researched — borrowing one costs a single layer (the platform),
+    // the same trade the observed path makes on purpose. So the rule became
+    // conditional rather than absolute: global rows never cross platforms,
+    // segment rows may. The row in this fixture carries no segment, so it must
+    // still be refused, and this assertion is unchanged. The positive case
+    // lives in scripts/check-trend-personalization.mjs.
     assert(!names.includes("LEGACY_TT_ONE"),
       "an Instagram-only request pulled a TikTok legacy row — the fallback should not borrow across platforms");
   }

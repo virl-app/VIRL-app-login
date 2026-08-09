@@ -51,6 +51,30 @@ const SOURCE_HINTS_GENERAL = [
   "YouTube and podcast discussion within the niche",
 ];
 
+// [SEARCH-CONTROLS] The deny-list form of the rule constraint #1b states in
+// prose. Prefixed with "-" per Perplexity's exclusion syntax and capped at the
+// documented 10 entries, so this is the ten worst offenders rather than the
+// whole category — the prose constraint still carries the rest.
+//
+// The prompt text is deliberately NOT removed now that this exists. Two
+// reasons: the wrapper drops these filters and retries on a 4xx (tier gating,
+// param drift), so the prose is the fallback that survives that path; and
+// "avoid as PRIMARY evidence" is a judgment about how a source is used, which
+// no domain filter can express — a deny-list can only remove the domain
+// entirely, which would also lose its legitimate corroborating use.
+const EXCLUDED_RECAP_DOMAINS = [
+  "-sproutsocial.com",
+  "-hootsuite.com",
+  "-buffer.com",
+  "-socialmediaexaminer.com",
+  "-later.com",
+  "-influencermarketinghub.com",
+  "-semrush.com",
+  "-hubspot.com",
+  "-socialpilot.co",
+  "-planoly.com",
+];
+
 const SOURCE_HINTS_PLATFORM = {
   TikTok:    ["newsroom.tiktok.com", "creators.tiktok.com"],
   Instagram: ["creators.instagram.com", "about.instagram.com"],
@@ -135,8 +159,34 @@ function buildTrendsPrompt(platform, opts) {
 // history.
 export async function researchTrends(platform, opts) {
   const prompt = buildTrendsPrompt(platform, opts);
+  // [SEARCH-CONTROLS] This call was `sonar` with no search options — the
+  // cheapest, shallowest configuration available — for the task in this
+  // codebase that depends most on search depth. The prompt asks for
+  // micro-trends "used by 500 creators last week and 5000 this week", which is
+  // precisely the signal a shallow search cannot reach: it sits below the
+  // threshold where recap publications have written it up yet.
+  //
+  //   sonar-pro    deeper retrieval, more sources per query
+  //   recency=week matches constraint #3's 14-day rule at the search layer
+  //     (Perplexity's coarser "month" would be looser than the prompt asks;
+  //     "week" is tighter, which is the safe direction for a freshness rule)
+  //   context=high the prompt requests 12 specific items with per-item
+  //     citations, which needs the sources in context to answer honestly
+  //
+  // Cost: ~14 calls/week. sonar-pro is roughly 3x input / 15x output vs sonar
+  // on the pricing sampled in perplexity.js, so this moves a rounding-error
+  // line item to a slightly larger rounding-error line item. The weekly
+  // research is the input to every generation's trend block; it is the wrong
+  // place in this stack to be economizing.
   // Token budget slightly higher to accommodate 12 items vs the old 7.
-  const result = await callPerplexity({ prompt, model: "sonar", maxTokens: 5000 });
+  const result = await callPerplexity({
+    prompt,
+    model: "sonar-pro",
+    maxTokens: 5000,
+    searchRecency: "week",
+    searchDomains: EXCLUDED_RECAP_DOMAINS,
+    searchContextSize: "high",
+  });
   if (!result) return null;
   const parsed = tryParseJSON(result.text);
   if (!parsed) {

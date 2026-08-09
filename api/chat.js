@@ -1475,9 +1475,21 @@ export default async function handler(req, res) {
     const trendPlatforms = pickInlinePlatforms(generationType, params, profile);
     if (trendPlatforms.length > 0) {
       const niche = (params && typeof params.niche === "string") ? params.niche : "";
+      // [TREND-PERSONALIZATION] Goals reach trend SELECTION, not just the
+      // writing. Same params the niche playbook already reads a few hundred
+      // lines below, so this adds no new client contract — the values were
+      // in scope all along and simply weren't handed to the trend layer.
+      const trendGoal          = (params && typeof params.goal === "string") ? params.goal : "";
+      const trendGoalSecondary = (params && typeof params.goalSecondary === "string") ? params.goalSecondary : "";
       // Fail-open: buildTrendContext returns an empty block on any DB blip, and
       // the prompt builders fall back to their explicit "no trends" state.
-      const ctx = await buildTrendContext({ platforms: trendPlatforms, niche, profile }).catch(() => null);
+      const ctx = await buildTrendContext({
+        platforms: trendPlatforms,
+        niche,
+        profile,
+        goal: trendGoal,
+        goalSecondary: trendGoalSecondary,
+      }).catch(() => null);
       if (ctx && ctx.block) {
         trends             = ctx.block;
         usedFreshTrends    = ctx.usedTrends;
