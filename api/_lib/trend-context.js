@@ -217,22 +217,58 @@ function ymd(iso) {
 // Platform names differ between the two tables — `trends` stores the app's
 // Title-case labels ("TikTok"), `trend_items` stores lowercase keys — so the
 // match is done on the normalized form.
-async function loadLegacyTrends(requestedPlatforms) {
+// [TRENDS-SEGMENT] `segment` selects the tier. The weekly cron now writes both
+// a global row per platform (segment NULL, what this table always held) and a
+// per-segment row researched with that vertical's niche label. Rows for the
+// creator's segment WIN over global rows for the same platform, because the
+// whole defect this addresses is a real estate agent being handed general
+// TikTok culture — a segment row that is a few days older is still about her
+// business, and a global row published this morning still isn't.
+//
+// Both tiers are bounded by the same freshness window, so "older" here means
+// "older but still inside 14 days", not "stale".
+async function loadLegacyTrends(requestedPlatforms, segment) {
   const since = new Date(Date.now() - LEGACY_TREND_FRESHNESS_DAYS * 86400000).toISOString();
+  // One round trip for both tiers. `segment.is.null` is the global row; the
+  // eq clause is only added when we have a segment to ask for.
+  const tierFilter = segment
+    ? `&or=(segment.eq.${encodeURIComponent(segment)},segment.is.null)`
+    : "&segment=is.null";
   const rows = await sbGet(
-    "trends?select=platform,summary,items,fetched_at" +
+    "trends?select=platform,segment,summary,items,fetched_at" +
     `&fetched_at=gte.${encodeURIComponent(since)}` +
-    "&order=fetched_at.desc&limit=100",
+    tierFilter +
+    "&order=fetched_at.desc&limit=200",
   ).catch(() => []);
   if (!Array.isArray(rows) || !rows.length) return { items: [], asOf: "" };
 
   const want = new Set(requestedPlatforms.map(normPlatform));
   const newestByPlatform = new Map();
+  const segmentHit = new Set();
   for (const r of rows) {
     if (!r || !r.platform) continue;
     const key = normPlatform(r.platform);
     if (!want.has(key)) continue;
-    if (!newestByPlatform.has(key)) newestByPlatform.set(key, r); // rows are desc-sorted
+    // Belt and braces against the query. The `or=(segment.eq.X,segment.is.null)`
+    // filter should already exclude other segments' rows, but if that filter
+    // is ever wrong the failure is silent and specific: a fitness row has no
+    // marker distinguishing it from a global one, so it would be served to a
+    // real estate agent as though it were platform-wide research. Rejecting
+    // here makes the guarantee a property of this function rather than of a
+    // URL built elsewhere in the same file.
+    const rowSegment = r.segment || null;
+    if (rowSegment !== null && rowSegment !== segment) continue;
+    const isSegmentRow = !!(segment && rowSegment === segment);
+    // Rows arrive desc by fetched_at, so the first row seen for a platform is
+    // the newest of whichever tier it belongs to. A segment row displaces a
+    // global one already held; a global row never displaces a segment one.
+    if (!newestByPlatform.has(key)) {
+      newestByPlatform.set(key, r);
+      if (isSegmentRow) segmentHit.add(key);
+    } else if (isSegmentRow && !segmentHit.has(key)) {
+      newestByPlatform.set(key, r);
+      segmentHit.add(key);
+    }
   }
   if (!newestByPlatform.size) return { items: [], asOf: "" };
 
@@ -275,7 +311,10 @@ async function loadLegacyTrends(requestedPlatforms) {
     if (!took) break;
   }
 
-  return { items: interleaved.slice(0, MAX_TRENDS), asOf };
+  // `segmented` drives the PROVENANCE wording below: claiming these items
+  // are "what is being talked about in this niche" is only true when they
+  // actually came from niche-targeted research.
+  return { items: interleaved.slice(0, MAX_TRENDS), asOf, segmented: segmentHit.size > 0 };
 }
 
 // [TREND-FALLBACK] Deliberately NOT renderTrendItem. That renderer prints a
@@ -413,9 +452,10 @@ export async function buildTrendContext({ platforms, niche, profile, goal, goalS
     // [TREND-FALLBACK] Only reached when the observed pipeline is dry, so the
     // healthy path costs nothing. Observed data always wins — this is a
     // second source, never a merge.
-    let legacy = { items: [], asOf: "" };
+    let legacy = { items: [], asOf: "", segmented: false };
     if (scored.length === 0) {
-      legacy = await loadLegacyTrends(requested).catch(() => ({ items: [], asOf: "" }));
+      legacy = await loadLegacyTrends(requested, segment)
+        .catch(() => ({ items: [], asOf: "", segmented: false }));
       // [TREND-PERSONALIZATION] The same boundary check the observed path
       // gets. These rows were previously the LEAST filtered thing in the
       // system — no niche score, no fit floor, nothing — while being the
@@ -452,7 +492,17 @@ export async function buildTrendContext({ platforms, niche, profile, goal, goalS
       sections.push(
         (refreshedAt ? `[CURRENT TRENDS as of ${refreshedAt}]\n` : "[CURRENT TRENDS]\n") +
         lines.join("\n") +
-        "\n  PROVENANCE: these come from VIRL's weekly trend research of published sources (each cited above), NOT from live measurement of the platforms. They are real, dated, and checkable — but they carry no rising-or-peaking lifecycle signal, so refer to them as what is being talked about in this niche right now, never as what is 'peaking' or 'blowing up'. Do not attach an engagement number to any of them." +
+        // [TRENDS-SEGMENT] This line used to assert "what is being talked
+        // about IN THIS NICHE" unconditionally, while the cron researched
+        // every platform niche-agnostically — so the prompt was claiming a
+        // relevance the data did not have, and the model repeated the claim
+        // downstream in good faith. The wording now follows the actual
+        // provenance of the rows being shown.
+        "\n  PROVENANCE: these come from VIRL's weekly trend research of published sources (each cited above), NOT from live measurement of the platforms. They are real, dated, and checkable — but they carry no rising-or-peaking lifecycle signal, so refer to them as what is being talked about " +
+        (legacy.segmented
+          ? "in this creator's niche right now"
+          : "on this platform generally right now — this batch is PLATFORM-WIDE research, not specific to this creator's industry, so do not present any of it as an industry trend") +
+        ", never as what is 'peaking' or 'blowing up'. Do not attach an engagement number to any of them." +
         "\n  Rules: use at most 2 of these, and only where they fit naturally. Always name the exact hashtag, sound, format, or angle as written above.",
       );
     } else {

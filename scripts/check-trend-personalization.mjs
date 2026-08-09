@@ -118,6 +118,57 @@ assert(!r.block.includes("debating the election"),
 assert(r.block.includes("Twilight listing photo"),
   "legacy filtering must leave unrelated fallback items intact");
 
+// ── 3b. Segment rows beat global rows, and the wording follows ─────────────
+// [TRENDS-SEGMENT] The defect: a real estate agent's plan built on general
+// TikTok culture, under a prompt line asserting it was her industry. Both
+// halves are asserted here — the right row wins, AND the claim made about it
+// matches where it came from.
+
+OBSERVED = [];
+const globalRow = {
+  platform: "TikTok", segment: null, fetched_at: new Date().toISOString(), summary: "",
+  items: [{ trend: "The Microwave Challenge is a behavior-led challenge", category: "format", source_url: "https://example.com/g", reason: "" }],
+};
+const segmentRow = {
+  platform: "TikTok", segment: "real_estate",
+  // Deliberately OLDER than the global row: inside the freshness window, being
+  // about her business beats being published this morning.
+  fetched_at: new Date(Date.now() - 3 * 86400000).toISOString(), summary: "",
+  items: [{ trend: "Agents posting sub-60s twilight walkthroughs", category: "format", source_url: "https://example.com/s", reason: "" }],
+};
+
+LEGACY = [globalRow, segmentRow];
+r = await buildTrendContext({ ...BASE, profile: {} });
+assert(r.block.includes("twilight walkthroughs"),
+  "a segment row must win over a global row for the same platform");
+assert(!r.block.includes("Microwave Challenge"),
+  "the global row must not also be served once a segment row exists");
+assert(r.block.includes("in this creator's niche right now"),
+  "provenance should claim niche relevance when the rows ARE niche-researched");
+
+// Order-independence. Rows arrive newest-first, so which tier appears first
+// depends on publish times — the preference must not.
+LEGACY = [segmentRow, globalRow];
+r = await buildTrendContext({ ...BASE, profile: {} });
+assert(r.block.includes("twilight walkthroughs") && !r.block.includes("Microwave Challenge"),
+  "segment preference must hold regardless of row order");
+
+// Global-only: the claim must weaken to match.
+LEGACY = [globalRow];
+r = await buildTrendContext({ ...BASE, profile: {} });
+assert(r.block.includes("Microwave Challenge"),
+  "global rows must still serve when no segment row exists — this is the fallback's fallback");
+assert(r.block.includes("PLATFORM-WIDE research"),
+  "provenance must say platform-wide when serving global rows, not claim the creator's industry");
+assert(!r.block.includes("in this creator's niche right now"),
+  "the niche claim must NOT appear over platform-wide rows — that was the original overclaim");
+
+// A different creator's segment row must never leak across segments.
+LEGACY = [{ ...segmentRow, segment: "fitness" }];
+r = await buildTrendContext({ ...BASE, profile: {} });
+assert(!r.block.includes("twilight walkthroughs"),
+  "a row belonging to another segment must not be served to this one");
+
 // ── 4. Goal reaches the block, and only when set ───────────────────────────
 
 OBSERVED = [trendRow("Kitchen reveal transition")];
@@ -159,4 +210,4 @@ if (failures) {
   console.error(`\n${failures} assertion(s) failed.`);
   process.exit(1);
 }
-console.log("OK: trend selection honors stated boundaries, goals, and pillars — and filters nothing without cause.");
+console.log("OK: trend selection honors segment, stated boundaries, goals, and pillars — and filters nothing without cause.");

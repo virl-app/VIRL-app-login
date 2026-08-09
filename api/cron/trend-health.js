@@ -108,8 +108,15 @@ async function newestTimestamp(table, column) {
 // is. Monitoring the outcome absorbs the transient and keeps the persistent.
 async function legacyFreshnessByPlatform() {
   try {
+    // [TRENDS-SEGMENT] Global rows only (`segment IS NULL`). The cron now
+    // writes per-segment rows for TikTok, Instagram and LinkedIn on top of the
+    // global row per platform. Counting both would let a healthy segment row
+    // make a platform look fresh while its global refresh was failing — the
+    // same shape as the bug this function already fixed once, where six
+    // healthy platforms hid a seventh behind a global max. Measure one tier,
+    // and measure the one every creator falls back to.
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/trends?select=platform,fetched_at&order=fetched_at.desc&limit=500`,
+      `${SUPABASE_URL}/rest/v1/trends?select=platform,fetched_at&segment=is.null&order=fetched_at.desc&limit=500`,
       { headers: SUPABASE_HEADERS },
     );
     if (!res.ok) return { newestByPlatform: new Map(), unreadable: true };
