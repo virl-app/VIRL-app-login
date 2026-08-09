@@ -227,7 +227,7 @@ function ymd(iso) {
 //
 // Both tiers are bounded by the same freshness window, so "older" here means
 // "older but still inside 14 days", not "stale".
-async function loadLegacyTrends(requestedPlatforms, segment) {
+async function loadLegacyTrends(requestedPlatforms, segment, fallbackPlatform) {
   const since = new Date(Date.now() - LEGACY_TREND_FRESHNESS_DAYS * 86400000).toISOString();
   // One round trip for both tiers. `segment.is.null` is the global row; the
   // eq clause is only added when we have a segment to ask for.
@@ -243,6 +243,23 @@ async function loadLegacyTrends(requestedPlatforms, segment) {
   if (!Array.isArray(rows) || !rows.length) return { items: [], asOf: "" };
 
   const want = new Set(requestedPlatforms.map(normPlatform));
+  // [TRENDS-SEGMENT] The cross-platform fallback is conditional, and the
+  // condition is the reason check-strategist's assertion still holds.
+  //
+  // That assertion exists because legacy rows were platform-global editorial
+  // research with no niche scoring, so borrowing one across platforms stacked
+  // a second layer of imprecision on the first. That is still exactly true of
+  // a GLOBAL row: TikTok culture served to a YouTube creator is wrong about
+  // the industry AND wrong about the platform.
+  //
+  // It is not true of a SEGMENT row, which is researched for this creator's
+  // industry — borrowing that costs one layer, the platform, which is the same
+  // trade the observed path has always made deliberately. So the fallback
+  // platform is admitted here, and rows arriving on it are dropped below
+  // unless they are segment rows.
+  const fallback = normPlatform(fallbackPlatform || "");
+  const borrowed = fallback && !want.has(fallback) ? fallback : "";
+  if (borrowed) want.add(borrowed);
   const newestByPlatform = new Map();
   const segmentHit = new Set();
   for (const r of rows) {
@@ -259,6 +276,8 @@ async function loadLegacyTrends(requestedPlatforms, segment) {
     const rowSegment = r.segment || null;
     if (rowSegment !== null && rowSegment !== segment) continue;
     const isSegmentRow = !!(segment && rowSegment === segment);
+    // A borrowed platform earns its slot only by being niche-researched.
+    if (key === borrowed && !isSegmentRow) continue;
     // Rows arrive desc by fetched_at, so the first row seen for a platform is
     // the newest of whichever tier it belongs to. A segment row displaces a
     // global one already held; a global row never displaces a segment one.
@@ -285,6 +304,12 @@ async function loadLegacyTrends(requestedPlatforms, segment) {
         : "topic";
       items.push({
         platform:     key,
+        // [TRENDS-SEGMENT] Which tier this specific item came from. Once the
+        // TikTok fallback can add off-platform rows, one batch can mix
+        // niche-researched and platform-wide items, and a single blanket
+        // PROVENANCE claim over the mix would be the same overclaim this
+        // sequence started with — just harder to spot.
+        segmented:    !!(segment && row.segment === segment),
         type:         cat,
         display_name: name,
         reason:       (typeof it.reason === "string" && it.reason.trim()) ? it.reason.trim() : "",
@@ -296,12 +321,20 @@ async function loadLegacyTrends(requestedPlatforms, segment) {
 
   // Interleave across platforms before capping, so a single chatty platform
   // can't crowd the others out of the 5 slots.
+  // Seed the map in priority order — the creator's OWN platforms first, the
+  // TikTok fallback last — because Map preserves insertion order and the
+  // interleave below walks it. Without this the lead item is whichever
+  // platform happened to publish most recently, which on a thin week means a
+  // YouTube creator opens on a TikTok trend.
   const byPlatform = new Map();
+  for (const p of requestedPlatforms.map(normPlatform)) byPlatform.set(p, []);
+  if (borrowed) byPlatform.set(borrowed, []); // last: the fallback fills after own platforms
   for (const it of items) {
     const list = byPlatform.get(it.platform) || [];
     list.push(it);
     byPlatform.set(it.platform, list);
   }
+  for (const [k, v] of [...byPlatform]) if (v.length === 0) byPlatform.delete(k);
   const interleaved = [];
   for (let i = 0; interleaved.length < items.length; i++) {
     let took = false;
@@ -313,17 +346,42 @@ async function loadLegacyTrends(requestedPlatforms, segment) {
 
   // `segmented` drives the PROVENANCE wording below: claiming these items
   // are "what is being talked about in this niche" is only true when they
-  // actually came from niche-targeted research.
-  return { items: interleaved.slice(0, MAX_TRENDS), asOf, segmented: segmentHit.size > 0 };
+  // actually came from niche-targeted research. Computed over the items
+  // ACTUALLY SERVED, not over what was fetched — a segment row that lost its
+  // slot to the MAX_TRENDS cap must not license a niche claim about items
+  // that did make the cut.
+  const served = interleaved.slice(0, MAX_TRENDS);
+  return {
+    items: served,
+    asOf,
+    segmented: served.some(i => i.segmented),
+    allSegmented: served.length > 0 && served.every(i => i.segmented),
+  };
 }
 
 // [TREND-FALLBACK] Deliberately NOT renderTrendItem. That renderer prints a
 // lifecycle status ("status rising") which the legacy rows simply do not have —
 // reusing it would mean inventing one, and an invented "rising" is exactly the
 // kind of unfalsifiable claim the trend-grounding rule exists to stop.
-function renderLegacyTrendItem(idx, t) {
+function renderLegacyTrendItem(idx, t, targetPlatforms) {
   const parts = [`${idx}. ${String(t.type).toUpperCase()}: ${t.display_name}`];
   if (t.reason) parts.push(t.reason);
+
+  // [TRENDS-SEGMENT] Cross-platform framing, mirroring renderTrendItem's — but
+  // NOT its wording. That one says "peaking on TikTok now", and "peaking" is a
+  // lifecycle claim these rows categorically do not carry. Borrowing the
+  // phrasing would launder a guess into the prompt, which is the specific
+  // thing the comment above this function exists to prevent.
+  const platform = normPlatform(t.platform);
+  if (!targetPlatforms.includes(platform) && platform === FALLBACK_PLATFORM) {
+    parts.push("(from TikTok research, not this creator's platform — adapt the idea; do not state it is trending where they post.)");
+  }
+
+  // When a batch mixes tiers, say which items are the general ones. An
+  // unmarked platform-wide item sitting beside niche-researched ones reads as
+  // though it were equally specific to the creator's industry.
+  if (!t.segmented) parts.push("(platform-wide, not industry-specific.)");
+
   let line = "  " + parts.join(" ");
   if (t.external_url) line += `\n     Source: ${t.external_url}`;
   return line;
@@ -452,10 +510,17 @@ export async function buildTrendContext({ platforms, niche, profile, goal, goalS
     // [TREND-FALLBACK] Only reached when the observed pipeline is dry, so the
     // healthy path costs nothing. Observed data always wins — this is a
     // second source, never a merge.
-    let legacy = { items: [], asOf: "", segmented: false };
+    let legacy = { items: [], asOf: "", segmented: false, allSegmented: false };
     if (scored.length === 0) {
-      legacy = await loadLegacyTrends(requested, segment)
-        .catch(() => ({ items: [], asOf: "", segmented: false }));
+      // [TRENDS-SEGMENT] `trendPlatforms`, not `requested`. The observed query
+      // has always included the TikTok fallback (line ~392) and the legacy
+      // query never did — so a YouTube creator got YouTube rows and nothing
+      // else, on the one path that is actually running while the observed
+      // pipeline is dark. Niche research covers TikTok for all nine segments,
+      // so this is what carries niche-specific signal to creators on the four
+      // platforms that have no segment rows of their own.
+      legacy = await loadLegacyTrends(requested, segment, FALLBACK_PLATFORM)
+        .catch(() => ({ items: [], asOf: "", segmented: false, allSegmented: false }));
       // [TREND-PERSONALIZATION] The same boundary check the observed path
       // gets. These rows were previously the LEAST filtered thing in the
       // system — no niche score, no fit floor, nothing — while being the
@@ -488,7 +553,7 @@ export async function buildTrendContext({ platforms, niche, profile, goal, goalS
       );
     } else if (legacy.items.length) {
       refreshedAt = ymd(legacy.asOf);
-      const lines = legacy.items.map((t, i) => renderLegacyTrendItem(i + 1, t));
+      const lines = legacy.items.map((t, i) => renderLegacyTrendItem(i + 1, t, requested));
       sections.push(
         (refreshedAt ? `[CURRENT TRENDS as of ${refreshedAt}]\n` : "[CURRENT TRENDS]\n") +
         lines.join("\n") +
@@ -498,10 +563,18 @@ export async function buildTrendContext({ platforms, niche, profile, goal, goalS
         // relevance the data did not have, and the model repeated the claim
         // downstream in good faith. The wording now follows the actual
         // provenance of the rows being shown.
-        "\n  PROVENANCE: these come from VIRL's weekly trend research of published sources (each cited above), NOT from live measurement of the platforms. They are real, dated, and checkable — but they carry no rising-or-peaking lifecycle signal, so refer to them as what is being talked about " +
-        (legacy.segmented
-          ? "in this creator's niche right now"
-          : "on this platform generally right now — this batch is PLATFORM-WIDE research, not specific to this creator's industry, so do not present any of it as an industry trend") +
+        // [TRENDS-SEGMENT] Three states, not two. Once the TikTok fallback can
+        // add off-platform rows, a batch can be all niche-researched, all
+        // platform-wide, or a mix — and the mixed case is the one a blanket
+        // claim gets wrong, because the general items inherit the specific
+        // items' credibility. Items are individually marked by the renderer;
+        // this line says which situation the reader is in.
+        "\n  PROVENANCE: these come from VIRL's weekly trend research of published sources (each cited above), NOT from live measurement of the platforms. They are real, dated, and checkable — but they carry no rising-or-peaking lifecycle signal. " +
+        (legacy.allSegmented
+          ? "This batch is researched for this creator's industry, so refer to it as what is being talked about in their niche right now"
+          : legacy.segmented
+            ? "This batch is MIXED: items marked 'platform-wide' are general to the platform and are NOT industry signal — treat only the unmarked ones as being about this creator's field, and do not describe a marked item as an industry trend"
+            : "This batch is PLATFORM-WIDE research, not specific to this creator's industry — refer to it as what is being talked about on the platform generally, and do not present any of it as an industry trend") +
         ", never as what is 'peaking' or 'blowing up'. Do not attach an engagement number to any of them." +
         "\n  Rules: use at most 2 of these, and only where they fit naturally. Always name the exact hashtag, sound, format, or angle as written above.",
       );

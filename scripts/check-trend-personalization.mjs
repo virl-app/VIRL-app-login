@@ -143,7 +143,7 @@ assert(r.block.includes("twilight walkthroughs"),
   "a segment row must win over a global row for the same platform");
 assert(!r.block.includes("Microwave Challenge"),
   "the global row must not also be served once a segment row exists");
-assert(r.block.includes("in this creator's niche right now"),
+assert(r.block.includes("researched for this creator's industry"),
   "provenance should claim niche relevance when the rows ARE niche-researched");
 
 // Order-independence. Rows arrive newest-first, so which tier appears first
@@ -160,7 +160,7 @@ assert(r.block.includes("Microwave Challenge"),
   "global rows must still serve when no segment row exists — this is the fallback's fallback");
 assert(r.block.includes("PLATFORM-WIDE research"),
   "provenance must say platform-wide when serving global rows, not claim the creator's industry");
-assert(!r.block.includes("in this creator's niche right now"),
+assert(!r.block.includes("researched for this creator's industry"),
   "the niche claim must NOT appear over platform-wide rows — that was the original overclaim");
 
 // A different creator's segment row must never leak across segments.
@@ -168,6 +168,66 @@ LEGACY = [{ ...segmentRow, segment: "fitness" }];
 r = await buildTrendContext({ ...BASE, profile: {} });
 assert(!r.block.includes("twilight walkthroughs"),
   "a row belonging to another segment must not be served to this one");
+
+// ── 3c. The TikTok fallback reaches the legacy path ────────────────────────
+// [TRENDS-SEGMENT] The observed query has always included FALLBACK_PLATFORM;
+// the legacy query never did. So a creator on a platform with no segment rows
+// of its own — YouTube, Facebook, X, Pinterest — got platform-wide research
+// and nothing else, on the path that runs while the observed pipeline is dark.
+
+OBSERVED = [];
+const ytGlobal = {
+  platform: "YouTube", segment: null, fetched_at: new Date().toISOString(), summary: "",
+  items: [{ trend: "Shorts creators leaning on cold opens", category: "format", source_url: "https://example.com/y", reason: "" }],
+};
+const ttSegment = {
+  platform: "TikTok", segment: "real_estate", fetched_at: new Date().toISOString(), summary: "",
+  items: [{ trend: "Agents posting sub-60s twilight walkthroughs", category: "format", source_url: "https://example.com/s", reason: "" }],
+};
+
+LEGACY = [ytGlobal, ttSegment];
+r = await buildTrendContext({ platforms: ["YouTube"], niche: "Real Estate", profile: {} });
+assert(r.block.includes("twilight walkthroughs"),
+  "a YouTube creator should receive niche-researched TikTok items via the fallback");
+assert(r.block.includes("cold opens"),
+  "their own platform's items must still be served, not replaced by the fallback");
+assert(r.block.includes("from TikTok research, not this creator's platform"),
+  "an off-platform item must be framed as such, or it reads as a YouTube trend");
+assert(!r.block.includes("peaking on TikTok"),
+  "legacy items carry no lifecycle signal — the observed renderer's 'peaking' wording must not be borrowed");
+
+// Own platform leads. On a thin week the fallback must not open the block.
+const ytFirst = r.block.indexOf("cold opens");
+const ttFirst = r.block.indexOf("twilight walkthroughs");
+assert(ytFirst !== -1 && ttFirst !== -1 && ytFirst < ttFirst,
+  "the creator's own platform should lead; the fallback fills after it");
+
+// Mixed batches must not let the general item borrow the specific one's
+// credibility.
+assert(r.block.includes("This batch is MIXED"),
+  "a batch mixing niche and platform-wide items must say so");
+assert(r.block.includes("(platform-wide, not industry-specific.)"),
+  "the platform-wide item must be individually marked inside a mixed batch");
+
+// The negative that keeps check-strategist's rule intact: a GLOBAL TikTok row
+// must NOT be borrowed. Platform-wide culture served to a YouTube creator is
+// wrong about the industry AND the platform — two layers of imprecision, which
+// is exactly what that assertion was written to prevent. Only the segment row
+// earns the crossing.
+LEGACY = [ytGlobal, { ...ttSegment, segment: null }];
+r = await buildTrendContext({ platforms: ["YouTube"], niche: "Real Estate", profile: {} });
+assert(!r.block.includes("twilight walkthroughs"),
+  "a GLOBAL TikTok row must not be borrowed across platforms — only niche-researched rows earn that");
+assert(r.block.includes("cold opens"),
+  "declining the borrow must not cost the creator their own platform's items");
+
+// A TikTok creator has no off-platform item, so no framing should appear.
+LEGACY = [ttSegment];
+r = await buildTrendContext({ platforms: ["TikTok"], niche: "Real Estate", profile: {} });
+assert(!r.block.includes("from TikTok research, not this creator's platform"),
+  "no cross-platform framing when TikTok IS the creator's platform");
+assert(r.block.includes("researched for this creator's industry"),
+  "an all-segment batch should carry the unqualified niche claim");
 
 // ── 4. Goal reaches the block, and only when set ───────────────────────────
 
