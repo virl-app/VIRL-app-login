@@ -86,7 +86,15 @@ and everything week-specific.
     takes no playbook at all, by recorded decision.
 - `_lib/trend-context.js` — DB-backed trends (`trend_items`), freshness floor 7
   days, niche-fit floor 0.6, max 5 items, TikTok as cross-platform fallback.
-  Fails open to an empty block. One renderer, `trendsContext` in prompts.js,
+  Fails open to an empty block. **This describes the OBSERVED path only.** A
+  second path — the weekly `trends` research — feeds generation whenever the
+  observed pipeline returns nothing, which is the state the system is in
+  whenever the ingest has no vendor token. It has different filters, a
+  different freshness window (14 days), no lifecycle status, and a
+  *conditional* cross-platform fallback rather than the unconditional one
+  above. Treating the two as interchangeable is a live source of error; see the
+  `virl-trend-dataflow` skill before reasoning about how trend data reaches a
+  prompt. One renderer, `trendsContext` in prompts.js,
   serves every surface and never returns "" — the empty state is named, not
   silent. `FRESH_TRENDS_TYPE` + `pickInlinePlatforms` in chat.js decide which
   surfaces COLLECT; `caption_remix` is the one deliberate exclusion.
