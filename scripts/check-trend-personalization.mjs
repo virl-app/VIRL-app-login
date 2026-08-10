@@ -264,6 +264,93 @@ assert(r.snapshot.items.length === 2,
 assert(r.snapshot.items[0].display_name === "Staging walkthrough audio",
   "a trend overlapping a stated content pillar should rank ahead of one that doesn't");
 
+// ── 6. Per-platform trend framing ──────────────────────────────────────────
+// [PLATFORM-FRAME] X returned zero items for seven consecutive weeks, with
+// stored summaries naming the cause in the model's own words: "Quiet week for
+// emerging MICRO-TRENDS on X". The prompt described TikTok and was applied to
+// every platform. These assertions pin the override to X and — more
+// importantly — prove the other six are untouched, because the risk of a
+// per-platform frame is that it quietly becomes a per-platform rewrite.
+
+const { buildTrendsPrompt } = await import("../api/_lib/trends-research.js");
+
+const xPrompt = buildTrendsPrompt("X", {});
+assert(xPrompt.includes("Macro and news topics ARE in scope on X"),
+  "X should get the macro-permitting rule — excluding macro removes X's entire surface");
+assert(!xPrompt.includes("STRICT exclusion of mainstream/macro items"),
+  "the generic macro exclusion must be REPLACED for X, not merely appended to");
+assert(!xPrompt.includes("Trending audio"),
+  "X has no audio — asking for it spends a slot on nothing");
+assert(!xPrompt.includes("business.x.com"),
+  "X's advertiser blogs carry product news, never creator trends");
+assert(xPrompt.includes("do not look for TikTok-style micro-trends here"),
+  "X should be told the absence of micro-trends is not a useful answer");
+// Permissive on subject, unchanged on rigour — the whole risk of relaxing #5
+// is reopening the generic-slop door that constraint #4 guards.
+assert(xPrompt.includes("STRICT exclusion of evergreen advice"),
+  "relaxing the macro rule must NOT relax the evergreen-advice ban");
+assert(xPrompt.includes("MUST cite an exact source URL"),
+  "relaxing the macro rule must NOT relax the citation requirement");
+assert(/does NOT relax specificity/i.test(xPrompt),
+  "the macro allowance must say in the prompt that specificity still applies");
+
+// The two platforms that WORK must not be touched. TikTok and Instagram Reels
+// are the medium the generic prompt describes, they are the only two with zero
+// quiet weeks, and they are the last thing that should change. This is the
+// assertion that stops a per-platform frame becoming a per-platform rewrite.
+for (const p of ["TikTok", "Instagram"]) {
+  const prompt = buildTrendsPrompt(p, {});
+  assert(prompt.includes("STRICT exclusion of mainstream/macro items"),
+    `${p} must keep the original macro rule — it is demonstrably working`);
+  assert(prompt.includes("Trending audio"),
+    `${p} must keep the original surface list, unchanged`);
+  assert(prompt.includes("prioritize micro-trends"),
+    `${p} must keep the original framing — short-form video is what it describes`);
+  assert(!prompt.includes("ARE in scope"),
+    `${p} must not pick up another platform's framing`);
+}
+
+// Every framed platform: new surface list, same rigour. Relaxing what counts
+// as a trend must never relax what counts as evidence.
+for (const p of ["X", "LinkedIn", "YouTube", "Pinterest", "Facebook"]) {
+  const prompt = buildTrendsPrompt(p, {});
+  assert(!prompt.includes("Trending audio"),
+    `${p} should not be asked for audio — that is a short-form-video surface`);
+  assert(prompt.includes("do not look for TikTok-style micro-trends here"),
+    `${p} should be told the absence of micro-trends is not a useful answer`);
+  assert(prompt.includes("STRICT exclusion of evergreen advice"),
+    `${p} must keep the evergreen ban — reframing is not permission for slop`);
+  assert(prompt.includes("MUST cite an exact source URL"),
+    `${p} must keep the citation requirement`);
+  assert(buildTrendsPrompt(p, { niche: "Real Estate" }).includes("Real Estate"),
+    `${p} must still carry the niche focus, or segment rows are global rows with a label`);
+}
+
+// YouTube is framed but deliberately KEEPS the macro exclusion: its demand is
+// already niche-level, so only the surface list needed changing. A frame is
+// not obliged to relax every rule, and this pins that distinction.
+const ytPrompt = buildTrendsPrompt("YouTube", {});
+assert(ytPrompt.includes("STRICT exclusion of mainstream/macro items"),
+  "YouTube keeps the macro exclusion — its search demand is already niche-level");
+assert(ytPrompt.includes("Title and thumbnail patterns"),
+  "YouTube should be asked about packaging, which is where its trends actually live");
+
+// The three that DO relax the macro rule must each say specificity still holds,
+// in the prompt itself and not merely in a comment here.
+for (const p of ["X", "LinkedIn", "Pinterest", "Facebook"]) {
+  const prompt = buildTrendsPrompt(p, {});
+  assert(!prompt.includes("STRICT exclusion of mainstream/macro items"),
+    `${p}'s macro rule must be REPLACED, not appended to — both present is contradictory`);
+  assert(/does NOT relax specificity/i.test(prompt),
+    `${p} must state in the prompt that permitting macro subjects does not permit vagueness`);
+}
+
+// The niche layer has to survive the override, or X segment rows go back to
+// being platform-wide research under a segment label.
+const xNiche = buildTrendsPrompt("X", { niche: "Real Estate" });
+assert(xNiche.includes("Real Estate"),
+  "the X frame must still carry the niche focus — otherwise segment rows are global rows with a label");
+
 // ── done ───────────────────────────────────────────────────────────────────
 
 if (failures) {

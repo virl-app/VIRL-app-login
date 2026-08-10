@@ -85,19 +85,169 @@ const SOURCE_HINTS_PLATFORM = {
   Pinterest: ["business.pinterest.com"],
 };
 
-function buildTrendsPrompt(platform, opts) {
+// [PLATFORM-FRAME] What counts as a "trend" is not the same on every platform,
+// and this prompt used to assume it was.
+//
+// The generic wording — "prioritize micro-trends", constraint #5's strict
+// exclusion of macro items, a request for trending audio — describes TikTok
+// exactly. It describes X almost not at all, and X produced ZERO items for
+// seven consecutive weeks while every other platform produced something. The
+// stored summaries name the reason in the model's own words: "Quiet week for
+// emerging MICRO-TRENDS on X", "no specific, named MICRO-trends". It was not
+// failing and not erroring. It searched, found the discourse that X actually
+// runs on, was forbidden by constraint #5 from returning any of it, and
+// correctly took constraint #6's empty-list option. Seven times.
+//
+// On X the macro conversation IS the content opportunity: a creator's job
+// there is to have a take on what the room is already arguing about. Excluding
+// macro items removes the entire surface.
+//
+// This started as an X-only override on the grounds that the other platforms
+// were producing SOMETHING and only X had evidence. The item counts hid the
+// real shape. Reading how many weeks each platform's `summary` reported a
+// quiet week, over the same window:
+//
+//   X          7/7 quiet   avg 0.0 items
+//   Facebook   6/7 quiet   avg 1.7
+//   Pinterest  6/7 quiet   avg 1.1
+//   YouTube    5/7 quiet   avg 1.7
+//   LinkedIn   4/6 quiet   avg 4.0
+//   Instagram  0/7 quiet   avg 12.0
+//   TikTok     healthy
+//
+// Five of seven are mostly refusing. X was only conspicuous for refusing
+// completely. The others are BIMODAL, not thin — Facebook's twelve items all
+// arrived in one week, Pinterest's eight in one week — which averages into
+// something that reads like a quiet platform and is actually a platform whose
+// question mostly doesn't fit.
+//
+// The real split is short-form video versus everything else. TikTok and
+// Instagram Reels are the same medium and the generic prompt describes that
+// medium exactly. The other five are five different mediums being asked the
+// short-form-video question.
+//
+// So each of the five gets a frame. TikTok and Instagram deliberately get
+// NONE: they are demonstrably working, and they are the last thing that should
+// be touched. The tests assert both are unchanged.
+//
+// Every frame keeps specificity, citations, and the evergreen ban exactly as
+// they are. These change WHAT COUNTS as a trend on a platform, never how
+// rigorous the answer has to be — the risk in relaxing the macro rule is
+// reopening the door constraint #4 guards, so each frame that relaxes it says
+// so in its own text.
+//
+// These framings are reasoned, not measured. What IS measured is that the
+// current frame is wrong for these five: it returns nothing five weeks in
+// seven. `quiet_weeks` per platform is the check — if it does not fall for a
+// given platform within a few cycles, that frame is wrong too and gets
+// replaced with evidence rather than defended.
+const PLATFORM_TREND_FRAME = {
+  X: {
+    // Replaces the generic "what to surface" list.
+    whatCounts: [
+      "  - Named debates or arguments the niche is actively having (the specific claim, not 'people are discussing X')",
+      "  - Specific posts or threads driving that discussion — link the post",
+      "  - Recurring post FORMATS gaining traction (thread structures, quote-post patterns, opening lines)",
+      "  - Emerging terminology, coinages, or framings the niche has started using",
+      "  - A news or industry development the niche is reacting to, where a creator could credibly add a take",
+      "  - Accounts newly setting the agenda in this niche",
+    ],
+    // Replaces constraint #5. The specificity requirement is UNCHANGED — this
+    // permits macro subjects, not vagueness. "AI is trending" is still
+    // refused; "the argument about X's new API pricing splitting indie devs"
+    // is a named subject with a citable post behind it.
+    macroRule:
+      "5. Macro and news topics ARE in scope on X — the conversation is the content here, and a creator's opening is a take on what the room is already arguing about. This does NOT relax specificity: name the actual claim, argument, or development and cite the post carrying it. 'AI is trending' is still useless; 'the thread arguing that AI SDRs are killing junior sales roles, 4k quote-posts' is exactly right.",
+    // business.x.com / blog.x.com are advertiser and corporate-announcement
+    // blogs — they carry product news, never creator trends. Pointing the
+    // model at them spends its source budget on the wrong venue. Dropping them
+    // falls through to SOURCE_HINTS_GENERAL, which names the platform itself
+    // and Reddit, and for X those are genuinely where the signal is.
+    dropPlatformHints: true,
+  },
+
+  LinkedIn: {
+    // The other discourse platform, and the same diagnosis as X: professional
+    // conversation is what LinkedIn runs on, and the generic rule forbids
+    // reporting it. 4 of 6 weeks quiet, then 12 items in the weeks it fit.
+    whatCounts: [
+      "  - Specific arguments or positions the professional niche is debating right now (name the claim)",
+      "  - Posts or articles driving that discussion — link the post",
+      "  - Post FORMATS gaining traction (carousel structures, personal-story openings, contrarian takes, data-led posts)",
+      "  - Industry developments, research, or announcements practitioners are reacting to",
+      "  - Language and framings entering the niche's professional vocabulary",
+      "  - People newly setting the agenda in this field",
+    ],
+    macroRule:
+      "5. Industry-level and news topics ARE in scope on LinkedIn — professional commentary on what the field is discussing is the native content here. This does NOT relax specificity: name the actual claim, report, or development and cite the post or article carrying it. 'AI is changing recruiting' is useless; 'the report claiming AI screening cut interview-to-offer time 40%, and the pushback from recruiters in the comments' is right.",
+  },
+
+  YouTube: {
+    // Not a trend-cycle platform. Topics and packaging move; sounds do not.
+    // Search and recommendation demand is the signal.
+    whatCounts: [
+      "  - Video TOPICS or questions getting outsized search and view demand right now",
+      "  - Title and thumbnail patterns doing well in this niche (describe the actual pattern)",
+      "  - Format shifts — Shorts vs long-form, series concepts, episode structures, video lengths",
+      "  - Specific videos that broke out recently in this niche, and what they did differently",
+      "  - Emerging sub-topics creators in this niche have started covering",
+      "  - Recurring hooks or opening structures in the first 15 seconds",
+    ],
+    // Macro stays excluded: YouTube demand IS niche-level, so the original
+    // rule is correct here. Only the surface list changes.
+  },
+
+  Pinterest: {
+    // Pinterest demand BUILDS. Users plan there — autumn searches climb from
+    // midsummer — so a 14-day window discards the shape of the signal rather
+    // than keeping it fresh, and the API-level recency filter would compound
+    // it. This is the one platform where a longer look-back is more accurate,
+    // not laxer.
+    recencyDays: 45,
+    searchRecency: "month",
+    // A search engine with pictures. "What is being searched for" is the
+    // trend; there is no trend CYCLE in the TikTok sense at all.
+    whatCounts: [
+      "  - Search terms and keyword themes gaining volume in this niche",
+      "  - Seasonal or calendar-driven demand starting to climb (name the season and the search)",
+      "  - Visual and aesthetic directions gaining traction (colour, styling, composition)",
+      "  - Pin FORMATS performing well (idea pins, infographics, before/after, text overlay styles)",
+      "  - Board and collection themes people are actively building",
+      "  - Products or subjects being saved heavily in this niche",
+    ],
+    macroRule:
+      "5. Pinterest is a SEARCH platform, so search demand and seasonal shifts are exactly what we want, not a distraction from it. This does NOT relax specificity: name the actual search term, season, or aesthetic and cite the source. 'Fall content is trending' is useless; 'searches for warm-toned kitchen renovations climbing ahead of autumn, per Pinterest's own trend data' is right.",
+  },
+
+  Facebook: {
+    // Community and locality, not a discovery feed. Groups are the surface.
+    whatCounts: [
+      "  - Discussions gaining traction in Groups serving this niche (name the question being asked)",
+      "  - Local, regional, or event-driven topics this audience is engaging with",
+      "  - Post FORMATS working here (longer-form text, photo carousels, Reels crossposts, polls)",
+      "  - Questions this audience keeps asking publicly that a creator could answer",
+      "  - Community or seasonal moments the niche is organising around",
+      "  - Specific posts driving unusual comment volume in this niche",
+    ],
+    macroRule:
+      "5. Local, community and event-driven topics ARE in scope on Facebook — this is a community platform and its content opportunities are frequently local or seasonal rather than nationally trending. This does NOT relax specificity: name the actual discussion, event, or question and cite where it is happening. 'People are talking about the housing market' is useless; 'a Group thread asking whether to list before or after the school year, 300+ comments' is right.",
+  },
+};
+
+export function buildTrendsPrompt(platform, opts) {
   const niche         = (opts && typeof opts.niche === "string") ? opts.niche.trim() : "";
   const excludeTrends = (opts && Array.isArray(opts.excludeTrends))
     ? opts.excludeTrends.filter(t => typeof t === "string" && t.trim()).slice(0, 15)
     : [];
-  const platformHints = SOURCE_HINTS_PLATFORM[platform] || [];
+  const frame         = PLATFORM_TREND_FRAME[platform] || null;
+  const platformHints = (frame && frame.dropPlatformHints) ? [] : (SOURCE_HINTS_PLATFORM[platform] || []);
   const hintList      = [...platformHints, ...SOURCE_HINTS_GENERAL];
 
   // Niche header — when present, sharpens the whole search toward that
   // creator's vertical. When absent, prompt reads as a generic platform
   // trends scan (the cron's behavior).
   const nicheLine = niche
-    ? "Niche focus: " + niche + " creators specifically. We want trends moving in THIS niche, not generic platform-wide signal. A trend that's hot on TikTok overall is not interesting; a trend that's hot among " + niche + " creators IS."
+    ? "Niche focus: " + niche + " creators specifically. We want trends moving in THIS niche, not generic platform-wide signal. A trend that's hot on " + platform + " overall is not interesting; a trend that's hot among " + niche + " creators IS."
     : "";
 
   // Exclusion block — only added when the caller has a list of trends the
@@ -113,15 +263,21 @@ function buildTrendsPrompt(platform, opts) {
     "",
     nicheLine,
     "",
-    "Surface up to 12 of the following — prioritize micro-trends and emerging signals over established mainstream items:",
-    "  - Trending topics or themes",
-    "  - Trending hashtags (specific ones, not '#fyp')",
-    "  - Trending audio (where applicable to the platform)",
-    "  - Emerging or surging content formats",
-    "  - Specific hook or opening angles that are getting outsized engagement",
-    "  - Sub-niche conversations gaining traction in the past 7-14 days",
+    frame
+      ? "Surface up to 12 of the following. These are what a trend actually looks like on " + platform + " — do not look for TikTok-style micro-trends here, they do not exist on this platform and reporting their absence is not a useful answer:"
+      : "Surface up to 12 of the following — prioritize micro-trends and emerging signals over established mainstream items:",
+    ...(frame ? frame.whatCounts : [
+      "  - Trending topics or themes",
+      "  - Trending hashtags (specific ones, not '#fyp')",
+      "  - Trending audio (where applicable to the platform)",
+      "  - Emerging or surging content formats",
+      "  - Specific hook or opening angles that are getting outsized engagement",
+      "  - Sub-niche conversations gaining traction in the past 7-14 days",
+    ]),
     "",
-    "What we want: SPECIFIC, NAMED, recently-emerging items. A trend used by 500 creators last week and 5000 this week is FAR more valuable than one with 1M users that's been hot for a month.",
+    frame
+      ? "What we want: SPECIFIC, NAMED items with something citable behind them. Prefer what surfaced or escalated in the last 7-14 days over a subject that has been running for months."
+      : "What we want: SPECIFIC, NAMED, recently-emerging items. A trend used by 500 creators last week and 5000 this week is FAR more valuable than one with 1M users that's been hot for a month.",
     "",
     excludeBlock,
     "",
@@ -129,9 +285,13 @@ function buildTrendsPrompt(platform, opts) {
     "1. Sources: anything publicly visible. Prefer PRIMARY venues where the conversation is actually happening over publications that summarize it: " + hintList.join(", "),
     "1b. AVOID social-media-marketing recap publications (Sprout Social, Hootsuite, Buffer, Social Media Examiner, and their equivalents) as your PRIMARY evidence for an item. They aggregate each other, which means the same handful of trends resurfaces there every week — if every item you return traces back to one of those, the research has failed even when each item is individually true. Use them only to corroborate something you found at the source.",
     "2. Each item MUST cite an exact source URL — use the full https:// URL, not a citation marker like [1]. If the source is a TikTok / Reel / post, link to the post itself.",
-    "3. Skip anything older than 14 days — we want THIS WEEK's signal.",
+    (frame && frame.recencyDays)
+      ? "3. Skip anything older than " + frame.recencyDays + " days. Demand on this platform builds over weeks rather than spiking, so a search or theme climbing steadily over that window is signal — not staleness. Still prefer what is accelerating now over what has been flat for months."
+      : "3. Skip anything older than 14 days — we want THIS WEEK's signal.",
     "4. STRICT exclusion of evergreen advice. 'Use trending audio,' 'post consistently,' 'engage with your audience' — these are rules, not trends. ONLY return specific named items.",
-    "5. STRICT exclusion of mainstream/macro items unless they have a niche-specific angle. 'AI tools are trending' is not useful; 'Five specific AI tools getting traction in [niche] this week' is.",
+    (frame && frame.macroRule)
+      ? frame.macroRule
+      : "5. STRICT exclusion of mainstream/macro items unless they have a niche-specific angle. 'AI tools are trending' is not useful; 'Five specific AI tools getting traction in [niche] this week' is.",
     "6. If the platform has had a quiet week with no notable signal, return an empty items list rather than padding.",
     "",
     "Return ONLY valid JSON (no markdown, no preamble):",
@@ -179,11 +339,14 @@ export async function researchTrends(platform, opts) {
   // research is the input to every generation's trend block; it is the wrong
   // place in this stack to be economizing.
   // Token budget slightly higher to accommodate 12 items vs the old 7.
+  const frame = PLATFORM_TREND_FRAME[platform] || null;
   const result = await callPerplexity({
     prompt,
     model: "sonar-pro",
     maxTokens: 5000,
-    searchRecency: "week",
+    // Per-frame where a platform's signal genuinely moves on a different
+    // clock; "week" everywhere else.
+    searchRecency: (frame && frame.searchRecency) || "week",
     searchDomains: EXCLUDED_RECAP_DOMAINS,
     searchContextSize: "high",
   });
