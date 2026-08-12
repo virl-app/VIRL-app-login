@@ -10,7 +10,8 @@
     "check:strategist": "node scripts/check-strategist.mjs",
     "check:trends": "node scripts/check-trend-personalization.mjs",
     "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist && npm run check:trends",
-    "audit:trends": "node scripts/audit-trend-research.mjs"
+    "audit:trends": "node scripts/audit-trend-research.mjs",
+    "og:image": "node scripts/og-image.mjs"
   },
   "dependencies": {
     "resend": "^4.0.0",
