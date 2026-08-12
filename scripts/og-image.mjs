@@ -5,7 +5,12 @@
 // headline, offer, or brand palette changes, instead of being a mystery PNG
 // nobody can edit.
 //
-//   npm run og:image        # writes og-image.png at the repo root
+//   npm run og:image                  # writes og-image.png at the repo root
+//   node scripts/og-image.mjs <path>  # writes anywhere; .jpg/.jpeg emits JPEG
+//
+// The <path> form exists because the marketing site (govirl.ai, a separate
+// repo) needs the same card as og-image.jpg. Two sites share one design; this
+// is the one place it's defined.
 //
 // Playwright is NOT a repo dependency — the card changes a couple of times a
 // year and the browser download is ~150MB, which isn't worth adding to every
@@ -42,7 +47,8 @@ try {
 }
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const OUT = join(REPO_ROOT, 'og-image.png');
+const OUT = process.argv[2] ?? join(REPO_ROOT, 'og-image.png');
+const IS_JPEG = /\.jpe?g$/i.test(OUT);
 
 // A desktop Chrome UA is required — Google Fonts serves woff2 only to
 // browsers it recognizes, and hands older formats to anything else.
@@ -140,9 +146,10 @@ try {
   );
   if (unloaded.length) throw new Error(`fonts failed to load: ${unloaded.join(', ')}`);
 
-  await page.screenshot({ path: OUT });
+  // quality applies to JPEG only — passing it with a .png path throws.
+  await page.screenshot({ path: OUT, ...(IS_JPEG ? { type: 'jpeg', quality: 92 } : {}) });
   await browser.close();
-  console.log(`OK: wrote ${OUT} (1200x630)`);
+  console.log(`OK: wrote ${OUT} (1200x630${IS_JPEG ? ', JPEG q92' : ''})`);
 } finally {
   await rm(workDir, { recursive: true, force: true });
 }
