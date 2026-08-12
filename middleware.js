@@ -14,9 +14,17 @@
 //                                blocking unknown would catch them too.
 //
 // Matcher: every route EXCEPT the waitlist endpoint itself (so non-US
-// visitors can submit the form), favicon, and robots.txt. /api/* routes
-// are otherwise gated, which is what we want — defense in depth against
-// a curl client trying to hit /api/chat from outside the US.
+// visitors can submit the form), favicon, robots.txt, and the Open Graph
+// preview image. /api/* routes are otherwise gated, which is what we want —
+// defense in depth against a curl client trying to hit /api/chat from
+// outside the US.
+//
+// Why og-image is excluded: link-preview crawlers (Twitterbot,
+// facebookexternalhit, LinkedInBot, Slack, iMessage) fetch from datacenter
+// IPs worldwide, and Vercel geolocates plenty of them outside the US. Gated,
+// they'd get this HTML page back with a 200 and an image content-type
+// mismatch, so the shared link renders as a card with no image. The PNG is
+// public marketing art — nothing to gate.
 //
 // Bypass acceptability: this gate is NOT VPN-proof. Anyone with a US
 // VPN gets through. For compliance defensibility, document the
@@ -24,7 +32,7 @@
 // as evidence of good-faith effort.
 
 export const config = {
-  matcher: '/((?!api/international-waitlist|favicon|robots).*)',
+  matcher: '/((?!api/international-waitlist|favicon|robots|og-image).*)',
 };
 
 const ALLOWED_COUNTRIES = new Set(['US', 'PR', 'GU', 'VI', 'AS', 'MP']);

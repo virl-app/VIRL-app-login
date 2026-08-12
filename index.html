@@ -4,6 +4,45 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>VIRL - Finally, a content strategy that sounds like you.</title>
+<meta name="description" content="VIRL is the first AI content strategist. It learns your voice and maps a full week of social content in about 60 seconds. 14-day free trial, no card."/>
+<link rel="canonical" href="https://govirl.ai/"/>
+
+<!-- [LINK PREVIEW] Open Graph + Twitter Card tags. These are what X, iMessage,
+     LinkedIn, Facebook, Slack, and WhatsApp read when someone pastes a govirl.ai
+     link. Without og:image the crawlers have nothing to show and the post
+     renders as a bare grey card with only the title.
+
+     Two things these tags depend on, both easy to break:
+       1. og:image MUST be an absolute https URL — relative paths are ignored by
+          every major crawler.
+       2. /og-image.png has to be reachable WITHOUT the geo-gate. Crawlers hit
+          the site from datacenter IPs all over the world, so middleware.js
+          explicitly excludes og-image from its matcher. If that exclusion is
+          removed, non-US-resolving crawlers get the HTML "not available yet"
+          page in place of the PNG and the preview breaks again.
+
+     After changing the image, re-scrape the URL so the platforms drop their
+     cached copy (X: cards-dev.twitter.com/validator, Facebook/Instagram:
+     developers.facebook.com/tools/debug, LinkedIn: linkedin.com/post-inspector).
+     Cache-bust by bumping the ?v= query string below if a platform is stubborn. -->
+<meta property="og:type" content="website"/>
+<meta property="og:site_name" content="VIRL"/>
+<meta property="og:url" content="https://govirl.ai/"/>
+<meta property="og:title" content="VIRL — Finally, a strategy that sounds like you."/>
+<meta property="og:description" content="The first AI content strategist. VIRL learns your voice and maps a full week of social content in about 60 seconds. 14-day free trial, no card."/>
+<meta property="og:image" content="https://govirl.ai/og-image.png?v=1"/>
+<meta property="og:image:secure_url" content="https://govirl.ai/og-image.png?v=1"/>
+<meta property="og:image:type" content="image/png"/>
+<meta property="og:image:width" content="1200"/>
+<meta property="og:image:height" content="630"/>
+<meta property="og:image:alt" content="VIRL — Finally, a strategy that sounds like you."/>
+<meta property="og:locale" content="en_US"/>
+
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="VIRL — Finally, a strategy that sounds like you."/>
+<meta name="twitter:description" content="The first AI content strategist. VIRL learns your voice and maps a full week of social content in about 60 seconds. 14-day free trial, no card."/>
+<meta name="twitter:image" content="https://govirl.ai/og-image.png?v=1"/>
+<meta name="twitter:image:alt" content="VIRL — Finally, a strategy that sounds like you."/>
 <script type="text/javascript" src="https://app.termly.io/resource-blocker/a8c380c9-9255-4beb-b922-7a884c5cc9e0?autoBlock=on"></script>
 <!-- Google tag (gtag.js) – Google Analytics 4. Loaded from googletagmanager.com,
      so Termly's auto-blocker categorizes and holds it until analytics/cookie
