@@ -46,7 +46,7 @@ export default async function handler(req, res) {
     const r = await fetch(
       SUPABASE_URL + "/rest/v1/credits?user_id=eq."
         + encodeURIComponent(userId)
-        + "&select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,founding_tier,founding_position"
+        + "&select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,founding_tier,founding_position,comp_weekly_credits,comp_expires_at"
         + "&limit=1",
       {
         headers: {

@@ -324,7 +324,7 @@ async function loadCreditsFromSupabase(userId, accessToken) {
       "Pragma": "no-cache",
     };
     const res = await fetch(
-      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,founding_tier,founding_position&user_id=eq." + userId + "&limit=1",
+      SUPABASE_URL + "/rest/v1/credits?select=credits,plan,reset_at,fresh_trends_plan_remaining,fresh_trends_scan_remaining,fresh_trends_caption_remaining,founding_tier,founding_position,comp_weekly_credits,comp_expires_at&user_id=eq." + userId + "&limit=1",
       { headers, cache: "no-store" }
     );
     if (res.ok) {
@@ -10356,7 +10356,40 @@ function App() {
   // is false and the UI shows a skeleton dash — never a misleading number.
   var creditsLoaded = sbCredits != null;
   var sbPlan = sbCredits ? sbCredits.plan : "free";
-  var credits = sbCredits ? sbCredits.credits : 0;
+  // [REFILL-MIRROR] The weekly refill is LAZY — it is written by the
+  // lazy-reset block in /api/chat on the user's next generation, not by a
+  // cron. So the stored `credits` value is a stale leftover from last cycle
+  // for anyone who comes back after their reset_at passed: a Founder Circle
+  // member who spent down to 4 last week opens the app to a HUD reading "4"
+  // (and a nearly-empty progress bar) even though their wallet refills to 150
+  // the moment they generate. Mirror the same computation chat.js runs so the
+  // HUD shows the balance they actually have.
+  //
+  // Precedence and constants match the lazy reset in api/chat.js — comp
+  // allowance wins while the comp is live, else 150 paid / 20 free. Keep the
+  // two in sync.
+  //
+  // Deliberately PAID-ONLY (plus comped accounts): chat.js gates trial expiry
+  // *before* the lazy reset, so an expired free trial never gets refilled.
+  // Mirroring the refill for free rows would promise a number that never
+  // lands. In-trial free users keep showing the stored value, which is the
+  // honest floor.
+  var refillDue = (function(){
+    if (!sbCredits) return false;
+    if (!sbCredits.reset_at) return true;
+    var ms = Date.parse(sbCredits.reset_at);
+    return Number.isNaN(ms) || ms <= Date.now();
+  })();
+  var credits = (function(){
+    if (!sbCredits) return 0;
+    if (!refillDue) return sbCredits.credits;
+    var compMs = sbCredits.comp_expires_at ? Date.parse(sbCredits.comp_expires_at) : NaN;
+    if (!Number.isNaN(compMs) && compMs > Date.now() && sbCredits.comp_weekly_credits != null) {
+      return sbCredits.comp_weekly_credits;
+    }
+    var paid = sbPlan === "founding" || sbPlan === "pro" || sbPlan === "standard";
+    return paid ? 150 : sbCredits.credits;
+  })();
   // Days until the user's per-user weekly reset. Computed from the
   // sbCredits.reset_at field (set server-side by the lazy reset in
   // /api/chat). Fallback: 7. Floor-rounded so a sub-day window still
@@ -14895,8 +14928,9 @@ return (
                             Falls back to row.credits if the API predates the
                             field. The * marks a refill that is due but not
                             yet written. */}
-                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:row.refill_pending?B.muted:B.ink}}>
-                          {(row.effective_credits!=null?row.effective_credits:row.credits)}{row.refill_pending?" *":""}
+                        <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.ink}}>
+                          {(row.effective_credits!=null?row.effective_credits:row.credits)}
+                          {row.refill_pending&&<span title="Weekly refill due — this is the balance they have; it writes to the row on their next generation." style={{color:B.muted,fontWeight:300,marginLeft:3}}>↻</span>}
                         </div>
                       </div>
                     );
@@ -14904,7 +14938,7 @@ return (
                 </div>
 
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:12,textAlign:"center"}}>
-                  {"Est. MRR assumes $25/mo per Standard user, $20/mo per Founder Circle member (locked for life). Data from Supabase credits table only. * = weekly refill due — shows the balance their wallet refills to on their next generation."}
+                  {"Est. MRR assumes $25/mo per Standard user, $20/mo per Founder Circle member (locked for life). Data from Supabase credits table only. ↻ = these credits are available now; the weekly refill writes to their row the moment they next generate."}
                 </div>
               </div>
             )}
