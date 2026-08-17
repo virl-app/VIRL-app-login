@@ -1,4 +1,7 @@
 {
+  "functions": {
+    "api/cron/trends-refresh.js": { "maxDuration": 300 }
+  },
   "crons": [
     {
       "path": "/api/cron/email-triggers",

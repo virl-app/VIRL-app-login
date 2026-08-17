@@ -392,7 +392,7 @@ export function buildTrendsPrompt(platform, opts) {
     //   from trends where fetched_at >= now() - interval '3 weeks'
     //   group by 1 order by 1;
     //
-    // Baseline to beat: 14 of 20 segment rows empty, 0 of 9 TikTok segments
+    // Baseline to beat: 15 of 20 segment rows empty, 0 of 9 TikTok segments
     // producing. `quiet_weeks` remains valid on global rows, which keep the
     // stock template.
     niche

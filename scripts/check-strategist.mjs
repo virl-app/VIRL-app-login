@@ -674,6 +674,14 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
   {
     process.env.CRON_SECRET = process.env.CRON_SECRET || "fixture-cron-secret";
     process.env.RESEND_API_KEY = process.env.RESEND_API_KEY || "fixture-resend-key";
+    // trend-health imports trends-refresh (for SEGMENT_PLATFORMS), which pulls
+    // in trends-research and the perplexity wrapper — and all of them read
+    // their config at MODULE scope. This is the first import of that whole
+    // chain, so the env has to be complete here or the refresh handler loads
+    // with no API key and every job errors.
+    process.env.SUPABASE_URL         = process.env.SUPABASE_URL         || "https://fixture.supabase.co";
+    process.env.SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "fixture-service-key";
+    process.env.PERPLEXITY_API_KEY   = process.env.PERPLEXITY_API_KEY   || "fixture-perplexity-key";
     const { default: trendHealth } = await import("../api/cron/trend-health.js");
 
     const mockRes = () => {
@@ -840,7 +848,7 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     //
     // The failure this covers is the one every other check in this file is
     // structurally blind to. On the first week per-segment research ran, all 20
-    // rows were written ON TIME and 14 came back EMPTY. Every age-based check
+    // rows were written ON TIME and 15 came back EMPTY. Every age-based check
     // reported a perfectly healthy tier, because it was perfectly fresh — and
     // creators in those segments silently dropped to platform-wide research.
     //
@@ -957,6 +965,116 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     }
 
     globalThis.fetch = realFetch2;
+  }
+
+  // ── [REFRESH-CONCURRENCY] The weekly refresh must finish its whole job list ─
+  //
+  // On 2026-08-17 it wrote 13 of 27 rows and stopped — in exact job order, no
+  // gaps. A productive research call takes ~17s and an empty one ~4s, so while
+  // most rows came back empty the sequential loop finished; once the retiered
+  // prompt made them productive, 27 × ~17s outran the function's duration
+  // ceiling and the platform killed it mid-list. 14 segment pairs got no row.
+  //
+  // The failure is invisible from inside the handler — it never gets to return
+  // — so what is asserted here is the property that prevents it: every job runs
+  // exactly once, and the burst stays bounded while they do.
+  {
+    const { default: trendsRefresh, SEGMENT_PLATFORMS: SEGMENT_PLATFORMS2 } =
+      await import("../api/cron/trends-refresh.js");
+    // Not exported — read the cap from source, same as the staleness
+    // thresholds below, so the assertion tracks the constant rather than a
+    // number copied here that can drift away from it.
+    const refreshSrc = readFileSync(new URL("../api/cron/trends-refresh.js", import.meta.url), "utf8");
+    const REFRESH_CONCURRENCY_LIMIT = Number((refreshSrc.match(/REFRESH_CONCURRENCY\s*=\s*(\d+)/) || [])[1]);
+    assert(REFRESH_CONCURRENCY_LIMIT > 0,
+      "could not read REFRESH_CONCURRENCY from trends-refresh.js — the cap assertion below would be vacuous");
+    // An ABSOLUTE bound, not one derived from the constant. The in-flight
+    // assertion further down compares against the constant itself, which means
+    // it can never fail by someone raising the constant — the precise change it
+    // is supposed to guard against. This is the assertion that catches that.
+    // Range rather than an exact value so the number can be tuned on evidence
+    // without editing a test to match, which is how a test stops meaning
+    // anything.
+    assert(REFRESH_CONCURRENCY_LIMIT >= 2 && REFRESH_CONCURRENCY_LIMIT <= 8,
+      `REFRESH_CONCURRENCY is ${REFRESH_CONCURRENCY_LIMIT} — below 2 the run is sequential again and outruns the duration ceiling; above ~8 it is the unbounded burst the sequential design existed to avoid. Move it with a measurement, not a hunch.`);
+    const realFetch3 = globalThis.fetch;
+
+    const inserted = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const perplexityBody = {
+      choices: [{ message: { content: JSON.stringify({
+        summary: "fixture week",
+        items: [{ trend: "a named thing", category: "format", source_url: "https://example.com/a", reason: "" }],
+        sources: ["https://example.com/a"],
+      }) } }],
+      citations: ["https://example.com/a"],
+    };
+
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.perplexity.ai")) {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        // Yield across a couple of turns so overlapping calls actually overlap;
+        // a synchronous resolve would show maxInFlight 1 even when the pool is
+        // working, and the assertion below would be measuring nothing.
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight--;
+        return { ok: true, status: 200, json: async () => perplexityBody, text: async () => "" };
+      }
+      if (u.includes("/rest/v1/trends")) {
+        const row = JSON.parse(init.body);
+        inserted.push(`${row.platform}/${row.segment || "global"}`);
+        return { ok: true, status: 201, text: async () => "" };
+      }
+      return { ok: true, status: 200, json: async () => [], text: async () => "" };
+    };
+
+    const out = {};
+    const r = {
+      status(code) { out.code = code; return r; },
+      json(body) { out.body = body; return r; },
+    };
+    await trendsRefresh({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+    globalThis.fetch = realFetch3;
+
+    const planned = out.body && out.body.planned;
+    assert(out.code === 200 && planned > 0,
+      `trends-refresh did not complete: ${JSON.stringify(out)}`);
+    assert(inserted.length === planned,
+      `${inserted.length} of ${planned} jobs wrote a row — the run is dropping work, which is how 14 segment pairs went missing`);
+    assert(new Set(inserted).size === inserted.length,
+      `a job ran twice: ${inserted.filter((v, i) => inserted.indexOf(v) !== i).join(", ")}`);
+    assert(out.body.published === planned && out.body.errored === 0,
+      `counts disagree with the work done: ${JSON.stringify({ planned, published: out.body.published, errored: out.body.errored })}`);
+
+    // Every declared pair specifically, not just the right total — a pool that
+    // skipped the tail and double-ran the head would satisfy a count check.
+    const expectedPairs = [];
+    for (const seg of Object.keys(SEGMENT_PLATFORMS2)) {
+      for (const pf of SEGMENT_PLATFORMS2[seg]) expectedPairs.push(`${pf}/${seg}`);
+    }
+    const missing = expectedPairs.filter((p) => !inserted.includes(p));
+    assert(missing.length === 0,
+      `segment pairs never ran: ${missing.join(", ")}`);
+
+    // Bounded, and actually concurrent. Both halves matter: unbounded would
+    // reintroduce the rate-limit risk the sequential loop was protecting
+    // against, and a pool that never overlaps has not fixed the timeout.
+    assert(maxInFlight > 1,
+      "research calls never overlapped — the run is still effectively sequential and will time out again");
+    assert(maxInFlight <= REFRESH_CONCURRENCY_LIMIT,
+      `${maxInFlight} research calls were in flight at once, over the ${REFRESH_CONCURRENCY_LIMIT} cap — that is the unbounded burst the sequential design existed to avoid`);
+  }
+
+  // The ceiling has to be declared, not inherited. The run that truncated was
+  // relying on whatever the platform defaulted to.
+  {
+    const fnCfg = (vercelCfg.functions || {})["api/cron/trends-refresh.js"];
+    assert(fnCfg && Number(fnCfg.maxDuration) > 0,
+      "trends-refresh has no explicit maxDuration — its runtime ceiling is whatever the platform happens to default to, which is what it silently outgrew");
   }
 
   // The load-bearing numeric relationship. Generation refuses trends older
