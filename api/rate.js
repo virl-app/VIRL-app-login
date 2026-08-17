@@ -30,6 +30,11 @@ const ALLOWED_TYPES   = new Set(["plan_card", "caption", "scan_result", "script"
 const ALLOWED_RATINGS = new Set(["up", "down", null]);
 const ALLOWED_REASONS = new Set(["Too formal", "Not my words", "Wrong energy"]);
 
+// The unique constraint that identifies "this creator's rating of this item".
+// Every upsert below has to name it explicitly — see the comment at the call
+// site for why the default (the primary key) is the wrong target.
+const RATING_CONFLICT_TARGET = "user_id,generation_type,target_ref";
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
@@ -92,9 +97,18 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // Upsert the rating. Unique constraint on (user_id, generation_type,
-    // target_ref) means re-rates flip the existing row.
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/content_ratings`, {
+    // Upsert the rating onto the existing row for this item, if any.
+    //
+    // `on_conflict` is NOT optional here. PostgREST defaults the ON CONFLICT
+    // target to the PRIMARY KEY, and content_ratings' primary key is the
+    // surrogate `id` — which we never send, so nothing ever conflicts on it.
+    // The insert then goes on to violate the real key, UNIQUE (user_id,
+    // generation_type, target_ref), and PostgREST returns 409. Without this
+    // parameter the first rating on an item is the only write that ever
+    // succeeds: every re-rate and every reaction chip on that item 409s.
+    // Naming the unique constraint's columns is what makes merge-duplicates
+    // actually merge.
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/content_ratings?on_conflict=${RATING_CONFLICT_TARGET}`, {
       method: "POST",
       headers: {
         apikey:        SUPABASE_SERVICE_KEY,
@@ -123,7 +137,7 @@ export default async function handler(req, res) {
       // fields so the rating itself still lands — the creator's thumbs
       // -down is worth more than the annotation on it.
       if (reason) {
-        const retry = await fetch(`${SUPABASE_URL}/rest/v1/content_ratings`, {
+        const retry = await fetch(`${SUPABASE_URL}/rest/v1/content_ratings?on_conflict=${RATING_CONFLICT_TARGET}`, {
           method: "POST",
           headers: {
             apikey:        SUPABASE_SERVICE_KEY,
