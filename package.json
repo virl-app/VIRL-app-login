@@ -9,7 +9,8 @@
     "check:voice": "node scripts/check-voice.mjs",
     "check:strategist": "node scripts/check-strategist.mjs",
     "check:trends": "node scripts/check-trend-personalization.mjs",
-    "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist && npm run check:trends",
+    "check:rating": "node scripts/check-rating-upsert.mjs",
+    "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist && npm run check:trends && npm run check:rating",
     "audit:trends": "node scripts/audit-trend-research.mjs",
     "og:image": "node scripts/og-image.mjs"
   },
