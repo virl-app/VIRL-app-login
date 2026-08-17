@@ -215,7 +215,10 @@ function ymd(iso) {
 // `trend` name. If the two ever diverge, a row of nameless items ranks as
 // populated, wins its platform, and then renders nothing — the empty-segment
 // outage again, wearing a full items array.
-function legacyRowHasItems(row) {
+// Exported for cron/trend-health.js, which asks the same question of the same
+// rows: "did this row actually produce anything?" Two definitions of that would
+// let the monitor call a row productive that generation renders as empty.
+export function legacyRowHasItems(row) {
   const list = row && Array.isArray(row.items) ? row.items : [];
   return list.some(it => it && typeof it.trend === "string" && it.trend.trim());
 }

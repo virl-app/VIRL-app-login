@@ -23,6 +23,8 @@
 import { sendEmail }          from "../_lib/email-send.js";
 import { trendPipelineStale } from "../_lib/email-templates.js";
 import { cronAuthorized }     from "../_lib/cron-auth.js";
+import { SEGMENT_PLATFORMS }  from "./trends-refresh.js";
+import { legacyRowHasItems }  from "../_lib/trend-context.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -53,6 +55,31 @@ const PLATFORMS = ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X"
 //   uses — past 14 the fallback returns nothing and every surface goes dark.
 const OBSERVED_STALE_DAYS = 5;
 const LEGACY_STALE_DAYS   = 10;
+
+// [SEGMENT-HEALTH] The per-segment tier needs a DIFFERENT question asked of it,
+// and this is the reason it went unmonitored through a total failure.
+//
+// Every other check in this file measures the AGE of data, on the argument
+// that age catches every mechanism identically. That argument holds when the
+// failure stops rows being written. The segment tier's actual failure did not:
+// the first week it ran, all 20 rows were written exactly on schedule and 14 of
+// them were EMPTY — the research model declining the question it was asked. A
+// staleness check would have called that a perfectly healthy tier, because it
+// was perfectly fresh. It was simply worthless.
+//
+// So the segment tier is measured on PRODUCTION, not freshness: how many of the
+// (segment, platform) pairs the cron writes came back carrying anything. That
+// is the only framing under which the observed outage is visible at all.
+//
+// The floor is a share rather than a count because the pair list is expected to
+// grow. Half is a deliberate, reasoned line, not a measured one: one or two
+// verticals genuinely having a quiet week is normal variance and must not page
+// anyone, while more than half coming back empty is the tier failing as a whole
+// rather than nine independent quiet weeks. Baseline when this was written: 6
+// of 20 productive (30%), which this correctly flags. If real weeks routinely
+// land near 50% once the tiered prompt has run a few cycles, this number is
+// wrong and should be moved with the data in hand rather than defended.
+const SEGMENT_PRODUCTIVE_FLOOR = 0.5;
 
 const SUPABASE_HEADERS = {
   apikey:        SUPABASE_SERVICE_KEY,
@@ -135,6 +162,79 @@ async function legacyFreshnessByPlatform() {
   }
 }
 
+// [SEGMENT-HEALTH] Production check on the per-segment research tier.
+//
+// Reads only segment rows (`segment=not.is.null`) — the exact complement of the
+// global probe above, so the two tiers stay independently measurable and a
+// healthy one can never vouch for a broken one. That separation is the same
+// rule the global probe already documents, applied one level down.
+//
+// Scored per (segment, platform) PAIR rather than per row, because a pair is
+// what a creator experiences: a real estate agent on TikTok is served the
+// real_estate/TikTok row or she is served the global fallback instead. Pairs
+// come from trends-refresh's own map, so adding a pair there enrolls it here.
+//
+// A pair with no row at all counts as unproductive, not as absent. Rows that
+// produce nothing vanish from any grouping keyed on their items, which is
+// precisely how a tier of empty rows can look like a short healthy report.
+async function segmentTierHealth(now) {
+  const expected = [];
+  for (const segment of Object.keys(SEGMENT_PLATFORMS)) {
+    for (const platform of SEGMENT_PLATFORMS[segment]) expected.push(segment + "/" + platform);
+  }
+  if (!expected.length) return null;
+
+  // Same window as the global research check: the tier refreshes weekly, so 10
+  // days absorbs one missed run without crying about it.
+  const since = new Date(now - LEGACY_STALE_DAYS * DAY_MS).toISOString();
+  let rows;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/trends?select=platform,segment,items,fetched_at`
+      + `&segment=not.is.null&fetched_at=gte.${encodeURIComponent(since)}`
+      + "&order=fetched_at.desc&limit=500",
+      { headers: SUPABASE_HEADERS },
+    );
+    if (!res.ok) return { unreadable: true, expected: expected.length };
+    rows = await res.json();
+  } catch (e) {
+    console.error("[cron/trend-health] segment probe failed", e && e.message);
+    return { unreadable: true, expected: expected.length };
+  }
+
+  // Rows arrive newest-first, so the first row seen for a pair is its current
+  // one — the same row loadLegacyTrends would pick.
+  const newestByPair = new Map();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!r || !r.platform || !r.segment) continue;
+    const pair = r.segment + "/" + r.platform;
+    if (newestByPair.has(pair)) continue;
+    newestByPair.set(pair, r);
+  }
+
+  const barren = [];
+  let fresh = 0;
+  let productive = 0;
+  for (const pair of expected) {
+    const row = newestByPair.get(pair);
+    if (row) fresh++;
+    // legacyRowHasItems is trend-context's own test, imported rather than
+    // restated, so "productive" here means exactly "renders something there".
+    if (row && legacyRowHasItems(row)) productive++;
+    else barren.push(pair);
+  }
+
+  return {
+    unreadable: false,
+    expected:   expected.length,
+    fresh,
+    productive,
+    // Capped: this lands in an email, and 20 pair names is a wall, not a signal.
+    barren:     barren.slice(0, 8),
+    barrenCount: barren.length,
+  };
+}
+
 function ageDays(ts, now) {
   if (ts == null) return null;
   return Math.max(0, Math.floor((now - ts) / DAY_MS));
@@ -149,9 +249,10 @@ export default async function handler(req, res) {
   }
 
   const now = Date.now();
-  const [observedTs, legacy] = await Promise.all([
+  const [observedTs, legacy, segments] = await Promise.all([
     newestTimestamp("trend_items", "last_seen"),
     legacyFreshnessByPlatform(),
+    segmentTierHealth(now),
   ]);
 
   const observedAge = ageDays(observedTs, now);
@@ -187,30 +288,74 @@ export default async function handler(req, res) {
   // fallback means every surface renders the "no trends" empty state.
   const bothDark = observedStale && legacyStale;
 
+  // [SEGMENT-HEALTH] Two distinct segment failures, because they need different
+  // reactions: the tier not running at all points at the cron, while the tier
+  // running and returning nothing points at the research prompt.
+  //
+  // Deliberately NOT folded into `legacyStale`. Since the empty-row precedence
+  // fix, an unproductive segment row falls through to global research rather
+  // than blanking the platform, so this is a DEGRADATION — creators get
+  // platform-wide research instead of their industry's — not an outage. Rolling
+  // it into the outage flag would overstate it and, worse, would make the
+  // genuinely dark case indistinguishable in the subject line.
+  const segmentReadable = !!(segments && !segments.unreadable);
+  const segmentTierDown = segmentReadable && segments.expected > 0 && segments.fresh === 0;
+  const segmentThin     = segmentReadable && segments.expected > 0 && !segmentTierDown
+    && (segments.productive / segments.expected) < SEGMENT_PRODUCTIVE_FLOOR;
+  const segmentDegraded = segmentTierDown || segmentThin;
+
+  // [SEGMENT-HEALTH] The admin lookup is load-bearing: sendEmail dedupes on
+  // (user_id, template, dedupe_key), so an unresolved id means no alert at all.
+  // The previous version took `users[0]` from a list endpoint that does not
+  // filter on `?email=`, which is whichever user the page happened to start
+  // with — a different id run to run breaks the daily dedupe, and an empty page
+  // silently disables the whole alert. Match the address explicitly instead.
+  //
+  // If it cannot be resolved, that is logged as an error and reported in the
+  // response rather than passed over: a monitor that quietly declines to alert
+  // is the precise failure this file was written to end, and it would be a poor
+  // joke for it to have that shape itself.
   let adminUserId = null;
+  let adminLookupFailed = false;
   try {
     const r = await fetch(
-      `${SUPABASE_URL}/auth/v1/admin/users?email=${encodeURIComponent(ADMIN_EMAIL)}`,
+      `${SUPABASE_URL}/auth/v1/admin/users?per_page=1000`,
       { headers: SUPABASE_HEADERS },
     );
     if (r.ok) {
       const j = await r.json();
-      const u = (j.users && j.users[0]) || null;
+      const users = (j && Array.isArray(j.users)) ? j.users : [];
+      const want = ADMIN_EMAIL.toLowerCase();
+      const u = users.find(x => x && typeof x.email === "string" && x.email.toLowerCase() === want);
       if (u && u.id) adminUserId = u.id;
     }
-  } catch (e) { /* non-fatal */ }
+  } catch (e) {
+    console.error("[cron/trend-health] admin lookup threw", e && e.message);
+  }
+  if (!adminUserId) {
+    adminLookupFailed = true;
+    console.error(
+      "[cron/trend-health] could not resolve an id for", ADMIN_EMAIL,
+      "— no staleness email can be sent until this resolves.",
+    );
+  }
 
   // Dedupe on the run date so a same-day re-run is a no-op, but a pipeline
   // that stays broken re-alerts every day. That is intentional: a single
   // ignorable email is how the last outage lasted eight days.
   let emailed = false;
-  if ((observedStale || legacyStale) && adminUserId) {
+  if ((observedStale || legacyStale || segmentDegraded) && adminUserId) {
     const tpl = trendPipelineStale({
       observedAge, legacyAge, observedStale, legacyStale, bothDark,
       laggingPlatforms,
       totalPlatforms:    PLATFORMS.length,
       observedThreshold: OBSERVED_STALE_DAYS,
       legacyThreshold:   LEGACY_STALE_DAYS,
+      segmentTierDown, segmentThin,
+      segmentExpected:   segmentReadable ? segments.expected   : null,
+      segmentProductive: segmentReadable ? segments.productive : null,
+      segmentBarren:     segmentReadable ? segments.barren     : [],
+      segmentBarrenCount: segmentReadable ? segments.barrenCount : 0,
     });
     const dedupeKey = "trend_health_" + new Date(now).toISOString().slice(0, 10);
     emailed = await sendEmail({
@@ -234,6 +379,14 @@ export default async function handler(req, res) {
     bothDark,
     laggingPlatforms,
     legacyPlatformAges,
+    segmentTierDown,
+    segmentThin,
+    segmentDegraded,
+    segmentExpected:   segmentReadable ? segments.expected    : null,
+    segmentFresh:      segmentReadable ? segments.fresh       : null,
+    segmentProductive: segmentReadable ? segments.productive  : null,
+    segmentBarren:     segmentReadable ? segments.barren      : [],
+    adminLookupFailed,
     emailed,
   });
 }

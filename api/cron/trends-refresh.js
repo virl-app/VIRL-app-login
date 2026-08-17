@@ -69,7 +69,11 @@ export const SEGMENT_LABELS = {
 // LinkedIn is added for the two segments whose audiences are actually there.
 // This map is the knob to turn as segments grow; adding a pair costs one
 // Perplexity call a week.
-const SEGMENT_PLATFORMS = {
+// [SEGMENT-HEALTH] Exported so cron/trend-health.js can monitor exactly the
+// pairs this cron writes. Duplicating the map there would mean a pair added
+// here is silently unmonitored — the same drift that let the segment tier fail
+// unwatched in the first place.
+export const SEGMENT_PLATFORMS = {
   real_estate:    ["TikTok", "Instagram"],
   coach:          ["TikTok", "Instagram", "LinkedIn"],
   creator:        ["TikTok", "Instagram"],
