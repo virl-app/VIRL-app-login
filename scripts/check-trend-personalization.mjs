@@ -409,6 +409,79 @@ const xNiche = buildTrendsPrompt("X", { niche: "Real Estate" });
 assert(xNiche.includes("Real Estate"),
   "the X frame must still carry the niche focus — otherwise segment rows are global rows with a label");
 
+// ── 6b. The niche ask is tiered, and the global ask is untouched ───────────
+// [NICHE-TIERS] The first week the per-segment cron ran, 14 of 20 segment rows
+// came back with zero items — all nine TikTok segments, five of nine Instagram
+// — while the SAME prompt minus the niche line returned 12 items per platform
+// the same week. The niche line demanded trends invented BY the niche and
+// called anything else "not interesting", so the model took constraint #6's
+// empty-list option rather than report the real signal it had found.
+
+for (const p of ["TikTok", "Instagram"]) {
+  const nichePrompt = buildTrendsPrompt(p, { niche: "Real Estate" });
+
+  // The three tiers, and the instruction that makes them more than decoration.
+  assert(/TIER 1/.test(nichePrompt) && /TIER 2/.test(nichePrompt) && /TIER 3/.test(nichePrompt),
+    `${p} niche research must offer all three tiers of niche signal`);
+  assert(/ALWAYS prefer a lower tier over returning nothing/i.test(nichePrompt),
+    `${p} must be told to drop a tier rather than return nothing — without this the tiers are advisory and the row still comes back empty`);
+  assert(/audience/i.test(nichePrompt),
+    `${p} niche research must count audience-side signal, not only creator-side`);
+
+  // The old absolutism is what emptied the rows. It must be gone, not softened
+  // and left in alongside the tiers, which would be contradictory.
+  assert(!/is not interesting/i.test(nichePrompt),
+    `${p} must not tell the model platform-wide signal is uninteresting — that is what produced 14 empty rows`);
+
+  // Tier 3 is the load-bearing compromise: it admits platform-wide trends ONLY
+  // with a named niche application. Without that the segment row degrades into
+  // the global row it is supposed to improve on.
+  assert(/name the specific Real Estate application in the item itself/i.test(nichePrompt),
+    `${p} tier 3 must require the niche application be named, or segment rows become global rows with a label`);
+  assert(/does not count|does NOT count/.test(nichePrompt),
+    `${p} must still refuse an unapplied platform-wide trend — the global row already carries those`);
+
+  // Reframing what counts as a trend must not relax what counts as evidence.
+  // Same rule the platform frames are held to.
+  assert(nichePrompt.includes("MUST cite an exact source URL"),
+    `${p} niche research must keep the citation requirement`);
+  assert(nichePrompt.includes("STRICT exclusion of evergreen advice"),
+    `${p} niche research must keep the evergreen ban — widening the ask is not permission for slop`);
+  assert(/rather than padding/i.test(nichePrompt),
+    `${p} must keep the anti-padding rule — an honest zero is still better than filler`);
+
+  // The empty-list exit stays available but its bar is stated, since "no tier-1
+  // signal" was being read as "quiet week".
+  assert(/is NOT a quiet week/i.test(nichePrompt),
+    `${p} must say that an absence of niche-native signal is not by itself a quiet week`);
+
+  // The prompt must not also hand back a pre-written empty answer. All 20
+  // segment rows opened with "Quiet week" — the exact phrase the stock template
+  // supplies — so raising the bar in constraint #6 achieves nothing while the
+  // last line remains a fill-in-the-blank way to give up.
+  assert(!nichePrompt.includes('"summary": "Quiet week'),
+    `${p} niche research must not pre-write a "Quiet week" summary — the model copies it verbatim`);
+  assert(/Only if all three tiers genuinely came up empty/.test(nichePrompt),
+    `${p} must still offer an empty shape — an honest zero has to stay expressible`);
+  assert(/do not just call it a quiet week/i.test(nichePrompt),
+    `${p}'s empty case must ask what was searched, since trends.summary is the field that diagnoses these failures`);
+}
+
+// The global path is the one that WORKS — 12 items per platform in the same
+// week the segment rows were empty. It must not pick up any of the above. This
+// is the same guard that stops a per-platform frame becoming a rewrite.
+for (const p of ["TikTok", "Instagram", "X", "LinkedIn", "YouTube", "Pinterest", "Facebook"]) {
+  const globalPrompt = buildTrendsPrompt(p, {});
+  assert(!/TIER 1/.test(globalPrompt),
+    `${p}'s global prompt must not carry the niche tiers — it has no niche to tier by`);
+  assert(!/is NOT a quiet week/i.test(globalPrompt),
+    `${p}'s global prompt must keep the original constraint #6 — it is not the path that was failing`);
+  assert(globalPrompt.includes("If the platform has had a quiet week with no notable signal, return an empty items list"),
+    `${p}'s global prompt must keep constraint #6 verbatim`);
+  assert(globalPrompt.includes('"summary": "Quiet week'),
+    `${p}'s global prompt keeps the stock empty template — it is producing full batches and is not what we are fixing`);
+}
+
 // ── done ───────────────────────────────────────────────────────────────────
 
 if (failures) {
