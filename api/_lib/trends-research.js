@@ -246,8 +246,52 @@ export function buildTrendsPrompt(platform, opts) {
   // Niche header — when present, sharpens the whole search toward that
   // creator's vertical. When absent, prompt reads as a generic platform
   // trends scan (the cron's behavior).
+  //
+  // [NICHE-TIERS] This line used to end "A trend that's hot on <platform>
+  // overall is not interesting; a trend that's hot among <niche> creators IS."
+  // That is the same mistake PLATFORM_TREND_FRAME above was written to fix, on
+  // the other axis: it describes a state the world is rarely in, and then
+  // constraint #6 offers a clean exit when the world isn't in it.
+  //
+  // Measured, first week the per-segment cron ran — 20 segment rows, one per
+  // (segment, platform) pair:
+  //
+  //   TikTok      0 of 9 segments produced anything   (global TikTok: 12 items)
+  //   Instagram   4 of 9 segments produced anything   (global IG:     12 items)
+  //
+  // Same platform, same week, same model, same everything else — the global row
+  // is this prompt WITHOUT the niche line and it returned a full batch. So the
+  // niche line is what emptied the row, not a quiet week. The stored summaries
+  // say so in the model's own words: "no reliably dated, niche-specific signals
+  // from the last 7-14 days", "the available sources mostly repeat evergreen
+  // advice". It searched, found real signal, was told the signal it found was
+  // "not interesting", and took the empty-list option. Fourteen times.
+  //
+  // The demand was for trends INVENTED BY the niche, which is a rare event
+  // stacked on top of already-strict recency and citation rules. What a
+  // strategist actually needs is broader: what her audience is doing counts,
+  // and a platform-wide format she can apply to her business counts — that is
+  // most of the job. Tiering says which is best without making the others
+  // failures, and the "prefer a lower tier over returning nothing" instruction
+  // is what closes the empty-list escape hatch that constraint #6 opens.
+  //
+  // Tier 3 keeps segment rows from collapsing back into global rows with a
+  // label — the thing check-trend-personalization asserts against — by
+  // requiring the niche application to be named IN THE ITEM. An unapplied
+  // platform trend is what the global row already carries; repeating it here
+  // would spend a Perplexity call to duplicate a row we already have.
+  //
+  // Evidence rules are untouched, exactly as with the platform frames: this
+  // changes what COUNTS as niche signal, never how well it must be sourced.
   const nicheLine = niche
-    ? "Niche focus: " + niche + " creators specifically. We want trends moving in THIS niche, not generic platform-wide signal. A trend that's hot on " + platform + " overall is not interesting; a trend that's hot among " + niche + " creators IS."
+    ? [
+        "Niche focus: " + niche + " creators specifically. This research is for them — it is not a general " + platform + " recap, and a separate platform-wide pass already covers that.",
+        "Three tiers count as niche signal. Prefer a higher tier, but ALWAYS prefer a lower tier over returning nothing:",
+        "  TIER 1 — Signal native to " + niche + ": trends, formats, arguments or questions moving among " + niche + " creators themselves.",
+        "  TIER 2 — Signal moving among their AUDIENCE, i.e. the people " + niche + " creators serve. What that audience is asking, sharing or reacting to on " + platform + " is a content opportunity even if no " + niche + " creator has covered it yet — often it is the best one, because it is uncontested.",
+        "  TIER 3 — A broader " + platform + " trend that " + niche + " creators are already adapting, or credibly could. Only counts if you name the specific " + niche + " application in the item itself: \"the X format is trending\" does NOT count; \"the X format, being used for listing walkthroughs\" does.",
+        "A broad " + platform + " trend with no stated " + niche + " angle is the one thing that does not count — that is what the platform-wide research already returns, so repeating it here adds nothing.",
+      ].join("\n")
     : "";
 
   // Exclusion block — only added when the caller has a list of trends the
@@ -292,7 +336,17 @@ export function buildTrendsPrompt(platform, opts) {
     (frame && frame.macroRule)
       ? frame.macroRule
       : "5. STRICT exclusion of mainstream/macro items unless they have a niche-specific angle. 'AI tools are trending' is not useful; 'Five specific AI tools getting traction in [niche] this week' is.",
-    "6. If the platform has had a quiet week with no notable signal, return an empty items list rather than padding.",
+    // [NICHE-TIERS] The empty-list option has to survive — padding is worse
+    // than an honest zero, and that is why this constraint exists. But on a
+    // niche run the model was reading it as "no TIER 1 signal, therefore
+    // quiet", which is how 14 rows came back empty in a week when the same
+    // prompt without the niche line returned 12 items per platform. Naming the
+    // bar explicitly is the difference between an honest zero and a premature
+    // one; the anti-padding half is repeated verbatim so nothing is traded for
+    // it.
+    niche
+      ? "6. If the week is genuinely quiet, return an empty items list rather than padding. But \"no trend originated with " + niche + " creators this week\" is NOT a quiet week — that is normal, and tiers 2 and 3 exist precisely for it. Work all three tiers before concluding there is nothing. An empty list means all three came up empty, which should be rare; padding with evergreen advice to avoid one is still worse."
+      : "6. If the platform has had a quiet week with no notable signal, return an empty items list rather than padding.",
     "",
     "Return ONLY valid JSON (no markdown, no preamble):",
     "{",
@@ -308,7 +362,42 @@ export function buildTrendsPrompt(platform, opts) {
     '  "sources": ["<url>", "..."]',
     "}",
     "",
-    "If no notable shifts: { \"summary\": \"Quiet week — no notable trends from trusted sources.\", \"items\": [], \"sources\": [] }",
+    // [NICHE-TIERS] This trailing line hands the model a complete, pre-written
+    // empty answer — including the summary text. Every one of the 20 segment
+    // rows in the first per-segment week opened with the words "Quiet week",
+    // the exact phrase this template supplies, and 14 of them shipped the empty
+    // items list that comes with it. Constraint #6 can argue for a higher bar
+    // all it likes while the last line of the prompt is still a fill-in-the-
+    // blank version of giving up.
+    //
+    // The global path keeps it verbatim: it is not the path that was failing,
+    // and its rows returned 12 items each in the same week.
+    //
+    // On the niche path the empty shape stays available — an honest zero must
+    // always be expressible — but nothing is pre-written for it, and the
+    // summary is asked to say what was actually searched. `trends.summary` is
+    // where this system has explained its own failures before; a copied stock
+    // phrase is the one thing it cannot do that with.
+    //
+    // MEASUREMENT TRAP, for whoever checks whether this worked: the standard
+    // `quiet_weeks` diagnostic counts summaries matching /quiet|no notable/,
+    // and this change deliberately removes the stock phrase those patterns key
+    // on. On SEGMENT rows that metric will therefore fall whether or not the
+    // research improved, which makes it worthless here and actively misleading
+    // — it will look like a win by construction. Judge the segment tier by
+    // COUNTING ZERO-ITEM ROWS instead:
+    //
+    //   select coalesce(segment,'(global)') as tier, count(*) as rows,
+    //          count(*) filter (where jsonb_array_length(coalesce(items,'[]'::jsonb)) = 0) as empty
+    //   from trends where fetched_at >= now() - interval '3 weeks'
+    //   group by 1 order by 1;
+    //
+    // Baseline to beat: 14 of 20 segment rows empty, 0 of 9 TikTok segments
+    // producing. `quiet_weeks` remains valid on global rows, which keep the
+    // stock template.
+    niche
+      ? "Only if all three tiers genuinely came up empty: { \"summary\": \"<say what you searched across all three tiers and what you did not find — be specific, do not just call it a quiet week>\", \"items\": [], \"sources\": [] }"
+      : "If no notable shifts: { \"summary\": \"Quiet week — no notable trends from trusted sources.\", \"items\": [], \"sources\": [] }",
   ].filter(line => line !== "").join("\n");
 }
 
