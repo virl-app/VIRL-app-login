@@ -390,10 +390,21 @@ export function trendPipelineStale({
   observedAge, legacyAge, observedStale, legacyStale, bothDark,
   laggingPlatforms, totalPlatforms,
   observedThreshold, legacyThreshold,
+  // [SEGMENT-HEALTH] Optional — omitted by callers that only check freshness.
+  segmentTierDown = false, segmentThin = false,
+  segmentExpected = null, segmentProductive = null,
+  segmentBarren = [], segmentBarrenCount = 0,
 }) {
   const lagging = Array.isArray(laggingPlatforms) ? laggingPlatforms : [];
   const allLagging = totalPlatforms ? lagging.length >= totalPlatforms : false;
   const age = (d) => (d === null ? "no data at all" : d === 1 ? "1 day old" : `${d} days old`);
+  const segmentDegraded = segmentTierDown || segmentThin;
+  const barren = Array.isArray(segmentBarren) ? segmentBarren : [];
+  // A degraded segment tier is a real regression in quality and NOT an outage —
+  // creators still get trends, just platform-wide ones instead of their own
+  // industry's. It therefore never claims the headline while an actual dark
+  // pipeline is in play, and it never uses outage language.
+  const segmentOnly = segmentDegraded && !observedStale && !legacyStale;
 
   // A partial legacy outage names the platforms, because "LinkedIn stopped"
   // and "everything stopped" need different reactions and the subject line is
@@ -402,22 +413,32 @@ export function trendPipelineStale({
     ? "Both trend sources are stale — plans are running without trends."
     : observedStale
       ? "The trend ingest has stopped updating."
-      : allLagging || lagging.length === 0
-        ? "The weekly trend research has stopped updating."
-        : `Weekly trend research has stalled on ${lagging.join(", ")}.`;
+      : segmentOnly
+        ? (segmentTierDown
+            ? "The per-segment trend research has stopped running."
+            : "Per-segment trend research is coming back mostly empty.")
+        : allLagging || lagging.length === 0
+          ? "The weekly trend research has stopped updating."
+          : `Weekly trend research has stalled on ${lagging.join(", ")}.`;
 
   const subject = bothDark
     ? "VIRL: no trend data reaching plans"
     : observedStale
       ? `VIRL trend ingest stale (${age(observedAge)})`
-      : allLagging || lagging.length === 0
-        ? `VIRL trend research stale (${age(legacyAge)})`
-        : `VIRL trend research stalled: ${lagging.join(", ")}`;
+      : segmentOnly
+        ? (segmentTierDown
+            ? "VIRL per-segment research not running"
+            : `VIRL per-segment research thin (${segmentProductive}/${segmentExpected} producing)`)
+        : allLagging || lagging.length === 0
+          ? `VIRL trend research stale (${age(legacyAge)})`
+          : `VIRL trend research stalled: ${lagging.join(", ")}`;
 
   // Creator impact first. Which pipeline broke is the second question.
   const impact = bothDark
     ? `<p style="margin:0 0 12px"><strong style="color:${COLOR.coral}">Every generation surface is currently showing the "no trends this week" state.</strong> Creators are getting plans, captions, and scans built with no trend grounding at all.</p>`
-    : observedStale
+    : segmentOnly
+      ? `<p style="margin:0 0 12px">Creators are still getting trends and nothing is dark — but ${segmentTierDown ? "the per-segment research is not running at all" : `only ${segmentProductive} of ${segmentExpected} segment/platform pairs came back with anything`}, so the affected creators are being served <strong>platform-wide research instead of their own industry's</strong>. That is the difference the segment tier exists to make, and it is quietly not being made.</p>`
+      : observedStale
       ? `<p style="margin:0 0 12px">Creators are still getting trends — the weekly research fallback is covering it. But the observed pipeline is the one that carries live platform signal, and it is not recovering on its own.</p>`
       : (lagging.length && !allLagging)
         ? `<p style="margin:0 0 12px">Creators on <strong>${esc(lagging.join(", "))}</strong> are the ones affected — their fallback trend data has stopped refreshing while the other platforms keep updating. Everyone else is unaffected.</p>`
@@ -429,12 +450,23 @@ export function trendPipelineStale({
     lagging.length
       ? `<li style="margin:6px 0"><strong>Platforms not refreshing:</strong> ${esc(lagging.join(", "))}${totalPlatforms ? ` (${lagging.length} of ${totalPlatforms})` : ""}</li>`
       : "",
+    // [SEGMENT-HEALTH] Reported as a production count, never as an age. These
+    // rows are typically written on time and simply empty, so a freshness
+    // figure here would read as reassurance about the exact thing that failed.
+    segmentDegraded
+      ? `<li style="margin:6px 0"><strong>Per-segment research:</strong> ${segmentTierDown
+          ? "no rows written at all"
+          : `${segmentProductive} of ${segmentExpected} pairs produced items`}${
+          barren.length ? ` &mdash; empty: ${esc(barren.join(", "))}${segmentBarrenCount > barren.length ? `, +${segmentBarrenCount - barren.length} more` : ""}` : ""}</li>`
+      : "",
   ].join("");
 
   const body = `${impact}
     <ul style="margin:0 0 16px;padding-left:18px">${rows}</ul>
     <p style="margin:0 0 12px">Generation refuses any trend older than 7 days, so the observed threshold is set to warn with roughly two days of runway before creators feel it.</p>
-    <p style="margin:0">Most likely causes: the trend vendor token expired or hit its quota, the scheduled job stopped firing, or the ingest function is erroring before it writes. Check the ingest logs first &mdash; an empty run logs "ALL ADAPTERS RETURNED EMPTY" and then exits without writing.</p>`;
+    ${segmentOnly
+      ? `<p style="margin:0">Most likely cause: the research prompt, not the plumbing &mdash; these rows are usually written on schedule and simply come back with an empty items list, and the model states its reason in <code>trends.summary</code>. Read that column for the affected pairs before changing anything.</p>`
+      : `<p style="margin:0">Most likely causes: the trend vendor token expired or hit its quota, the scheduled job stopped firing, or the ingest function is erroring before it writes. Check the ingest logs first &mdash; an empty run logs "ALL ADAPTERS RETURNED EMPTY" and then exits without writing.</p>`}`;
 
   const textLines = [
     headline,
@@ -443,15 +475,24 @@ export function trendPipelineStale({
       ? "Every generation surface is showing the no-trends state right now."
       : observedStale
         ? "Creators still have trends via the weekly research fallback, but the observed pipeline is not recovering."
-        : (lagging.length && !allLagging)
-          ? `Creators on ${lagging.join(", ")} are the ones affected — their fallback data has stopped refreshing while the other platforms keep updating.`
-          : "Plans are fine; the fallback behind them is stale.",
+        : segmentOnly
+          ? `Nothing is stale and nothing is dark. ${segmentTierDown
+              ? "The per-segment research is not running at all"
+              : `Only ${segmentProductive} of ${segmentExpected} segment/platform pairs came back with anything`}, so those creators are being served platform-wide research instead of their own industry's.`
+          : (lagging.length && !allLagging)
+            ? `Creators on ${lagging.join(", ")} are the ones affected — their fallback data has stopped refreshing while the other platforms keep updating.`
+            : "Plans are fine; the fallback behind them is stale.",
     "",
     `Observed ingest (trend_items, Mon + Thu): ${age(observedAge)}${observedStale ? ` — past the ${observedThreshold}-day threshold` : " — healthy"}`,
     `Weekly research (trends, Mondays), oldest platform: ${age(legacyAge)}${legacyStale ? ` — past the ${legacyThreshold}-day threshold` : " — healthy"}`,
     lagging.length ? `Platforms not refreshing: ${lagging.join(", ")}${totalPlatforms ? ` (${lagging.length} of ${totalPlatforms})` : ""}` : "",
+    segmentDegraded
+      ? `Per-segment research: ${segmentTierDown ? "no rows written at all" : `${segmentProductive} of ${segmentExpected} pairs produced items`}${barren.length ? ` — empty: ${barren.join(", ")}${segmentBarrenCount > barren.length ? `, +${segmentBarrenCount - barren.length} more` : ""}` : ""}`
+      : "",
     "",
-    'Check the ingest logs first — an empty run logs "ALL ADAPTERS RETURNED EMPTY" and exits without writing.',
+    segmentOnly
+      ? "These rows are usually written on time and simply come back empty — read trends.summary for the affected pairs, the model states its reason there."
+      : 'Check the ingest logs first — an empty run logs "ALL ADAPTERS RETURNED EMPTY" and exits without writing.',
   ].join("\n");
 
   return {

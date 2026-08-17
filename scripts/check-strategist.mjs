@@ -687,14 +687,41 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     const staleIso = new Date(Date.now() - 30 * DAY).toISOString();
     const realFetch2 = globalThis.fetch;
     const hits = [];
+
+    // [SEGMENT-HEALTH] The admin fixture carries the real address now. The
+    // lookup used to take users[0] from an endpoint that does not filter on
+    // ?email=, so a user with no email at all still "resolved" — which is why
+    // this fixture could omit it. Matching by address is what makes the alert
+    // reliable, so the fixture has to be a user the match can find.
+    const adminUsers = { users: [{ id: "u0", email: "someone.else@example.com" },
+                                 { id: "u1", email: "laurenannedoty@gmail.com" }] };
+
+    // Every (segment, platform) pair the cron writes, built from the cron's own
+    // map so the fixture cannot drift from the thing under test. `withItems`
+    // false is the observed failure: rows present, on time, and empty.
+    const { SEGMENT_PLATFORMS } = await import("../api/cron/trends-refresh.js");
+    const segmentRows = (iso, withItems = true) => {
+      const out = [];
+      for (const seg of Object.keys(SEGMENT_PLATFORMS)) {
+        for (const pf of SEGMENT_PLATFORMS[seg]) {
+          out.push({
+            platform: pf, segment: seg, fetched_at: iso,
+            items: withItems ? [{ trend: "a specifically named thing", category: "format" }] : [],
+          });
+        }
+      }
+      return out;
+    };
+    const isSegmentProbe = (u) => u.includes("segment=not.is.null");
     globalThis.fetch = async (url, init) => {
       const u = String(url);
       hits.push(u);
       if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: staleIso }] };
+      if (isSegmentProbe(u)) return { ok: true, json: async () => segmentRows(staleIso) };
       if (u.includes("/trends?")) return { ok: true, json: async () =>
         ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"]
           .map((pf) => ({ platform: pf, fetched_at: staleIso })) };
-      if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+      if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => adminUsers };
       // 409 = "already claimed" — proves sendEmail ran without reaching Resend.
       if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
       return { ok: true, json: async () => [] };
@@ -732,6 +759,7 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
         const u = String(url);
         hits.push(u);
         if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+        if (isSegmentProbe(u)) return { ok: true, json: async () => segmentRows(freshIso) };
         if (u.includes("/trends?")) return { ok: true, json: async () => [
           { platform: "TikTok", fetched_at: freshIso },
           { platform: "Instagram", fetched_at: freshIso },
@@ -741,7 +769,7 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
           { platform: "Pinterest", fetched_at: freshIso },
           { platform: "LinkedIn", fetched_at: lateIso },
         ] };
-        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => adminUsers };
         if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
         return { ok: true, json: async () => [] };
       };
@@ -769,10 +797,11 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
       globalThis.fetch = async (url) => {
         const u = String(url);
         if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+        if (isSegmentProbe(u)) return { ok: true, json: async () => segmentRows(freshIso) };
         if (u.includes("/trends?")) return { ok: true, json: async () =>
           ["TikTok", "Instagram", "Facebook", "YouTube", "X", "LinkedIn"]
             .map((p) => ({ platform: p, fetched_at: freshIso })) };  // no Pinterest row at all
-        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => adminUsers };
         if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
         return { ok: true, json: async () => [] };
       };
@@ -790,10 +819,11 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
         const u = String(url);
         hits.push(u);
         if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+        if (isSegmentProbe(u)) return { ok: true, json: async () => segmentRows(freshIso) };
         if (u.includes("/trends?")) return { ok: true, json: async () =>
           ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"]
             .map((pf) => ({ platform: pf, fetched_at: freshIso })) };
-        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [{ id: "u1" }] }) };
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => adminUsers };
         if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
         return { ok: true, json: async () => [] };
       };
@@ -804,6 +834,126 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
         `fresh pipelines were reported stale: ${JSON.stringify(out.body)}`);
       assert(!hits.some((u) => u.includes("/email_sends")),
         "trend-health emailed about a healthy pipeline — a daily false alarm is how a real alert gets ignored");
+    }
+
+    // ── [SEGMENT-HEALTH] The per-segment tier ──────────────────────────────
+    //
+    // The failure this covers is the one every other check in this file is
+    // structurally blind to. On the first week per-segment research ran, all 20
+    // rows were written ON TIME and 14 came back EMPTY. Every age-based check
+    // reported a perfectly healthy tier, because it was perfectly fresh — and
+    // creators in those segments silently dropped to platform-wide research.
+    //
+    // Freshness cannot see this. Only production can.
+    const freshIso = new Date(Date.now() - 1 * DAY).toISOString();
+    const healthyBase = (u) => {
+      if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: freshIso }] };
+      if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => adminUsers };
+      if (u.includes("/email_sends")) return { ok: false, status: 409, text: async () => "" };
+      return null;
+    };
+    const globalHealthy = { ok: true, json: async () =>
+      ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"]
+        .map((pf) => ({ platform: pf, fetched_at: freshIso })) };
+
+    // Rows present, on schedule, and empty. THE regression test.
+    {
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        hits.push(u);
+        if (isSegmentProbe(u)) return { ok: true, json: async () => segmentRows(freshIso, false) };
+        if (u.includes("/trends?")) return globalHealthy;
+        return healthyBase(u) || { ok: true, json: async () => [] };
+      };
+      hits.length = 0;
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.body && out.body.segmentThin === true,
+        `20 on-time but EMPTY segment rows were reported healthy: ${JSON.stringify(out.body && { thin: out.body.segmentThin, prod: out.body.segmentProductive })}`);
+      assert(out.body && out.body.segmentProductive === 0,
+        `empty rows counted as productive: ${out.body && out.body.segmentProductive}`);
+      assert(out.body && out.body.observedStale === false && out.body.legacyStale === false,
+        "the freshness checks should be untouched here — this is precisely the case they cannot see");
+      assert(hits.some((u) => u.includes("/email_sends")),
+        "a segment tier producing nothing at all sent no email — that is the outage that ran unnoticed");
+      assert(Array.isArray(out.body.segmentBarren) && out.body.segmentBarren.length > 0,
+        "the barren pairs are not named, so the email cannot say which segments went generic");
+    }
+
+    // The tier not running at all is a different fault with a different fix,
+    // and must be reported as such rather than folded into "thin".
+    {
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (isSegmentProbe(u)) return { ok: true, json: async () => [] };
+        if (u.includes("/trends?")) return globalHealthy;
+        return healthyBase(u) || { ok: true, json: async () => [] };
+      };
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.body && out.body.segmentTierDown === true && out.body.segmentThin === false,
+        `no segment rows at all must report tierDown, not thin: ${JSON.stringify(out.body && { down: out.body.segmentTierDown, thin: out.body.segmentThin })}`);
+    }
+
+    // A degraded segment tier is a QUALITY regression, not an outage: creators
+    // still get trends, just platform-wide ones. It must never claim the
+    // language reserved for a dark pipeline, or the one alert that means
+    // "nobody is getting trends" stops being distinguishable at a glance.
+    {
+      const { trendPipelineStale: tpl } = await import("../api/_lib/email-templates.js");
+      const segOnly = tpl({
+        observedAge: 1, legacyAge: 1, observedStale: false, legacyStale: false,
+        bothDark: false, laggingPlatforms: [], totalPlatforms: 7,
+        observedThreshold: 5, legacyThreshold: 10,
+        segmentThin: true, segmentExpected: 20, segmentProductive: 6,
+        segmentBarren: ["real_estate/TikTok"], segmentBarrenCount: 14,
+      });
+      assert(/6\D+20|20/.test(segOnly.subject),
+        `the segment subject should carry the production count: ${segOnly.subject}`);
+      assert(!/no trend data reaching plans|stale/i.test(segOnly.subject),
+        `a segment degradation is using outage language: ${segOnly.subject}`);
+      assert(/platform-wide research instead of their own industry/i.test(segOnly.html),
+        "the email does not say what the creator actually loses when the segment tier degrades");
+      assert(/trends\.summary/.test(segOnly.text),
+        "the email should point at trends.summary — the model states its reason there, and it went unread for a week");
+      // The plain-text body has its own impact selector, and it fell through to
+      // the wrong branch when the HTML one was given a segment case: it told the
+      // reader the fallback was stale while reporting both tiers healthy.
+      assert(!/the fallback behind them is stale/.test(segOnly.text),
+        "the text body claims the fallback is stale on a segment-only alert where nothing is stale");
+      assert(/Nothing is stale and nothing is dark/.test(segOnly.text),
+        "the text body should lead by saying nothing is down, or a quality warning reads as an outage");
+
+      // A real outage must still win the headline when both are true.
+      const both = tpl({
+        observedAge: 30, legacyAge: 30, observedStale: true, legacyStale: true,
+        bothDark: true, laggingPlatforms: ["TikTok"], totalPlatforms: 7,
+        observedThreshold: 5, legacyThreshold: 10,
+        segmentThin: true, segmentExpected: 20, segmentProductive: 0,
+      });
+      assert(/no trend data reaching plans/i.test(both.subject),
+        `a segment degradation displaced a total outage in the subject: ${both.subject}`);
+    }
+
+    // An unresolvable admin id must be reported, not silently swallowed. The
+    // alert genuinely cannot send without one (email_sends dedupes on user_id),
+    // so the only honest options are to say so or to fail silently — and
+    // failing silently is the exact shape this whole file exists to end.
+    {
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [] }) };
+        if (isSegmentProbe(u)) return { ok: true, json: async () => segmentRows(freshIso) };
+        if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: staleIso }] };
+        if (u.includes("/trends?")) return globalHealthy;
+        return { ok: true, json: async () => [] };
+      };
+      const { r, out } = mockRes();
+      await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
+      assert(out.body && out.body.adminLookupFailed === true,
+        "the admin lookup failed and the response did not say so — the alert is disabled and nothing anywhere reports it");
+      assert(out.body && out.body.observedStale === true && out.body.emailed === false,
+        "a stale pipeline with no resolvable admin must still REPORT stale, even though it cannot email");
     }
 
     globalThis.fetch = realFetch2;
