@@ -169,6 +169,64 @@ r = await buildTrendContext({ ...BASE, profile: {} });
 assert(!r.block.includes("twilight walkthroughs"),
   "a row belonging to another segment must not be served to this one");
 
+// ── 3b-ii. An EMPTY segment row must not shadow a populated global row ─────
+// [TRENDS-SEGMENT-EMPTY] Observed in production the first week per-segment
+// research shipped: 14 of 20 segment rows returned zero items, and because the
+// tier preference was unconditional they displaced populated global rows. All
+// nine TikTok segments went dark while a 12-item global TikTok row sat unused.
+// The pair below is the point — one assertion that the empty row stops
+// shadowing, one that the tier preference it was built on is still intact.
+const emptySegmentRow = { ...segmentRow, items: [] };
+
+LEGACY = [globalRow, emptySegmentRow];
+r = await buildTrendContext({ ...BASE, profile: {} });
+assert(r.block.includes("Microwave Challenge"),
+  "an empty segment row must fall through to the global row, not blank the platform");
+assert(r.block.includes("PLATFORM-WIDE research"),
+  "falling through to global must also downgrade the provenance claim to match");
+
+// Order-independence again: the empty row arriving first must not win by being
+// seen first, which is how a rank check regresses into a first-writer-wins one.
+LEGACY = [emptySegmentRow, globalRow];
+r = await buildTrendContext({ ...BASE, profile: {} });
+assert(r.block.includes("Microwave Challenge"),
+  "row order must not decide it — an empty segment row loses whenever it is seen");
+
+// The other half of the pair: nothing was traded away to fix it. A POPULATED
+// segment row must still beat a populated global row, older or not.
+LEGACY = [globalRow, segmentRow];
+r = await buildTrendContext({ ...BASE, profile: {} });
+assert(r.block.includes("twilight walkthroughs") && !r.block.includes("Microwave Challenge"),
+  "a populated segment row must still outrank a global one — the tier preference is not what broke");
+
+// A row whose items all lack a usable `trend` name is empty in every sense the
+// renderer cares about, and must rank as empty rather than as populated-but-
+// silent — otherwise it wins its platform and then renders nothing.
+LEGACY = [globalRow, { ...segmentRow, items: [{ trend: "   ", category: "format" }] }];
+r = await buildTrendContext({ ...BASE, profile: {} });
+assert(r.block.includes("Microwave Challenge"),
+  "a segment row of nameless items must rank as empty, not shadow the global row");
+
+// Both tiers empty: the block stays empty and nothing is invented from it.
+LEGACY = [{ ...globalRow, items: [] }, emptySegmentRow];
+r = await buildTrendContext({ ...BASE, profile: {} });
+assert(!r.block.includes("twilight walkthroughs") && !r.block.includes("Microwave Challenge"),
+  "two empty rows must produce no items rather than resurrecting either one");
+
+// The cross-platform rule must survive the rank change: an empty TikTok SEGMENT
+// row must not let a global TikTok row take the borrowed slot in its place.
+// (Section 3c's fixtures are declared below this point, so these are local.)
+const ytOwn = {
+  platform: "YouTube", segment: null, fetched_at: new Date().toISOString(), summary: "",
+  items: [{ trend: "Shorts creators leaning on cold opens", category: "format", source_url: "https://example.com/y", reason: "" }],
+};
+LEGACY = [ytOwn, { ...segmentRow, items: [] }, globalRow];
+r = await buildTrendContext({ platforms: ["YouTube"], niche: "Real Estate", profile: {} });
+assert(!r.block.includes("Microwave Challenge"),
+  "an empty segment row must not open the borrowed slot to a GLOBAL row of another platform");
+assert(r.block.includes("cold opens"),
+  "the creator's own platform must still serve while the borrow declines");
+
 // ── 3c. The TikTok fallback reaches the legacy path ────────────────────────
 // [TRENDS-SEGMENT] The observed query has always included FALLBACK_PLATFORM;
 // the legacy query never did. So a creator on a platform with no segment rows

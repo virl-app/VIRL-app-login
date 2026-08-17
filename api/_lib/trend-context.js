@@ -210,6 +210,16 @@ function ymd(iso) {
   try { return new Date(iso).toISOString().slice(0, 10); } catch (_e) { return ""; }
 }
 
+// [TRENDS-SEGMENT-EMPTY] "Has items" has to mean the same thing here as it does
+// in loadLegacyTrends' extraction loop, which drops any item lacking a usable
+// `trend` name. If the two ever diverge, a row of nameless items ranks as
+// populated, wins its platform, and then renders nothing — the empty-segment
+// outage again, wearing a full items array.
+function legacyRowHasItems(row) {
+  const list = row && Array.isArray(row.items) ? row.items : [];
+  return list.some(it => it && typeof it.trend === "string" && it.trend.trim());
+}
+
 // [TREND-FALLBACK] Most-recent legacy research row per requested platform,
 // flattened into items. Called ONLY when the observed pipeline came back
 // empty, so the healthy path pays no extra round trip.
@@ -261,7 +271,7 @@ async function loadLegacyTrends(requestedPlatforms, segment, fallbackPlatform) {
   const borrowed = fallback && !want.has(fallback) ? fallback : "";
   if (borrowed) want.add(borrowed);
   const newestByPlatform = new Map();
-  const segmentHit = new Set();
+  const rankByPlatform = new Map();
   for (const r of rows) {
     if (!r || !r.platform) continue;
     const key = normPlatform(r.platform);
@@ -278,15 +288,32 @@ async function loadLegacyTrends(requestedPlatforms, segment, fallbackPlatform) {
     const isSegmentRow = !!(segment && rowSegment === segment);
     // A borrowed platform earns its slot only by being niche-researched.
     if (key === borrowed && !isSegmentRow) continue;
-    // Rows arrive desc by fetched_at, so the first row seen for a platform is
-    // the newest of whichever tier it belongs to. A segment row displaces a
-    // global one already held; a global row never displaces a segment one.
-    if (!newestByPlatform.has(key)) {
+    // Rows arrive desc by fetched_at, so the first row seen at a given rank is
+    // the newest at that rank. A segment row outranks a global one — but only
+    // when it actually carries items.
+    //
+    // [TRENDS-SEGMENT-EMPTY] The tier preference used to be unconditional, and
+    // an EMPTY segment row therefore displaced a populated global one and the
+    // platform went dark. That is not hypothetical: the first week per-segment
+    // research shipped, 14 of 20 segment rows came back with zero items — the
+    // model declining the compound niche-plus-recency-plus-citation ask — and
+    // every TikTok creator in all nine segments was served nothing while a
+    // 12-item global TikTok row sat unread beside it. Creators who HAD been
+    // getting global research got less than before the tier existed.
+    //
+    // An empty row is not research about her business, it is the absence of
+    // it, so it wins nothing. Ranking (rather than a bare has-items check) also
+    // settles the case where a platform holds several rows inside the 14-day
+    // window: a populated segment row from last week still beats an empty one
+    // published this morning, which is the same "older but about her business"
+    // trade the tier preference was introduced to make.
+    // Carrying items is the dominant term, tier the tiebreak: segment+items (3)
+    // > global+items (2) > segment+empty (1) > global+empty (0). Weighting tier
+    // above items is precisely the inversion that caused the outage.
+    const rank = (legacyRowHasItems(r) ? 2 : 0) + (isSegmentRow ? 1 : 0);
+    if (!newestByPlatform.has(key) || rank > rankByPlatform.get(key)) {
       newestByPlatform.set(key, r);
-      if (isSegmentRow) segmentHit.add(key);
-    } else if (isSegmentRow && !segmentHit.has(key)) {
-      newestByPlatform.set(key, r);
-      segmentHit.add(key);
+      rankByPlatform.set(key, rank);
     }
   }
   if (!newestByPlatform.size) return { items: [], asOf: "" };
