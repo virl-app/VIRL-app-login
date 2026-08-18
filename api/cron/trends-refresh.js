@@ -47,6 +47,14 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 const PLATFORMS = ["TikTok","Instagram","Facebook","YouTube","LinkedIn","X","Pinterest"];
 
+// [REFRESH-CONCURRENCY] How many research calls may be in flight at once. See
+// the worker pool in the handler for the measurements behind this. Four is
+// chosen to be obviously safe against a rate limit while cutting the run from
+// roughly 7.5 minutes to roughly 2 — the constraint is the function's duration
+// ceiling, and the headroom matters because a call gets SLOWER as the prompt
+// gets better at finding things.
+const REFRESH_CONCURRENCY = 4;
+
 // [TRENDS-SEGMENT] The nine canonical segment keys, with the human-readable
 // label handed to researchTrends. The label is what lands in the prompt
 // ("Niche focus: Real Estate creators specifically"), so it is written the way
@@ -166,16 +174,58 @@ export default async function handler(req, res) {
   let errored   = 0;
   const failed  = [];
 
-  // Sequential on purpose. This runs once a week with no latency budget, and
-  // 27 concurrent Perplexity calls is a good way to discover a rate limit.
-  for (const job of jobs) {
-    const outcome = await refreshOne(job.platform, job.segment);
-    if (outcome === "published") published++;
-    else {
-      errored++;
-      failed.push(`${job.platform}/${job.segment || "global"}`);
+  // [REFRESH-CONCURRENCY] This loop was sequential, on the reasoning that a
+  // weekly job has "no latency budget" and that 27 concurrent Perplexity calls
+  // is how you discover a rate limit. The second half is still true. The first
+  // half stopped being true the moment the research prompt started working.
+  //
+  // Measured on the 2026-08-17 run, from the fetched_at timestamps it wrote:
+  //
+  //   07:02:03  TikTok    (global)  12 items
+  //   07:02:18  Instagram (global)  12      ← ~15-17s apart
+  //   07:02:39  YouTube   (global)   0      ← 4s: an EMPTY answer is nearly free
+  //   ...
+  //   07:04:38  coach/TikTok        12
+  //   (stops at job 13 of 27, in exact job order)
+  //
+  // A productive call costs ~17s and an empty one ~4s. While most rows came
+  // back empty the whole run finished comfortably; once the retiered prompt
+  // made them productive, 27 sequential calls became ~7.5 minutes and the
+  // platform killed the function partway. The rows are truncated in job order
+  // with no gaps, which is the signature of a process kill rather than of
+  // individual failures — refreshOne catches its own errors and continues, so
+  // nothing short of a kill can end the loop early.
+  //
+  // The cost of that: 14 of 20 segment pairs got no row, so those creators
+  // silently fall back to platform-wide research. The tier is funded, running,
+  // and half-delivering.
+  //
+  // A small worker pool fixes it without touching the rate-limit concern that
+  // motivated the original design. At 4 in flight the same 27 jobs take ~2
+  // minutes rather than ~7.5, which fits inside the ceiling with room for calls
+  // to get slower as the prompt improves further. Deliberately a small fixed
+  // number and not `Promise.all(jobs)` — the point is to bound the burst, not
+  // remove the bound.
+  //
+  // Each worker still runs its own jobs strictly one at a time, so this changes
+  // how many calls are in flight, never how many are made.
+  let cursor = 0;
+  async function worker() {
+    for (;;) {
+      const i = cursor++;
+      if (i >= jobs.length) return;
+      const job = jobs[i];
+      const outcome = await refreshOne(job.platform, job.segment);
+      if (outcome === "published") published++;
+      else {
+        errored++;
+        failed.push(`${job.platform}/${job.segment || "global"}`);
+      }
     }
   }
+  await Promise.all(
+    Array.from({ length: Math.min(REFRESH_CONCURRENCY, jobs.length) }, worker),
+  );
 
   // [TREND-HEALTH] `failed` is returned by name rather than as a bare count.
   // The prior version returned only `errored`, into a JSON body nobody reads —

@@ -62,7 +62,7 @@ const LEGACY_STALE_DAYS   = 10;
 // Every other check in this file measures the AGE of data, on the argument
 // that age catches every mechanism identically. That argument holds when the
 // failure stops rows being written. The segment tier's actual failure did not:
-// the first week it ran, all 20 rows were written exactly on schedule and 14 of
+// the first week it ran, all 20 rows were written exactly on schedule and 15 of
 // them were EMPTY — the research model declining the question it was asked. A
 // staleness check would have called that a perfectly healthy tier, because it
 // was perfectly fresh. It was simply worthless.
@@ -75,8 +75,8 @@ const LEGACY_STALE_DAYS   = 10;
 // grow. Half is a deliberate, reasoned line, not a measured one: one or two
 // verticals genuinely having a quiet week is normal variance and must not page
 // anyone, while more than half coming back empty is the tier failing as a whole
-// rather than nine independent quiet weeks. Baseline when this was written: 6
-// of 20 productive (30%), which this correctly flags. If real weeks routinely
+// rather than nine independent quiet weeks. Baseline when this was written: 5
+// of 20 productive (25%), which this correctly flags. If real weeks routinely
 // land near 50% once the tiered prompt has run a few cycles, this number is
 // wrong and should be moved with the data in hand rather than defended.
 const SEGMENT_PRODUCTIVE_FLOOR = 0.5;

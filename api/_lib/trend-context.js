@@ -298,7 +298,8 @@ async function loadLegacyTrends(requestedPlatforms, segment, fallbackPlatform) {
     // [TRENDS-SEGMENT-EMPTY] The tier preference used to be unconditional, and
     // an EMPTY segment row therefore displaced a populated global one and the
     // platform went dark. That is not hypothetical: the first week per-segment
-    // research shipped, 14 of 20 segment rows came back with zero items — the
+    // research shipped, 15 of 20 segment rows came back with zero items and 14
+    // of those displaced a populated global row — the
     // model declining the compound niche-plus-recency-plus-citation ask — and
     // every TikTok creator in all nine segments was served nothing while a
     // 12-item global TikTok row sat unread beside it. Creators who HAD been

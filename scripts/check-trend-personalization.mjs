@@ -171,7 +171,8 @@ assert(!r.block.includes("twilight walkthroughs"),
 
 // ── 3b-ii. An EMPTY segment row must not shadow a populated global row ─────
 // [TRENDS-SEGMENT-EMPTY] Observed in production the first week per-segment
-// research shipped: 14 of 20 segment rows returned zero items, and because the
+// research shipped: 15 of 20 segment rows returned zero items, 14 of them over
+// a populated global row, and because the
 // tier preference was unconditional they displaced populated global rows. All
 // nine TikTok segments went dark while a 12-item global TikTok row sat unused.
 // The pair below is the point — one assertion that the empty row stops
@@ -410,7 +411,7 @@ assert(xNiche.includes("Real Estate"),
   "the X frame must still carry the niche focus — otherwise segment rows are global rows with a label");
 
 // ── 6b. The niche ask is tiered, and the global ask is untouched ───────────
-// [NICHE-TIERS] The first week the per-segment cron ran, 14 of 20 segment rows
+// [NICHE-TIERS] The first week the per-segment cron ran, 15 of 20 segment rows
 // came back with zero items — all nine TikTok segments, five of nine Instagram
 // — while the SAME prompt minus the niche line returned 12 items per platform
 // the same week. The niche line demanded trends invented BY the niche and
