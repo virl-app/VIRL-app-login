@@ -141,6 +141,10 @@ async function saveProfileToSupabase(profile, userId) {
       platform_audiences: profile.platformAudiences||{},
       post_freq: profile.postFreq||null,
       content_length: profile.contentLength||null,
+      // [WEEK-START] 0=Sun..6=Sat. Not `|| 0` — Sunday IS 0, so a falsy
+      // check would quietly discard the most common setting. Normalize
+      // instead, which also clamps anything out of range.
+      week_start_day: normalizeWeekStartDay(profile.weekStartDay),
       worked_well: profile.workedWell||null,
       // [INTEL 1] Personal-fact columns. NULL on empty so we can later
       // distinguish "user has not yet been prompted" from "explicitly cleared".
@@ -260,6 +264,9 @@ async function loadProfileFromSupabase(userId) {
       platformAudiences: data.platform_audiences||{},
       postFreq: data.post_freq||"",
       contentLength: data.content_length||"",
+      // [WEEK-START] Normalize rather than `||` — Sunday is 0 and would be
+      // swallowed by a falsy default.
+      weekStartDay: normalizeWeekStartDay(data.week_start_day),
       workedWell: data.worked_well||"",
       // [INTEL 1] Personal-fact columns. Existing rows pre-migration return
       // null for these and fall through the || "" so the textareas render empty.
@@ -386,15 +393,65 @@ function saveCachedSbCredits(userId, row) {
 // refresh on any device lands the user back on their current plan rather
 // than the empty profile screen. Helpers fail open — if the table isn't
 // provisioned yet, the app silently falls back to localStorage-only.
-// ISO date for the Monday of the calendar week containing `d`. Used as the
-// week_start key for plan_history rows so re-generations within the same
-// week update one row instead of creating duplicates.
-function weekStartISO(d) {
+// [WEEK-START] ISO date for the start of the planning week containing `d`.
+// Used as the week_start key for plan_history rows so re-generations within
+// the same week update one row instead of creating duplicates.
+//
+// `weekStartDay` is the creator's own week anchor (0=Sun..6=Sat, profiles
+// .week_start_day). This was hard-coded to Monday, which disagreed with both
+// the plan's own day labels and the credit-derived expiry — see
+// migrations/027-week-start-day.sql for the full four-clock story.
+//
+// MUST stay in lockstep with weekStartUTC in api/_lib/plan-history.js. The
+// server filters history with `week_start < currentWeekStart` using the key
+// the client computed; if the two disagree by even a day, a same-week
+// regenerate reads as a prior week and the prompt announces "week 2" to
+// someone still working on week 1.
+function weekStartISO(d, weekStartDay) {
+  const anchor = normalizeWeekStartDay(weekStartDay);
   const date = new Date(d || Date.now());
-  const day = date.getDay() || 7; // Sunday=7
   date.setHours(0,0,0,0);
-  date.setDate(date.getDate() - (day - 1));
-  return date.toISOString().slice(0, 10);
+  const back = (date.getDay() - anchor + 7) % 7;
+  date.setDate(date.getDate() - back);
+  // Local-midnight date parts, not toISOString() — toISOString() converts to
+  // UTC first, which rolls a US-evening date forward to tomorrow and files
+  // the plan under the wrong week.
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return date.getFullYear() + "-" + mm + "-" + dd;
+}
+
+// Clamp whatever reached us (missing profile, stale cache, hand-edited row)
+// to a usable anchor. Out-of-range values produce silently wrong week
+// windows rather than throwing, so coerce rather than trust.
+function normalizeWeekStartDay(v) {
+  const n = parseInt(v, 10);
+  return (Number.isInteger(n) && n >= 0 && n <= 6) ? n : 0; // default Sunday
+}
+
+// [WEEK-START] Local-midnight timestamp of the END of the planning week
+// containing `d` — i.e. the instant the next week begins. This is the
+// planning-side replacement for the credit-derived expiry.
+function weekEndMs(d, weekStartDay) {
+  const anchor = normalizeWeekStartDay(weekStartDay);
+  const date = new Date(d || Date.now());
+  date.setHours(0,0,0,0);
+  const back = (date.getDay() - anchor + 7) % 7;
+  date.setDate(date.getDate() - back + 7);
+  return date.getTime();
+}
+
+// Whole days left in the planning week containing `d`, counting today.
+// A plan generated on the last day of the week has 1 day of runway.
+function daysLeftInWeek(d, weekStartDay) {
+  const now = d || Date.now();
+  return Math.max(1, Math.round((weekEndMs(now, weekStartDay) - startOfDayMs(now)) / 86400000));
+}
+
+function startOfDayMs(d) {
+  const date = new Date(d || Date.now());
+  date.setHours(0,0,0,0);
+  return date.getTime();
 }
 
 async function loadPlanFromSupabase(userId) {
@@ -405,7 +462,7 @@ async function loadPlanFromSupabase(userId) {
     return data;
   } catch(e) { return null; }
 }
-async function savePlanToSupabase(userId, cards, stats, expiresAt, strategy, trendsSnapshot, restDayTips) {
+async function savePlanToSupabase(userId, cards, stats, expiresAt, strategy, trendsSnapshot, restDayTips, weekStartDay) {
   // Dual-write: current `plans` row (one per user, replaced on regenerate)
   // PLUS a `plan_history` row keyed by (user_id, week_start) so past weeks
   // accumulate. The history row is what the server reads on the next plan
@@ -435,7 +492,9 @@ async function savePlanToSupabase(userId, cards, stats, expiresAt, strategy, tre
   // History upsert — fail-open so the UI flow still works if plan_history
   // hasn't been provisioned yet.
   try {
-    const ws = weekStartISO(Date.now());
+    // [WEEK-START] Same anchor the server uses to exclude the current week
+    // from history — see weekStartISO's lockstep note.
+    const ws = weekStartISO(Date.now(), weekStartDay);
     await supabaseClient.from("plan_history").upsert({
       user_id:    userId,
       week_start: ws,
@@ -465,13 +524,15 @@ function queuePlanSave() {
   }).catch(function () {});
   return planSaveChain;
 }
-async function deletePlanFromSupabase(userId) {
-  try { await supabaseClient.from("plans").delete().eq("user_id", userId); } catch(e) {}
-}
+// [WEEK-START] The plan-delete helper that used to live here is gone along
+// with its only caller. Expired plans are now kept and relabelled as last
+// week's rather than wiped — see the hydration block's else branch for why.
+// A new generation overwrites the row via upsert, so nothing needs to delete
+// it; account deletion is handled server-side in api/delete-account.js.
 
 // user_data table: one row per user with persistent vault + results jsonb.
-// Distinct from plans (which expires weekly) — vault and results survive
-// the Monday reset and stay tied to the account for the lifetime of the
+// Distinct from plans (which turns over each planning week) — vault and
+// results survive the weekly rollover and stay tied to the account for the
 // membership. Helpers fail open: if the table isn't provisioned yet, the
 // app silently falls back to localStorage-only.
 async function loadUserDataFromSupabase(userId) {
@@ -2260,27 +2321,43 @@ function clearLocalUserData() {
   } catch(e) {}
 }
 
-// Resolves when the current plan should expire. Aligned with the user's
-// per-user credit reset cadence (sbCredits.reset_at), so plan + credits
-// tick together — the plan ends when fresh credits arrive. Falls back to
-// "now + 7 days" if the credits row hasn't loaded yet, which still gives
-// a per-user rolling 7-day window. Note: getNextMonday() (below) is kept
-// only for legacy callers; new code should use computePlanExpiry.
-function computePlanExpiry(sbCredits) {
-  if (sbCredits && sbCredits.reset_at) {
-    var ms = Date.parse(sbCredits.reset_at);
-    if (!Number.isNaN(ms) && ms > Date.now()) return ms;
-  }
-  return Date.now() + 7 * 86400000;
+// [WEEK-START] Resolves when the current plan should expire: the end of the
+// creator's own planning week.
+//
+// This used to read sbCredits.reset_at, tying the plan's lifetime to the
+// BILLING cycle. That cycle drifts — the lazy refill in api/chat.js sets
+// reset_at = now + 7 days on the first generation after expiry, and
+// api/stripe-webhook.js re-anchors it again the moment someone subscribes —
+// so "your plan expires" landed on a different weekday every cycle and moved
+// when you paid. The planning week now stands on its own; credits keep their
+// rolling cadence and are deliberately not user-movable (see
+// migrations/027-week-start-day.sql).
+// Mirrors MIN_PARTIAL_WEEK_DAYS in api/_lib/prompts.js. Must match: the
+// server decides the plan's SPAN with this threshold, and this file decides
+// when the plan DIES. If they disagree, a rolled-over 8-day plan generated on
+// a Saturday expires the next day and the creator watches a week of work
+// vanish overnight.
+const MIN_PARTIAL_WEEK_DAYS = 3;
+
+function computePlanExpiry(profile) {
+  const anchor = normalizeWeekStartDay(profile && profile.weekStartDay);
+  const end = weekEndMs(Date.now(), anchor);
+  // Rollover: when the current week has almost nothing left, the server
+  // generates through the FOLLOWING week instead of handing over a stub, so
+  // the plan has to live that long too.
+  // weekEndMs(end) rather than end + 7*86400000: `end` is already local
+  // midnight on the next anchor day, so this returns the end of THAT week
+  // via calendar arithmetic. Adding raw milliseconds would land an hour off
+  // across a DST boundary.
+  return daysLeftInWeek(Date.now(), anchor) < MIN_PARTIAL_WEEK_DAYS
+    ? weekEndMs(end, anchor)
+    : end;
 }
 
-function getNextMonday() {
-  const d = new Date();
-  const diff = d.getDay()===0 ? 1 : 8-d.getDay();
-  d.setDate(d.getDate()+diff);
-  d.setHours(0,0,0,0);
-  return d.getTime();
-}
+// [WEEK-START] getNextMonday() removed. It was already unreferenced, kept
+// "for legacy callers" — and a hard-coded Monday helper sitting next to the
+// week-start logic is exactly the thing a future change would reach for by
+// accident. Use weekEndMs / computePlanExpiry instead.
 
 
 function fileToBase64(file) {
@@ -9864,12 +9941,15 @@ function App() {
   // top post" insights.
   const [remixSource,setRemixSource] = useState(null);
   const [loading,setLoading] = useState(false);
-  // Plan persists for the week — cleared when credit week resets
+  // [WEEK-START] The plan persists past its own expiry and is relabelled as
+  // last week's (see planExpired). This initializer used to drop it once
+  // planExpiresAt passed, which — now that expiry lands on the same weekday
+  // for everyone — meant a flash of empty Plan tab on every Sunday load,
+  // until the Supabase hydration a moment later put it back. Keep whatever
+  // is cached; the hydration below is still authoritative.
   const [cards,setCards] = useState(function(){
     try {
-      if (stored.plan && stored.planExpiresAt && Date.now() < stored.planExpiresAt) {
-        return stored.plan;
-      }
+      if (stored.plan) return stored.plan;
     } catch(e){}
     return null;
   });
@@ -9896,11 +9976,12 @@ function App() {
     return null;
   }, [planHistoryRows, cards]);
 
+  // [WEEK-START] Kept past expiry for the same reason as `cards` above —
+  // these three have to agree, or an expired plan renders with its cards but
+  // no strategy hero and no stats.
   const [stats,setStats] = useState(function(){
     try {
-      if (stored.planStats && stored.planExpiresAt && Date.now() < stored.planExpiresAt) {
-        return stored.planStats;
-      }
+      if (stored.planStats) return stored.planStats;
     } catch(e){}
     return null;
   });
@@ -9909,9 +9990,7 @@ function App() {
   // cards and stats. Lives for the same duration as the cards.
   const [strategy,setStrategy] = useState(function(){
     try {
-      if (stored.planStrategy && stored.planExpiresAt && Date.now() < stored.planExpiresAt) {
-        return stored.planStrategy;
-      }
+      if (stored.planStrategy) return stored.planStrategy;
     } catch(e){}
     return null;
   });
@@ -9942,6 +10021,21 @@ function App() {
   // when the LLM omitted the field. Renderer falls back to the static
   // REST_DAY_TIPS catalog for any day not covered.
   const [restDayTips,setRestDayTips] = useState(null);
+  // [WEEK-START] True when the plan on screen belongs to a week that has
+  // already ended. The plan is deliberately kept and shown rather than
+  // deleted (see the hydration block below) — this flag is what turns it
+  // into "last week's plan" with a Generate CTA instead of silently
+  // presenting stale days as current. Reset to false whenever a new plan
+  // lands, so a fresh generation never inherits the banner.
+  const [planExpired,setPlanExpired] = useState(function(){
+    // Seed from the local cache so the banner is correct on first paint,
+    // before the Supabase hydration confirms it. Absent expiry = treat as
+    // current; the hydration corrects either way.
+    try {
+      return !!(stored.plan && stored.planExpiresAt && Date.now() >= stored.planExpiresAt);
+    } catch(e){}
+    return false;
+  });
   // [HOLIDAY-PICKER] Set of observance ids the user has checked in the
   // holiday picker above the Plan generator. Defaults empty (all
   // observances default OFF — no app-side opinion about what matters).
@@ -10220,14 +10314,39 @@ function App() {
           save(current);
         } catch(e) {}
       } else {
-        deletePlanFromSupabase(userId);
-        setCards(null);
-        setStats(null);
-        setStrategy(null);
-        setRestDayTips(null);
+        // [WEEK-START] An expired plan is KEPT and shown as last week's,
+        // not deleted.
+        //
+        // This used to wipe the row and blank the Plan tab. While plan
+        // expiry rode the drifting credit cycle that landed on a random day
+        // per user; now that every plan ends on the creator's own week
+        // boundary, it would fire for everyone at the same moment — you open
+        // VIRL on Sunday morning, your plan is gone, and you have to spend a
+        // generation before there is anything on screen at all. For a
+        // product whose entire argument is "show up consistently," going
+        // blank at the exact start of the week is the worst possible moment.
+        //
+        // Nothing is lost by keeping it: plan_history already archives every
+        // week, and generating a new plan overwrites this row anyway.
+        setCards(row.cards);
+        if (row.stats)    setStats(row.stats);
+        if (row.strategy) setStrategy(row.strategy);
+        if (row.trends_snapshot) setPlanTrendsSnapshot(row.trends_snapshot);
+        setRestDayTips(Array.isArray(row.rest_day_tips) ? row.rest_day_tips : null);
+        // Drives the "last week's plan" banner + Generate CTA. Kept in React
+        // state rather than derived at render time so the plan doesn't
+        // silently flip to "expired" mid-session while someone is reading it.
+        setPlanExpired(true);
+        setTab(function(t) {
+          if (tabFromSessionStorage.current) return t;
+          return t === "profile" ? "plan" : t;
+        });
         try {
           var stale = load() || {};
-          delete stale.plan; delete stale.planStats; delete stale.planStrategy; delete stale.planExpiresAt;
+          stale.plan = row.cards;
+          stale.planStats = row.stats || null;
+          stale.planStrategy = row.strategy || null;
+          stale.planExpiresAt = expiresAt;
           save(stale);
         } catch(e) {}
       }
@@ -10430,6 +10549,25 @@ function App() {
   // based* features and excludes standard by design). Standard subs are
   // paid for the fresh-trends gate; don't lump them in with free trial.
   var isPaid = isFoundingOrPro || sbPlan === "standard";
+  // [WEEK-START] Hide the credit countdown from paying subscribers.
+  //
+  // For every paid non-Pro tier the counter is already decorative: api/chat.js
+  // calls consume_credit with p_strict = !isPaid, so paid generations take the
+  // LENIENT branch — the balance floors at 0 and the generation goes through
+  // anyway. Standard and Founder Circle have never once been blocked by it.
+  // A number that ticks toward zero while implying a limit that does not
+  // exist is an anxiety meter, not a quota.
+  //
+  // Deliberately display-only: the server keeps decrementing exactly as
+  // before. That count is the early warning for a runaway account, and
+  // deleting it would trade a UI annoyance for a billing blind spot. It moves
+  // to a plain "generations used this week" line in account settings.
+  //
+  // MUST stay below `isPaid`. These are `var`s in one long function body, so
+  // declaring this above it reads the hoisted-but-undefined binding, and
+  // `!undefined` is true — the pill would silently show for everyone, with no
+  // error to catch it.
+  var showCreditsPill = !isPaid;
   // [FRESH-TRENDS] Per-gen-type weekly counters from the same credits
   // row that drives daysUntilReset. Coalesce nulls to 1 so a user whose
   // row predates the migration sees the freebie until the lazy server
@@ -10832,11 +10970,17 @@ function App() {
       ? (TRIAL_DAYS - daysIntoTrial) + " days left — don't lose your plans"
       : "Last chance — claim your Founder Circle spot";
 
-  // [RESULTS-OVERHAUL] Cycle-end nudge. Was Sunday-only ("isSunday"); now
-  // fires when each user's personal credit cycle is one day from
-  // resetting, since plans rotate based on signup date, not the calendar
-  // week. daysUntilReset is computed above from sbCredits.reset_at.
-  var cycleEndingSoon = daysUntilReset != null && daysUntilReset <= 1;
+  // [RESULTS-OVERHAUL] Cycle-end nudge — "log your results, the week is
+  // nearly up". Was Sunday-only ("isSunday"), then moved onto the personal
+  // credit cycle when plans rotated by signup date.
+  //
+  // [WEEK-START] Now anchored to the PLANNING week. The nudge is about
+  // wrapping up a plan, and the plan's life is the planning week — pointing
+  // it at the credit cycle meant it fired on a drifting day unrelated to the
+  // plan sitting on screen, and (once credits are hidden for paid tiers) on a
+  // clock those users can no longer even see.
+  var daysLeftThisWeek = daysLeftInWeek(Date.now(), profile && profile.weekStartDay);
+  var cycleEndingSoon = daysLeftThisWeek <= 1;
   // [RESULTS-OVERHAUL] unloggedCards now includes last week's plan too,
   // not just this week's, so the batch-log modal covers everything that
   // still needs results. Sorted: current week first, then last week,
@@ -11042,7 +11186,7 @@ function App() {
       replaceSlots: replaceSlots,
       // Skip plan_history's prior-week lookup — this is a same-week
       // edit, not a new week.
-      currentWeekStart: weekStartISO(Date.now()),
+      currentWeekStart: weekStartISO(Date.now(), profile && profile.weekStartDay),
     }, { token: userToken, trendsSnapshot: planTrendsSnapshot }, {
       onText: function (delta) {
         parser.push(delta, {
@@ -11095,7 +11239,7 @@ function App() {
 
       // Persist the merged plan. plan_history upserts by week_start so
       // the same week's row is updated with the new card mix.
-      var planExpiresAt = computePlanExpiry(sbCredits);
+      var planExpiresAt = computePlanExpiry(profile);
       try {
         var current = JSON.parse(localStorage.getItem(KEY) || "{}");
         current.plan = working;
@@ -11104,13 +11248,13 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch (e) {}
-      if (session) queuePlanSave(session.user.id, working, stats, planExpiresAt, strategy, planTrendsSnapshot, restDayTips);
+      if (session) queuePlanSave(session.user.id, working, stats, planExpiresAt, strategy, planTrendsSnapshot, restDayTips, profile && profile.weekStartDay);
 
       try {
         var meta = (result && result.meta) || {};
         var planUsage = meta.usage || {};
         logEvent(session && session.user && session.user.id, "plan_partial_regen", {
-          weekStart:           weekStartISO(Date.now()),
+          weekStart:           weekStartISO(Date.now(), profile && profile.weekStartDay),
           replacedCount:       sorted.length,
           totalCards:          cards.length,
           replacedDayLabels:   replaceDayLabels,
@@ -11277,6 +11421,8 @@ function App() {
       if (parsedStats)    setStats(parsedStats);
       if (parsedStrategy) setStrategy(parsedStrategy);
       setRestDayTips(parsedTips);
+      // [WEEK-START] Fresh plan — drop the "last week's plan" banner.
+      setPlanExpired(false);
       try {
         var trimmed = (weekContext || "").trim().slice(0, 1200);
         if (trimmed) {
@@ -11321,7 +11467,7 @@ function App() {
           });
         }
       } catch(e) {}
-      var planExpiresAt = computePlanExpiry(sbCredits);
+      var planExpiresAt = computePlanExpiry(profile);
       try {
         var current = JSON.parse(localStorage.getItem(KEY)||"{}");
         current.plan = parsedCards;
@@ -11330,7 +11476,7 @@ function App() {
         current.planExpiresAt = planExpiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e){}
-      if (session) queuePlanSave(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot, parsedTips);
+      if (session) queuePlanSave(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot, parsedTips, profile && profile.weekStartDay);
       try {
         var weekStart = (function(){
           try { return new Date().toISOString().slice(0, 10); }
@@ -11392,11 +11538,15 @@ function App() {
       rejectedCards: cards ? cards.slice(0, 20).map(function (c) {
         return { title: (c && c.title) || "", hook: (c && c.hook) || "" };
       }) : undefined,
-      // Same Monday-of-this-week key the client uses when upserting
-      // plan_history. The server uses it to exclude this row from the
-      // history it loads, so a same-week regenerate is treated as
-      // "still week N" instead of bumping to week N+1.
-      currentWeekStart: weekStartISO(Date.now()),
+      // [WEEK-START] Start-of-this-planning-week key the client uses when
+      // upserting plan_history — the creator's own anchor, not a calendar
+      // Monday. The server uses it to exclude this row from the history it
+      // loads, so a same-week regenerate is treated as "still week N"
+      // instead of bumping to week N+1.
+      currentWeekStart: weekStartISO(Date.now(), profile && profile.weekStartDay),
+      // Fallback anchor only — the server reads the authoritative value off
+      // the profile row it fetches. See the note in api/chat.js.
+      weekStartDay:     normalizeWeekStartDay(profile && profile.weekStartDay),
       // [HOLIDAY-PICKER] Observance ids the user opted in to via the
       // picker above the Generate button. Server resolves these to
       // dates against the same window the picker showed (via
@@ -11742,12 +11892,12 @@ function App() {
       try {
         var current = JSON.parse(localStorage.getItem(KEY)||"{}");
         expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
-          ? current.planExpiresAt : computePlanExpiry(sbCredits);
+          ? current.planExpiresAt : computePlanExpiry(profile);
         current.plan = next;
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
-      } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      } catch(e) { expiresAt = computePlanExpiry(profile); }
+      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips, profile && profile.weekStartDay);
       return next;
     });
   }
@@ -11768,12 +11918,12 @@ function App() {
       try {
         var current = JSON.parse(localStorage.getItem(KEY)||"{}");
         expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
-          ? current.planExpiresAt : computePlanExpiry(sbCredits);
+          ? current.planExpiresAt : computePlanExpiry(profile);
         current.plan = next;
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
-      } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      } catch(e) { expiresAt = computePlanExpiry(profile); }
+      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips, profile && profile.weekStartDay);
       return next;
     });
   }
@@ -11877,12 +12027,12 @@ function App() {
       try {
         var current = JSON.parse(localStorage.getItem(KEY)||"{}");
         expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
-          ? current.planExpiresAt : computePlanExpiry(sbCredits);
+          ? current.planExpiresAt : computePlanExpiry(profile);
         current.plan = next;
         current.planExpiresAt = expiresAt;
         localStorage.setItem(KEY, JSON.stringify(current));
-      } catch(e) { expiresAt = computePlanExpiry(sbCredits); }
-      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips);
+      } catch(e) { expiresAt = computePlanExpiry(profile); }
+      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips, profile && profile.weekStartDay);
       // [LEARNING-CONSENT] Refactored: edit-diff capture + consent
       // prompt trigger both flow through captureEditDiff. surface
       // "plan_card" fires the legacy plan_card_edited event name to
@@ -12343,6 +12493,8 @@ return (
           )}
           <div style={{marginBottom:10}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              {/* [WEEK-START] Free/trial only — see showCreditsPill. */}
+              {showCreditsPill && (
               <div style={{display:"flex",alignItems:"center",gap:6}}>
                 <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?"#F43F5E":"#3B82F6"}}/>
                 {creditsLoaded&&!isUnlimitedCredits&&weeklyCreditMax&&(
@@ -12362,6 +12514,7 @@ return (
                   )}
                 </span>
               </div>
+              )}
               {/* [PRICING 3] Founder Circle members get a distinct badge with
                   their position number. Standard paid users keep the existing
                   "Pro" green badge. */}
@@ -12474,7 +12627,9 @@ return (
           </a>
           <div style={{display:"flex",alignItems:"center",gap:14}}>
             {/* Credits as outline-only data on the navy field. Coral
-                outline + text when low so the urgency still registers. */}
+                outline + text when low so the urgency still registers.
+                [WEEK-START] Free/trial only — see showCreditsPill. */}
+            {showCreditsPill && (
             <div onClick={function(){ setCreditsTipOpen(function(v){ return !v; }); }}
               style={{display:"flex",alignItems:"center",gap:7,background:"transparent",borderRadius:99,padding:"5px 12px",border:"1px solid "+(creditsLoaded&&credits<=5?"rgba(244,63,94,0.55)":"rgba(255,255,255,0.32)"),position:"relative",cursor:"default"}}>
               <div style={{width:5,height:5,borderRadius:"50%",background:creditsLoaded&&credits<=5?B.coral:B.white}}/>
@@ -12490,6 +12645,7 @@ return (
                 </div>
               )}
             </div>
+            )}
             {/* [PRICING 3] Founder Circle pill in the mobile topnav. Position
                 number reads as a quiet point of pride next to the credits
                 widget without competing for visual weight. */}
@@ -12575,6 +12731,32 @@ return (
               }} aria-label="Dismiss"
               style={{fontFamily:"'Jost',sans-serif",fontSize:20,fontWeight:400,color:B.coral,background:"none",border:"none",cursor:"pointer",padding:"0 4px",lineHeight:1,flexShrink:0}}>
               {"×"}
+            </button>
+          </div>
+        )}
+
+        {/* [WEEK-START] ── Last week's plan ──────────────────────────────────
+            Shown instead of a blank Plan tab once the planning week rolls
+            over. The plan is intentionally still on screen and still usable
+            (they may not have posted everything yet) — this just stops the
+            stale days from reading as current, and puts Generate one tap
+            away. Not dismissible: it disappears on its own the moment a new
+            plan lands. */}
+        {planExpired && cards && cards.length>0 && (
+          <div style={{background:"rgba(31,58,138,0.06)",border:"1px solid rgba(31,58,138,0.18)",borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+              <div style={{width:6,height:6,borderRadius:"50%",background:B.blue,flexShrink:0}}/>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.navy}}>
+                {"This is last week's plan — still here so you can finish anything you haven't posted. Ready for a new one?"}
+              </div>
+            </div>
+            {/* Deliberately does NOT call generate() — a full week costs
+                credits, and spending them from a banner tap the creator
+                might have meant as "dismiss" is the wrong default. The
+                generator controls live at the top of the Plan tab. */}
+            <button onClick={function(){ setTab("plan"); try { window.scrollTo({top:0,behavior:"smooth"}); } catch(e) {} }}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 12px",background:B.blue,color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
+              Plan this week
             </button>
           </div>
         )}
@@ -12822,6 +13004,56 @@ return (
                 </div>
               )}
             </div>
+
+            {/* [WEEK-START] Planning-week start day. The one setting that
+                decides when the plan's days begin, which week past plans file
+                under, and when the weekly email arrives. Deliberately does
+                NOT move the credit refill — that stays on its own rolling
+                cadence so the setting can't be flipped to farm refills. */}
+            <div style={{marginTop:32,paddingTop:20,borderTop:"1px solid "+B.divider}}>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>
+                My week starts on
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map(function(label,idx){
+                  var active = normalizeWeekStartDay(profile.weekStartDay) === idx;
+                  return (
+                    <button key={label} onClick={function(){
+                      var next = Object.assign({}, profile, { weekStartDay: idx });
+                      setProfile(next);
+                      if (session) saveProfileToSupabase(next, session.user.id);
+                      try { var c = load()||{}; c.profile = next; save(c); } catch(e) {}
+                    }} aria-pressed={active}
+                      style={{
+                        fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:active?700:400,
+                        padding:"8px 14px",borderRadius:99,cursor:"pointer",
+                        background:active?B.navy:B.bg,color:active?B.white:B.ink,
+                        border:"1px solid "+(active?B.navy:B.border)
+                      }}>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:10,lineHeight:1.5}}>
+                {"Your plan runs from the day you generate it through the end of this week, so every plan after that starts on " + ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][normalizeWeekStartDay(profile.weekStartDay)] + ". A short first week is free."}
+              </div>
+            </div>
+
+            {/* [WEEK-START] Usage, not a countdown. Paid tiers no longer see
+                the nav credit pill (it implied a cap that consume_credit's
+                lenient path never enforces) — this is the honest version:
+                what they've used, with no bar draining toward zero. */}
+            {isPaid && !isUnlimitedCredits && creditsLoaded && weeklyCreditMax && (
+              <div style={{marginTop:24,paddingTop:20,borderTop:"1px solid "+B.divider}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>
+                  This week
+                </div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,color:B.ink}}>
+                  {Math.max(0, weeklyCreditMax - credits) + " of " + weeklyCreditMax + " generations used"}
+                </div>
+              </div>
+            )}
 
             {/* [CX-FIX 2] Self-serve billing for paid members — opens the
                 Stripe Customer Portal to update card, view invoices, or
@@ -13744,7 +13976,12 @@ return (
                     transition:"background .2s, border-color .2s",
                   }}>
                   <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                    <span style={{fontSize:12,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.navy}}>{"Last week's plan"}</span>
+                    {/* [WEEK-START] lastWeekPlan is "the newest history row
+                        that isn't the plan on screen". Once the on-screen
+                        plan is ITSELF last week's (planExpired), this row is
+                        the week before that — calling both "last week's
+                        plan" would put two different weeks under one label. */}
+                    <span style={{fontSize:12,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.navy}}>{planExpired ? "The week before" : "Last week's plan"}</span>
                     <span style={{fontSize:12,fontWeight:400,color:B.blue}}>{lastWeekPlan.cards.length + " cards"}</span>
                     {lastWeekUnlogged.length > 0 && (
                       <span style={{

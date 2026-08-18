@@ -46,8 +46,9 @@ function daysSince(isoDate) {
   return Math.floor((Date.now() - t) / DAY_MS);
 }
 
-// ISO 8601 week number — used as the weekly_reset dedupe suffix so re-runs
-// within the same Monday are no-ops but the next Monday gets a fresh slot.
+// ISO 8601 week number. [WEEK-START] No longer the weekly_reset suffix (that
+// moved to the per-user planning-week key); still the dedupe suffix for the
+// genuinely global weekly sends — inactive_7d and sunday_reset.
 function isoYearWeek(d) {
   const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const day = date.getUTCDay() || 7;
@@ -101,31 +102,52 @@ function isTrialExpired(user, credit) {
   return days !== null && days >= TRIAL_DAYS;
 }
 
-async function fetchProfileName(userId) {
+// [WEEK-START] Returns { name, weekStartDay }. weekStartDay (0=Sun..6=Sat) is
+// what the weekly "plan your week" email is anchored to — see the trigger
+// below for why it no longer rides the credit cycle.
+async function fetchProfileForEmail(userId) {
   try {
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=name`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=name,week_start_day`,
       { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
     );
-    if (!res.ok) return "";
+    if (!res.ok) return { name: "", weekStartDay: 0 };
     const rows = await res.json();
     // Strip angle brackets: `name` is user-controlled and gets interpolated
     // raw into HTML email bodies. Removing < > neutralizes tag injection
     // while keeping the plaintext variants clean (no entity artifacts).
-    return ((rows[0] && rows[0].name) || "").replace(/[<>]/g, "").slice(0, 120);
-  } catch (e) { return ""; }
+    const name = ((rows[0] && rows[0].name) || "").replace(/[<>]/g, "").slice(0, 120);
+    const raw = rows[0] && rows[0].week_start_day;
+    const n = parseInt(raw, 10);
+    return { name, weekStartDay: (Number.isInteger(n) && n >= 0 && n <= 6) ? n : 0 };
+  } catch (e) { return { name: "", weekStartDay: 0 }; }
+}
+
+// UTC start-of-planning-week date (YYYY-MM-DD) for the week containing `ms`.
+// Mirrors weekStartUTC in api/_lib/plan-history.js — used here purely as the
+// weekly email's dedupe key, so one send per planning week per user.
+function weekStartKeyUTC(ms, weekStartDay) {
+  const d = new Date(ms);
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() - weekStartDay + 7) % 7));
+  return d.toISOString().slice(0, 10);
 }
 
 // Whether this user has EVER generated a plan. Used by the phase1-no-plan
 // trigger to skip users who've already cleared the "first plan" hurdle.
 //
 // [EVER-GENERATED-FIX] This used to check `plans` alone, which is wrong:
-// `plans` holds only the user's CURRENT plan (one row per user) and the app
-// DELETES that row once the plan expires. So a user who generated a plan
-// weeks ago and let it lapse read as "never generated" and became eligible
-// for a "you haven't made your first plan yet" email that is plainly false
-// to them. Production bears this out: 13 distinct users have fired
-// `plan_generated`, but `plans` holds only 8 rows.
+// `plans` holds only the user's CURRENT plan (one row per user), and at the
+// time it was ALSO deleted once the plan expired. So a user who generated a
+// plan weeks ago and let it lapse read as "never generated" and became
+// eligible for a "you haven't made your first plan yet" email that is plainly
+// false to them. Production bore this out: 13 distinct users had fired
+// `plan_generated`, but `plans` held only 8 rows.
+//
+// [WEEK-START] Expired plans are no longer deleted (the client keeps them as
+// "last week's plan"), so `plans` rows now persist. The plan_history check
+// below stays regardless: rows predating that change are still missing, and
+// history remains the durable record.
 //
 // `plan_history` is the durable record, so it is the authority here. We
 // still check `plans` first because it is the cheaper hit for active users
@@ -254,12 +276,14 @@ async function processUser(user, todayIsSunday, weekKey) {
 
   const credit  = await fetchCredits(userId);
   const plan    = credit ? credit.plan : null;
-  const resetAt = credit ? credit.reset_at : null;
+  // [WEEK-START] credits.reset_at is no longer read here — the weekly
+  // reminder moved onto the planning-week anchor. Left out of scope rather
+  // than kept unused; fetchCredits still selects it for the Loops sync below.
   const isPaid = PAID_PLANS.includes(plan);
 
   const trialExpired = isTrialExpired(user, credit);
 
-  const name = await fetchProfileName(userId);
+  const { name, weekStartDay } = await fetchProfileForEmail(userId);
   const unsubToken = makeUnsubToken(userId);
   const lastSignInDays = daysSince(user.last_sign_in_at);
 
@@ -342,23 +366,25 @@ async function processUser(user, todayIsSunday, weekKey) {
     }
   }
 
-  // Weekly credit-reset reminder — marketing, opt-out-able. Anchored to the
-  // user's OWN reset cycle (credits.reset_at), NOT a global Monday.
+  // Weekly "plan your week" reminder — marketing, opt-out-able.
   //
-  // Source of truth: credits reset on a per-user 7-day window stored in
-  // credits.reset_at. handle_new_user seeds the first window, and the lazy
-  // reset in api/chat.js re-anchors reset_at to now()+7d on the first
-  // generation after the window expires — so an active user's reset day
-  // drifts to whatever day/time they generate, and is almost never a
-  // calendar Monday. Gating on Mondays therefore fired the reminder on the
-  // wrong day (a day early, every week) for anyone off the Monday cadence.
+  // [WEEK-START] Anchored to the creator's PLANNING week (profiles
+  // .week_start_day), not the credit cycle.
   //
-  // We now fire once the user's window has actually rolled over
-  // (now >= reset_at), so the email lands on their real reset day. Deduped
-  // per cycle by the reset_at date: each new cycle gets a fresh reset_at
-  // (different date) → exactly one send; a frozen reset_at (a user who hasn't
-  // generated since expiry) keeps the same key → no resend on later runs.
-  // The days >= 7 floor keeps first-week users on the welcome track.
+  // History: this was originally gated on calendar Mondays, then moved to
+  // credits.reset_at because the credit cycle is per-user. But that cycle
+  // drifts — the lazy reset in api/chat.js re-anchors reset_at to now()+7d on
+  // the first generation after expiry, and api/stripe-webhook.js re-anchors
+  // it again on subscribe — so the mail arrived on a different weekday every
+  // cycle and moved when someone paid. Now that the plan itself starts and
+  // ends on the creator's own anchor day, an email whose entire CTA is
+  // "generate this week's plan" firing on a drifting Wednesday actively
+  // fights the thing it is advertising.
+  //
+  // Fires on the creator's anchor day, deduped by that week's start date so
+  // each planning week gets exactly one send no matter how many times the
+  // daily cron runs. The days >= 7 floor keeps first-week users on the
+  // welcome track.
   //
   // [TRIAL-AWARE-EMAIL] Suppressed once the trial has expired. This email's
   // whole CTA is "Generate this week's plan" — the exact action api/chat.js
@@ -367,9 +393,10 @@ async function processUser(user, todayIsSunday, weekKey) {
   // comped users are unaffected; only expired free accounts are skipped.
   // (What these users SHOULD get is an upgrade-framed win-back — that needs
   // new copy, so it is deliberately not bolted on here.)
-  const resetMs = resetAt ? Date.parse(resetAt) : NaN;
-  if (!trialExpired && days >= 7 && !Number.isNaN(resetMs) && Date.now() >= resetMs) {
-    const cycleKey = resetAt.slice(0, 10); // YYYY-MM-DD of this cycle's reset
+  // Today IS the creator's week-start day (cron runs daily at 14:00 UTC).
+  const isPlanningWeekStart = new Date().getUTCDay() === weekStartDay;
+  if (!trialExpired && days >= 7 && isPlanningWeekStart) {
+    const cycleKey = weekStartKeyUTC(Date.now(), weekStartDay);
     const tpl = T.weeklyReset({ name, unsubscribeToken: unsubToken });
     await sendEmail({
       userId, to: email, template: "weekly_reset", dedupeKey: `weekly_reset_${cycleKey}`,
@@ -497,7 +524,7 @@ async function processReminderUser(user, todayIsSunday, weekKey) {
     // exists, Monday is a rest day, and nothing needs logging.
     if (!hasPlan || tomorrowCards.length > 0 || unlogged > 0) {
       if (await userGotOtherEmailToday(userId)) return;
-      const name = await fetchProfileName(userId);
+      const { name } = await fetchProfileForEmail(userId);
       const tpl = T.sundayReset({ name, unloggedCount: unlogged, cards: tomorrowCards, hasPlan, unsubscribeToken: makeUnsubToken(userId) });
       await sendEmail({
         userId, to: email, template: "sunday_reset", dedupeKey: `sunday_reset_${weekKey}`,
@@ -509,7 +536,7 @@ async function processReminderUser(user, todayIsSunday, weekKey) {
 
   if (tomorrowCards.length === 0) return; // rest day or no plan: silence
   if (await userGotOtherEmailToday(userId)) return;
-  const name = await fetchProfileName(userId);
+  const { name } = await fetchProfileForEmail(userId);
   const targetDate = new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 10);
   const tpl = T.postingReminder({ name, cards: tomorrowCards, unsubscribeToken: makeUnsubToken(userId) });
   await sendEmail({

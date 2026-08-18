@@ -18,7 +18,7 @@
     },
     {
       "path": "/api/cron/trends-refresh",
-      "schedule": "0 7 * * 1"
+      "schedule": "0 7 * * 6"
     },
     {
       "path": "/api/cron/trend-health",

@@ -1,4 +1,15 @@
-// Weekly trends refresh. Auto-publishes — no admin approval. Each row in
+// Weekly trends refresh. Runs SATURDAY 07:00 UTC (see vercel.json).
+//
+// [WEEK-START] It ran Mondays until planning weeks became creator-anchored
+// with a Sunday default. Trend rows are hard-filtered at 7 days
+// (TREND_FRESHNESS_DAYS in api/_lib/trend-context.js), so a Monday refresh
+// meant a Sunday-anchored plan — the moment most creators generate — was
+// built on day-six data sitting right at the cutoff, with a late-Sunday
+// generation liable to have items dropped entirely. Refreshing the day
+// BEFORE the default week start puts the freshest research in front of the
+// plan that actually uses it. Move this again if the default anchor moves.
+//
+// Auto-publishes — no admin approval. Each row in
 // public.trends is dated and lists the URLs the model cited; users see the
 // freshness on the Algo tab and can form their own judgment. Plan / scan /
 // caption prompts pull the latest row per platform and weave the items in.
