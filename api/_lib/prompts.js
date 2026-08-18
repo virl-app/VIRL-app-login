@@ -33,6 +33,44 @@ function computeCardRange(postFreq, platformCount) {
   return { min: 10, max: 14 };
 }
 
+// [WEEK-START] Shortest partial week worth generating. Below this we roll the
+// plan into the following week instead (see buildPlan) — a one- or two-day
+// plan costs a full generation and delivers almost nothing.
+const MIN_PARTIAL_WEEK_DAYS = 3;
+
+// [WEEK-START] Every card range above is calibrated for a 7-day week. A plan
+// that spans fewer days has to carry proportionally fewer cards, or a "Daily
+// × 2 platforms" creator gets all 10-14 posts crammed into three days — VIRL
+// telling them to post four times a day.
+//
+// Floors at 1 so the range can never collapse to zero: the "light week"
+// toggle already narrows to 3-5, and prorating that across a 3-day span
+// would otherwise round the minimum to 0 and leave the model free to
+// return an empty plan.
+// Spans ABOVE 7 (the rollover case — a Saturday generation running 8-9 days)
+// are deliberately clamped to the 7-day volume rather than scaled up. The
+// plan response is already budgeted at maxTokens 14000 and heavy plans have
+// truncated at less; a daily × 3-platform creator scaled to 9 days would ask
+// for ~27 fully-populated cards and hit the "cut off mid-thought" path. A
+// rollover week running slightly light is a far better failure than one that
+// doesn't finish generating.
+function prorateCardRange(range, spanDays) {
+  const span = Math.max(1, Math.min(7, parseInt(spanDays, 10) || 7));
+  if (span === 7) return range;
+  const scale = span / 7;
+  const min = Math.max(1, Math.round(range.min * scale));
+  const max = Math.max(min, Math.round(range.max * scale));
+  return { min, max };
+}
+
+// Mirrors normalizeWeekStartDay in index.html and api/_lib/plan-history.js.
+// 0=Sun..6=Sat, defaulting to Sunday. Coerces rather than throws: an
+// out-of-range anchor produces a silently wrong week window, not an error.
+function normalizeWeekStartDay(v) {
+  const n = parseInt(v, 10);
+  return (Number.isInteger(n) && n >= 0 && n <= 6) ? n : 0;
+}
+
 // [VAULT-EXEMPLARS] Renders the user's saved/posted items as a few-shot
 // voice reference block. Goes into plan, caption, and script prompts so
 // the model can align with how this specific creator actually sounds,
@@ -1199,7 +1237,14 @@ function getFormatGuidance(niche) {
 // quote_graphic / story / long_form_text) is also the set INTEL 4 will branch
 // on when rendering format-specific PlanCards, so any change to this list
 // must be coordinated with the renderer.
-const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mix of content formats across the 7-day plan. Do NOT default all posts to video format. Distribute content across these format types based on the user's selected platform formats and industry context: "
+// [WEEK-START] "the 7-day plan" was accurate when every plan spanned a full
+// week. Plans now run from today to the end of the creator's own planning
+// week, so a mid-week generation can be shorter — see buildPlan's day-label
+// construction. Phrased span-agnostically rather than interpolating a number,
+// because this block lives in the SHARED (cache-friendly) system prompt and
+// must stay byte-identical across users; the real span is stated in the
+// per-request user prompt.
+const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mix of content formats across the plan. Do NOT default all posts to video format. Distribute content across these format types based on the user's selected platform formats and industry context: "
   + "Video posts (Reels, TikTok videos, YouTube Shorts) are high-attention, hook-driven, ideal for entertainment and education. "
   + "Single image posts (feed photos, Pinterest pins) let the caption carry the content, image speaks for itself, ideal for lifestyle and inspiration. "
   + "Carousel posts (Instagram carousels, LinkedIn document carousels) follow a narrative arc across slides, ideal for educational content, frameworks, and lists. "
@@ -1516,22 +1561,57 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // not yet send clientNow.
   const WEEKDAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const clientNow = params && params.clientNow;
-  let startWeekday;
+  const todayWeekday = (clientNow && typeof clientNow.weekday === "number"
+    && clientNow.weekday >= 0 && clientNow.weekday <= 6)
+      ? clientNow.weekday
+      : new Date().getUTCDay();
+  const startWeekday = WEEKDAYS[todayWeekday];
+
+  // [WEEK-START] The plan runs from TODAY to the end of the creator's own
+  // planning week, then the next one starts on their anchor day.
+  //
+  // Day 1 is deliberately still today rather than the next anchor day. The
+  // alternative — always generating a full week starting on the anchor —
+  // means a creator who signs up or refreshes on a Wednesday has nothing to
+  // post until Sunday, and consistency is the whole point of the product.
+  // It would also require relaxing SCHEDULE_REALISM_RULE (Day 1 = today is
+  // what makes "never schedule into a window that already closed" coherent),
+  // which is a real safety rail. So: start today, end on their boundary, and
+  // every plan after the first is a full aligned week.
+  //
+  // ROLLOVER: when only a day or two is left, a stub plan is worse than
+  // useless — it costs a generation and buys almost nothing. Below
+  // MIN_PARTIAL_WEEK_DAYS we extend through the FOLLOWING week instead, so a
+  // Saturday signup on a Sunday week gets Sat → next Sat (8 days) rather than
+  // a one-day plan.
+  const weekStartDay = normalizeWeekStartDay(profile && profile.weekStartDay);
+  const daysLeftInWeek = (((weekStartDay - todayWeekday - 1 + 7) % 7) + 1);
+  const planSpanDays = daysLeftInWeek < MIN_PARTIAL_WEEK_DAYS
+    ? daysLeftInWeek + 7
+    : daysLeftInWeek;
+  // A span under a full week is one the creator did not choose — it is
+  // dictated by which day they happened to arrive. buildPlan's return value
+  // exposes this so the caller can decline to charge for it.
+  const isPartialWeek = planSpanDays < 7;
+
   const dayLabels = [];
-  if (clientNow && typeof clientNow.weekday === "number" && clientNow.weekday >= 0 && clientNow.weekday <= 6) {
-    startWeekday = WEEKDAYS[clientNow.weekday];
-    for (let i = 0; i < 7; i++) {
-      dayLabels.push("Day " + (i + 1) + " - " + WEEKDAYS[(clientNow.weekday + i) % 7]);
-    }
-  } else {
-    const today = new Date();
-    startWeekday = WEEKDAYS[today.getUTCDay()];
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(today.getTime() + i * 86400000);
-      dayLabels.push("Day " + (i + 1) + " - " + WEEKDAYS[d.getUTCDay()]);
-    }
+  for (let i = 0; i < planSpanDays; i++) {
+    dayLabels.push("Day " + (i + 1) + " - " + WEEKDAYS[(todayWeekday + i) % 7]);
   }
   const dayLabelsLine = dayLabels.join(", ");
+  // Scale the target card count to the days actually available. Applied to
+  // effectiveCardRange (post light-week override) so a light 3-day week
+  // narrows once, not twice over.
+  const plannedCardRange = prorateCardRange(effectiveCardRange, planSpanDays);
+  const spanSentence = planSpanDays === 7
+    ? "This plan covers a full 7-day week."
+    : planSpanDays < 7
+      // Short week: the creator arrived mid-week. Say so plainly — the model
+      // otherwise pads to seven days or opens by apologising for the length.
+      ? "This plan covers " + planSpanDays + " days — it runs from today through the end of the creator's planning week, which starts on " + WEEKDAYS[weekStartDay] + ", so their NEXT plan begins cleanly on that day. Treat " + planSpanDays + " days as the whole canvas: do NOT stretch the ideas to fill seven, and do NOT apologise for or draw attention to the shorter run."
+      // Rollover: too little of this week was left to be worth planning, so
+      // this one absorbs it and continues through the following week.
+      : "This plan covers " + planSpanDays + " days — only a day or two of the current week remained, so rather than hand over a stub this plan runs through the END of the following week (which starts on " + WEEKDAYS[weekStartDay] + "). Pace the ideas across the full " + planSpanDays + " days; do NOT front-load everything into the first week and leave the tail empty.";
 
   // [PLAN-PLATFORM-FIX] Hard allow-list for FULL plan generation. The
   // partial-regen builder gained this constraint in [REGEN-PLATFORM-FIX]
@@ -1602,7 +1682,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + historyCtx
     + rejectedCtx
     + nowContext(params)
-    + " The week starts TODAY (" + startWeekday + "). When you assign a `day` to a card, use one of these exact day labels: " + dayLabelsLine + ". Day 1 is today; do NOT anchor to Monday. You do NOT have to use all 7 labels — the card count below tells you how many posts to actually produce, and the remaining days are rest days."
+    + " The plan starts TODAY (" + startWeekday + "). " + spanSentence + " When you assign a `day` to a card, use one of these exact day labels: " + dayLabelsLine + ". Day 1 is today. These are the ONLY valid day labels — never invent one beyond this list, and never extend the plan past its last label. You do NOT have to use every label — the card count below tells you how many posts to actually produce, and the remaining days are rest days."
     // [DAY-NAME-GUARD] The model occasionally names a weekday inside the
     // card copy that doesn't match the card's scheduled day — e.g. a
     // Tuesday card titled "The Saturday Chaos That Runs on VIRL." That
@@ -1643,8 +1723,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
               : base + " None of the platforms selected THIS week is a long-form-native channel, so place them on whichever SELECTED platform best carries narrative text (e.g. a caption-led Instagram post) — do NOT add LinkedIn or Facebook to satisfy this.";
           })()
         : "")
-    + " Create " + effectiveCardRange.min + "-" + effectiveCardRange.max + " total posts for THIS week, based on the creator's posting cadence × platform count. This is the actual number to ship — do NOT pad or shrink to fit 7 days. If the range is BELOW 7, leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE 7, double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window — except on Day 1, where a window that has already passed is not available (see SCHEDULING REALISM). Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
-    + (isLightWeek ? " LIGHT WEEK: The creator deliberately chose a light week. Treat 3-5 posts as the COMPLETE strategy, not a reduced one — never apologize for volume or suggest they should post more. Choose only the highest-leverage ideas, spread them across the week with intentional rest days, and make each post carry more strategic weight. If Stories are among the selected formats, prefer 1-2 low-effort Story prompts inside the range over additional feed posts."
+    // [WEEK-START] Count and span both come from the per-request numbers
+    // above — the old copy hard-coded "7 days" in the padding rule, which
+    // told the model to fill a week even when the plan spans fewer.
+    + " Create " + plannedCardRange.min + "-" + plannedCardRange.max + " total posts for THIS plan, based on the creator's posting cadence × platform count, already scaled to the " + planSpanDays + "-day span. This is the actual number to ship — do NOT pad or shrink it to fill the calendar. If the range is BELOW " + planSpanDays + ", leave the days you don't pick as intentional rest days (the unused day labels are fine to skip). If the range is ABOVE " + planSpanDays + ", double up the days that make most sense — don't artificially flatten to one card per day. The day labels above just establish the calendar; you do NOT need to assign a card to every label. Use each platform's cadence from the playbook below to decide how many posts of each. Set postTime values to fall within each platform's peak window — except on Day 1, where a window that has already passed is not available (see SCHEDULING REALISM). Pick formats from each platform's format priority. Hashtag count per post must match each platform's playbook entry."
+    + (isLightWeek ? " LIGHT WEEK: The creator deliberately chose a light week. Treat the post count above as the COMPLETE strategy, not a reduced one — never apologize for volume or suggest they should post more. Choose only the highest-leverage ideas, spread them across the span with intentional rest days, and make each post carry more strategic weight. If Stories are among the selected formats, prefer 1-2 low-effort Story prompts inside the range over additional feed posts."
     : "")
     + (optimalDaysCtx ? "\n\n" + optimalDaysCtx + "\n\nWhen distributing cards across the week, weight the optimal days above heavily — they're either the creator's own best-performing days (when 'performs best on' is shown) or industry rule-of-thumb for the platform (when 'general best days' is shown). The user-history signal is the stronger one when present." : "")
     // [REST-DAY-LLM] Generate one tip per day NOT receiving a card. Tips
@@ -1703,7 +1786,19 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // Sonnet 4.6 supports up to 64K; handleStreamingPlan retries once at a
     // larger budget when this still truncates.
     maxTokens: 14000,
-    cost:      isRegen ? CREDIT_COSTS.regen : CREDIT_COSTS.plan,
+    // [WEEK-START] A partial week is free. The creator didn't choose a short
+    // plan — it's dictated by which day they happened to sign up or come
+    // back, and it's a one-time cost paid to get them onto their own week
+    // boundary. Charging the full 3 credits for a 3-day stub makes the very
+    // first plan a mid-week signup ever sees feel like a bad deal. Regens
+    // keep their own (already cheap) cost regardless of span.
+    cost:      isRegen
+      ? CREDIT_COSTS.regen
+      : (isPartialWeek ? 0 : CREDIT_COSTS.plan),
+    // Surfaced for the client so it can label the shorter run instead of
+    // leaving the creator to wonder why they got four days.
+    planSpanDays,
+    isPartialWeek,
   };
 }
 

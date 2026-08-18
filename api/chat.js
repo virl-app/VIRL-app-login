@@ -934,6 +934,9 @@ async function fetchProfile(userId) {
       platformAudiences: data.platform_audiences || {},
       postFreq:          data.post_freq         || "",
       contentLength:     data.content_length    || "",
+      // [WEEK-START] 0=Sun..6=Sat. Authoritative anchor for the plan's day
+      // labels and span. Not `|| 0` — Sunday is 0 and would look falsy.
+      weekStartDay:      data.week_start_day,
       workedWell:        data.worked_well       || "",
       // [INTEL 1] Personal-fact columns. Empty strings for existing users
       // who have not filled out these fields yet — the prompt builder skips
@@ -1253,7 +1256,15 @@ export default async function handler(req, res) {
     fetchProfile(userId),
     VOICE_GEN_TYPES.has(generationType) ? fetchVaultPatterns(userId, targetPlatforms)                         : Promise.resolve(null),
     loadPlaybook(),
-    generationType === "plan" ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart)     : Promise.resolve([]),
+    // [WEEK-START] weekStartDay here is only the FALLBACK anchor for the case
+    // where the client didn't send currentWeekStart (it always does). It runs
+    // in the same Promise.all as fetchProfile, so the authoritative
+    // profile.weekStartDay isn't available yet — and serializing the two to
+    // get it would add a round trip to the slowest surface for a degenerate
+    // path. Client-supplied and untrusted, but it can only pick which week
+    // boundary a fallback lands on; the prompt builder below uses the
+    // server-fetched profile value.
+    generationType === "plan" ? loadPlanHistoryForPrompt(userId, 3, params && params.currentWeekStart, params && params.weekStartDay) : Promise.resolve([]),
     // [COMPLIANCE 1] Per-niche compliance rules (Real Estate, Wellness in
     // v1). Loader returns {} on any infra failure so the get-for-niche
     // call below falls through to the hardcoded safe-defaults floor.

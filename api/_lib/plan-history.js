@@ -56,15 +56,27 @@ async function fetchEarliestWeekStart(userId) {
   } catch (e) { return null; }
 }
 
-// UTC Monday of the week containing `d`, as YYYY-MM-DD. Server-side
-// fallback for when the client didn't send currentWeekStart — mirrors
-// the client's weekStartISO (index.html) closely enough for week math.
-function weekStartUTC(d) {
+// [WEEK-START] UTC start-of-planning-week for the week containing `d`, as
+// YYYY-MM-DD. Server-side fallback for when the client didn't send
+// currentWeekStart — mirrors the client's weekStartISO (index.html).
+//
+// `weekStartDay` is profiles.week_start_day (0=Sun..6=Sat). This was
+// hard-coded to Monday alongside the client helper; the two MUST change
+// together. fetchHistoryRows filters `week_start < currentWeekStart` using
+// the key the client wrote, so a one-day disagreement makes a same-week
+// regenerate look like a prior week and bumps the prompt's "This is week N".
+function weekStartUTC(d, weekStartDay) {
+  const anchor = normalizeWeekStartDay(weekStartDay);
   const date = new Date(d);
-  const day = date.getUTCDay() || 7; // Sunday=7
   date.setUTCHours(0, 0, 0, 0);
-  date.setUTCDate(date.getUTCDate() - (day - 1));
+  const back = (date.getUTCDay() - anchor + 7) % 7;
+  date.setUTCDate(date.getUTCDate() - back);
   return date.toISOString().slice(0, 10);
+}
+
+function normalizeWeekStartDay(v) {
+  const n = parseInt(v, 10);
+  return (Number.isInteger(n) && n >= 0 && n <= 6) ? n : 0; // default Sunday
 }
 
 // Calendar-based week number: how many calendar weeks the current week
@@ -73,12 +85,19 @@ function weekStartUTC(d) {
 // and doesn't saturate at the fetch limit — a user in their 9th calendar
 // week is week 9 even though the prompt only sees the last 3 summaries.
 // Skipped weeks still advance the number, matching real elapsed time.
-function calendarWeekNumber(earliestWeekStart, currentWeekStart) {
+function calendarWeekNumber(earliestWeekStart, currentWeekStart, weekStartDay) {
   if (!earliestWeekStart) return 1;
-  const ref = currentWeekStart || weekStartUTC(Date.now());
+  const ref = currentWeekStart || weekStartUTC(Date.now(), weekStartDay);
   const diffMs = Date.parse(ref) - Date.parse(earliestWeekStart);
   if (!Number.isFinite(diffMs)) return 1;
-  return Math.max(1, Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1);
+  // [WEEK-START] Round, not floor. Both keys are supposed to sit on the same
+  // weekday, making the gap a clean multiple of 7 — but they can be off by a
+  // few days whenever the anchor itself moved: rows written before
+  // migrations/027 (Monday-keyed, backfilled) and any user who later changes
+  // week_start_day. Under floor, a 6-day-short gap silently drops a whole
+  // week, so someone told "week 5" last cycle gets told "week 4" this one.
+  // Round snaps to the nearest week boundary instead of always truncating.
+  return Math.max(1, Math.round(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1);
 }
 
 async function fetchUserResults(userId) {
@@ -152,13 +171,13 @@ function summarizeWeek(row, resultsByCardId) {
 // the returned summaries — without it, a same-week regenerate would
 // mis-count as week N+1. The calendar week number is naturally immune
 // to regenerates (one plan_history row per week regardless).
-export async function loadPlanHistoryForPrompt(userId, limit, currentWeekStart) {
+export async function loadPlanHistoryForPrompt(userId, limit, currentWeekStart, weekStartDay) {
   const [rows, results, earliestWeekStart] = await Promise.all([
     fetchHistoryRows(userId, limit, currentWeekStart),
     fetchUserResults(userId),
     fetchEarliestWeekStart(userId),
   ]);
-  const weekNumber = calendarWeekNumber(earliestWeekStart, currentWeekStart);
+  const weekNumber = calendarWeekNumber(earliestWeekStart, currentWeekStart, weekStartDay);
   if (!rows.length) return { weeks: [], weekNumber };
   const resultsByCardId = {};
   for (const r of results) {
