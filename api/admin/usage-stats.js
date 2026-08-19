@@ -31,7 +31,7 @@ async function fetchEvents(since) {
   // scale we won't approach that for 30 days; if we do, this becomes a
   // paginated loop.
   const url = `${SUPABASE_URL}/rest/v1/usage_events`
-    + `?select=user_id,generation_type,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,est_cost_usd,created_at,drift_retried,drift_score_before,drift_score_after,drift_retry_cost_usd`
+    + `?select=user_id,generation_type,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,est_cost_usd,created_at,drift_retried,drift_kept,drift_score_before,drift_score_after,drift_retry_cost_usd`
     + `&created_at=gte.${encodeURIComponent(since)}`
     + `&order=created_at.desc`
     + `&limit=10000`;
@@ -106,26 +106,41 @@ function dailySparkline(events, days) {
 // alone (already included in total cost; surfaced here for attribution).
 const STREAMING_GEN_TYPES = new Set(["plan", "plan_partial"]);
 function driftRollup(events) {
-  let eligible = 0, retries = 0, sumBefore = 0, sumAfter = 0, improved = 0, extraCost = 0;
+  let eligible = 0, retries = 0, kept = 0, extraCost = 0;
+  let sumBefore = 0,  countBefore = 0;
+  let sumAfter  = 0,  countAfter  = 0;
+  let sumImprov = 0,  countImprov = 0;
   for (const e of events) {
     if (!STREAMING_GEN_TYPES.has(e.generation_type || "")) eligible++;
     if (!e.drift_retried) continue;
     retries++;
+    if (e.drift_kept) kept++;
     const before = e.drift_score_before != null ? parseFloat(e.drift_score_before) : null;
     const after  = e.drift_score_after  != null ? parseFloat(e.drift_score_after)  : null;
-    if (before != null) sumBefore += before;
-    if (after  != null) sumAfter  += after;
-    if (before != null && after != null && after < before) improved++;
+    // [A1] Average each metric over its OWN non-null count. The gate can
+    // record a null `after` (retry's JSON failed to parse) while `before` is
+    // present; mixing those into a shared denominator deflated avg_after and
+    // inflated avg_improvement. Per-metric counts fix it.
+    if (before != null) { sumBefore += before; countBefore++; }
+    if (after  != null) { sumAfter  += after;  countAfter++;  }
+    if (before != null && after != null) { sumImprov += (before - after); countImprov++; }
     extraCost += parseFloat(e.drift_retry_cost_usd) || 0;
   }
   return {
     eligible_calls:   eligible,
     retries,
     retry_rate:       eligible > 0 ? retries / eligible : 0,
-    avg_score_before: retries > 0 ? +(sumBefore / retries).toFixed(1) : null,
-    avg_score_after:  retries > 0 ? +(sumAfter  / retries).toFixed(1) : null,
-    avg_improvement:  retries > 0 ? +((sumBefore - sumAfter) / retries).toFixed(1) : null,
-    kept_rate:        retries > 0 ? improved / retries : 0,
+    avg_score_before: countBefore > 0 ? +(sumBefore / countBefore).toFixed(1) : null,
+    avg_score_after:  countAfter  > 0 ? +(sumAfter  / countAfter ).toFixed(1) : null,
+    // Positive = improvement (drift went down). Can legitimately be negative
+    // if the average kept-or-discarded retry happened to score worse than
+    // the original — the dashboard renders sign-aware so a "−" prefix isn't
+    // hardcoded.
+    avg_improvement:  countImprov > 0 ? +(sumImprov / countImprov).toFixed(1) : null,
+    // [A1] Real kept rate — based on the persisted drift_kept boolean (the
+    // gate's actual keep decision includes the not-truncated check), not on
+    // a re-derived (after < before) that over-counts truncated retries.
+    kept_rate:        retries > 0 ? kept / retries : 0,
     extra_cost_usd:   +extraCost.toFixed(4),
   };
 }
