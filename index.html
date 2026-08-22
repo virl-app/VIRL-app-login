@@ -3233,37 +3233,218 @@ function getVaultPatterns(vault) {
   return {count:planItems.length, topPlatform:top(platformCounts), topFormat:top(formatCounts)};
 }
 
+// [CLIPBOARD] Clipboard writes fail in more places than people expect:
+// navigator.clipboard is undefined on plain http:// (anything but
+// localhost), missing or blocked inside in-app browsers (Instagram,
+// TikTok, Facebook — where a lot of creators open links), and it rejects
+// outright with NotAllowedError when the document doesn't hold focus or
+// the browser denies the permission. Every one of those failures used to
+// be silent here: the promise rejected unhandled, the button never
+// changed, and the paste came up empty. So try the async API, fall back
+// to the execCommand path that still works in those webviews, and hand
+// the caller a boolean so no button can claim a success it didn't get.
+function legacyCopyText(text) {
+  var ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  // The node has to stay rendered and inside the viewport — display:none,
+  // visibility:hidden and off-screen positions all break the selection.
+  // Fixed top-left at zero opacity is the shape every browser accepts;
+  // font-size 16px stops iOS zooming the page while it's briefly focused.
+  ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:none;outline:none;box-shadow:none;background:transparent;opacity:0;font-size:16px;";
+  document.body.appendChild(ta);
+  var sel = null, prevRange = null;
+  try {
+    sel = document.getSelection();
+    prevRange = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
+  } catch(e) {}
+  var ok = false;
+  try {
+    // iOS ignores .select() on a readonly textarea — it needs a real Range
+    // over a contenteditable node plus an explicit setSelectionRange.
+    if (/ipad|iphone|ipod/i.test(navigator.userAgent || "")) {
+      ta.contentEditable = "true";
+      ta.readOnly = false;
+      var range = document.createRange();
+      range.selectNodeContents(ta);
+      if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+      ta.setSelectionRange(0, 999999);
+    } else {
+      ta.select();
+    }
+    ok = !!document.execCommand("copy");
+  } catch(e) { ok = false; }
+  try { document.body.removeChild(ta); } catch(e) {}
+  // Hand the user's own selection back — we borrowed it.
+  try { if (sel) { sel.removeAllRanges(); if (prevRange) sel.addRange(prevRange); } } catch(e) {}
+  return ok;
+}
+
+// Resolves true when the text is genuinely on the clipboard, false when
+// every path failed. Never rejects — callers branch on the boolean.
+// The fallback still runs inside the click's transient user activation
+// (browsers keep that alive for a few seconds), so execCommand is still
+// permitted even though it fires a microtask after the rejection.
+function copyText(text) {
+  var payload = String(text == null ? "" : text);
+  if (!payload) return Promise.resolve(false);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      return navigator.clipboard.writeText(payload).then(
+        function(){ return true; },
+        function(err){
+          try { console.warn("[VIRL] clipboard write blocked (" + ((err && err.name) || "unknown") + ") — falling back to execCommand"); } catch(e) {}
+          return legacyCopyText(payload);
+        }
+      );
+    } catch(e) { /* fall through to the legacy path */ }
+  }
+  return Promise.resolve(legacyCopyText(payload));
+}
+
 function CopyBtn({text,label}) {
   label = label||"Copy";
-  const [copied,setCopied] = useState(false);
+  // "ok" / "fail" / null. A failed copy has to say so — silently doing
+  // nothing is what sends people to paste an empty clipboard.
+  const [state,setState] = useState(null);
   function doCopy() {
-    navigator.clipboard&&navigator.clipboard.writeText(text).then(function() {
-      setCopied(true); setTimeout(function(){setCopied(false);},1800);
+    copyText(text).then(function(ok){
+      setState(ok ? "ok" : "fail");
+      setTimeout(function(){ setState(null); }, ok ? 1800 : 3200);
     });
   }
+  var failed = state === "fail", copied = state === "ok";
   return (
     <button onClick={doCopy}
-      style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",padding:"5px 12px",background:copied?B.greenSoft:B.bg,color:copied?B.green:B.muted,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0,transition:"all .15s"}}>
-      {copied?"Copied!":label}
+      title={failed ? "Couldn't reach the clipboard — copy the text manually" : label}
+      style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",padding:"5px 12px",background:failed?B.coralSoft:copied?B.greenSoft:B.bg,color:failed?B.coral:copied?B.green:B.muted,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0,transition:"all .15s"}}>
+      {failed?"Copy failed":copied?"Copied!":label}
     </button>
   );
+}
+
+// [CARD-COPY] One copy control per card. Replaces the scattered
+// "Copy all" (hashtags), "Copy reminder" and "Share this post" buttons —
+// the creator's actual job is "get the caption + hashtags into the
+// platform", so that's the one thing the button does. The two-squares
+// glyph is the universal copy affordance, so it carries no label.
+const CopyIcon = ({size, checked, failed}) => (
+  <svg width={size||15} height={size||15} viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+    aria-hidden="true" style={{display:"block"}}>
+    {failed ? (
+      <React.Fragment>
+        <circle cx="12" cy="12" r="9"/>
+        <line x1="12" y1="7.5" x2="12" y2="13"/>
+        <line x1="12" y1="16.5" x2="12" y2="16.5"/>
+      </React.Fragment>
+    ) : checked ? (
+      <polyline points="20 6 9 17 4 12"/>
+    ) : (
+      <React.Fragment>
+        <rect x="9" y="9" width="12" height="12" rx="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </React.Fragment>
+    )}
+  </svg>
+);
+
+// Assembles the publishable copy for a card: whatever plays the role of
+// the caption for this format, then the hashtags. Production direction
+// (photo / film / audio / design) is deliberately excluded — none of it
+// belongs in the caption box.
+function buildCardCopyText(card) {
+  if (!card) return "";
+  var fmt = normalizeFormat(card.format);
+  var parts = [];
+  function push(v) { var t = String(v == null ? "" : v).trim(); if (t) parts.push(t); }
+  if (fmt === "long_form_text") {
+    push(card.hook); push(card.body); push(card.closing);
+  } else if (fmt === "quote_graphic") {
+    if (card.quote) push("“" + String(card.quote).trim() + "”" + (card.attribution ? "\n— " + card.attribution : ""));
+    push(card.caption);
+  } else if (fmt === "story") {
+    // Stories have no caption — the frame copy IS what gets typed out.
+    (Array.isArray(card.frames) ? card.frames : []).forEach(function(f, i) {
+      var frame = [];
+      if (f.content)     frame.push(String(f.content).trim());
+      if (f.textOverlay) frame.push("Text overlay: " + String(f.textOverlay).trim());
+      if (frame.length) parts.push("Frame " + (f.frameNumber || i + 1) + ": " + frame.join("\n"));
+    });
+  } else {
+    push(card.caption);
+  }
+  // Older cards (pre-format schema) carry nothing but a description.
+  if (!parts.length) push(card.description);
+  var tags = hashtagLine(card.hashtags);
+  if (tags) parts.push(tags);
+  return parts.join("\n\n");
+}
+
+// The app's single copy affordance — every generation surface uses this
+// one so "copy" always looks and behaves the same. `variant="dark"` is
+// for the navy hook cards, where the default light pill vanishes.
+function IconCopyButton({text, title, variant}) {
+  // "ok" / "fail" / null — see CopyBtn. A blocked clipboard turns the
+  // button coral and says so rather than sitting there looking untouched.
+  const [state, setState] = useState(null);
+  var payload = String(text == null ? "" : text).trim();
+  if (!payload) return null;
+  function doCopy(e) {
+    // Some of these sit inside a click target of their own (the plan card
+    // header expands on click) — copying must not also fire that.
+    if (e && e.stopPropagation) e.stopPropagation();
+    copyText(payload).then(function(ok){
+      setState(ok ? "ok" : "fail");
+      setTimeout(function(){ setState(null); }, ok ? 1800 : 3200);
+    });
+  }
+  var dark   = variant === "dark";
+  var label  = title || "Copy";
+  var copied = state === "ok";
+  var failed = state === "fail";
+  var caption = failed ? "Couldn't reach the clipboard — copy the text manually"
+              : copied ? "Copied"
+              : label;
+  return (
+    <button onClick={doCopy}
+      title={caption}
+      aria-label={caption}
+      style={{display:"flex",alignItems:"center",justifyContent:"center",width:28,height:28,padding:0,
+        background:failed ? B.coralSoft : copied ? B.greenSoft : (dark ? "rgba(255,255,255,0.12)" : B.bg),
+        color:     failed ? B.coral     : copied ? B.green     : (dark ? "rgba(255,255,255,0.9)"  : B.muted),
+        border:"1px solid "+(failed ? B.coral : copied ? B.green : (dark ? "rgba(255,255,255,0.25)" : B.border)),
+        borderRadius:8,cursor:"pointer",flexShrink:0,transition:"all .15s"}}>
+      <CopyIcon checked={copied} failed={failed}/>
+    </button>
+  );
+}
+
+function CardCopyButton({card}) {
+  return <IconCopyButton text={buildCardCopyText(card)} title="Copy caption + hashtags"/>;
 }
 
 // Strip a leading "#" if the model returned hashtags with the prefix already
 // — otherwise we render "##fitness". Belt-and-braces: the prompt also tells
 // the model not to include the "#", but we don't trust upstream to comply.
 const cleanHashtag = (h) => String(h || "").replace(/^#+/, "").trim();
+// "#a #b #c" from whatever shape the model returned. Empty string when
+// there are no usable tags, so callers can append it unconditionally.
+const hashtagLine = (list) => (Array.isArray(list) ? list : [])
+  .map(cleanHashtag).filter(Boolean).map(function(h){ return "#" + h; }).join(" ");
+// Caption + its hashtags, the payload almost every copy button wants.
+function withHashtags(text, list) {
+  var body = String(text == null ? "" : text).trim();
+  var tags = hashtagLine(list);
+  return tags ? (body ? body + "\n\n" + tags : tags) : body;
+}
 const HashtagRow = ({hashtags}) => {
   if (!hashtags||!hashtags.length) return null;
   const cleaned = hashtags.map(cleanHashtag).filter(Boolean);
   if (!cleaned.length) return null;
-  const text = cleaned.map(function(h){return "#"+h;}).join(" ");
   return (
     <div style={{background:B.skySoft,borderRadius:12,padding:"14px 18px",marginBottom:12}}>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.blue}}>Hashtags</div>
-        <CopyBtn text={text} label="Copy all"/>
-      </div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.blue,marginBottom:10}}>Hashtags</div>
       <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
         {cleaned.map(function(h){return (
           <span key={h} style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:500,color:B.blue,padding:"4px 12px",background:B.card,borderRadius:99}}>{"#"+h}</span>
@@ -3272,29 +3453,6 @@ const HashtagRow = ({hashtags}) => {
     </div>
   );
 };
-
-function SharePlanCard({card}) {
-  const [copied,setCopied] = useState(false);
-  function sharePost() {
-    const tags = (card.hashtags&&card.hashtags.length)
-      ? "\n\n"+card.hashtags.map(cleanHashtag).filter(Boolean).map(function(h){return "#"+h;}).join(" ") : "";
-    const text = "\ud83d\udcc5 "+card.day+" - "+card.platform
-      +"\n\n\ud83d\udccc "+card.title
-      +"\n\n"+card.description
-      +"\n\n\ud83d\udd50 Post at: "+card.postTime
-      +"\n\u2756 Trend: "+card.trend
-      +tags+"\n\nStrategy by VIRL \u00b7 govirl.ai";
-    navigator.clipboard&&navigator.clipboard.writeText(text).then(function() {
-      setCopied(true); setTimeout(function(){setCopied(false);},2000);
-    });
-  }
-  return (
-    <button onClick={sharePost}
-      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 14px",background:copied?B.greenSoft:B.skySoft,color:copied?B.green:B.sky,border:"none",borderRadius:99,cursor:"pointer",transition:"all .2s"}}>
-      {copied?"Copied!":"Share this post"}
-    </button>
-  );
-}
 
 function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScript}) {
   // If a script was previously saved on this card, show it instead of
@@ -3437,11 +3595,6 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
       +(script.onScreenText&&script.onScreenText.length?"\n\nON-SCREEN TEXT: "+script.onScreenText.join(" | "):"");
   }
 
-  function copyScript() {
-    if (!script) return;
-    navigator.clipboard&&navigator.clipboard.writeText(buildFullScript());
-  }
-
   function downloadScript() {
     if (!script) return;
     var text = buildFullScript();
@@ -3467,10 +3620,15 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:4}}>Script Generator</div>
             <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,lineHeight:1.2}}>{card.title}</div>
           </div>
-          <button onClick={onClose}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.15em",textTransform:"uppercase",padding:"7px 14px",background:"rgba(255,255,255,0.1)",color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-            Close
-          </button>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+            {script && !editing && (
+              <IconCopyButton text={buildFullScript()} title="Copy full script" variant="dark"/>
+            )}
+            <button onClick={onClose}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.15em",textTransform:"uppercase",padding:"7px 14px",background:"rgba(255,255,255,0.1)",color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+              Close
+            </button>
+          </div>
         </div>
         <div style={{padding:"22px"}}>
           {loading&&<RotatingStatus kind="script"/>}
@@ -3502,7 +3660,6 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
                 <div style={{background:B.navy,borderRadius:14,padding:"16px 18px",marginBottom:16}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>Opening Hook</div>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.white,lineHeight:1.3}}>{'"'+script.hook+'"'}</div>
-                  <div style={{marginTop:10}}><CopyBtn text={script.hook} label="Copy hook"/></div>
                 </div>
               ) : (
                 <div style={{background:B.navy,borderRadius:14,padding:"16px 18px",marginBottom:16}}>
@@ -3618,10 +3775,6 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
                     <button onClick={startEdit}
                       style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.navy,color:B.white,border:"none",cursor:"pointer",borderRadius:14}}>
                       Edit
-                    </button>
-                    <button onClick={copyScript}
-                      style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.ink,color:B.white,border:"none",cursor:"pointer",borderRadius:14}}>
-                      Copy Full
                     </button>
                     <button onClick={downloadScript}
                       style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.blue,color:B.white,border:"none",cursor:"pointer",borderRadius:14}}>
@@ -4349,18 +4502,14 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
   }
 
-  function copyPost() {
-    if (!post) return;
-    var hashtagLine = (post.hashtags && post.hashtags.length)
-      ? "\n\n" + post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")
-      : "";
-    var full = (post.hook || "") + "\n\n"
+  // Feeds the header copy button. Production notes (the compliance
+  // disclosure hint) stay out — this is what gets pasted into the post box.
+  function buildPostText() {
+    if (!post) return "";
+    var body = (post.hook || "") + "\n\n"
              + (post.body || "")
-             + (post.closing ? "\n\n" + post.closing : "")
-             + hashtagLine;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(full).catch(function(){});
-    }
+             + (post.closing ? "\n\n" + post.closing : "");
+    return withHashtags(body, post.hashtags);
   }
 
   // Modal shell — same overlay treatment as ScriptGenerator so the two
@@ -4421,6 +4570,11 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
         {post && !editing && (
           <div>
             <div style={{padding:"18px 20px",background:B.bg,borderRadius:12,border:"1px solid "+B.border,marginBottom:14}}>
+              {/* [CARD-COPY] Copy sits at the top of the draft, same two-squares
+                   glyph as everywhere else, so the action row below is verbs only. */}
+              <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+                <IconCopyButton text={buildPostText()} title="Copy post + hashtags"/>
+              </div>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.ink,lineHeight:1.6,marginBottom:12,whiteSpace:"pre-wrap"}}>{post.hook}</div>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{post.body}</div>
               {post.closing && <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{post.closing}</div>}
@@ -4436,10 +4590,6 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
               )}
             </div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              <button onClick={copyPost}
-                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-                {"Copy"}
-              </button>
               {onSaveLongPost && !savedOnCard && (
                 <button onClick={function(){ onSaveLongPost(post); setSavedOnCard(true); }}
                   style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
@@ -4694,7 +4844,6 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
   // re-renders immediately after a click without forcing a parent
   // re-render. Initialized from localStorage on mount.
   const [posted,setPosted]     = useState(function(){ return isCardPosted(cardId); });
-  var reminder = "VIRL "+card.day+": "+card.title+" - Post at "+card.postTime+" on "+card.platform;
   var hasSavedScript = !!card.savedScript;
   // [P1] One-line preview shown beneath the title on collapsed cards so
   // the user can differentiate a stacked week of cards without expanding
@@ -4855,6 +5004,11 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
           {usedFreshTrends && <MTag type="result">✦ Fresh trend</MTag>}
           {hasSavedScript && <MTag type="result">Script saved</MTag>}
           {result && <MTag type="result">Logged</MTag>}
+          {/* [CARD-COPY] The card's one copy control. Lives in the header so
+               it's reachable without expanding, and so there's exactly one
+               place to look for "give me the caption". Hidden mid-edit —
+               copying a half-finished draft isn't what anyone wants. */}
+          {!editing && !editMode && <CardCopyButton card={card}/>}
           {editMode ? (
             <button
               onClick={function(e){ e.stopPropagation(); if (onToggleReplace) onToggleReplace(idx); }}
@@ -4913,7 +5067,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
       )}
 
       {/* [UX-01] Expanded section: full description, why-this-works,
-           tag chips, hashtags, copy-reminder strip. Mounted only when
+           tag chips, hashtags. Mounted only when
            expanded so collapsed cards stay scannable. Hidden in edit
            mode — EditCardBody above replaces it with form fields. */}
       {expanded && !editing && (
@@ -4947,12 +5101,6 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
             </div>
           )}
           <HashtagRow hashtags={card.hashtags}/>
-          <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.navy,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-              {"🌙 "+card.day+" · "+card.postTime+" · "+card.platform}
-            </div>
-            <CopyBtn text={reminder} label="Copy reminder"/>
-          </div>
         </div>
       )}
 
@@ -5055,7 +5203,6 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
             {card.savedLongPost ? "View Full Post" : "Write Full Post"}
           </button>
         )}
-        {expanded && <SharePlanCard card={card}/>}
         {expanded && userToken && (
           <RatingButtons sessionToken={userToken} generationType="plan_card" targetRef={(card.title||"")+"|"+(card.day||"")} size="sm"/>
         )}
@@ -5221,7 +5368,7 @@ function RemixCaption({text,onSelect,profile,userToken,onCreditsUsed}) {
   );
 }
 
-function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUsed}) {
+function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUsed,hashtags}) {
   const [editing,setEditing] = useState(false);
   const [text,setText] = useState(caption.text);
   const [saved,setSaved] = useState(false);
@@ -5254,8 +5401,8 @@ function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUs
     <div style={{background:idx%2===0?B.card:B.cardAlt,borderRadius:12,padding:"18px 20px",marginBottom:8}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.blue}}>{caption.label}</div>
-        <div style={{display:"flex",gap:6}}>
-          {!editing&&<CopyBtn text={text} label="Copy"/>}
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {!editing&&<IconCopyButton text={withHashtags(text, hashtags)} title="Copy caption + hashtags"/>}
           <button onClick={function(){setEditing(function(v){return !v;});}}
             style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:editing?B.ink:B.bg,color:editing?B.white:B.muted,border:"none",borderRadius:99,cursor:"pointer"}}>
             {editing?"Cancel":"Edit"}
@@ -5333,7 +5480,7 @@ function EditableHook({value, onSave, eyebrow, fontSize}) {
         <div>
           <div style={{fontFamily:"'Italiana',serif",fontSize:sz,color:B.white,lineHeight:1.3,marginBottom:10}}>{'"'+(value||"")+'"'}</div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <CopyBtn text={value||""} label="Copy hook"/>
+            <IconCopyButton text={value||""} title="Copy hook" variant="dark"/>
             <button onClick={function(){ setDraft(value||""); setEditing(true); }}
               style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:"rgba(255,255,255,0.12)",color:"rgba(255,255,255,0.9)",border:"1px solid rgba(255,255,255,0.25)",borderRadius:99,cursor:"pointer"}}>
               Edit
@@ -5474,7 +5621,7 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLe
             value={result.hook}
             onSave={function(next){ setResult(function(prev){ return prev ? Object.assign({}, prev, {hook: next}) : prev; }); }}/>
           {(result.captions||[]).map(function(cap,i){return (
-            <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
+            <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} hashtags={result.hashtags}/>
           );})}
           <HashtagRow hashtags={result.hashtags}/>
           <button onClick={generate} disabled={loading}
@@ -5611,14 +5758,6 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
          + hashtagLine;
   }
 
-  function copyPost() {
-    if (!post) return;
-    var text = assemblePostText(post);
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(function(){});
-    }
-  }
-
   // [POST-SAVE] Persist the current post to the Vault as a caption-type
   // item (same shape saveCaption expects). Gated on onSavePost so older
   // call sites that don't pass it simply hide the button.
@@ -5721,15 +5860,12 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
     setSavedToVault(false); // the edited version is worth saving again
   }
 
-  // Shared action row appended under both display blocks. Copy / Save to
-  // Vault / Edit / Regenerate, with Save flipping to a "Saved ✓" badge.
-  function renderActions(copyLabel) {
+  // Shared action row appended under both display blocks. Save to Vault /
+  // Edit / Regenerate, with Save flipping to a "Saved ✓" badge. Copy is not
+  // here — it's the icon button at the top of the draft.
+  function renderActions() {
     return (
       <div style={{marginTop:18,display:"flex",gap:8,flexWrap:"wrap"}}>
-        <button onClick={copyPost}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-          {copyLabel}
-        </button>
         {onSavePost && !savedToVault && (
           <button onClick={handleSaveToVault}
             style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
@@ -5871,6 +6007,9 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
       {/* Result rendering — branches per mode */}
       {post && !editing && mode === "linkedin" && (
         <div style={{background:B.card,borderRadius:16,padding:"22px 24px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
+          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+            <IconCopyButton text={assemblePostText(post)} title="Copy post + hashtags"/>
+          </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.ink,lineHeight:1.6,marginBottom:14,whiteSpace:"pre-wrap"}}>{post.hook}</div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{post.body}</div>
           {post.closing && <div style={{marginTop:16,fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{post.closing}</div>}
@@ -5884,7 +6023,7 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
               {"Suggested disclosure: " + post.compliance_note}
             </div>
           )}
-          {renderActions("Copy")}
+          {renderActions()}
         </div>
       )}
 
@@ -5901,6 +6040,9 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
 
       {post && !editing && mode === "blog" && (
         <div style={{background:B.card,borderRadius:16,padding:"24px 26px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
+          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+            <IconCopyButton text={assemblePostText(post)} title="Copy full post"/>
+          </div>
           <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.ink,lineHeight:1.2,marginBottom:8}}>{post.title}</div>
           {post.subtitle && <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.55,marginBottom:18}}>{post.subtitle}</div>}
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-wrap",marginBottom:18}}>{post.intro}</div>
@@ -5929,7 +6071,7 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
               {"Suggested disclosure: " + post.compliance_note}
             </div>
           )}
-          {renderActions("Copy full post")}
+          {renderActions()}
         </div>
       )}
 
@@ -5958,7 +6100,7 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
   );
 }
 
-function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCreditsUsed}) {
+function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCreditsUsed,hashtags}) {
   const [editing,setEditing] = useState(false);
   const [text,setText] = useState(captionText||"");
   const [saved,setSaved] = useState(false);
@@ -5987,8 +6129,8 @@ function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCr
     <div style={{background:B.bg,borderRadius:12,padding:"14px 16px",marginBottom:12}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.blue}}>Caption</div>
-        <div style={{display:"flex",gap:6}}>
-          {!editing&&<CopyBtn text={text} label="Copy"/>}
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {!editing&&<IconCopyButton text={withHashtags(text, hashtags)} title="Copy caption + hashtags"/>}
           <button onClick={function(){setEditing(function(v){return !v;});}}
             style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:editing?B.ink:B.card,color:editing?B.white:B.muted,border:"none",borderRadius:99,cursor:"pointer"}}>
             {editing?"Cancel":"Edit"}
@@ -6536,7 +6678,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
                 </div>
               )}
               {typeof r.caption==="string"&&r.caption.trim()&&(
-                <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
+                <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} hashtags={r.hashtags}/>
               )}
               <HashtagRow hashtags={r.hashtags}/>
               {/* [SCAN-FORMAT] "Also works as" — the other ways to use this
@@ -8410,11 +8552,10 @@ function ReferralCard({token}) {
   },[open, token]);
   function copy() {
     if (!data) return;
-    try {
-      navigator.clipboard.writeText(data.url).then(function(){
-        setCopied(true); setTimeout(function(){ setCopied(false); }, 2000);
-      });
-    } catch(e) {}
+    copyText(data.url).then(function(ok){
+      if (!ok) return;
+      setCopied(true); setTimeout(function(){ setCopied(false); }, 2000);
+    });
   }
   return (
     <div style={{marginTop:10,border:"1px solid "+B.border,borderRadius:10,background:B.bg}}>
@@ -8989,8 +9130,8 @@ function ReferralModal({milestone, userId, onDismiss}) {
     // so the user can paste into the IG app.
     if (navigator.share) {
       navigator.share({title:"Try VIRL", text:shareText, url:referralUrl}).catch(function(){});
-    } else if (navigator.clipboard) {
-      navigator.clipboard.writeText(shareText + " " + referralUrl);
+    } else {
+      copyText(shareText + " " + referralUrl);
     }
   }
   function dismiss() {
@@ -13336,8 +13477,10 @@ return (
                             lines.push("Hashtags: "+(card.hashtags||[]).join(" "));
                             return lines.join("\n");
                           }).join("\n\n---\n\n");
-                          navigator.clipboard&&navigator.clipboard.writeText(text).then(function(){
-                            alert("Full plan copied to clipboard.");
+                          copyText(text).then(function(ok){
+                            alert(ok
+                              ? "Full plan copied to clipboard."
+                              : "This browser blocked the copy. Open the plan in Safari or Chrome and try again.");
                           });
                         }}
                           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:"rgba(255,255,255,0.12)",color:B.white,border:"1px solid rgba(255,255,255,0.2)",cursor:"pointer",borderRadius:99}}>
