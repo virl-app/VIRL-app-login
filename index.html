@@ -12752,9 +12752,20 @@ return (
             </div>
             {/* Deliberately does NOT call generate() — a full week costs
                 credits, and spending them from a banner tap the creator
-                might have meant as "dismiss" is the wrong default. The
-                generator controls live at the top of the Plan tab. */}
-            <button onClick={function(){ setTab("plan"); try { window.scrollTo({top:0,behavior:"smooth"}); } catch(e) {} }}
+                might have meant as "dismiss" is the wrong default. Instead
+                it opens the setup wizard on its last step ("This week"),
+                which ends in the Generate button — one tap away, and the
+                step chips still let them walk back to platforms/goals
+                first. Just switching to the Plan tab is not enough: this
+                banner renders above every tab, so on the Plan tab itself
+                setTab is a no-op and the generator stays hidden behind
+                showSetup, which reads as a dead button. */}
+            <button onClick={function(){
+                setTab("plan");
+                setSetupStep(2);
+                setShowSetup(true);
+                try { window.scrollTo({top:0,behavior:"smooth"}); } catch(e) {}
+              }}
               style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 12px",background:B.blue,color:B.white,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0}}>
               Plan this week
             </button>
