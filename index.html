@@ -1424,53 +1424,6 @@ const UsageKPI = ({label, value, sub, color}) => (
 // optional sentiment chips, a free-text "what's on your mind" textarea,
 // and a secondary "book 15 min with the founder" link if the env var is
 // set. Submit POSTs to /api/feedback (auth-required server-side).
-// [RESEARCH-VERIFY] Presentation cleanup for the channel-research brief.
-//
-// Two jobs, both about the brief being readable rather than merely
-// correct. First, the brief is rendered as PLAIN TEXT, so any markdown
-// the research model emitted despite being told not to shows up on
-// screen as literal asterisks ("**GoGirl.ai**") — the server strips this
-// now, but rows cached before that still carry it and there is no reason
-// to make a creator wait for a refresh to stop seeing syntax.
-//
-// Second, the brief arrives as a single ~12-sentence paragraph, which on
-// a phone is an unbroken wall of text nobody reads closely enough to
-// catch an error in — the exact review this panel exists to enable.
-// Grouping it into short blocks costs nothing and makes a wrong claim
-// findable.
-//
-// Deliberately NOT a markdown renderer: this is a research summary, not
-// authored content, and interpreting arbitrary model output as markup is
-// how you get surprises. Strip the syntax, keep the words.
-function researchTextBlocks(raw) {
-  var t = String(raw || "")
-    .replace(/\[\d+(?:\s*,\s*\d+)*\]/g, "")   // citation markers
-    .replace(/\*\*([^*]+)\*\*/g, "$1")        // **bold**
-    .replace(/__([^_]+)__/g, "$1")            // __bold__
-    .replace(/`([^`]+)`/g, "$1")              // `code`
-    .replace(/^\s*[-*•]\s+/gm, "")            // stray bullets
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!t) return [];
-  // Sentence split without lookbehind — Safari only shipped regex
-  // lookbehind in 16.4, and this panel gets read on phones.
-  var sentences = (t.match(/[^.!?]+[.!?]*\s*/g) || [t])
-    .map(function(s){ return s.trim(); })
-    .filter(Boolean);
-  var blocks = [], cur = [];
-  sentences.forEach(function(s){
-    cur.push(s);
-    if (cur.length >= 3) { blocks.push(cur.join(" ")); cur = []; }
-  });
-  if (cur.length) {
-    // A lone trailing sentence reads as an orphan — fold it into the
-    // previous block instead of leaving a one-line paragraph.
-    if (cur.length === 1 && blocks.length) blocks[blocks.length - 1] += " " + cur[0];
-    else blocks.push(cur.join(" "));
-  }
-  return blocks;
-}
-
 // First-plan celebration overlay. Renders once after the very first plan
 // generates; the parent persists the seen-flag in localStorage on dismiss
 // so a refresh, navigation, or follow-up plan never re-fires it.
@@ -1551,100 +1504,6 @@ function VoiceExcerptSuggestions({voiceSamples, onKeep}) {
           </button>
         </div>
       );})}
-    </div>
-  );
-}
-
-// [POST-SAMPLE] The reliable fallback when handle research can't reach a
-// creator's profiles at all: instead of asking VIRL to go find a post,
-// the creator hands one over directly — a link or a screenshot. Neither
-// depends on a platform letting an automated request through the way
-// whole-profile research does (Instagram/TikTok/Facebook block that even
-// for a correct, public, direct link — a platform-side restriction, not
-// a VIRL bug). A screenshot always works since it's pixels, not a fetch;
-// a link works when the platform still serves link-preview metadata for
-// that one post (TikTok's oEmbed reliably does; others best-effort via
-// Open Graph tags). Extraction is never auto-saved — the creator reviews
-// the transcribed text and explicitly taps Keep, mirroring
-// VoiceExcerptSuggestions' one-tap-confirm pattern above.
-function PostSampleFeeder({userToken, onKeep}) {
-  const [urlValue,setUrlValue] = useState("");
-  const [busy,setBusy]         = useState(false);
-  const [error,setError]       = useState("");
-  const [pending,setPending]   = useState(null); // {caption}
-
-  function fetchFromUrl() {
-    var url = urlValue.trim();
-    if (!url || !userToken) return;
-    setBusy(true); setError(""); setPending(null);
-    fetch("/api/profile-post-sample", {
-      method:  "POST",
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + userToken },
-      body:    JSON.stringify({ postUrl: url }),
-    }).then(function(r){ return r.json(); }).then(function(j){
-      setBusy(false);
-      if (j && j.ok && j.caption) setPending({ caption: j.caption });
-      else setError("Couldn't read that link — this platform may be blocking it too. Try a screenshot instead.");
-    }).catch(function(){ setBusy(false); setError("Connection issue — try again."); });
-  }
-
-  function fetchFromScreenshot(file) {
-    if (!file || !userToken) return;
-    setBusy(true); setError(""); setPending(null);
-    decodeAndResizeImage(file).then(function(img){
-      return callAPI("voice_sample_extract", {}, { token: userToken, imageBase64: img.b64, imageType: img.mediaType });
-    }).then(function(data){
-      setBusy(false);
-      var parsed = extractJSON(data.text) || {};
-      var text = (parsed.captionText || "").trim();
-      if (parsed.found && text) setPending({ caption: text });
-      else setError("Couldn't find readable caption text in that screenshot — try one where the caption is visible.");
-    }).catch(function(e){
-      setBusy(false);
-      setError((e && e.message) || "Couldn't read that screenshot.");
-    });
-  }
-
-  var chipStyle = {fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 14px",background:B.navySoft,color:B.navy,border:"none",borderRadius:8,cursor:"pointer"};
-
-  return (
-    <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid "+B.divider}}>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:4}}>Feed VIRL one real post</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:10}}>
-        Paste a link to one of your posts, or upload a screenshot of one. This works even when a platform blocks automated research, since you're handing VIRL the content directly instead of asking it to go find it.
-      </div>
-      {pending ? (
-        <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",marginBottom:6}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.ink,lineHeight:1.6,fontStyle:"italic",marginBottom:10}}>{"“"+pending.caption+"”"}</div>
-          <div style={{display:"flex",gap:8}}>
-            <button type="button" onClick={function(){ onKeep(pending.caption); setPending(null); setUrlValue(""); }}
-              style={Object.assign({},chipStyle,{background:B.blue,color:B.white})}>
-              Keep as voice sample
-            </button>
-            <button type="button" onClick={function(){ setPending(null); }}
-              style={Object.assign({},chipStyle,{background:"transparent",color:B.muted,border:"1px solid "+B.border})}>
-              Discard
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
-          <input value={urlValue} onChange={function(e){ setUrlValue(e.target.value); }}
-            placeholder="Paste a link to one of your posts" disabled={busy}
-            style={{flex:"1 1 220px",background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"9px 12px",fontSize:12,color:B.ink,fontFamily:"'Jost',sans-serif"}}/>
-          <button type="button" onClick={fetchFromUrl} disabled={busy || !urlValue.trim()}
-            style={Object.assign({},chipStyle,{opacity:(busy||!urlValue.trim())?0.5:1})}>
-            Fetch
-          </button>
-          <label style={Object.assign({},chipStyle,{opacity:busy?0.5:1})}>
-            Upload screenshot
-            <input type="file" accept="image/*" disabled={busy} style={{display:"none"}}
-              onChange={function(e){ var f = e.target.files && e.target.files[0]; e.target.value = ""; fetchFromScreenshot(f); }}/>
-          </label>
-        </div>
-      )}
-      {busy && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6}}>Reading...</div>}
-      {error && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.coral,marginTop:6}}>{error}</div>}
     </div>
   );
 }
@@ -6764,11 +6623,7 @@ function normalizeSocialInput(raw) {
   } catch (e) { return v; }
 }
 
-// [RESEARCH-REVIEW] userToken added so the panel can call
-// /api/profile-research-prewarm to display what VIRL learned from the
-// creator's channels. Optional — signed-out/legacy callers omit it and
-// the review block falls back to its "nothing yet" state.
-function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,userToken}) {
+function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   const [myPlatforms,setMyPlatforms] = useState(profile.myPlatforms||[]);
   const [name,setName] = useState(profile.name||"");
   const [audience,setAudience] = useState(profile.audience||"");
@@ -6848,28 +6703,11 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
   // [NICHE-DETAIL] The creator's own words on what they do and who pays
   // them — the precise business definition inside the broad niche label.
   const [nicheDetail,setNicheDetail]               = useState(profile.nicheDetail||"");
-  // [RESEARCH-REVIEW] Corrections to the machine-gathered channel research,
-  // plus fetch state for displaying the research paragraph itself.
-  // researchPreview.status: idle | loading | ready | none
+  // [RESEARCH-REVIEW] Corrections to the machine-gathered channel research.
+  // No longer editable in the UI — the research review panel was removed —
+  // but anything a creator already saved still rides every profile save and
+  // still outranks the machine research in every prompt.
   const [researchCorrections,setResearchCorrections] = useState(profile.researchCorrections||"");
-  // [RESEARCH-VERIFY] verification carries the server's account of what
-  // the fact-check removed; null means the brief predates the check (or
-  // the check couldn't run), which the panel says out loud rather than
-  // implying a clean bill of health.
-  const [researchPreview,setResearchPreview]         = useState({status:"idle",text:"",verification:null});
-  // "" when idle, otherwise which flow is in flight: "run" (a plain
-  // re-read) or "correct" (save-then-re-read). Both are truthy for the
-  // disabled/dimmed states; the distinction only drives which progress
-  // line shows, so the two buttons don't narrate over each other.
-  const [researchBusy,setResearchBusy]               = useState("");
-  const [researchError,setResearchError]             = useState("");
-  // Tracks the corrections submit specifically, so the creator gets a
-  // definite answer about whether their words were saved — separate from
-  // whether the re-run produced anything.
-  const [correctionState,setCorrectionState]         = useState("idle"); // idle | saved
-  // The corrections value as last persisted, so the submit button can go
-  // quiet when there's nothing new to send.
-  const [savedCorrections,setSavedCorrections]       = useState(profile.researchCorrections||"");
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -6933,97 +6771,11 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
     return out;
   }
 
-  // [RESEARCH-VERIFY] Single path for every way the panel talks to
-  // /api/profile-research-prewarm: the first "show me what you learned"
-  // click, an explicit re-run, and the corrections submit.
-  //
-  //   force           — bypass the 30-day research cache. Only ever set by
-  //                     an explicit click; costs a live research call.
-  //   withCorrections — persist the corrections textarea server-side and
-  //                     feed it into the re-run as ground truth.
-  //
-  // Corrections save on their own endpoint rather than waiting for the
-  // profile's Save button because a creator who has just been shown a
-  // wrong fact about their business wants to fix THAT, right there. Making
-  // them scroll to a global save (and guess whether it applied) is how the
-  // correction box ends up unused.
-  function runResearch(opts) {
-    var force           = !!(opts && opts.force);
-    var withCorrections = !!(opts && opts.withCorrections);
-    if (!userToken) { setResearchPreview({status:"none",text:"",verification:null}); return; }
-    var sending = researchCorrections;
-    setResearchBusy(withCorrections ? "correct" : "run");
-    setResearchError("");
-    setCorrectionState("idle");
-    // Only blank the panel when there's nothing to keep on screen. A
-    // re-run over an existing brief leaves it visible with a spinner —
-    // the creator is usually comparing the new one against it.
-    if (!force && researchPreview.status !== "ready") {
-      setResearchPreview({status:"loading",text:"",verification:null});
-    }
-
-    function post(payload) {
-      return fetch("/api/profile-research-prewarm", {
-        method:  "POST",
-        headers: { "Content-Type":"application/json", "Authorization":"Bearer "+userToken },
-        body:    JSON.stringify(payload),
-      }).then(function(r){
-        return r.json().catch(function(){ return {}; }).then(function(j){ return {ok:r.ok, body:j||{}}; });
-      });
-    }
-
-    // Save the correction on its own round trip and confirm it before the
-    // research starts. The re-run can take tens of seconds (live search +
-    // fact-check) and may time out; the save takes milliseconds and must
-    // never be left ambiguous, because it's the part that protects every
-    // generation from here on whether or not the re-run lands.
-    // Plain closure flag rather than reading state back — the setState
-    // above isn't visible inside this same tick's callbacks.
-    var didSave = !withCorrections;
-    var saveStep = withCorrections
-      ? post({ corrections: sending, saveOnly: true }).then(function(res){
-          if (!res.ok) throw new Error(res.body.error || "save_failed");
-          didSave = true;
-          setSavedCorrections(sending);
-          setCorrectionState("saved");
-        })
-      : Promise.resolve();
-
-    saveStep.then(function(){
-      return post(force ? { refresh:true } : {});
-    }).then(function(res){
-      var j = res.body;
-      setResearchBusy("");
-      if (!res.ok) {
-        setResearchError(j.error || "VIRL couldn't run that just now — try again in a moment.");
-        return;
-      }
-      if (j.researchText) setResearchPreview({status:"ready",text:j.researchText,verification:j.verification||null});
-      else if (researchPreview.status !== "ready" || force) setResearchPreview({status:"none",text:"",verification:null});
-    }).catch(function(e){
-      setResearchBusy("");
-      if (!didSave) {
-        var msg = (e && e.message && e.message !== "save_failed" && e.message.indexOf("etch") < 0) ? e.message : "";
-        setResearchError(msg || "Couldn't save that correction — try again.");
-      } else {
-        setResearchError(withCorrections
-          ? "Your correction is saved. The re-research didn't finish — tap “Run it again” in a moment."
-          : "Connection issue — try again.");
-        if (!force && researchPreview.status !== "ready") setResearchPreview({status:"none",text:"",verification:null});
-      }
-    });
-  }
-
   function handleSave() {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
     onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
-    // [RESEARCH-VERIFY] The global save persists corrections too, so the
-    // research panel's own "unsaved changes" hint has to clear here as
-    // well — otherwise it keeps nagging about something already saved.
-    setSavedCorrections(researchCorrections);
-    setCorrectionState("saved");
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -7036,8 +6788,6 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
   // would have their toggle silently wiped to false by the upsert.
   function handleSavePhase1() {
     onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
-    setSavedCorrections(researchCorrections);
-    setCorrectionState("saved");
     setPhase1Saved(true);
     setPhase1JustSaved(true);
   }
@@ -7352,154 +7102,10 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
             Research my public posts
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-            Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content. Heads up: Instagram, TikTok, and Facebook restrict automated access even to a correct, public, direct link, so this doesn't always succeed — if it comes back empty, you can feed VIRL a real post directly instead (link or screenshot) below.
+            Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content. Heads up: Instagram, TikTok, and Facebook restrict automated access even to a correct, public, direct link, so this doesn't always succeed — when it comes back empty, your voice samples and saved posts carry the weight instead.
           </div>
         </div>
       </div>
-      {/* [RESEARCH-REVIEW] Show the creator what the public-post research
-          actually says about them, and collect corrections. The research
-          used to be invisible: a wrong observation (same-name account,
-          stale read) silently steered every generation for up to 30 days.
-          Corrections persist on the profile row and override the machine
-          research in every prompt. */}
-      {learnFromPublicPosts && (
-        <div style={{marginTop:14,paddingTop:16,borderTop:"1px solid "+B.divider}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:6}}>What VIRL has learned from your channels</div>
-          {researchPreview.status === "idle" && (
-            <button type="button" onClick={function(){ runResearch({}); }} disabled={researchBusy}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,letterSpacing:"0.03em",padding:"9px 16px",background:B.bg,color:B.navy,border:"1px solid "+B.border,borderRadius:9,cursor:researchBusy?"default":"pointer",opacity:researchBusy?0.5:1}}>
-              Show what VIRL learned
-            </button>
-          )}
-          {researchPreview.status === "loading" && (
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted}}>Checking your channels...</div>
-          )}
-          {researchPreview.status === "ready" && (
-            <div style={{marginBottom:10}}>
-              {/* [RESEARCH-VERIFY] Broken into blocks and stripped of
-                  markdown before display — see researchTextBlocks. A brief
-                  the creator can't stand to read is a brief they can't
-                  check, which defeats the point of showing it. */}
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.ink,lineHeight:1.7,background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",opacity:researchBusy?0.5:1,transition:"opacity .2s"}}>
-                {researchTextBlocks(researchPreview.text).map(function(block,i){
-                  return <div key={i} style={{marginTop:i?10:0}}>{block}</div>;
-                })}
-              </div>
-              {/* [RESEARCH-VERIFY] What the fact-check did, stated plainly.
-                  Shown even when nothing was removed: a creator who has
-                  been handed a wrong business name once wants to know the
-                  check ran, not to infer it from the absence of a warning.
-                  And when it did NOT run (older cached brief, verifier
-                  unavailable), that gets said too rather than passing off
-                  an unchecked brief as a clean one. */}
-              {(function(){
-                var v = researchPreview.verification;
-                if (!v) {
-                  return (
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:8}}>
-                      This one was gathered before VIRL started fact-checking its own research. Run it again to have VIRL check it against your profile.
-                    </div>
-                  );
-                }
-                var removed = Array.isArray(v.removed) ? v.removed : [];
-                var tone    = v.identityConflict ? B.coral : (v.checked ? B.green : B.muted);
-                var headline = !v.checked
-                  ? "Partly checked — VIRL's fact-check couldn't run in full on this one, so read it with an extra eye."
-                  : (removed.length
-                      ? ("VIRL fact-checked this against your profile and cut " + removed.length + (removed.length === 1 ? " claim" : " claims") + " it couldn't stand behind.")
-                      : "VIRL fact-checked this against your profile — nothing had to be cut.");
-                return (
-                  <div style={{marginTop:8}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:tone,lineHeight:1.55}}>{headline}</div>
-                    {removed.length > 0 && (
-                      <ul style={{margin:"6px 0 0",paddingLeft:16}}>
-                        {removed.map(function(r,i){
-                          return <li key={i} style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:2}}>{r}</li>;
-                        })}
-                      </ul>
-                    )}
-                    {v.identityConflict && (
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:6}}>
-                        That usually means the research landed on someone else's account or business. Tell VIRL below what's actually yours and run it again — your correction outranks anything the research finds.
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-              <div style={{display:"flex",alignItems:"center",gap:10,marginTop:10,flexWrap:"wrap"}}>
-                <button type="button" onClick={function(){ runResearch({force:true}); }} disabled={researchBusy}
-                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 14px",background:"transparent",color:B.navy,border:"1px solid "+B.border,borderRadius:8,cursor:researchBusy?"default":"pointer",opacity:researchBusy?0.5:1}}>
-                  Run it again
-                </button>
-                {researchBusy === "run" && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>Re-reading your channels and fact-checking...</span>}
-              </div>
-            </div>
-          )}
-          {researchError && (
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.coral,lineHeight:1.55,marginTop:6}}>{researchError}</div>
-          )}
-          {researchPreview.status === "none" && (
-            <div style={{marginBottom:10}}>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-                {/* [HONEST-EMPTY-STATE] "Nothing on file" read as a bug to
-                    creators whose accounts simply aren't in the public search
-                    index yet (new, small, or private accounts - most early
-                    creators), AND to creators on platforms that flat-out
-                    block automated reads regardless of indexing. Say both
-                    real reasons plainly instead of leaving it ambiguous —
-                    the platform restriction especially, since that one may
-                    genuinely never resolve on its own, unlike "not indexed
-                    yet." Then hand over the one path that's guaranteed to
-                    work regardless of what any platform blocks. */}
-                No usable research yet. Two real reasons this happens, and neither is a bug: your accounts may still be new or small enough that they're not in the public search index yet — that one resolves on its own as they grow. But Instagram, TikTok, and Facebook also actively restrict automated access to profile pages, even from a correct, public, direct link — that's those platforms' own policy, and it may never resolve no matter how VIRL's research improves. VIRL will never guess from a lookalike account to paper over either case. Everything else in your profile — your voice samples, saved posts, and edits — still shapes every output at full weight.
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8,flexWrap:"wrap"}}>
-                <button type="button" onClick={function(){ runResearch({force:true}); }} disabled={researchBusy}
-                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 14px",background:"transparent",color:B.navy,border:"1px solid "+B.border,borderRadius:8,cursor:researchBusy?"default":"pointer",opacity:researchBusy?0.5:1}}>
-                  Try again
-                </button>
-                {researchBusy === "run" && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>Re-reading your channels...</span>}
-              </div>
-              <PostSampleFeeder userToken={userToken} onKeep={function(t){
-                setVoiceSamples(function(prev){ return prev.concat([t]); });
-              }}/>
-            </div>
-          )}
-          <div style={{marginTop:10}}>
-            <Label>Anything wrong or missing? (optional)</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
-              Your corrections always beat what the research says — they shape every future generation, and VIRL treats them as fact the next time it reads your channels.
-            </div>
-            <textarea value={researchCorrections} onChange={function(e){setResearchCorrections(e.target.value); setCorrectionState("idle");}}
-              placeholder="e.g. That's not my business — mine is the one at my website. I don't do luxury listings; I work with first-time sellers."
-              style={Object.assign({},textareaStyle,{minHeight:66})}/>
-            {/* [RESEARCH-VERIFY] The submit the box never had. Before this,
-                corrections only persisted via the profile's global Save
-                button far below, and nothing re-ran the research — so a
-                creator could correct a wrong business name and watch the
-                same wrong brief sit there indefinitely, with no signal
-                that anything had been received. Saving and re-running are
-                one action here because they're one intent. */}
-            <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8,flexWrap:"wrap"}}>
-              <button type="button"
-                onClick={function(){ runResearch({force:true,withCorrections:true}); }}
-                disabled={researchBusy || (!researchCorrections.trim() && !savedCorrections)}
-                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 16px",background:B.blue,color:B.white,border:"none",borderRadius:8,cursor:(researchBusy||(!researchCorrections.trim()&&!savedCorrections))?"default":"pointer",opacity:(researchBusy||(!researchCorrections.trim()&&!savedCorrections))?0.45:1}}>
-                Save correction &amp; re-run
-              </button>
-              {researchBusy === "correct" && (
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>Saving, then re-researching with your correction...</span>
-              )}
-              {!researchBusy && correctionState === "saved" && researchCorrections.trim() === savedCorrections.trim() && (
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.green}}>Saved — VIRL will use this over anything it finds.</span>
-              )}
-              {!researchBusy && correctionState !== "saved" && researchCorrections.trim() !== savedCorrections.trim() && (
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>Unsaved changes.</span>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:12,paddingTop:14,borderTop:"1px solid "+B.divider}}>
         Turning any toggle off is forward-looking — it stops future use of that source but doesn't delete data already collected. To wipe everything VIRL has learned, use <strong style={{color:B.navy}}>Delete account</strong> in Settings.
       </div>
@@ -12886,9 +12492,6 @@ return (
               </div>
             </div>
             <CreatorProfile profile={profile} syncState={profileSync} syncError={profileSyncError}
-              // [RESEARCH-REVIEW] Token lets the panel fetch + display the
-              // channel research for the signed-in user.
-              userToken={userToken}
               // [CHANGE 1] Lets Phase 1 success state navigate to the plan tab,
               // mirroring how the welcome modal hands off to plan.
               onNavigateToPlan={function(){setTab("plan");}}
