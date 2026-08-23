@@ -1424,53 +1424,6 @@ const UsageKPI = ({label, value, sub, color}) => (
 // optional sentiment chips, a free-text "what's on your mind" textarea,
 // and a secondary "book 15 min with the founder" link if the env var is
 // set. Submit POSTs to /api/feedback (auth-required server-side).
-// [RESEARCH-VERIFY] Presentation cleanup for the channel-research brief.
-//
-// Two jobs, both about the brief being readable rather than merely
-// correct. First, the brief is rendered as PLAIN TEXT, so any markdown
-// the research model emitted despite being told not to shows up on
-// screen as literal asterisks ("**GoGirl.ai**") — the server strips this
-// now, but rows cached before that still carry it and there is no reason
-// to make a creator wait for a refresh to stop seeing syntax.
-//
-// Second, the brief arrives as a single ~12-sentence paragraph, which on
-// a phone is an unbroken wall of text nobody reads closely enough to
-// catch an error in — the exact review this panel exists to enable.
-// Grouping it into short blocks costs nothing and makes a wrong claim
-// findable.
-//
-// Deliberately NOT a markdown renderer: this is a research summary, not
-// authored content, and interpreting arbitrary model output as markup is
-// how you get surprises. Strip the syntax, keep the words.
-function researchTextBlocks(raw) {
-  var t = String(raw || "")
-    .replace(/\[\d+(?:\s*,\s*\d+)*\]/g, "")   // citation markers
-    .replace(/\*\*([^*]+)\*\*/g, "$1")        // **bold**
-    .replace(/__([^_]+)__/g, "$1")            // __bold__
-    .replace(/`([^`]+)`/g, "$1")              // `code`
-    .replace(/^\s*[-*•]\s+/gm, "")            // stray bullets
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!t) return [];
-  // Sentence split without lookbehind — Safari only shipped regex
-  // lookbehind in 16.4, and this panel gets read on phones.
-  var sentences = (t.match(/[^.!?]+[.!?]*\s*/g) || [t])
-    .map(function(s){ return s.trim(); })
-    .filter(Boolean);
-  var blocks = [], cur = [];
-  sentences.forEach(function(s){
-    cur.push(s);
-    if (cur.length >= 3) { blocks.push(cur.join(" ")); cur = []; }
-  });
-  if (cur.length) {
-    // A lone trailing sentence reads as an orphan — fold it into the
-    // previous block instead of leaving a one-line paragraph.
-    if (cur.length === 1 && blocks.length) blocks[blocks.length - 1] += " " + cur[0];
-    else blocks.push(cur.join(" "));
-  }
-  return blocks;
-}
-
 // First-plan celebration overlay. Renders once after the very first plan
 // generates; the parent persists the seen-flag in localStorage on dismiss
 // so a refresh, navigation, or follow-up plan never re-fires it.
@@ -1551,100 +1504,6 @@ function VoiceExcerptSuggestions({voiceSamples, onKeep}) {
           </button>
         </div>
       );})}
-    </div>
-  );
-}
-
-// [POST-SAMPLE] The reliable fallback when handle research can't reach a
-// creator's profiles at all: instead of asking VIRL to go find a post,
-// the creator hands one over directly — a link or a screenshot. Neither
-// depends on a platform letting an automated request through the way
-// whole-profile research does (Instagram/TikTok/Facebook block that even
-// for a correct, public, direct link — a platform-side restriction, not
-// a VIRL bug). A screenshot always works since it's pixels, not a fetch;
-// a link works when the platform still serves link-preview metadata for
-// that one post (TikTok's oEmbed reliably does; others best-effort via
-// Open Graph tags). Extraction is never auto-saved — the creator reviews
-// the transcribed text and explicitly taps Keep, mirroring
-// VoiceExcerptSuggestions' one-tap-confirm pattern above.
-function PostSampleFeeder({userToken, onKeep}) {
-  const [urlValue,setUrlValue] = useState("");
-  const [busy,setBusy]         = useState(false);
-  const [error,setError]       = useState("");
-  const [pending,setPending]   = useState(null); // {caption}
-
-  function fetchFromUrl() {
-    var url = urlValue.trim();
-    if (!url || !userToken) return;
-    setBusy(true); setError(""); setPending(null);
-    fetch("/api/profile-post-sample", {
-      method:  "POST",
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + userToken },
-      body:    JSON.stringify({ postUrl: url }),
-    }).then(function(r){ return r.json(); }).then(function(j){
-      setBusy(false);
-      if (j && j.ok && j.caption) setPending({ caption: j.caption });
-      else setError("Couldn't read that link — this platform may be blocking it too. Try a screenshot instead.");
-    }).catch(function(){ setBusy(false); setError("Connection issue — try again."); });
-  }
-
-  function fetchFromScreenshot(file) {
-    if (!file || !userToken) return;
-    setBusy(true); setError(""); setPending(null);
-    decodeAndResizeImage(file).then(function(img){
-      return callAPI("voice_sample_extract", {}, { token: userToken, imageBase64: img.b64, imageType: img.mediaType });
-    }).then(function(data){
-      setBusy(false);
-      var parsed = extractJSON(data.text) || {};
-      var text = (parsed.captionText || "").trim();
-      if (parsed.found && text) setPending({ caption: text });
-      else setError("Couldn't find readable caption text in that screenshot — try one where the caption is visible.");
-    }).catch(function(e){
-      setBusy(false);
-      setError((e && e.message) || "Couldn't read that screenshot.");
-    });
-  }
-
-  var chipStyle = {fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 14px",background:B.navySoft,color:B.navy,border:"none",borderRadius:8,cursor:"pointer"};
-
-  return (
-    <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid "+B.divider}}>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:4}}>Feed VIRL one real post</div>
-      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:10}}>
-        Paste a link to one of your posts, or upload a screenshot of one. This works even when a platform blocks automated research, since you're handing VIRL the content directly instead of asking it to go find it.
-      </div>
-      {pending ? (
-        <div style={{background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",marginBottom:6}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.ink,lineHeight:1.6,fontStyle:"italic",marginBottom:10}}>{"“"+pending.caption+"”"}</div>
-          <div style={{display:"flex",gap:8}}>
-            <button type="button" onClick={function(){ onKeep(pending.caption); setPending(null); setUrlValue(""); }}
-              style={Object.assign({},chipStyle,{background:B.blue,color:B.white})}>
-              Keep as voice sample
-            </button>
-            <button type="button" onClick={function(){ setPending(null); }}
-              style={Object.assign({},chipStyle,{background:"transparent",color:B.muted,border:"1px solid "+B.border})}>
-              Discard
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
-          <input value={urlValue} onChange={function(e){ setUrlValue(e.target.value); }}
-            placeholder="Paste a link to one of your posts" disabled={busy}
-            style={{flex:"1 1 220px",background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"9px 12px",fontSize:12,color:B.ink,fontFamily:"'Jost',sans-serif"}}/>
-          <button type="button" onClick={fetchFromUrl} disabled={busy || !urlValue.trim()}
-            style={Object.assign({},chipStyle,{opacity:(busy||!urlValue.trim())?0.5:1})}>
-            Fetch
-          </button>
-          <label style={Object.assign({},chipStyle,{opacity:busy?0.5:1})}>
-            Upload screenshot
-            <input type="file" accept="image/*" disabled={busy} style={{display:"none"}}
-              onChange={function(e){ var f = e.target.files && e.target.files[0]; e.target.value = ""; fetchFromScreenshot(f); }}/>
-          </label>
-        </div>
-      )}
-      {busy && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,marginTop:6}}>Reading...</div>}
-      {error && <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.coral,marginTop:6}}>{error}</div>}
     </div>
   );
 }
@@ -3374,37 +3233,218 @@ function getVaultPatterns(vault) {
   return {count:planItems.length, topPlatform:top(platformCounts), topFormat:top(formatCounts)};
 }
 
+// [CLIPBOARD] Clipboard writes fail in more places than people expect:
+// navigator.clipboard is undefined on plain http:// (anything but
+// localhost), missing or blocked inside in-app browsers (Instagram,
+// TikTok, Facebook — where a lot of creators open links), and it rejects
+// outright with NotAllowedError when the document doesn't hold focus or
+// the browser denies the permission. Every one of those failures used to
+// be silent here: the promise rejected unhandled, the button never
+// changed, and the paste came up empty. So try the async API, fall back
+// to the execCommand path that still works in those webviews, and hand
+// the caller a boolean so no button can claim a success it didn't get.
+function legacyCopyText(text) {
+  var ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  // The node has to stay rendered and inside the viewport — display:none,
+  // visibility:hidden and off-screen positions all break the selection.
+  // Fixed top-left at zero opacity is the shape every browser accepts;
+  // font-size 16px stops iOS zooming the page while it's briefly focused.
+  ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:none;outline:none;box-shadow:none;background:transparent;opacity:0;font-size:16px;";
+  document.body.appendChild(ta);
+  var sel = null, prevRange = null;
+  try {
+    sel = document.getSelection();
+    prevRange = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
+  } catch(e) {}
+  var ok = false;
+  try {
+    // iOS ignores .select() on a readonly textarea — it needs a real Range
+    // over a contenteditable node plus an explicit setSelectionRange.
+    if (/ipad|iphone|ipod/i.test(navigator.userAgent || "")) {
+      ta.contentEditable = "true";
+      ta.readOnly = false;
+      var range = document.createRange();
+      range.selectNodeContents(ta);
+      if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+      ta.setSelectionRange(0, 999999);
+    } else {
+      ta.select();
+    }
+    ok = !!document.execCommand("copy");
+  } catch(e) { ok = false; }
+  try { document.body.removeChild(ta); } catch(e) {}
+  // Hand the user's own selection back — we borrowed it.
+  try { if (sel) { sel.removeAllRanges(); if (prevRange) sel.addRange(prevRange); } } catch(e) {}
+  return ok;
+}
+
+// Resolves true when the text is genuinely on the clipboard, false when
+// every path failed. Never rejects — callers branch on the boolean.
+// The fallback still runs inside the click's transient user activation
+// (browsers keep that alive for a few seconds), so execCommand is still
+// permitted even though it fires a microtask after the rejection.
+function copyText(text) {
+  var payload = String(text == null ? "" : text);
+  if (!payload) return Promise.resolve(false);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      return navigator.clipboard.writeText(payload).then(
+        function(){ return true; },
+        function(err){
+          try { console.warn("[VIRL] clipboard write blocked (" + ((err && err.name) || "unknown") + ") — falling back to execCommand"); } catch(e) {}
+          return legacyCopyText(payload);
+        }
+      );
+    } catch(e) { /* fall through to the legacy path */ }
+  }
+  return Promise.resolve(legacyCopyText(payload));
+}
+
 function CopyBtn({text,label}) {
   label = label||"Copy";
-  const [copied,setCopied] = useState(false);
+  // "ok" / "fail" / null. A failed copy has to say so — silently doing
+  // nothing is what sends people to paste an empty clipboard.
+  const [state,setState] = useState(null);
   function doCopy() {
-    navigator.clipboard&&navigator.clipboard.writeText(text).then(function() {
-      setCopied(true); setTimeout(function(){setCopied(false);},1800);
+    copyText(text).then(function(ok){
+      setState(ok ? "ok" : "fail");
+      setTimeout(function(){ setState(null); }, ok ? 1800 : 3200);
     });
   }
+  var failed = state === "fail", copied = state === "ok";
   return (
     <button onClick={doCopy}
-      style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",padding:"5px 12px",background:copied?B.greenSoft:B.bg,color:copied?B.green:B.muted,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0,transition:"all .15s"}}>
-      {copied?"Copied!":label}
+      title={failed ? "Couldn't reach the clipboard — copy the text manually" : label}
+      style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",padding:"5px 12px",background:failed?B.coralSoft:copied?B.greenSoft:B.bg,color:failed?B.coral:copied?B.green:B.muted,border:"none",borderRadius:99,cursor:"pointer",flexShrink:0,transition:"all .15s"}}>
+      {failed?"Copy failed":copied?"Copied!":label}
     </button>
   );
+}
+
+// [CARD-COPY] One copy control per card. Replaces the scattered
+// "Copy all" (hashtags), "Copy reminder" and "Share this post" buttons —
+// the creator's actual job is "get the caption + hashtags into the
+// platform", so that's the one thing the button does. The two-squares
+// glyph is the universal copy affordance, so it carries no label.
+const CopyIcon = ({size, checked, failed}) => (
+  <svg width={size||15} height={size||15} viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+    aria-hidden="true" style={{display:"block"}}>
+    {failed ? (
+      <React.Fragment>
+        <circle cx="12" cy="12" r="9"/>
+        <line x1="12" y1="7.5" x2="12" y2="13"/>
+        <line x1="12" y1="16.5" x2="12" y2="16.5"/>
+      </React.Fragment>
+    ) : checked ? (
+      <polyline points="20 6 9 17 4 12"/>
+    ) : (
+      <React.Fragment>
+        <rect x="9" y="9" width="12" height="12" rx="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </React.Fragment>
+    )}
+  </svg>
+);
+
+// Assembles the publishable copy for a card: whatever plays the role of
+// the caption for this format, then the hashtags. Production direction
+// (photo / film / audio / design) is deliberately excluded — none of it
+// belongs in the caption box.
+function buildCardCopyText(card) {
+  if (!card) return "";
+  var fmt = normalizeFormat(card.format);
+  var parts = [];
+  function push(v) { var t = String(v == null ? "" : v).trim(); if (t) parts.push(t); }
+  if (fmt === "long_form_text") {
+    push(card.hook); push(card.body); push(card.closing);
+  } else if (fmt === "quote_graphic") {
+    if (card.quote) push("“" + String(card.quote).trim() + "”" + (card.attribution ? "\n— " + card.attribution : ""));
+    push(card.caption);
+  } else if (fmt === "story") {
+    // Stories have no caption — the frame copy IS what gets typed out.
+    (Array.isArray(card.frames) ? card.frames : []).forEach(function(f, i) {
+      var frame = [];
+      if (f.content)     frame.push(String(f.content).trim());
+      if (f.textOverlay) frame.push("Text overlay: " + String(f.textOverlay).trim());
+      if (frame.length) parts.push("Frame " + (f.frameNumber || i + 1) + ": " + frame.join("\n"));
+    });
+  } else {
+    push(card.caption);
+  }
+  // Older cards (pre-format schema) carry nothing but a description.
+  if (!parts.length) push(card.description);
+  var tags = hashtagLine(card.hashtags);
+  if (tags) parts.push(tags);
+  return parts.join("\n\n");
+}
+
+// The app's single copy affordance — every generation surface uses this
+// one so "copy" always looks and behaves the same. `variant="dark"` is
+// for the navy hook cards, where the default light pill vanishes.
+function IconCopyButton({text, title, variant}) {
+  // "ok" / "fail" / null — see CopyBtn. A blocked clipboard turns the
+  // button coral and says so rather than sitting there looking untouched.
+  const [state, setState] = useState(null);
+  var payload = String(text == null ? "" : text).trim();
+  if (!payload) return null;
+  function doCopy(e) {
+    // Some of these sit inside a click target of their own (the plan card
+    // header expands on click) — copying must not also fire that.
+    if (e && e.stopPropagation) e.stopPropagation();
+    copyText(payload).then(function(ok){
+      setState(ok ? "ok" : "fail");
+      setTimeout(function(){ setState(null); }, ok ? 1800 : 3200);
+    });
+  }
+  var dark   = variant === "dark";
+  var label  = title || "Copy";
+  var copied = state === "ok";
+  var failed = state === "fail";
+  var caption = failed ? "Couldn't reach the clipboard — copy the text manually"
+              : copied ? "Copied"
+              : label;
+  return (
+    <button onClick={doCopy}
+      title={caption}
+      aria-label={caption}
+      style={{display:"flex",alignItems:"center",justifyContent:"center",width:28,height:28,padding:0,
+        background:failed ? B.coralSoft : copied ? B.greenSoft : (dark ? "rgba(255,255,255,0.12)" : B.bg),
+        color:     failed ? B.coral     : copied ? B.green     : (dark ? "rgba(255,255,255,0.9)"  : B.muted),
+        border:"1px solid "+(failed ? B.coral : copied ? B.green : (dark ? "rgba(255,255,255,0.25)" : B.border)),
+        borderRadius:8,cursor:"pointer",flexShrink:0,transition:"all .15s"}}>
+      <CopyIcon checked={copied} failed={failed}/>
+    </button>
+  );
+}
+
+function CardCopyButton({card}) {
+  return <IconCopyButton text={buildCardCopyText(card)} title="Copy caption + hashtags"/>;
 }
 
 // Strip a leading "#" if the model returned hashtags with the prefix already
 // — otherwise we render "##fitness". Belt-and-braces: the prompt also tells
 // the model not to include the "#", but we don't trust upstream to comply.
 const cleanHashtag = (h) => String(h || "").replace(/^#+/, "").trim();
+// "#a #b #c" from whatever shape the model returned. Empty string when
+// there are no usable tags, so callers can append it unconditionally.
+const hashtagLine = (list) => (Array.isArray(list) ? list : [])
+  .map(cleanHashtag).filter(Boolean).map(function(h){ return "#" + h; }).join(" ");
+// Caption + its hashtags, the payload almost every copy button wants.
+function withHashtags(text, list) {
+  var body = String(text == null ? "" : text).trim();
+  var tags = hashtagLine(list);
+  return tags ? (body ? body + "\n\n" + tags : tags) : body;
+}
 const HashtagRow = ({hashtags}) => {
   if (!hashtags||!hashtags.length) return null;
   const cleaned = hashtags.map(cleanHashtag).filter(Boolean);
   if (!cleaned.length) return null;
-  const text = cleaned.map(function(h){return "#"+h;}).join(" ");
   return (
     <div style={{background:B.skySoft,borderRadius:12,padding:"14px 18px",marginBottom:12}}>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.blue}}>Hashtags</div>
-        <CopyBtn text={text} label="Copy all"/>
-      </div>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.blue,marginBottom:10}}>Hashtags</div>
       <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
         {cleaned.map(function(h){return (
           <span key={h} style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:500,color:B.blue,padding:"4px 12px",background:B.card,borderRadius:99}}>{"#"+h}</span>
@@ -3413,29 +3453,6 @@ const HashtagRow = ({hashtags}) => {
     </div>
   );
 };
-
-function SharePlanCard({card}) {
-  const [copied,setCopied] = useState(false);
-  function sharePost() {
-    const tags = (card.hashtags&&card.hashtags.length)
-      ? "\n\n"+card.hashtags.map(cleanHashtag).filter(Boolean).map(function(h){return "#"+h;}).join(" ") : "";
-    const text = "\ud83d\udcc5 "+card.day+" - "+card.platform
-      +"\n\n\ud83d\udccc "+card.title
-      +"\n\n"+card.description
-      +"\n\n\ud83d\udd50 Post at: "+card.postTime
-      +"\n\u2756 Trend: "+card.trend
-      +tags+"\n\nStrategy by VIRL \u00b7 govirl.ai";
-    navigator.clipboard&&navigator.clipboard.writeText(text).then(function() {
-      setCopied(true); setTimeout(function(){setCopied(false);},2000);
-    });
-  }
-  return (
-    <button onClick={sharePost}
-      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"6px 14px",background:copied?B.greenSoft:B.skySoft,color:copied?B.green:B.sky,border:"none",borderRadius:99,cursor:"pointer",transition:"all .2s"}}>
-      {copied?"Copied!":"Share this post"}
-    </button>
-  );
-}
 
 function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScript}) {
   // If a script was previously saved on this card, show it instead of
@@ -3578,11 +3595,6 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
       +(script.onScreenText&&script.onScreenText.length?"\n\nON-SCREEN TEXT: "+script.onScreenText.join(" | "):"");
   }
 
-  function copyScript() {
-    if (!script) return;
-    navigator.clipboard&&navigator.clipboard.writeText(buildFullScript());
-  }
-
   function downloadScript() {
     if (!script) return;
     var text = buildFullScript();
@@ -3608,10 +3620,15 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:4}}>Script Generator</div>
             <div style={{fontFamily:"'Italiana',serif",fontSize:18,color:B.white,lineHeight:1.2}}>{card.title}</div>
           </div>
-          <button onClick={onClose}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.15em",textTransform:"uppercase",padding:"7px 14px",background:"rgba(255,255,255,0.1)",color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-            Close
-          </button>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+            {script && !editing && (
+              <IconCopyButton text={buildFullScript()} title="Copy full script" variant="dark"/>
+            )}
+            <button onClick={onClose}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.15em",textTransform:"uppercase",padding:"7px 14px",background:"rgba(255,255,255,0.1)",color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
+              Close
+            </button>
+          </div>
         </div>
         <div style={{padding:"22px"}}>
           {loading&&<RotatingStatus kind="script"/>}
@@ -3643,7 +3660,6 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
                 <div style={{background:B.navy,borderRadius:14,padding:"16px 18px",marginBottom:16}}>
                   <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.2em",textTransform:"uppercase",color:B.sky,marginBottom:8}}>Opening Hook</div>
                   <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.white,lineHeight:1.3}}>{'"'+script.hook+'"'}</div>
-                  <div style={{marginTop:10}}><CopyBtn text={script.hook} label="Copy hook"/></div>
                 </div>
               ) : (
                 <div style={{background:B.navy,borderRadius:14,padding:"16px 18px",marginBottom:16}}>
@@ -3759,10 +3775,6 @@ function ScriptGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveScr
                     <button onClick={startEdit}
                       style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.navy,color:B.white,border:"none",cursor:"pointer",borderRadius:14}}>
                       Edit
-                    </button>
-                    <button onClick={copyScript}
-                      style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.ink,color:B.white,border:"none",cursor:"pointer",borderRadius:14}}>
-                      Copy Full
                     </button>
                     <button onClick={downloadScript}
                       style={{flex:1,fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 18px",background:B.blue,color:B.white,border:"none",cursor:"pointer",borderRadius:14}}>
@@ -4490,18 +4502,14 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
     }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
   }
 
-  function copyPost() {
-    if (!post) return;
-    var hashtagLine = (post.hashtags && post.hashtags.length)
-      ? "\n\n" + post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")
-      : "";
-    var full = (post.hook || "") + "\n\n"
+  // Feeds the header copy button. Production notes (the compliance
+  // disclosure hint) stay out — this is what gets pasted into the post box.
+  function buildPostText() {
+    if (!post) return "";
+    var body = (post.hook || "") + "\n\n"
              + (post.body || "")
-             + (post.closing ? "\n\n" + post.closing : "")
-             + hashtagLine;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(full).catch(function(){});
-    }
+             + (post.closing ? "\n\n" + post.closing : "");
+    return withHashtags(body, post.hashtags);
   }
 
   // Modal shell — same overlay treatment as ScriptGenerator so the two
@@ -4562,6 +4570,11 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
         {post && !editing && (
           <div>
             <div style={{padding:"18px 20px",background:B.bg,borderRadius:12,border:"1px solid "+B.border,marginBottom:14}}>
+              {/* [CARD-COPY] Copy sits at the top of the draft, same two-squares
+                   glyph as everywhere else, so the action row below is verbs only. */}
+              <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+                <IconCopyButton text={buildPostText()} title="Copy post + hashtags"/>
+              </div>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.ink,lineHeight:1.6,marginBottom:12,whiteSpace:"pre-wrap"}}>{post.hook}</div>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{post.body}</div>
               {post.closing && <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{post.closing}</div>}
@@ -4577,10 +4590,6 @@ function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onS
               )}
             </div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              <button onClick={copyPost}
-                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-                {"Copy"}
-              </button>
               {onSaveLongPost && !savedOnCard && (
                 <button onClick={function(){ onSaveLongPost(post); setSavedOnCard(true); }}
                   style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
@@ -4835,7 +4844,6 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
   // re-renders immediately after a click without forcing a parent
   // re-render. Initialized from localStorage on mount.
   const [posted,setPosted]     = useState(function(){ return isCardPosted(cardId); });
-  var reminder = "VIRL "+card.day+": "+card.title+" - Post at "+card.postTime+" on "+card.platform;
   var hasSavedScript = !!card.savedScript;
   // [P1] One-line preview shown beneath the title on collapsed cards so
   // the user can differentiate a stacked week of cards without expanding
@@ -4996,6 +5004,11 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
           {usedFreshTrends && <MTag type="result">✦ Fresh trend</MTag>}
           {hasSavedScript && <MTag type="result">Script saved</MTag>}
           {result && <MTag type="result">Logged</MTag>}
+          {/* [CARD-COPY] The card's one copy control. Lives in the header so
+               it's reachable without expanding, and so there's exactly one
+               place to look for "give me the caption". Hidden mid-edit —
+               copying a half-finished draft isn't what anyone wants. */}
+          {!editing && !editMode && <CardCopyButton card={card}/>}
           {editMode ? (
             <button
               onClick={function(e){ e.stopPropagation(); if (onToggleReplace) onToggleReplace(idx); }}
@@ -5054,7 +5067,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
       )}
 
       {/* [UX-01] Expanded section: full description, why-this-works,
-           tag chips, hashtags, copy-reminder strip. Mounted only when
+           tag chips, hashtags. Mounted only when
            expanded so collapsed cards stay scannable. Hidden in edit
            mode — EditCardBody above replaces it with form fields. */}
       {expanded && !editing && (
@@ -5088,12 +5101,6 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
             </div>
           )}
           <HashtagRow hashtags={card.hashtags}/>
-          <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontStyle:"italic",color:B.navy,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-              {"🌙 "+card.day+" · "+card.postTime+" · "+card.platform}
-            </div>
-            <CopyBtn text={reminder} label="Copy reminder"/>
-          </div>
         </div>
       )}
 
@@ -5196,7 +5203,6 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
             {card.savedLongPost ? "View Full Post" : "Write Full Post"}
           </button>
         )}
-        {expanded && <SharePlanCard card={card}/>}
         {expanded && userToken && (
           <RatingButtons sessionToken={userToken} generationType="plan_card" targetRef={(card.title||"")+"|"+(card.day||"")} size="sm"/>
         )}
@@ -5362,7 +5368,7 @@ function RemixCaption({text,onSelect,profile,userToken,onCreditsUsed}) {
   );
 }
 
-function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUsed}) {
+function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUsed,hashtags}) {
   const [editing,setEditing] = useState(false);
   const [text,setText] = useState(caption.text);
   const [saved,setSaved] = useState(false);
@@ -5395,8 +5401,8 @@ function EditableCaption({caption,idx,topic,onSave,profile,userToken,onCreditsUs
     <div style={{background:idx%2===0?B.card:B.cardAlt,borderRadius:12,padding:"18px 20px",marginBottom:8}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.blue}}>{caption.label}</div>
-        <div style={{display:"flex",gap:6}}>
-          {!editing&&<CopyBtn text={text} label="Copy"/>}
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {!editing&&<IconCopyButton text={withHashtags(text, hashtags)} title="Copy caption + hashtags"/>}
           <button onClick={function(){setEditing(function(v){return !v;});}}
             style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:editing?B.ink:B.bg,color:editing?B.white:B.muted,border:"none",borderRadius:99,cursor:"pointer"}}>
             {editing?"Cancel":"Edit"}
@@ -5474,7 +5480,7 @@ function EditableHook({value, onSave, eyebrow, fontSize}) {
         <div>
           <div style={{fontFamily:"'Italiana',serif",fontSize:sz,color:B.white,lineHeight:1.3,marginBottom:10}}>{'"'+(value||"")+'"'}</div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <CopyBtn text={value||""} label="Copy hook"/>
+            <IconCopyButton text={value||""} title="Copy hook" variant="dark"/>
             <button onClick={function(){ setDraft(value||""); setEditing(true); }}
               style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:"rgba(255,255,255,0.12)",color:"rgba(255,255,255,0.9)",border:"1px solid rgba(255,255,255,0.25)",borderRadius:99,cursor:"pointer"}}>
               Edit
@@ -5615,7 +5621,7 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLe
             value={result.hook}
             onSave={function(next){ setResult(function(prev){ return prev ? Object.assign({}, prev, {hook: next}) : prev; }); }}/>
           {(result.captions||[]).map(function(cap,i){return (
-            <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
+            <EditableCaption key={i} caption={cap} idx={i} topic={topic} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} hashtags={result.hashtags}/>
           );})}
           <HashtagRow hashtags={result.hashtags}/>
           <button onClick={generate} disabled={loading}
@@ -5752,14 +5758,6 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
          + hashtagLine;
   }
 
-  function copyPost() {
-    if (!post) return;
-    var text = assemblePostText(post);
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(function(){});
-    }
-  }
-
   // [POST-SAVE] Persist the current post to the Vault as a caption-type
   // item (same shape saveCaption expects). Gated on onSavePost so older
   // call sites that don't pass it simply hide the button.
@@ -5862,15 +5860,12 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
     setSavedToVault(false); // the edited version is worth saving again
   }
 
-  // Shared action row appended under both display blocks. Copy / Save to
-  // Vault / Edit / Regenerate, with Save flipping to a "Saved ✓" badge.
-  function renderActions(copyLabel) {
+  // Shared action row appended under both display blocks. Save to Vault /
+  // Edit / Regenerate, with Save flipping to a "Saved ✓" badge. Copy is not
+  // here — it's the icon button at the top of the draft.
+  function renderActions() {
     return (
       <div style={{marginTop:18,display:"flex",gap:8,flexWrap:"wrap"}}>
-        <button onClick={copyPost}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-          {copyLabel}
-        </button>
         {onSavePost && !savedToVault && (
           <button onClick={handleSaveToVault}
             style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
@@ -6012,6 +6007,9 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
       {/* Result rendering — branches per mode */}
       {post && !editing && mode === "linkedin" && (
         <div style={{background:B.card,borderRadius:16,padding:"22px 24px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
+          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+            <IconCopyButton text={assemblePostText(post)} title="Copy post + hashtags"/>
+          </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.ink,lineHeight:1.6,marginBottom:14,whiteSpace:"pre-wrap"}}>{post.hook}</div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{post.body}</div>
           {post.closing && <div style={{marginTop:16,fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{post.closing}</div>}
@@ -6025,7 +6023,7 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
               {"Suggested disclosure: " + post.compliance_note}
             </div>
           )}
-          {renderActions("Copy")}
+          {renderActions()}
         </div>
       )}
 
@@ -6042,6 +6040,9 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
 
       {post && !editing && mode === "blog" && (
         <div style={{background:B.card,borderRadius:16,padding:"24px 26px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
+          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+            <IconCopyButton text={assemblePostText(post)} title="Copy full post"/>
+          </div>
           <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.ink,lineHeight:1.2,marginBottom:8}}>{post.title}</div>
           {post.subtitle && <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.55,marginBottom:18}}>{post.subtitle}</div>}
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-wrap",marginBottom:18}}>{post.intro}</div>
@@ -6070,7 +6071,7 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
               {"Suggested disclosure: " + post.compliance_note}
             </div>
           )}
-          {renderActions("Copy full post")}
+          {renderActions()}
         </div>
       )}
 
@@ -6099,7 +6100,7 @@ function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpg
   );
 }
 
-function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCreditsUsed}) {
+function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCreditsUsed,hashtags}) {
   const [editing,setEditing] = useState(false);
   const [text,setText] = useState(captionText||"");
   const [saved,setSaved] = useState(false);
@@ -6128,8 +6129,8 @@ function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCr
     <div style={{background:B.bg,borderRadius:12,padding:"14px 16px",marginBottom:12}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,color:B.blue}}>Caption</div>
-        <div style={{display:"flex",gap:6}}>
-          {!editing&&<CopyBtn text={text} label="Copy"/>}
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {!editing&&<IconCopyButton text={withHashtags(text, hashtags)} title="Copy caption + hashtags"/>}
           <button onClick={function(){setEditing(function(v){return !v;});}}
             style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.1em",textTransform:"uppercase",padding:"5px 12px",background:editing?B.ink:B.card,color:editing?B.white:B.muted,border:"none",borderRadius:99,cursor:"pointer"}}>
             {editing?"Cancel":"Edit"}
@@ -6677,7 +6678,7 @@ function VIRLScan({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLeft
                 </div>
               )}
               {typeof r.caption==="string"&&r.caption.trim()&&(
-                <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed}/>
+                <EditableScanCaption captionText={r.caption} platform={r.platform} onSave={onSaveCaption} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} hashtags={r.hashtags}/>
               )}
               <HashtagRow hashtags={r.hashtags}/>
               {/* [SCAN-FORMAT] "Also works as" — the other ways to use this
@@ -6764,11 +6765,7 @@ function normalizeSocialInput(raw) {
   } catch (e) { return v; }
 }
 
-// [RESEARCH-REVIEW] userToken added so the panel can call
-// /api/profile-research-prewarm to display what VIRL learned from the
-// creator's channels. Optional — signed-out/legacy callers omit it and
-// the review block falls back to its "nothing yet" state.
-function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,userToken}) {
+function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
   const [myPlatforms,setMyPlatforms] = useState(profile.myPlatforms||[]);
   const [name,setName] = useState(profile.name||"");
   const [audience,setAudience] = useState(profile.audience||"");
@@ -6848,28 +6845,11 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
   // [NICHE-DETAIL] The creator's own words on what they do and who pays
   // them — the precise business definition inside the broad niche label.
   const [nicheDetail,setNicheDetail]               = useState(profile.nicheDetail||"");
-  // [RESEARCH-REVIEW] Corrections to the machine-gathered channel research,
-  // plus fetch state for displaying the research paragraph itself.
-  // researchPreview.status: idle | loading | ready | none
+  // [RESEARCH-REVIEW] Corrections to the machine-gathered channel research.
+  // No longer editable in the UI — the research review panel was removed —
+  // but anything a creator already saved still rides every profile save and
+  // still outranks the machine research in every prompt.
   const [researchCorrections,setResearchCorrections] = useState(profile.researchCorrections||"");
-  // [RESEARCH-VERIFY] verification carries the server's account of what
-  // the fact-check removed; null means the brief predates the check (or
-  // the check couldn't run), which the panel says out loud rather than
-  // implying a clean bill of health.
-  const [researchPreview,setResearchPreview]         = useState({status:"idle",text:"",verification:null});
-  // "" when idle, otherwise which flow is in flight: "run" (a plain
-  // re-read) or "correct" (save-then-re-read). Both are truthy for the
-  // disabled/dimmed states; the distinction only drives which progress
-  // line shows, so the two buttons don't narrate over each other.
-  const [researchBusy,setResearchBusy]               = useState("");
-  const [researchError,setResearchError]             = useState("");
-  // Tracks the corrections submit specifically, so the creator gets a
-  // definite answer about whether their words were saved — separate from
-  // whether the re-run produced anything.
-  const [correctionState,setCorrectionState]         = useState("idle"); // idle | saved
-  // The corrections value as last persisted, so the submit button can go
-  // quiet when there's nothing new to send.
-  const [savedCorrections,setSavedCorrections]       = useState(profile.researchCorrections||"");
   const [saved,setSaved] = useState(false);
 
   // [CHANGE 1] Phase 2 expansion + Phase-1 success state.
@@ -6933,97 +6913,11 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
     return out;
   }
 
-  // [RESEARCH-VERIFY] Single path for every way the panel talks to
-  // /api/profile-research-prewarm: the first "show me what you learned"
-  // click, an explicit re-run, and the corrections submit.
-  //
-  //   force           — bypass the 30-day research cache. Only ever set by
-  //                     an explicit click; costs a live research call.
-  //   withCorrections — persist the corrections textarea server-side and
-  //                     feed it into the re-run as ground truth.
-  //
-  // Corrections save on their own endpoint rather than waiting for the
-  // profile's Save button because a creator who has just been shown a
-  // wrong fact about their business wants to fix THAT, right there. Making
-  // them scroll to a global save (and guess whether it applied) is how the
-  // correction box ends up unused.
-  function runResearch(opts) {
-    var force           = !!(opts && opts.force);
-    var withCorrections = !!(opts && opts.withCorrections);
-    if (!userToken) { setResearchPreview({status:"none",text:"",verification:null}); return; }
-    var sending = researchCorrections;
-    setResearchBusy(withCorrections ? "correct" : "run");
-    setResearchError("");
-    setCorrectionState("idle");
-    // Only blank the panel when there's nothing to keep on screen. A
-    // re-run over an existing brief leaves it visible with a spinner —
-    // the creator is usually comparing the new one against it.
-    if (!force && researchPreview.status !== "ready") {
-      setResearchPreview({status:"loading",text:"",verification:null});
-    }
-
-    function post(payload) {
-      return fetch("/api/profile-research-prewarm", {
-        method:  "POST",
-        headers: { "Content-Type":"application/json", "Authorization":"Bearer "+userToken },
-        body:    JSON.stringify(payload),
-      }).then(function(r){
-        return r.json().catch(function(){ return {}; }).then(function(j){ return {ok:r.ok, body:j||{}}; });
-      });
-    }
-
-    // Save the correction on its own round trip and confirm it before the
-    // research starts. The re-run can take tens of seconds (live search +
-    // fact-check) and may time out; the save takes milliseconds and must
-    // never be left ambiguous, because it's the part that protects every
-    // generation from here on whether or not the re-run lands.
-    // Plain closure flag rather than reading state back — the setState
-    // above isn't visible inside this same tick's callbacks.
-    var didSave = !withCorrections;
-    var saveStep = withCorrections
-      ? post({ corrections: sending, saveOnly: true }).then(function(res){
-          if (!res.ok) throw new Error(res.body.error || "save_failed");
-          didSave = true;
-          setSavedCorrections(sending);
-          setCorrectionState("saved");
-        })
-      : Promise.resolve();
-
-    saveStep.then(function(){
-      return post(force ? { refresh:true } : {});
-    }).then(function(res){
-      var j = res.body;
-      setResearchBusy("");
-      if (!res.ok) {
-        setResearchError(j.error || "VIRL couldn't run that just now — try again in a moment.");
-        return;
-      }
-      if (j.researchText) setResearchPreview({status:"ready",text:j.researchText,verification:j.verification||null});
-      else if (researchPreview.status !== "ready" || force) setResearchPreview({status:"none",text:"",verification:null});
-    }).catch(function(e){
-      setResearchBusy("");
-      if (!didSave) {
-        var msg = (e && e.message && e.message !== "save_failed" && e.message.indexOf("etch") < 0) ? e.message : "";
-        setResearchError(msg || "Couldn't save that correction — try again.");
-      } else {
-        setResearchError(withCorrections
-          ? "Your correction is saved. The re-research didn't finish — tap “Run it again” in a moment."
-          : "Connection issue — try again.");
-        if (!force && researchPreview.status !== "ready") setResearchPreview({status:"none",text:"",verification:null});
-      }
-    });
-  }
-
   function handleSave() {
     // [INTEL 1] Pass the 3 personal-fact fields up to the parent's onSave.
     // [INTEL 2] platformFormats joins the payload so per-platform format
     // preferences persist to Supabase alongside everything else.
     onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,personalFacts,neverAssume,loveToReference,platformFormats,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,voiceSamples,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
-    // [RESEARCH-VERIFY] The global save persists corrections too, so the
-    // research panel's own "unsaved changes" hint has to clear here as
-    // well — otherwise it keeps nagging about something already saved.
-    setSavedCorrections(researchCorrections);
-    setCorrectionState("saved");
     setSaved(true);
     setTimeout(function(){setSaved(false);},2000);
   }
@@ -7036,8 +6930,6 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
   // would have their toggle silently wiped to false by the upsert.
   function handleSavePhase1() {
     onSave({myPlatforms,name,audience,voice,vibes,sampleCaption,topics,purpose,offLimits,inspiration,journey,knownFor,pillars,emojiPref,handles:cleanedHandles(),platformAudiences,postFreq,contentLength,workedWell,learnFromEdits,learnFromVault,learnFromResults,learnFromPublicPosts,businessWebsite,offerings,serviceArea,idealClientProblem,primaryCta,commonObjections,nicheDetail,researchCorrections});
-    setSavedCorrections(researchCorrections);
-    setCorrectionState("saved");
     setPhase1Saved(true);
     setPhase1JustSaved(true);
   }
@@ -7352,154 +7244,10 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan,use
             Research my public posts
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-            Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content. Heads up: Instagram, TikTok, and Facebook restrict automated access even to a correct, public, direct link, so this doesn't always succeed — if it comes back empty, you can feed VIRL a real post directly instead (link or screenshot) below.
+            Pull style cues from public posts on the handles you provided. Done via Perplexity (third-party). Only your public content. Heads up: Instagram, TikTok, and Facebook restrict automated access even to a correct, public, direct link, so this doesn't always succeed — when it comes back empty, your voice samples and saved posts carry the weight instead.
           </div>
         </div>
       </div>
-      {/* [RESEARCH-REVIEW] Show the creator what the public-post research
-          actually says about them, and collect corrections. The research
-          used to be invisible: a wrong observation (same-name account,
-          stale read) silently steered every generation for up to 30 days.
-          Corrections persist on the profile row and override the machine
-          research in every prompt. */}
-      {learnFromPublicPosts && (
-        <div style={{marginTop:14,paddingTop:16,borderTop:"1px solid "+B.divider}}>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,color:B.navy,marginBottom:6}}>What VIRL has learned from your channels</div>
-          {researchPreview.status === "idle" && (
-            <button type="button" onClick={function(){ runResearch({}); }} disabled={researchBusy}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:600,letterSpacing:"0.03em",padding:"9px 16px",background:B.bg,color:B.navy,border:"1px solid "+B.border,borderRadius:9,cursor:researchBusy?"default":"pointer",opacity:researchBusy?0.5:1}}>
-              Show what VIRL learned
-            </button>
-          )}
-          {researchPreview.status === "loading" && (
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted}}>Checking your channels...</div>
-          )}
-          {researchPreview.status === "ready" && (
-            <div style={{marginBottom:10}}>
-              {/* [RESEARCH-VERIFY] Broken into blocks and stripped of
-                  markdown before display — see researchTextBlocks. A brief
-                  the creator can't stand to read is a brief they can't
-                  check, which defeats the point of showing it. */}
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.ink,lineHeight:1.7,background:B.bg,border:"1px solid "+B.border,borderRadius:10,padding:"12px 14px",opacity:researchBusy?0.5:1,transition:"opacity .2s"}}>
-                {researchTextBlocks(researchPreview.text).map(function(block,i){
-                  return <div key={i} style={{marginTop:i?10:0}}>{block}</div>;
-                })}
-              </div>
-              {/* [RESEARCH-VERIFY] What the fact-check did, stated plainly.
-                  Shown even when nothing was removed: a creator who has
-                  been handed a wrong business name once wants to know the
-                  check ran, not to infer it from the absence of a warning.
-                  And when it did NOT run (older cached brief, verifier
-                  unavailable), that gets said too rather than passing off
-                  an unchecked brief as a clean one. */}
-              {(function(){
-                var v = researchPreview.verification;
-                if (!v) {
-                  return (
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:8}}>
-                      This one was gathered before VIRL started fact-checking its own research. Run it again to have VIRL check it against your profile.
-                    </div>
-                  );
-                }
-                var removed = Array.isArray(v.removed) ? v.removed : [];
-                var tone    = v.identityConflict ? B.coral : (v.checked ? B.green : B.muted);
-                var headline = !v.checked
-                  ? "Partly checked — VIRL's fact-check couldn't run in full on this one, so read it with an extra eye."
-                  : (removed.length
-                      ? ("VIRL fact-checked this against your profile and cut " + removed.length + (removed.length === 1 ? " claim" : " claims") + " it couldn't stand behind.")
-                      : "VIRL fact-checked this against your profile — nothing had to be cut.");
-                return (
-                  <div style={{marginTop:8}}>
-                    <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:tone,lineHeight:1.55}}>{headline}</div>
-                    {removed.length > 0 && (
-                      <ul style={{margin:"6px 0 0",paddingLeft:16}}>
-                        {removed.map(function(r,i){
-                          return <li key={i} style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:2}}>{r}</li>;
-                        })}
-                      </ul>
-                    )}
-                    {v.identityConflict && (
-                      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:6}}>
-                        That usually means the research landed on someone else's account or business. Tell VIRL below what's actually yours and run it again — your correction outranks anything the research finds.
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-              <div style={{display:"flex",alignItems:"center",gap:10,marginTop:10,flexWrap:"wrap"}}>
-                <button type="button" onClick={function(){ runResearch({force:true}); }} disabled={researchBusy}
-                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 14px",background:"transparent",color:B.navy,border:"1px solid "+B.border,borderRadius:8,cursor:researchBusy?"default":"pointer",opacity:researchBusy?0.5:1}}>
-                  Run it again
-                </button>
-                {researchBusy === "run" && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>Re-reading your channels and fact-checking...</span>}
-              </div>
-            </div>
-          )}
-          {researchError && (
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.coral,lineHeight:1.55,marginTop:6}}>{researchError}</div>
-          )}
-          {researchPreview.status === "none" && (
-            <div style={{marginBottom:10}}>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6}}>
-                {/* [HONEST-EMPTY-STATE] "Nothing on file" read as a bug to
-                    creators whose accounts simply aren't in the public search
-                    index yet (new, small, or private accounts - most early
-                    creators), AND to creators on platforms that flat-out
-                    block automated reads regardless of indexing. Say both
-                    real reasons plainly instead of leaving it ambiguous —
-                    the platform restriction especially, since that one may
-                    genuinely never resolve on its own, unlike "not indexed
-                    yet." Then hand over the one path that's guaranteed to
-                    work regardless of what any platform blocks. */}
-                No usable research yet. Two real reasons this happens, and neither is a bug: your accounts may still be new or small enough that they're not in the public search index yet — that one resolves on its own as they grow. But Instagram, TikTok, and Facebook also actively restrict automated access to profile pages, even from a correct, public, direct link — that's those platforms' own policy, and it may never resolve no matter how VIRL's research improves. VIRL will never guess from a lookalike account to paper over either case. Everything else in your profile — your voice samples, saved posts, and edits — still shapes every output at full weight.
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8,flexWrap:"wrap"}}>
-                <button type="button" onClick={function(){ runResearch({force:true}); }} disabled={researchBusy}
-                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 14px",background:"transparent",color:B.navy,border:"1px solid "+B.border,borderRadius:8,cursor:researchBusy?"default":"pointer",opacity:researchBusy?0.5:1}}>
-                  Try again
-                </button>
-                {researchBusy === "run" && <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>Re-reading your channels...</span>}
-              </div>
-              <PostSampleFeeder userToken={userToken} onKeep={function(t){
-                setVoiceSamples(function(prev){ return prev.concat([t]); });
-              }}/>
-            </div>
-          )}
-          <div style={{marginTop:10}}>
-            <Label>Anything wrong or missing? (optional)</Label>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:6}}>
-              Your corrections always beat what the research says — they shape every future generation, and VIRL treats them as fact the next time it reads your channels.
-            </div>
-            <textarea value={researchCorrections} onChange={function(e){setResearchCorrections(e.target.value); setCorrectionState("idle");}}
-              placeholder="e.g. That's not my business — mine is the one at my website. I don't do luxury listings; I work with first-time sellers."
-              style={Object.assign({},textareaStyle,{minHeight:66})}/>
-            {/* [RESEARCH-VERIFY] The submit the box never had. Before this,
-                corrections only persisted via the profile's global Save
-                button far below, and nothing re-ran the research — so a
-                creator could correct a wrong business name and watch the
-                same wrong brief sit there indefinitely, with no signal
-                that anything had been received. Saving and re-running are
-                one action here because they're one intent. */}
-            <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8,flexWrap:"wrap"}}>
-              <button type="button"
-                onClick={function(){ runResearch({force:true,withCorrections:true}); }}
-                disabled={researchBusy || (!researchCorrections.trim() && !savedCorrections)}
-                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 16px",background:B.blue,color:B.white,border:"none",borderRadius:8,cursor:(researchBusy||(!researchCorrections.trim()&&!savedCorrections))?"default":"pointer",opacity:(researchBusy||(!researchCorrections.trim()&&!savedCorrections))?0.45:1}}>
-                Save correction &amp; re-run
-              </button>
-              {researchBusy === "correct" && (
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>Saving, then re-researching with your correction...</span>
-              )}
-              {!researchBusy && correctionState === "saved" && researchCorrections.trim() === savedCorrections.trim() && (
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,color:B.green}}>Saved — VIRL will use this over anything it finds.</span>
-              )}
-              {!researchBusy && correctionState !== "saved" && researchCorrections.trim() !== savedCorrections.trim() && (
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted}}>Unsaved changes.</span>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:B.muted,lineHeight:1.55,marginTop:12,paddingTop:14,borderTop:"1px solid "+B.divider}}>
         Turning any toggle off is forward-looking — it stops future use of that source but doesn't delete data already collected. To wipe everything VIRL has learned, use <strong style={{color:B.navy}}>Delete account</strong> in Settings.
       </div>
@@ -8804,11 +8552,10 @@ function ReferralCard({token}) {
   },[open, token]);
   function copy() {
     if (!data) return;
-    try {
-      navigator.clipboard.writeText(data.url).then(function(){
-        setCopied(true); setTimeout(function(){ setCopied(false); }, 2000);
-      });
-    } catch(e) {}
+    copyText(data.url).then(function(ok){
+      if (!ok) return;
+      setCopied(true); setTimeout(function(){ setCopied(false); }, 2000);
+    });
   }
   return (
     <div style={{marginTop:10,border:"1px solid "+B.border,borderRadius:10,background:B.bg}}>
@@ -9383,8 +9130,8 @@ function ReferralModal({milestone, userId, onDismiss}) {
     // so the user can paste into the IG app.
     if (navigator.share) {
       navigator.share({title:"Try VIRL", text:shareText, url:referralUrl}).catch(function(){});
-    } else if (navigator.clipboard) {
-      navigator.clipboard.writeText(shareText + " " + referralUrl);
+    } else {
+      copyText(shareText + " " + referralUrl);
     }
   }
   function dismiss() {
@@ -12897,9 +12644,6 @@ return (
               </div>
             </div>
             <CreatorProfile profile={profile} syncState={profileSync} syncError={profileSyncError}
-              // [RESEARCH-REVIEW] Token lets the panel fetch + display the
-              // channel research for the signed-in user.
-              userToken={userToken}
               // [CHANGE 1] Lets Phase 1 success state navigate to the plan tab,
               // mirroring how the welcome modal hands off to plan.
               onNavigateToPlan={function(){setTab("plan");}}
@@ -13744,8 +13488,10 @@ return (
                             lines.push("Hashtags: "+(card.hashtags||[]).join(" "));
                             return lines.join("\n");
                           }).join("\n\n---\n\n");
-                          navigator.clipboard&&navigator.clipboard.writeText(text).then(function(){
-                            alert("Full plan copied to clipboard.");
+                          copyText(text).then(function(ok){
+                            alert(ok
+                              ? "Full plan copied to clipboard."
+                              : "This browser blocked the copy. Open the plan in Safari or Chrome and try again.");
                           });
                         }}
                           style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"10px 16px",background:"rgba(255,255,255,0.12)",color:B.white,border:"1px solid rgba(255,255,255,0.2)",cursor:"pointer",borderRadius:99}}>
