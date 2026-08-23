@@ -3921,7 +3921,13 @@ function normalizeFormat(raw) {
   if (v === "carousel" || v === "carousel_pin" || v === "photo_carousel" || v === "document" || v === "document carousel") return "carousel";
   if (v === "quote_graphic" || v === "quote graphic" || v === "quote") return "quote_graphic";
   if (v === "story" || v === "stories" || v === "idea_pin") return "story";
-  if (v === "long_form_text" || v === "long-form text" || v === "long form text" || v === "long_post" || v === "long post" || v === "tweet" || v === "thread" || v === "image_tweet" || v === "community_post") return "long_form_text";
+  // [X-280] `tweet` / `thread` / `image_tweet` used to land here, which meant
+  // every X card rendered and labelled as "Long-form post". They now resolve
+  // to the thread format instead: a single tweet is a one-post thread, and an
+  // image tweet is an image card whose caption happens to be capped at 280.
+  if (v === "thread" || v === "tweet" || v === "tweets" || v === "x_thread") return "thread";
+  if (v === "image_tweet") return "single_image";
+  if (v === "long_form_text" || v === "long-form text" || v === "long form text" || v === "long_post" || v === "long post" || v === "community_post") return "long_form_text";
   // Everything video-shaped (reels, shorts, vertical videos, talking-head video,
   // aesthetic b-roll, day in my life, etc.) collapses to "video".
   return "video";
@@ -3938,6 +3944,7 @@ function humanizeFormat(raw) {
     quote_graphic:  "Quote graphic",
     story:          "Story",
     long_form_text: "Long-form post",
+    thread:         "Thread",
   };
   var key = normalizeFormat(raw);
   return map[key] || (raw && typeof raw === "string" ? raw : "");
@@ -4113,6 +4120,206 @@ function StoryCardBody({card}) {
   );
 }
 
+// [X-280] The format a card should actually RENDER and EDIT as, which is not
+// always the format it was generated with. Before the thread format existed,
+// every X card came back as long_form_text — the plan history holds 21 of
+// them, 313 to 1504 characters of prose apiece, none postable on a free
+// account. Those cards resolve to `thread` here so the renderer, the editor,
+// and the "Write Full Post" gate all agree about what they are without each
+// repeating the platform check. normalizeFormat stays the pure string mapper.
+function effectiveFormat(card) {
+  var fmt = normalizeFormat(card && card.format);
+  if (fmt === "long_form_text" && card && card.platform === "X") return "thread";
+  return fmt;
+}
+
+// [X-280] X caps a post at 280 characters unless the account holds a paid
+// subscription. Threads carry no such gate — every account can post one — and
+// X's own playbook entry ranks `thread` first in format_priority, so writing
+// thread-native is the strategy for both tiers rather than a concession to the
+// free one. THREAD_POST_LIMIT is the number the counters and the merge warning
+// below are measured against.
+var THREAD_POST_LIMIT = 280;
+
+// [X-280] Resolve a card into an ordered array of thread posts.
+//
+// New cards carry `posts` directly. Older X cards do not: before the thread
+// format existed, every X card came back as long_form_text, so the plan
+// history holds X posts sitting in `body` at 313-1504 characters — none of
+// them publishable on a free account as written. Rather than strand those
+// cards, this splits them back into posts on the way to the renderer, so a
+// plan generated before this change still yields something postable. Two
+// cases, in order:
+//   1. The model self-numbered ("1/ ... 2/ ..."), which it did on its own
+//      whenever it wanted a thread and had no field to put one in. Those
+//      markers are the author's own break points — split on them.
+//   2. No numbering. Pack whole paragraphs into posts up to the limit,
+//      never splitting mid-paragraph, and only fall back to sentence-level
+//      packing for a single paragraph that is itself over the limit.
+// A paragraph is only ever broken at a sentence boundary; a sentence longer
+// than the limit is left intact and flagged over-length in the UI rather than
+// chopped mid-word.
+// Pack paragraphs into chunks of at most `limit` characters, never splitting
+// mid-paragraph. Only a paragraph that is itself over the limit gets broken,
+// and then only at a sentence boundary — a sentence longer than the limit is
+// left intact and flagged over-length in the UI rather than chopped mid-word.
+function packParagraphs(text, limit) {
+  var paragraphs = (text || "").split(/\n\s*\n/).map(function(t){ return t.trim(); }).filter(Boolean);
+  var chunks = [];
+  paragraphs.forEach(function(para){
+    if (para.length <= limit) { chunks.push(para); return; }
+    var sentences = para.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [para];
+    var buf = "";
+    sentences.forEach(function(sentence){
+      var next = buf ? buf + " " + sentence.trim() : sentence.trim();
+      if (next.length > limit && buf) { chunks.push(buf); buf = sentence.trim(); }
+      else { buf = next; }
+    });
+    if (buf) chunks.push(buf);
+  });
+  // Merge adjacent chunks that still fit together, so a run of one-line
+  // paragraphs doesn't become a run of one-line posts.
+  var packed = [];
+  chunks.forEach(function(chunk){
+    var last = packed.length ? packed[packed.length - 1] : null;
+    if (last && (last.length + 2 + chunk.length) <= limit) {
+      packed[packed.length - 1] = last + "\n\n" + chunk;
+    } else {
+      packed.push(chunk);
+    }
+  });
+  return packed;
+}
+
+function splitIntoThreadPosts(text) {
+  var raw = (text || "").trim();
+  if (!raw) return [];
+
+  var numbered = raw.split(/\n(?=\s*\d+\s*\/)/);
+  if (numbered.length > 1) {
+    // The model self-numbered, which it did on its own whenever it wanted a
+    // thread and had no field to put one in. Those markers are the author's
+    // own break points, so they lead — but they are not sufficient on their
+    // own: the final segment routinely ran long, because the closing line got
+    // appended to it with no marker of its own. So each segment is still
+    // packed to the limit, and the whole thread is renumbered afterwards to
+    // stay sequential once a segment has split in two. NUMBER_BUDGET reserves
+    // room for the prefix the renumbering pass adds back.
+    var NUMBER_BUDGET = 6;
+    var pieces = [];
+    numbered.forEach(function(segment){
+      var stripped = segment.trim().replace(/^\s*\d+\s*\/\s*/, "");
+      pieces = pieces.concat(packParagraphs(stripped, THREAD_POST_LIMIT - NUMBER_BUDGET));
+    });
+    pieces = pieces.filter(Boolean);
+    return pieces.map(function(t, i){ return (i + 1) + "/ " + t; });
+  }
+
+  // Unnumbered prose. Split it, but do NOT add numbering — the creator wrote
+  // this as a single post, and plenty of threads run unnumbered. Renumbering
+  // it would be editing the copy rather than making it postable.
+  return packParagraphs(raw, THREAD_POST_LIMIT);
+}
+
+// [X-280] The card → posts adapter. `posts` wins when present; otherwise
+// reconstruct from whatever prose fields the older card shape used.
+function threadPostsFromCard(card) {
+  if (!card) return [];
+  if (Array.isArray(card.posts) && card.posts.length) {
+    return card.posts
+      .map(function(x){ return typeof x === "string" ? x.trim() : (x && x.text ? String(x.text).trim() : ""); })
+      .filter(Boolean);
+  }
+  var prose = [card.hook, card.body, card.closing]
+    .map(function(x){ return (x || "").trim(); })
+    .filter(Boolean)
+    .join("\n\n");
+  if (!prose) prose = (card.caption || "").trim();
+  return splitIntoThreadPosts(prose);
+}
+
+// [X-280] Thread card body. Each post is its own copyable block with a live
+// character count, because the unit the creator actually publishes is the
+// post, not the card — the old renderer handed them a wall of prose and left
+// the splitting (and the discovery that it wouldn't fit) to them.
+//
+// "Copy all" and the merge toggle exist so the paid tier is served without
+// being asked which tier it is on. A creator with a paid subscription taps
+// "Combine into one post" and gets the same content as a single post; a free
+// creator never touches it and never hits a dead end. That is deliberately an
+// output toggle rather than a profile question: subscription state changes
+// without warning, most people can't answer it confidently, and getting it
+// wrong silently produces unpostable content.
+function ThreadCardBody({card}) {
+  var posts = threadPostsFromCard(card);
+  var [merged, setMerged] = useState(false);
+  var [copiedIdx, setCopiedIdx] = useState(-1);
+  if (!posts.length) return null;
+
+  function copyText(text, idx) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function(){});
+    }
+    setCopiedIdx(idx);
+    setTimeout(function(){ setCopiedIdx(-1); }, 1400);
+  }
+  // Strip the "1/" numbering when merging — it reads as a broken thread
+  // inside a single post.
+  var mergedText = posts
+    .map(function(t){ return t.replace(/^\s*\d+\s*\/\s*/, ""); })
+    .join("\n\n");
+
+  var chipStyle = {fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"5px 11px",borderRadius:99,cursor:"pointer",border:"1px solid "+B.border,background:B.bg,color:B.sub};
+
+  return (
+    <div style={{marginBottom:14}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:8}}>
+        <FormatBodyEyebrow>{merged ? "Single post" : (posts.length === 1 ? "Post" : "Thread — " + posts.length + " posts")}</FormatBodyEyebrow>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          <button onClick={function(){ copyText(merged ? mergedText : posts.join("\n\n"), -2); }}
+            style={chipStyle}>{copiedIdx === -2 ? "Copied ✓" : (merged ? "Copy post" : "Copy all")}</button>
+          {posts.length > 1 && (
+            <button onClick={function(){ setMerged(!merged); }}
+              style={Object.assign({}, chipStyle, merged ? {background:B.blueSoft,color:B.blue,border:"1px solid "+B.blueSoft} : {})}>
+              {merged ? "Back to thread" : "Combine into one post"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {merged ? (
+        <div>
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.7,whiteSpace:"pre-wrap",padding:"12px 14px",background:B.bg,border:"1px solid "+B.border,borderRadius:10}}>{mergedText}</div>
+          {mergedText.length > THREAD_POST_LIMIT && (
+            <div style={{marginTop:6,fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:400,color:B.muted,lineHeight:1.5}}>
+              {mergedText.length + " characters — posting this as one piece needs a paid X subscription. The thread version works on any account."}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {posts.map(function(text, i){
+            var over = text.length > THREAD_POST_LIMIT;
+            return (
+              <div key={i} style={{padding:"11px 13px",background:B.bg,border:"1px solid "+(over?B.coral:B.border),borderRadius:10}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.65,whiteSpace:"pre-wrap"}}>{text}</div>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginTop:8}}>
+                  <span style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:500,color:over?B.coral:B.muted,letterSpacing:"0.04em"}}>
+                    {text.length + "/" + THREAD_POST_LIMIT + (over ? " — too long, trim before posting" : "")}
+                  </span>
+                  <button onClick={function(){ copyText(text, i); }} style={chipStyle}>
+                    {copiedIdx === i ? "Copied ✓" : "Copy"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LongFormCardBody({card}) {
   // Hook lives in the card title; only render here if distinct.
   var hook = card.hook && card.hook !== card.title ? card.hook : "";
@@ -4135,7 +4342,7 @@ function LongFormCardBody({card}) {
 // when the card has no format-specific fields populated, so backward-compat
 // (old plans) renders the existing description-only layout cleanly.
 function FormatSpecificBody({card}) {
-  var fmt = normalizeFormat(card.format);
+  var fmt = effectiveFormat(card);
   // [REPURPOSE 1] Universal line rendered after the format body via the
   // wrapper below — defined here so every format shares it.
   switch (fmt) {
@@ -4143,6 +4350,7 @@ function FormatSpecificBody({card}) {
     case "carousel":       return <RepurposeWrap card={card}><CarouselCardBody card={card}/></RepurposeWrap>;
     case "quote_graphic":  return <RepurposeWrap card={card}><QuoteCardBody card={card}/></RepurposeWrap>;
     case "story":          return <RepurposeWrap card={card}><StoryCardBody card={card}/></RepurposeWrap>;
+    case "thread":         return <RepurposeWrap card={card}><ThreadCardBody card={card}/></RepurposeWrap>;
     case "long_form_text": return <RepurposeWrap card={card}><LongFormCardBody card={card}/></RepurposeWrap>;
     case "video":
     default:               return <RepurposeWrap card={card}><VideoCardBody card={card}/></RepurposeWrap>;
@@ -4173,7 +4381,9 @@ function RepurposeWrap({card, children}) {
 // onScreenText (video) is supported as a newline-separated textarea.
 // Hashtags collapse to a comma-separated input and re-split on save.
 function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
-  var fmt = normalizeFormat(format);
+  // [X-280] Resolve through the card when we have one so a legacy X card
+  // edits as a thread (a posts textarea) rather than as hook/body/closing.
+  var fmt = card ? effectiveFormat(card) : normalizeFormat(format);
   // [EDIT-LOCKDOWN] Per-format editable fields. Production-direction
   // fields (audioRecommendation, photoDirection, compositionTip,
   // designDirection, interactiveElement) deliberately omitted — those
@@ -4201,6 +4411,12 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
       {key:"caption",      label:"Caption",          multiline:true},
     ],
     story: [],
+    // [X-280] Thread posts edit as one textarea with a blank line between
+    // posts — the same separator the renderer splits on — so the creator can
+    // merge, split, or reorder posts without a bespoke array editor.
+    thread: [
+      {key:"posts",   label:"Thread posts — one per block, separated by a blank line (280 chars each)", multiline:true},
+    ],
     long_form_text: [
       {key:"hook",    label:"Hook",    multiline:false},
       {key:"body",    label:"Body",    multiline:true},
@@ -4221,6 +4437,7 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
     carousel:       [{key:"repurpose", label:"Repurpose"}],
     quote_graphic:  [{key:"designDirection", label:"Design direction"}, {key:"repurpose", label:"Repurpose"}],
     story:          [{key:"repurpose", label:"Repurpose"}],
+    thread:         [{key:"repurpose", label:"Repurpose"}],
     long_form_text: [{key:"repurpose", label:"Repurpose"}],
   };
   // [EDIT-LOCKDOWN] Top-level editable fields. `insight` ("Why this
@@ -4704,6 +4921,10 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
       onScreenText:        Array.isArray(card.onScreenText) ? card.onScreenText.join("\n") : "",
       slides:              draftSlides,
       frames:              draftFrames,
+      // [X-280] Seeded through threadPostsFromCard rather than card.posts so
+      // an older X card whose thread is still stuck in `body` opens already
+      // split into posts. Saving then persists that split onto the card.
+      posts:               threadPostsFromCard(card).join("\n\n"),
     });
     setEditing(true);
     setExpanded(true);
@@ -4736,13 +4957,16 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
     // are VIRL's strategic call about the post, not the user's copy
     // to edit. They render in the read-only locked block but never
     // hit updates here.
-    var fmt = normalizeFormat(card.format);
+    var fmt = effectiveFormat(card);
     var formatTextKeys = {
       video:          ["hook","caption"],
       single_image:   ["caption"],
       carousel:       ["caption"],
       quote_graphic:  ["quote","attribution","caption"],
       story:          [],
+      // [X-280] `posts` is an array on the card but a blank-line-separated
+      // string in the editor, so it is handled after this loop, not in it.
+      thread:         [],
       long_form_text: ["hook","body","closing"],
     };
     var textKeys = ["title","description"].concat(formatTextKeys[fmt] || []);
@@ -4771,6 +4995,18 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
         .filter(Boolean);
       var currOst  = Array.isArray(card.onScreenText) ? card.onScreenText : [];
       if (draftOst.join("|") !== currOst.join("|")) updates.onScreenText = draftOst;
+    }
+    // [X-280] Thread posts: blank-line-separated textarea → array of posts.
+    // Compared against threadPostsFromCard rather than card.posts so an older
+    // X card that arrived as prose registers the split as a real change and
+    // saves it, instead of being diffed against an empty array every time.
+    if (fmt === "thread" && typeof draftCard.posts === "string") {
+      var draftPosts = draftCard.posts
+        .split(/\n\s*\n/)
+        .map(function(t){ return t.trim(); })
+        .filter(Boolean);
+      var currPosts  = threadPostsFromCard(card);
+      if (draftPosts.join("|") !== currPosts.join("|")) updates.posts = draftPosts;
     }
     // Carousel slides: diff each item's editable text fields. The
     // slideNumber + count + designDirection are preserved from the
@@ -5084,7 +5320,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
           {(card.trend || card.format) && (
             <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:14}}>
               {card.trend && <MTag>{"✦ "+card.trend}</MTag>}
-              {card.format && <MTag>{humanizeFormat(card.format)}</MTag>}
+              {card.format && <MTag>{humanizeFormat(effectiveFormat(card))}</MTag>}
             </div>
           )}
           <HashtagRow hashtags={card.hashtags}/>
@@ -5190,7 +5426,13 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
             long_post prompt as starting material rather than the model
             improvising from a blank brief. Hidden for video/carousel/
             etc. — those cards have other action affordances. */}
-        {expanded && card.format === "long_form_text" && (
+        {/* [X-280] effectiveFormat, not normalizeFormat, so X is excluded.
+            This action runs the long_post builder, which is LinkedIn-shaped
+            end to end and targets 500-1500 words — on an X card it produced a
+            post a free-tier account cannot publish, from a card that was
+            already unpostable. X cards need no expansion step: a thread card
+            carries its finished posts. */}
+        {expanded && effectiveFormat(card) === "long_form_text" && (
           <button onClick={function(){ setShowLongPost(true); }}
             style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
             {card.savedLongPost ? "View Full Post" : "Write Full Post"}

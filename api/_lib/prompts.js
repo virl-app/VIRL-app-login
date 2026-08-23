@@ -741,7 +741,7 @@ const PLATFORM_TONE = {
   Facebook:  "Warm and community-focused. Longer-form works well. Conversational, invites comments and shares.",
   YouTube:   "Longer, context-rich, keyword-friendly. Tells them what the video is and why to watch.",
   LinkedIn:  "Professional but human. Insight-led opening. No fluffy intros. Thought leadership tone.",
-  X:         "Ultra short. One punchy idea. Minimal hashtags. Conversational. Designed to spark replies.",
+  X:         "Ultra short. One punchy idea. Minimal hashtags. Conversational. Designed to spark replies. HARD LIMIT 280 characters per post — over that requires a paid X subscription the creator may not have.",
   Pinterest: "Keyword-rich, searchable. Tutorial or how-to framing. Warm and instructive.",
 };
 
@@ -761,6 +761,16 @@ const CAPTION_LENGTH_GUIDE = {
   Short:  "1-3 lines max. Punchy, no fluff.",
   Medium: "4-6 lines. One idea with context and a CTA.",
   Long:   "7-10 lines. Story-driven, conversational.",
+};
+
+// [X-280] X's version of the same three chips. Every X post is capped at 280
+// characters for accounts without a paid subscription, so "longer" on X can
+// only mean MORE posts, never a longer one. Each option below stays inside
+// what a free account can publish.
+const X_CAPTION_LENGTH_GUIDE = {
+  Short:  "ONE post, 280 characters or fewer. Punchy, no fluff.",
+  Medium: "ONE post, 280 characters or fewer, using most of the room — one idea with context and a CTA.",
+  Long:   "A SHORT THREAD of 3-5 posts. Each post must be 280 characters or fewer and read as a complete thought on its own. Number them \"1/\", \"2/\" etc. Separate posts with a blank line inside the caption string. Post 1 carries the hook and must stand alone — it is all that shows in replies and reposts. NEVER write one long block of prose.",
 };
 
 const GENERATION_TYPES = [
@@ -1251,7 +1261,21 @@ const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mi
   + "Quote graphics / text-on-image are bold typographic posts with minimal caption, ideal for brand voice moments and shareable insights. "
   + "Stories (Instagram, Facebook) are casual, in-the-moment, interactive (polls, questions, tap-throughs), ideal for daily presence and behind-the-scenes. "
   + "Long-form text (LinkedIn) is narrative storytelling, no visual required, ideal for thought leadership and personal essays. "
-  + "Each post in the plan MUST set its 'format' field to exactly one of: video, single_image, carousel, quote_graphic, story, long_form_text. Do not invent other format values.";
+  + "Threads (X) are a numbered sequence of standalone posts, each one publishable on its own, ideal for arguments that need more than one beat. "
+  + "Each post in the plan MUST set its 'format' field to exactly one of: video, single_image, carousel, quote_graphic, story, long_form_text, thread. Do not invent other format values."
+  // [X-280] The X post-length rule, stated as a hard constraint rather than
+  // left to the caption_limit line in the playbook block. Two facts drive it:
+  // a post over 280 characters requires a PAID X subscription, and threads do
+  // not — every account can post one. So an over-280 single post is content a
+  // free-tier creator physically cannot publish, and we have no reliable way
+  // to know which tier a creator is on. Writing thread-native is not a
+  // compromise for the paid ones: X's own playbook entry ranks `thread` first
+  // in format_priority. This block sits in the SHARED cache tier and names X
+  // unconditionally so it stays byte-identical across users.
+  + " X POST LENGTH — HARD CONSTRAINT: every individual X post must be 280 characters or fewer, including spaces, hashtags, and the numbering prefix."
+  + " Posts longer than 280 characters require a paid X subscription that most creators do not have, so an over-length post is content they cannot publish at all."
+  + " NEVER give an X card format=long_form_text. When the idea fits one post, use a single-post thread; when it needs more room, use format=thread and break it into posts that each clear 280 on their own."
+  + " Do not write one long post and rely on the creator to split it — splitting prose into tweets is rewriting, and each post must stand alone as a sentence anyway.";
 
 // [PERSONA] Field-level register map for the plan schema. The split is the
 // whole ballgame on this surface: the creator reads `insight` and `the_bet`
@@ -1494,7 +1518,8 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + " format=carousel → include `caption` (the post caption) and `slides` (array of 3-7 slides; each slide is an object with: `slideNumber` (1-indexed), `headline` (short), `body` (1-2 sentences), `designDirection` (how the slide should look))."
     + " format=quote_graphic → include `quote` (5-15 words), `attribution` (creator name or source), `caption` (caption for the post), `designDirection` (background style, font emphasis suggestions)."
     + " format=story → include `frames` (array of 3-5 Story frames; each frame is an object with: `frameNumber` (1-indexed), `content` (what the frame shows), `textOverlay` (suggested overlay text), `interactiveElement` (poll question, slider, question sticker, tap-through link, countdown, etc.))."
-    + " format=long_form_text → include `hook` (the opening line), `body` (the full post body, formatted with line breaks for LinkedIn readability — use \\n for line breaks inside the JSON string), `closing` (the final line / CTA)."
+    + " format=long_form_text → include `hook` (the opening line), `body` (the full post body, formatted with line breaks for LinkedIn readability — use \\n for line breaks inside the JSON string), `closing` (the final line / CTA). LinkedIn and Facebook only — never X."
+    + " format=thread → include `posts` (array of 2-8 strings, ONE per post in the thread, in order). Each string is the complete text of that post as the creator will paste it, 280 characters or fewer INCLUDING the numbering prefix. Number them \"1/\", \"2/\" and so on at the start of each string. Post 1 must work as a standalone post — it is the only one that appears in replies and reposts, so it carries the hook and has to earn the tap on its own. The last post carries the CTA or the closing turn. Do NOT emit `caption`, `body`, or `closing` on a thread card — `posts` is the whole artifact. A one-post thread is valid and correct when the idea fits in 280: emit a single-element array."
     + " Always include `format`, `platform`, and `day` on every card. If you cannot produce a meaningful format-specific field for a card, omit just that field (do not invent placeholder content)."
     // [REPURPOSE 1] Every asset should ship more than once. Two rules:
     // a universal per-card `repurpose` line, and a film-once planning
@@ -1718,9 +1743,20 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
                          : platformsArr.indexOf("Facebook") >= 0 ? "Facebook"
                          : null;
             const base = " The user explicitly selected 'Long-form post' as one of their preferred formats — include AT LEAST 1-2 cards with format='long_form_text' this week. The long_form_text cards are the user's path to thought-leadership content; do not silently skip them.";
+            // [X-280] X is deliberately not eligible as the fallback anchor.
+            // The fallback below reads "place them on whichever SELECTED
+            // platform best carries narrative text", and for an X-only creator
+            // that resolves to X — which would put a long_form_text card on the
+            // one platform where the format cannot be published. X's long-form
+            // equivalent is the thread, so the chip is honoured with
+            // format='thread' there instead of being silently dropped.
+            const xOnly = platformsArr.length > 0 && platformsArr.every(p => p === "X");
+            if (xOnly) {
+              return " The user explicitly selected 'Long-form post' as one of their preferred formats, and X is the only platform selected this week. On X the long-form equivalent is the THREAD — a post over 280 characters needs a paid subscription, a thread does not. Include AT LEAST 1-2 cards with format='thread' running 5-8 posts, carrying the depth the creator wants from long-form. Do NOT emit format='long_form_text', and do NOT add LinkedIn or Facebook to satisfy this.";
+            }
             return anchor
               ? base + " Anchor them to " + anchor + "."
-              : base + " None of the platforms selected THIS week is a long-form-native channel, so place them on whichever SELECTED platform best carries narrative text (e.g. a caption-led Instagram post) — do NOT add LinkedIn or Facebook to satisfy this.";
+              : base + " None of the platforms selected THIS week is a long-form-native channel, so place them on whichever SELECTED platform best carries narrative text (e.g. a caption-led Instagram post) — do NOT add LinkedIn or Facebook to satisfy this, and never place one on X (over-280 posts need a paid subscription there; use format='thread' if X needs the depth).";
           })()
         : "")
     // [WEEK-START] Count and span both come from the per-request numbers
@@ -2052,6 +2088,12 @@ function buildLongPost(params, profile, vaultPatterns, playbook, trends, _histor
   // same few-shot voice references as plans, scripts, captions.
   // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
   // [PERSONA] Single-register — the whole post ships under the creator's name.
+  // [X-280] This builder is LinkedIn-shaped end to end — the system role, the
+  // 500-1500 word target, the see-more fold, and longPostPlaybookContext's
+  // unconditional read of playbook.LinkedIn. It must never receive an X card:
+  // its output is a single prose post of 3000+ characters, which a free-tier X
+  // account cannot publish at all. X cards carry format=thread and are already
+  // complete artifacts, so the plan UI does not offer this action on them.
   const systemPrompt = composeSystemPrompt(profile, "long-form LinkedIn writer", compliance, vaultPatterns, personalDenylist, {
     virl:    [],
     creator: ["hook", "body", "closing"],
@@ -2313,7 +2355,16 @@ function buildCaption(params, profile, vaultPatterns, playbook, trends, _history
   const tone     = params.tone     || "Warm & relatable";
   const length   = params.length   || "Medium";
   const topic    = (params.topic   || "").trim();
-  const lengthRule = CAPTION_LENGTH_GUIDE[length] || CAPTION_LENGTH_GUIDE.Medium;
+  // [X-280] On X the length chips collide with the platform's hard limit:
+  // "Long" means 7-10 story-driven lines, which is 600+ characters, which a
+  // free-tier account cannot post. The playbook block below also asserts the
+  // 280 limit, so the prompt carried two rules and named no winner. X now
+  // reinterprets the chips as thread length rather than post length — the
+  // one reading where every option stays publishable on every account.
+  const isX = platform === "X";
+  const lengthRule = isX
+    ? (X_CAPTION_LENGTH_GUIDE[length] || X_CAPTION_LENGTH_GUIDE.Medium)
+    : (CAPTION_LENGTH_GUIDE[length] || CAPTION_LENGTH_GUIDE.Medium);
   const platformCtx = PLATFORM_TONE[platform] || "";
   const slots = hashtagSlots(playbook, platform, 7);
 
