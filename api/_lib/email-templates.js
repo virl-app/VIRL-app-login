@@ -516,6 +516,24 @@ export function trendPipelineStale({
   };
 }
 
+// 10a. Signed up but never completed the Creator Profile — the earliest
+// activation nudge. [ACTIVATION-GAP] phase1NoPlan below only fires once a
+// profile name exists, so the creator who signs up and stops immediately —
+// the one furthest from converting and most in need of a push — received
+// nothing at all. This is that person's email. VIRL voice.
+export function profileIncomplete({ name, unsubscribeToken }) {
+  const headline = "You're five minutes from your first week of content.";
+  const body = `
+    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'ve got an account, but I don't know anything about you yet — so there's nothing I can plan.</p>
+    <p style="margin:0 0 12px">Your Creator Profile takes about five minutes: your platforms, your niche, your goal, and how you actually sound. That's the difference between generic content and a week that sounds like you.</p>
+    <p style="margin:0">Once it's saved, your first 7-day plan takes about 60 seconds.</p>`;
+  return {
+    subject: "Set up your VIRL profile — about five minutes",
+    html:    layout({ eyebrow: "Getting started", headline, body, primaryCta: { href: APP_URL + "/?tab=profile", label: "Set up my profile" }, unsubscribeToken }),
+    text:    `${headline}\n\nYou've got an account, but I don't know anything about you yet — so there's nothing I can plan.\n\nYour Creator Profile takes about five minutes: your platforms, your niche, your goal, and how you actually sound.\n\nOnce it's saved, your first 7-day plan takes about 60 seconds.\n\n${APP_URL}/?tab=profile${unsubscribeFooterText(unsubscribeToken)}`,
+  };
+}
+
 // 10. Profile saved, no plan generated within 24h — activation nudge.
 export function phase1NoPlan({ name, unsubscribeToken }) {
   const headline = "Your profile's set. Now let me build your week.";

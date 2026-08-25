@@ -422,15 +422,29 @@ async function processUser(user, todayIsSunday, weekKey) {
     });
   }
 
-  // Tier 2 — Phase 1 saved but no plan after 24h. Account is between
-  // 1 and 7 days old, profile name is set (Phase 1 done), and no plans
-  // row exists. One-time per user (dedupeKey: phase1_no_plan_24h).
-  if (days >= 1 && days <= 7 && name) {
+  // Tier 2 — activation nudge. Account is 1-7 days old and no plans row
+  // exists yet.
+  //
+  // [ACTIVATION-GAP] This used to require `name` (i.e. a saved profile),
+  // which silently excluded the single most at-risk creator: the one who
+  // signed up and stopped before filling anything in. 18 of 24 free users
+  // had never generated a plan and most of those never got any nudge.
+  //
+  // Two variants now, on SEPARATE dedupe keys so someone who completes
+  // their profile after the first nudge still receives the second:
+  //   no profile yet   → profileIncomplete  ("set up your profile")
+  //   profile complete → phase1NoPlan       ("generate your first plan")
+  // Each is one-shot per user, so the ceiling is two activation emails
+  // across the first week.
+  if (days >= 1 && days <= 7) {
     const hasPlan = await userHasEverGeneratedPlan(userId);
     if (!hasPlan) {
-      const tpl = T.phase1NoPlan({ name, unsubscribeToken: unsubToken });
+      const template = name ? "phase1_no_plan_24h" : "profile_incomplete_24h";
+      const tpl = name
+        ? T.phase1NoPlan({ name, unsubscribeToken: unsubToken })
+        : T.profileIncomplete({ name, unsubscribeToken: unsubToken });
       await sendEmail({
-        userId, to: email, template: "phase1_no_plan_24h", dedupeKey: "phase1_no_plan_24h",
+        userId, to: email, template, dedupeKey: template,
         subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
       });
     }

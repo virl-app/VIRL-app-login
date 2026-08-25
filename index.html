@@ -9640,6 +9640,17 @@ function App() {
   });
   const [acctMenuOpen,setAcctMenuOpen] = useState(false);
   const [tab,setTab] = useState(function() {
+    // [EMAIL-CTA] An explicit ?tab= wins over the remembered session tab.
+    // Email CTAs ("Generate my first plan", "Finish my profile") have always
+    // linked to /?tab=plan and /?tab=profile, but nothing read the param —
+    // so every one of them dropped the reader on whatever tab they were last
+    // on. Honoured first, because the whole point of a deep link is to land
+    // on the surface the email pitched.
+    try {
+      let q = new URLSearchParams(window.location.search).get("tab");
+      if (q && LEGACY_TAB_MAP[q]) q = LEGACY_TAB_MAP[q];
+      if (q && ALLOWED_TABS.indexOf(q) >= 0) return q;
+    } catch(e) {}
     try {
       let remembered = sessionStorage.getItem("virl_active_tab");
       if (remembered && LEGACY_TAB_MAP[remembered]) remembered = LEGACY_TAB_MAP[remembered];
