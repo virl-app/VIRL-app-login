@@ -148,9 +148,20 @@ export default async function handler(req, res) {
     // silently cost the user their welcome email entirely — the one email
     // every new signup should be guaranteed.
     //
-    // Note the limit: this covers Loops REFUSING the event. It cannot cover
-    // Loops ACCEPTING an event that no automation listens for — that send
-    // looks identical from here and is only visible in the Loops dashboard.
+    // Two limits worth stating plainly:
+    //
+    //   1. This cannot cover Loops ACCEPTING an event that no automation
+    //      listens for. That failure returns ok:true and looks identical
+    //      to success from here — only the Loops dashboard shows it. If
+    //      the `signup_welcome` automation is missing or paused, new
+    //      signups still get nothing and no code change can detect it.
+    //
+    //   2. sendLoopsEvent also returns ok:false when the fetch THREW, and
+    //      a throw can mean the POST reached Loops but the response never
+    //      came back. Releasing on that case risks a duplicate welcome.
+    //      Accepted deliberately: a missing welcome is worse than a second
+    //      one, and it matches the same trade-off sendLoopsEventOnce makes
+    //      ("duplicate-risk is preferable to missed-event-on-infra-blip").
     if (out.ok !== true) {
       console.warn("[welcome] Loops event failed; releasing claim for Resend fallback", user.id);
       await releaseSend(user.id, "welcome", "welcome");

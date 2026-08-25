@@ -13,7 +13,8 @@
 // to itself as "I", never "VIRL is…". It may point to the humans behind the
 // product ("a real person reads every reply") — that's VIRL naming the team,
 // not claiming to BE a person, so it stays on-persona.
-//   welcome-adjacent lifecycle: phase1NoPlan, firstPlanGenerated, weeklyReset,
+//   welcome-adjacent lifecycle: profileIncomplete, phase1NoPlan,
+//   firstPlanGenerated, weeklyReset,
 //   postingReminder, sundayReset, sundayLogNudge, inactive7Day,
 //   trialDay7, trialDay11, trialDay13, trialExpired.
 //

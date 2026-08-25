@@ -334,7 +334,8 @@ All defined in `api/_lib/email-templates.js`:
 | `subscriptionCancelled` | "Your VIRL subscription is cancelled" | stripe-webhook subscription.deleted |
 | `weeklyReset` | (see file) | cron `email-triggers.js` |
 | `playbookDraftsReady` | (admin) | cron `playbook-refresh.js` |
-| `phase1NoPlan` | (see file) | cron `email-triggers.js` |
+| `profileIncomplete` | "Set up your VIRL profile — about five minutes" | cron `email-triggers.js` — signup with no profile, days 1-7 |
+| `phase1NoPlan` | (see file) | cron `email-triggers.js` — profile saved, no plan, days 1-7 |
 | `firstPlanGenerated` | (see file) | inline in chat.js |
 | `inactive7Day` | (see file) | cron `email-triggers.js` |
 | `sundayLogNudge` | (see file) | cron `email-triggers.js` |
