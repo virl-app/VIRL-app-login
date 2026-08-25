@@ -40,6 +40,11 @@ const PRIVACY_URL   = "https://app.termly.io/policy-viewer/policy.html?policyUUI
 const INSTAGRAM_URL = "https://www.instagram.com/virl_app";
 const TIKTOK_URL    = "https://www.tiktok.com/@virlapp";
 
+// CAN-SPAM requires a valid physical postal address in every commercial
+// message. Rendered in the HTML footer of every send and in the plain-text
+// footer of marketing sends. Registered entity address for VIRL LLC.
+const POSTAL_ADDRESS = "VIRL LLC · 501 Union St, Suite 545 · Nashville, TN 37219";
+
 // Wordmark image — "VIRL" rendered in the brand font (Italiana) and served as a
 // static asset from the app root, so it's pixel-identical in every email client
 // (including Gmail/Outlook, which don't load web fonts). Falls back to alt text.
@@ -95,13 +100,16 @@ function unsubscribeFooter(unsubscribeToken) {
       <div style="font-family:Helvetica,Arial,sans-serif;font-size:11px;color:${COLOR.muted};line-height:1.65">
         ${unsubLink}
       </div>
+      <div style="font-family:Helvetica,Arial,sans-serif;font-size:11px;color:${COLOR.muted};line-height:1.65;margin-top:10px">
+        ${POSTAL_ADDRESS}
+      </div>
     </td></tr>`;
 }
 
 function unsubscribeFooterText(unsubscribeToken) {
   if (!unsubscribeToken) return "";
   const url = `${UNSUBSCRIBE_BASE}?t=${encodeURIComponent(unsubscribeToken)}`;
-  return `\n\n---\nVIRL — ${BRAND_TAGLINE}\nInstagram: ${INSTAGRAM_URL}\nTikTok: ${TIKTOK_URL}\nPrivacy: ${PRIVACY_URL}\nUnsubscribe: ${url}\nAccount & billing emails will still be sent.`;
+  return `\n\n---\nVIRL — ${BRAND_TAGLINE}\nInstagram: ${INSTAGRAM_URL}\nTikTok: ${TIKTOK_URL}\nPrivacy: ${PRIVACY_URL}\nUnsubscribe: ${url}\nAccount & billing emails will still be sent.\n${POSTAL_ADDRESS}`;
 }
 
 // Email frame. Every template renders through this so a single-line
