@@ -80,6 +80,34 @@ export async function claimSend(userId, template, dedupeKey) {
   return false;
 }
 
+// Release a claim made by claimSend. Used when the work the claim was
+// protecting did NOT happen — e.g. the inline Loops path claims the shared
+// `welcome` slot, then the Loops event fails. Without a release the claim
+// permanently suppresses the Resend fallback in the cron safety-net and the
+// user never receives that email at all.
+//
+// Fail-quiet: if the DELETE fails the row simply stays, which is the old
+// behaviour (a missed email), never a duplicate.
+export async function releaseSend(userId, template, dedupeKey) {
+  try {
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/email_sends?user_id=eq.${userId}`
+        + `&template=eq.${encodeURIComponent(template)}`
+        + `&dedupe_key=eq.${encodeURIComponent(dedupeKey)}`,
+      {
+        method:  "DELETE",
+        headers: {
+          "apikey":        SUPABASE_SERVICE_KEY,
+          "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Prefer":        "return=minimal",
+        },
+      }
+    );
+  } catch (e) {
+    console.warn(`[email] releaseSend failed (${template}):`, e.message);
+  }
+}
+
 async function recordResendId(userId, template, dedupeKey, resendId) {
   if (!resendId) return;
   try {
