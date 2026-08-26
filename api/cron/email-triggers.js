@@ -327,6 +327,18 @@ async function processUser(user, todayIsSunday, weekKey) {
   }
 
   // Trial reminders apply to free-plan users only.
+  //
+  // [TRIAL-CLASSIFICATION] All four send as marketing (Lauren's call), so an
+  // opted-out creator no longer receives them. Day 11 and 13 lead with
+  // "Upgrade now" / "Claim my spot" and carry pricing; trial_expired pitches
+  // the paid tiers. Those are advertisements whatever the lifecycle map calls
+  // them, and they already rendered an unsubscribe link while being flagged
+  // transactional — which was the contradiction this resolves.
+  //
+  // Trade-off accepted: roughly a third of expiring trials stop receiving an
+  // upgrade pitch. The suppression that matters in production today is on the
+  // LOOPS side (these Resend sends are skipped while EMAIL_VIA_LOOPS=true), so
+  // the Loops trial audiences need `marketingSubscribed = true` to match.
   // [EMAIL-CUTOVER] When EMAIL_VIA_LOOPS=true, the entire trial sequence is
   // skipped here. Loops handles trial day 7/11/13/expired via audience
   // filters keyed on `signupAt` (set during /api/email/welcome's
@@ -347,21 +359,21 @@ async function processUser(user, todayIsSunday, weekKey) {
       const tpl = T.trialDay11({ name, unsubscribeToken: unsubToken });
       await sendEmail({
         userId, to: email, template: "trial_day_11", dedupeKey: "trial_day_11",
-        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
+        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
       });
     }
     if (days >= 13) {
       const tpl = T.trialDay13({ name, unsubscribeToken: unsubToken });
       await sendEmail({
         userId, to: email, template: "trial_day_13", dedupeKey: "trial_day_13",
-        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
+        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
       });
     }
     if (days >= 14) {
       const tpl = T.trialExpired({ name, unsubscribeToken: unsubToken });
       await sendEmail({
         userId, to: email, template: "trial_expired", dedupeKey: "trial_expired",
-        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false,
+        subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: true,
       });
     }
   }
