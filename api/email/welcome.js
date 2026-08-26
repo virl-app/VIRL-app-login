@@ -21,7 +21,7 @@
 //      verified. No-double-send guarantee: only one of the two paths
 //      fires per request based on the flag.
 
-import { sendEmail, emailEnabled, claimSend }   from "../_lib/email-send.js";
+import { sendEmail, emailEnabled, claimSend, releaseSend } from "../_lib/email-send.js";
 import { welcome as welcomeTemplate }           from "../_lib/email-templates.js";
 import { sendLoopsEvent, updateLoopsContact, loopsPlanValue, computeDaysIntoTrial } from "../_lib/loops.js";
 
@@ -127,9 +127,10 @@ export default async function handler(req, res) {
     // but that only holds if the inline Loops call claimed the shared
     // (template=welcome, dedupe_key=welcome) slot — sendLoopsEvent alone
     // does not). Pre-claim that slot here so the cron sees the inline
-    // Loops send and skips its Resend copy; a Loops-side failure still
-    // leaves the row in place (documented Loops failures don't retry via
-    // Resend), which matches every other inline→cron pair in the codebase.
+    // Loops send and skips its Resend copy. [WELCOME-GAP] A Loops-side
+    // failure now RELEASES the claim again (see below) so the Resend
+    // safety-net still delivers — the earlier behaviour left the row in
+    // place and cost the user the email outright.
     const claimed = await claimSend(user.id, "welcome", "welcome");
     if (!claimed) {
       return res.status(200).json({ sent: false, deduped: true, via: "loops" });
@@ -140,6 +141,31 @@ export default async function handler(req, res) {
       eventName: "signup_welcome",
       properties: { firstName: firstName || "", marketingSubscribed },
     });
+    // [WELCOME-GAP] If the Loops event did NOT land, give the slot back so
+    // the cron safety-net can still deliver the Resend welcome. Previously
+    // the claim above stayed put on failure, which meant a Loops outage (or
+    // a missing LOOPS_API_KEY, which makes every helper resolve ok:false)
+    // silently cost the user their welcome email entirely — the one email
+    // every new signup should be guaranteed.
+    //
+    // Two limits worth stating plainly:
+    //
+    //   1. This cannot cover Loops ACCEPTING an event that no automation
+    //      listens for. That failure returns ok:true and looks identical
+    //      to success from here — only the Loops dashboard shows it. If
+    //      the `signup_welcome` automation is missing or paused, new
+    //      signups still get nothing and no code change can detect it.
+    //
+    //   2. sendLoopsEvent also returns ok:false when the fetch THREW, and
+    //      a throw can mean the POST reached Loops but the response never
+    //      came back. Releasing on that case risks a duplicate welcome.
+    //      Accepted deliberately: a missing welcome is worse than a second
+    //      one, and it matches the same trade-off sendLoopsEventOnce makes
+    //      ("duplicate-risk is preferable to missed-event-on-infra-blip").
+    if (out.ok !== true) {
+      console.warn("[welcome] Loops event failed; releasing claim for Resend fallback", user.id);
+      await releaseSend(user.id, "welcome", "welcome");
+    }
     return res.status(200).json({ sent: out.ok === true, via: "loops" });
   }
 

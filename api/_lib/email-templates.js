@@ -13,7 +13,8 @@
 // to itself as "I", never "VIRL is…". It may point to the humans behind the
 // product ("a real person reads every reply") — that's VIRL naming the team,
 // not claiming to BE a person, so it stays on-persona.
-//   welcome-adjacent lifecycle: phase1NoPlan, firstPlanGenerated, weeklyReset,
+//   welcome-adjacent lifecycle: profileIncomplete, phase1NoPlan,
+//   firstPlanGenerated, weeklyReset,
 //   postingReminder, sundayReset, sundayLogNudge, inactive7Day,
 //   trialDay7, trialDay11, trialDay13, trialExpired.
 //
@@ -39,6 +40,11 @@ const UNSUBSCRIBE_BASE = `${APP_URL}/api/email/unsubscribe`;
 const PRIVACY_URL   = "https://app.termly.io/policy-viewer/policy.html?policyUUID=bc2fc2c6-2e38-40d0-9d73-de9941f510d0";
 const INSTAGRAM_URL = "https://www.instagram.com/virl_app";
 const TIKTOK_URL    = "https://www.tiktok.com/@virlapp";
+
+// CAN-SPAM requires a valid physical postal address in every commercial
+// message. Rendered in the HTML footer of every send and in the plain-text
+// footer of marketing sends. Registered entity address for VIRL LLC.
+const POSTAL_ADDRESS = "VIRL LLC · 501 Union St, Suite 545 · Nashville, TN 37219";
 
 // Wordmark image — "VIRL" rendered in the brand font (Italiana) and served as a
 // static asset from the app root, so it's pixel-identical in every email client
@@ -95,13 +101,16 @@ function unsubscribeFooter(unsubscribeToken) {
       <div style="font-family:Helvetica,Arial,sans-serif;font-size:11px;color:${COLOR.muted};line-height:1.65">
         ${unsubLink}
       </div>
+      <div style="font-family:Helvetica,Arial,sans-serif;font-size:11px;color:${COLOR.muted};line-height:1.65;margin-top:10px">
+        ${POSTAL_ADDRESS}
+      </div>
     </td></tr>`;
 }
 
 function unsubscribeFooterText(unsubscribeToken) {
   if (!unsubscribeToken) return "";
   const url = `${UNSUBSCRIBE_BASE}?t=${encodeURIComponent(unsubscribeToken)}`;
-  return `\n\n---\nVIRL — ${BRAND_TAGLINE}\nInstagram: ${INSTAGRAM_URL}\nTikTok: ${TIKTOK_URL}\nPrivacy: ${PRIVACY_URL}\nUnsubscribe: ${url}\nAccount & billing emails will still be sent.`;
+  return `\n\n---\nVIRL — ${BRAND_TAGLINE}\nInstagram: ${INSTAGRAM_URL}\nTikTok: ${TIKTOK_URL}\nPrivacy: ${PRIVACY_URL}\nUnsubscribe: ${url}\nAccount & billing emails will still be sent.\n${POSTAL_ADDRESS}`;
 }
 
 // Email frame. Every template renders through this so a single-line
@@ -505,6 +514,24 @@ export function trendPipelineStale({
       primaryCta: { href: APP_URL + "/?tab=admin", label: "Open the dashboard" },
     }),
     text: textLines,
+  };
+}
+
+// 10a. Signed up but never completed the Creator Profile — the earliest
+// activation nudge. [ACTIVATION-GAP] phase1NoPlan below only fires once a
+// profile name exists, so the creator who signs up and stops immediately —
+// the one furthest from converting and most in need of a push — received
+// nothing at all. This is that person's email. VIRL voice.
+export function profileIncomplete({ name, unsubscribeToken }) {
+  const headline = "You're five minutes from your first week of content.";
+  const body = `
+    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'ve got an account, but I don't know anything about you yet — so there's nothing I can plan.</p>
+    <p style="margin:0 0 12px">Your Creator Profile takes about five minutes: your platforms, your niche, your goal, and how you actually sound. That's the difference between generic content and a week that sounds like you.</p>
+    <p style="margin:0">Once it's saved, your first 7-day plan takes about 60 seconds.</p>`;
+  return {
+    subject: "Set up your VIRL profile — about five minutes",
+    html:    layout({ eyebrow: "Getting started", headline, body, primaryCta: { href: APP_URL + "/?tab=profile", label: "Set up my profile" }, unsubscribeToken }),
+    text:    `${headline}\n\nYou've got an account, but I don't know anything about you yet — so there's nothing I can plan.\n\nYour Creator Profile takes about five minutes: your platforms, your niche, your goal, and how you actually sound.\n\nOnce it's saved, your first 7-day plan takes about 60 seconds.\n\n${APP_URL}/?tab=profile${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
