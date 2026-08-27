@@ -53,7 +53,13 @@ const PLATFORMS = ["TikTok","Instagram","Facebook","YouTube","LinkedIn","X","Pin
 // roughly 7.5 minutes to roughly 2 — the constraint is the function's duration
 // ceiling, and the headroom matters because a call gets SLOWER as the prompt
 // gets better at finding things.
-const REFRESH_CONCURRENCY = 4;
+// [RATE-LIMIT] Lowered 4 -> 3 after the 2026-08-22 run: four simultaneous
+// sonar-pro calls at search_context_size "high" tripped Perplexity's request
+// rate limit and 23 of 27 jobs came back 429. Three in flight, with the
+// bounded backoff in perplexity.js absorbing what still trips, keeps the run
+// inside the 300s ceiling (27 jobs / 3 x ~17s ~= 155s, plus backoff) without
+// re-creating the burst.
+const REFRESH_CONCURRENCY = 3;
 
 // [TRENDS-SEGMENT] The nine canonical segment keys, with the human-readable
 // label handed to researchTrends. The label is what lands in the prompt
