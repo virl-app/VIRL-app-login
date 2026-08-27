@@ -28,8 +28,16 @@ This is the only source that can say something is **measurably** rising, and
 the only one carrying real sound IDs.
 
 **Research** — `trends`. Written by `api/cron/trends-refresh.js` (Node, Vercel),
-Mondays 07:00 UTC. Asks Perplexity what is being discussed, per platform and
-per segment. Auto-publishes with no review step.
+**Saturdays 07:00 UTC** (`0 7 * * 6` in `vercel.json`). Asks Perplexity what is
+being discussed, per platform and per segment. Auto-publishes with no review
+step.
+
+It ran Mondays until 2026-08-17, when planning weeks became creator-anchored
+with a Sunday default: refreshing the day BEFORE the week starts puts the
+freshest research in front of the plan that actually uses it. Move this line
+if the default anchor moves — and note this doc said "Mondays" for ten days
+after the change, which is exactly how someone ends up looking for a failed
+job on a day it was never scheduled to run.
 
 This can say what is being **talked about**. It cannot say what is
 accelerating — that number is not published anywhere for it to read. The
