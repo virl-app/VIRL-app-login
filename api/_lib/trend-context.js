@@ -344,6 +344,11 @@ async function loadLegacyTrends(requestedPlatforms, segment, fallbackPlatform) {
         type:         cat,
         display_name: name,
         reason:       (typeof it.reason === "string" && it.reason.trim()) ? it.reason.trim() : "",
+        // [ITEM-ANGLE] Optional by construction. Rows written before the
+        // research prompt asked for an angle have none, and they stay valid
+        // for the full 14-day window — so this must degrade to the previous
+        // output rather than render "Angle: undefined" for two weeks.
+        angle:        (typeof it.angle === "string" && it.angle.trim()) ? it.angle.trim() : "",
         external_url: (typeof it.source_url === "string" && /^https?:\/\//.test(it.source_url))
           ? it.source_url : null,
       });
@@ -414,6 +419,12 @@ function renderLegacyTrendItem(idx, t, targetPlatforms) {
   if (!t.segmented) parts.push("(platform-wide, not industry-specific.)");
 
   let line = "  " + parts.join(" ");
+  // [ITEM-ANGLE] Same label the observed path uses, deliberately — a creator
+  // should not be able to tell which pipeline fed them, and the two renderers
+  // disagreeing on wording is how that leaks. Unlike the "peaking" wording
+  // above there is nothing to launder here: an angle is a suggestion, not a
+  // claim about the world, so it carries no lifecycle implication.
+  if (t.angle) line += `\n     Angle: ${t.angle}`;
   if (t.external_url) line += `\n     Source: ${t.external_url}`;
   return line;
 }

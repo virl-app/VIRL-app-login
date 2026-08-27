@@ -177,6 +177,9 @@ const PLATFORM_TREND_FRAME = {
       "  - Industry developments, research, or announcements practitioners are reacting to",
       "  - Language and framings entering the niche's professional vocabulary",
       "  - People newly setting the agenda in this field",
+      // For a coach or consultant these are not news, they are buying signals
+      // — and they are heavily reported, so the model can actually find them.
+      "  - Hiring, layoffs, budget shifts or reorganisations in this industry that change what practitioners are worrying about",
     ],
     macroRule:
       "5. Industry-level and news topics ARE in scope on LinkedIn — professional commentary on what the field is discussing is the native content here. This does NOT relax specificity: name the actual claim, report, or development and cite the post or article carrying it. 'AI is changing recruiting' is useless; 'the report claiming AI screening cut interview-to-offer time 40%, and the pushback from recruiters in the comments' is right.",
@@ -192,9 +195,43 @@ const PLATFORM_TREND_FRAME = {
       "  - Specific videos that broke out recently in this niche, and what they did differently",
       "  - Emerging sub-topics creators in this niche have started covering",
       "  - Recurring hooks or opening structures in the first 15 seconds",
+      "  - Changes to how YouTube counts, ranks, recommends or pays — and what a creator should do differently because of it",
+      "  - Monetization or eligibility changes affecting small and mid-size channels",
     ],
-    // Macro stays excluded: YouTube demand IS niche-level, so the original
-    // rule is correct here. Only the surface list changes.
+    // [YT-MACRO] This frame shipped with a whatCounts list and NO macroRule,
+    // on the reasoning that "YouTube demand IS niche-level, so the original
+    // rule is correct here." Measured over the three runs since, that was the
+    // one frame decision the data contradicts. Mean items per run, before the
+    // 2026-08-10 frames vs after:
+    //
+    //   X          0.0 -> 6.5      Pinterest  1.1 -> 6.0
+    //   Facebook   1.7 -> 6.0      LinkedIn   4.0 -> 6.0
+    //   YouTube    1.7 -> 0.3      <- the only platform that went BACKWARDS,
+    //                                 and the only framed one without a
+    //                                 macroRule, so it kept generic #5:
+    //                                 "STRICT exclusion of mainstream/macro".
+    //
+    // The rows say exactly what that cost. Three consecutive summaries:
+    //   "the only clearly relevant primary-source signal surfaced was
+    //    YouTube's upcoming shift to engaged-view counting" (1 item)
+    //   "surfaced policy and creator-infrastructure updates, but not enough
+    //    validated niche-specific trend signal"             (0 items)
+    //   "without drifting into generic platform updates"    (0 items)
+    //
+    // It finds YouTube signal every week and discards it under #5. And the
+    // discarded item is the most valuable thing on this platform: a channel is
+    // a library, not a feed, so how the machine counts and pays is what
+    // changes what a creator should make. Engaged-view counting rewrites the
+    // brief — thumbnail-first stops beating hold-the-first-30-seconds.
+    macroRule:
+      "5. Platform, algorithm and monetization changes ARE in scope on YouTube — how the system counts, ranks, recommends and pays is the thing that changes what a creator should make, and on this platform it is the most reliably reported weekly signal. This does NOT relax specificity: name the actual change, when it takes effect, and what a creator should do differently because of it, then cite the announcement or the coverage. 'YouTube updated its algorithm' is useless; 'YouTube moves to engaged-view counting, so a first 30 seconds that holds now outranks a thumbnail that provokes the click' is exactly right.",
+    // A YouTube change announced three weeks out is MORE actionable than one
+    // already live — the lead time is the value. The 14-day default discarded
+    // exactly that. SOURCE_HINTS_PLATFORM already points at blog.youtube and
+    // creatoracademy.youtube.com, which is where these land; the frame was
+    // sending the model to the right venue and then forbidding what it found.
+    recencyDays: 30,
+    searchRecency: "month",
   },
 
   Pinterest: {
@@ -222,10 +259,16 @@ const PLATFORM_TREND_FRAME = {
   Facebook: {
     // Community and locality, not a discovery feed. Groups are the surface.
     whatCounts: [
+      // [FB-QUESTION-FIRST] Promoted from fourth to first, and asked for
+      // verbatim. For a local service business a recurring question IS the
+      // content — it is a hook, a caption and a sales objection at once — and
+      // quoting it exactly is what makes it usable without a rewrite. Fourth
+      // in a list of six, phrased as a paraphrase, it was the least likely
+      // item to survive the cut to five that trend-context applies.
+      "  - Questions this audience keeps asking publicly that a creator could answer — quote the question VERBATIM as it was actually asked",
       "  - Discussions gaining traction in Groups serving this niche (name the question being asked)",
       "  - Local, regional, or event-driven topics this audience is engaging with",
       "  - Post FORMATS working here (longer-form text, photo carousels, Reels crossposts, polls)",
-      "  - Questions this audience keeps asking publicly that a creator could answer",
       "  - Community or seasonal moments the niche is organising around",
       "  - Specific posts driving unusual comment volume in this niche",
     ],
@@ -240,6 +283,11 @@ export function buildTrendsPrompt(platform, opts) {
     ? opts.excludeTrends.filter(t => typeof t === "string" && t.trim()).slice(0, 15)
     : [];
   const frame         = PLATFORM_TREND_FRAME[platform] || null;
+  // 12 where micro-trends genuinely exist in that volume (TikTok, Instagram —
+  // both unframed, both returning 12 of 12); 8 on the framed platforms, which
+  // measure ~6. Per-frame override for anything that later earns a different
+  // number, on evidence rather than symmetry.
+  const itemTarget    = frame ? (frame.itemTarget || 8) : 12;
   const platformHints = (frame && frame.dropPlatformHints) ? [] : (SOURCE_HINTS_PLATFORM[platform] || []);
   const hintList      = [...platformHints, ...SOURCE_HINTS_GENERAL];
 
@@ -307,9 +355,17 @@ export function buildTrendsPrompt(platform, opts) {
     "",
     nicheLine,
     "",
+    // [ITEM-TARGET] The ask was a flat "up to 12" on every platform, including
+    // the framed ones that exist precisely because those platforms are not
+    // TikTok. Measured since the frames landed, TikTok and Instagram return 12
+    // of 12 while every framed platform settles around 6 — so on those the
+    // prompt asks for roughly double what is there, and the two ways to
+    // satisfy an over-large ask are padding and refusal. Refusal is the
+    // failure mode this frame system was written to fix. Ask for what the
+    // platform has.
     frame
-      ? "Surface up to 12 of the following. These are what a trend actually looks like on " + platform + " — do not look for TikTok-style micro-trends here, they do not exist on this platform and reporting their absence is not a useful answer:"
-      : "Surface up to 12 of the following — prioritize micro-trends and emerging signals over established mainstream items:",
+      ? "Surface up to " + itemTarget + " of the following. These are what a trend actually looks like on " + platform + " — do not look for TikTok-style micro-trends here, they do not exist on this platform and reporting their absence is not a useful answer:"
+      : "Surface up to " + itemTarget + " of the following — prioritize micro-trends and emerging signals over established mainstream items:",
     ...(frame ? frame.whatCounts : [
       "  - Trending topics or themes",
       "  - Trending hashtags (specific ones, not '#fyp')",
@@ -347,6 +403,14 @@ export function buildTrendsPrompt(platform, opts) {
     niche
       ? "6. If the week is genuinely quiet, return an empty items list rather than padding. But \"no trend originated with " + niche + " creators this week\" is NOT a quiet week — that is normal, and tiers 2 and 3 exist precisely for it. Work all three tiers before concluding there is nothing. An empty list means all three came up empty, which should be rare; padding with evergreen advice to avoid one is still worse."
       : "6. If the platform has had a quiet week with no notable signal, return an empty items list rather than padding.",
+    // [RANKED-OUTPUT] The highest-leverage line in this prompt, because of what
+    // happens downstream. buildTrendContext caps a generation at MAX_TRENDS = 5
+    // items, interleaved round-robin across the creator's platforms — so
+    // roughly TWO of these reach a human, and until now they were whichever
+    // two the model wrote first. Nothing ranked them. Every item past the
+    // second was researched, paid for, stored and never read. Ordering is the
+    // selection function; it simply was not being asked for.
+    "7. RANK the items. Return them in descending order of how useful they are to a creator in this space THIS WEEK — if you could tell them only one thing, that item goes first. Only the top few ever reach the creator, so the order is not cosmetic. Rank by how quickly a creator could act on it and how much difference it would make, not by how novel or interesting it is.",
     "",
     "Return ONLY valid JSON (no markdown, no preamble):",
     "{",
@@ -356,7 +420,15 @@ export function buildTrendsPrompt(platform, opts) {
     '      "trend": "<concise description, 1-2 sentences. Be specific — name the hashtag, the audio, the format, the angle>",',
     '      "category": "topic" | "audio" | "format" | "hook" | "hashtag",',
     '      "source_url": "<exact URL>",',
-    '      "reason": "<one sentence on why it\'s working right now>"',
+    '      "reason": "<one sentence on why it\'s working right now>",',
+    // [ITEM-ANGLE] An OBSERVED item carries suggested_angles and
+    // renderTrendItem prints it, so a creator on that path gets a trend AND a
+    // way in. A research item was {trend, category, source_url, reason} — no
+    // angle — and while the ingest is dark EVERY creator is on the research
+    // path, so nobody is getting one. "This format is working" without "here
+    // is what you'd make with it" is a newsletter, not a plan. Not a new
+    // capability: the ingest already asks Perplexity for exactly this.
+    '      "angle": "<one concrete sentence on how a creator in this space would actually USE this — a specific thing to make or say. Not a restatement of the trend, and not generic advice.>"',
     "    }",
     "  ],",
     '  "sources": ["<url>", "..."]',
