@@ -1069,6 +1069,70 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
       `${maxInFlight} research calls were in flight at once, over the ${REFRESH_CONCURRENCY_LIMIT} cap — that is the unbounded burst the sequential design existed to avoid`);
   }
 
+  // ── [RATE-LIMIT] A 429 must be backed off, never stripped-and-resent ───────
+  //
+  // On 2026-08-22 the refresh wrote 4 of 27 rows in 13 seconds and returned a
+  // healthy 200. Every missing job died on a Perplexity 429, and the wrapper
+  // made it worse: the [SEARCH-CONTROLS] branch treated every 4xx as "search
+  // options rejected" and instantly re-sent the request, so one rate-limited
+  // call became two and the whole run hammered a limit it had already tripped.
+  //
+  // Two distinct properties, because fixing one without the other still fails:
+  // the retry has to be DELAYED (not immediate), and it has to keep the search
+  // options (a 429 says nothing about them — stripping silently degrades search
+  // quality on every rate-limited call for no benefit).
+  {
+    const { callPerplexity } = await import("../api/_lib/perplexity.js");
+    const realFetch4 = globalThis.fetch;
+
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push({ at: Date.now(), body });
+      // Rate limited once, then the vendor recovers.
+      if (calls.length === 1) {
+        return {
+          ok: false,
+          status: 429,
+          text: async () => '{"error":{"code":429}}',
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: '{"summary":"ok","items":[],"sources":[]}' } }],
+          citations: [],
+        }),
+        text: async () => "",
+      };
+    };
+
+    const started = Date.now();
+    const out = await callPerplexity({
+      prompt: "fixture",
+      model: "sonar-pro",
+      searchRecency: "week",
+      searchContextSize: "high",
+    });
+    const elapsed = Date.now() - started;
+    globalThis.fetch = realFetch4;
+
+    assert(out && typeof out.text === "string",
+      "a 429 followed by a healthy response returned null — the run still loses the job it could have recovered");
+    assert(calls.length === 2,
+      `${calls.length} requests were made for one rate-limited call — anything but 2 means the 429 was either not retried or retried more than the backoff allows`);
+    // The delay is the whole point. An immediate retry is what turned one 429
+    // into a run-wide storm, and it is exactly what a naive fix reintroduces.
+    assert(elapsed >= 1000,
+      `the 429 retry fired after ${elapsed}ms — that is an immediate re-send, which doubles the request rate against an already-tripped limit`);
+    assert(calls[1].body.search_recency_filter === "week" &&
+           calls[1].body.web_search_options &&
+           calls[1].body.web_search_options.search_context_size === "high",
+      "the 429 retry dropped the search options — a rate limit says nothing about them, and stripping them degrades every rate-limited call's search for no benefit");
+  }
+
   // The ceiling has to be declared, not inherited. The run that truncated was
   // relying on whatever the platform defaulted to.
   {

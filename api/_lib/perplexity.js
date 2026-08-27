@@ -16,6 +16,16 @@
 const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_KEY;
 const ENDPOINT           = "https://api.perplexity.ai/chat/completions";
 
+// [RATE-LIMIT] A 429 is a RATE limit, not a bad-parameter rejection, and it is
+// the one 4xx that gets strictly worse when you retry it immediately. Bounded
+// exponential backoff with jitter, retrying the ORIGINAL request — the search
+// options were never the problem, so stripping them (as the 4xx branch below
+// does) throws away search quality without easing the limit.
+const RATE_LIMIT_RETRIES  = 3;
+const RATE_LIMIT_BASE_MS  = 1500;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // [SEARCH-CONTROLS] Perplexity enforces recency, source selection, and search
 // depth as REQUEST PARAMETERS. Until now this wrapper sent none of them, so
 // every one of those constraints was expressed in prose inside the prompt and
@@ -87,7 +97,28 @@ export async function callPerplexity(opts) {
   // search we had before. So on a 4xx, retry ONCE without them and log
   // loudly: degraded search beats no trends row, but a silent downgrade is
   // how you end up believing a filter is on when it never applied.
-  if (!res.ok && usedSearchOpts && res.status >= 400 && res.status < 500) {
+  // [RATE-LIMIT] Drain a 429 before anything else looks at the status. The
+  // weekly refresh fires REFRESH_CONCURRENCY research calls at once; on
+  // 2026-08-22 that tripped Perplexity's request rate limit and 23 of 27 jobs
+  // died on the first 429, because the branch below treated it as a rejected
+  // search option and instantly re-sent the request — doubling the request
+  // rate against an already-tripped limit. Back off instead.
+  for (let attempt = 0; !res.ok && res.status === 429 && attempt < RATE_LIMIT_RETRIES; attempt++) {
+    const waitMs = RATE_LIMIT_BASE_MS * Math.pow(2, attempt) + Math.floor(Math.random() * 400);
+    console.warn(
+      "[perplexity] 429 rate limited — backing off " + waitMs + "ms " +
+      "(attempt " + (attempt + 1) + "/" + RATE_LIMIT_RETRIES + ")",
+    );
+    await sleep(waitMs);
+    try {
+      res = await post(full);
+    } catch (e) {
+      console.error("[perplexity] rate-limit retry threw", e.message);
+      return null;
+    }
+  }
+
+  if (!res.ok && usedSearchOpts && res.status >= 400 && res.status < 500 && res.status !== 429) {
     const errText = await res.text().catch(() => "");
     console.error(
       "[perplexity] search options rejected (" + res.status + ") — retrying WITHOUT " +
