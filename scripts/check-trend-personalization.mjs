@@ -385,12 +385,41 @@ for (const p of ["X", "LinkedIn", "YouTube", "Pinterest", "Facebook"]) {
     `${p} must still carry the niche focus, or segment rows are global rows with a label`);
 }
 
-// YouTube is framed but deliberately KEEPS the macro exclusion: its demand is
-// already niche-level, so only the surface list needed changing. A frame is
-// not obliged to relax every rule, and this pins that distinction.
+// [YT-MACRO] This assertion previously pinned the opposite: YouTube was framed
+// but deliberately KEPT the macro exclusion, on the reasoning that "its demand
+// is already niche-level, so only the surface list needed changing."
+//
+// That reasoning is correct about YouTube DEMAND and wrong about what is
+// findable weekly, which is the thing the prompt actually depends on. Search
+// demand on YouTube genuinely is niche-level — but almost nobody publishes
+// this week's niche-level YouTube demand, so the model had a widened surface
+// list and a constraint still forbidding the only signal it could reach.
+//
+// Measured over the three runs after the 2026-08-10 frames, mean items/run:
+//
+//   X 0.0 -> 6.5   Pinterest 1.1 -> 6.0   Facebook 1.7 -> 6.0   LinkedIn 4.0 -> 6.0
+//   YouTube 1.7 -> 0.3    <- only framed platform without a macroRule,
+//                            only platform that went backwards
+//
+// And it said so, three summaries running: "the only clearly relevant
+// primary-source signal surfaced was YouTube's upcoming shift to engaged-view
+// counting" (1 item), "surfaced policy and creator-infrastructure updates"
+// (0 items), "without drifting into generic platform updates" (0 items).
+//
+// A channel is a library, not a feed, so how the machine counts, ranks and
+// pays is what changes the brief. That is now in scope, and the assertion
+// pins the new decision with the evidence so it is not quietly flipped back.
+//
+// The old comment's general principle — a frame need not relax every rule —
+// remains true; it simply has no example left, since all five framed
+// platforms now carry a macroRule. Do not re-add a hollow one to preserve it.
 const ytPrompt = buildTrendsPrompt("YouTube", {});
-assert(ytPrompt.includes("STRICT exclusion of mainstream/macro items"),
-  "YouTube keeps the macro exclusion — its search demand is already niche-level");
+assert(!ytPrompt.includes("STRICT exclusion of mainstream/macro items"),
+  "YouTube fell back to the generic macro exclusion — that pairing (widened surface list, unchanged constraint) took it from 1.7 items a run to 0.3 while it kept finding platform changes and discarding them");
+assert(/algorithm and monetization changes ARE in scope/.test(ytPrompt),
+  "YouTube lost its platform-change rule — algorithm, counting and monetization shifts are the signal this platform actually has each week");
+assert(ytPrompt.includes("older than 30 days"),
+  "YouTube is back on the 14-day window — a change announced three weeks out is more actionable than one already live, and the lead time is the value");
 assert(ytPrompt.includes("Title and thumbnail patterns"),
   "YouTube should be asked about packaging, which is where its trends actually live");
 

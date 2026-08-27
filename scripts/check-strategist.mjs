@@ -506,7 +506,10 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
   };
   const LEGACY_ROWS = [
     { platform: "Instagram", fetched_at: isoDay(3), summary: "s", items: [
-      { trend: "LEGACY_IG_ONE", category: "format", source_url: "https://example.com/a", reason: "Because A." },
+      // [ITEM-ANGLE] Only the first item carries an angle, deliberately: rows
+      // written before the prompt asked for one stay valid for 14 days, so
+      // both paths have to work in the same batch.
+      { trend: "LEGACY_IG_ONE", category: "format", source_url: "https://example.com/a", reason: "Because A.", angle: "ANGLE_SENTINEL_ONE" },
       { trend: "LEGACY_IG_TWO", category: "hook",   source_url: "https://example.com/b", reason: "Because B." },
       { trend: "LEGACY_IG_THREE", category: "topic" },
       { trend: "LEGACY_IG_FOUR", category: "topic" },
@@ -565,6 +568,28 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
       "the fallback block does not state that it is editorial research rather than observed measurement");
     assert(!/status rising|status peaking/.test(ctx.block),
       "the fallback block asserts a lifecycle status the legacy rows do not carry — that is an invented claim");
+
+    // [ITEM-ANGLE] A research item used to be trend + reason and nothing else,
+    // while an observed item carried suggested_angles and rendered them. With
+    // the ingest dark every creator is on this path, so the angle was reaching
+    // nobody — "this format is working" with no way in is a newsletter.
+    assert(ctx.block.includes("Angle: ANGLE_SENTINEL_ONE"),
+      "the research item's angle never reaches the prompt — the creator is told what is working and not what to make with it");
+    // And it must degrade, not print a hole: LEGACY_IG_TWO has no angle and
+    // rows predating this change stay servable for the full 14-day window.
+    assert(!/Angle:\s*(undefined|null|\n|$)/m.test(ctx.block),
+      "an item without an angle rendered an empty or undefined Angle line — pre-change rows are valid for 14 days and must degrade silently");
+
+    // [RANKED-OUTPUT] The prompt now asks for items ranked most-useful-first,
+    // which only means anything if rank order survives the MAX_TRENDS cut.
+    // LEGACY_IG has six items and the cap is five, so the last one must be the
+    // one dropped — if some later change reorders or reverses the list, the
+    // creator silently gets the least useful items and nothing else notices.
+    const served = (ctx.snapshot.items || []).map((i) => i.display_name);
+    assert(served.indexOf("LEGACY_IG_ONE") === 0,
+      `the top-ranked research item is not served first (got ${served[0]}) — ranking the prompt output is pointless if selection ignores the order`);
+    assert(!served.includes("LEGACY_IG_SIX"),
+      "the lowest-ranked item survived the cap while higher-ranked ones did not — selection is not honoring rank order");
 
     // The snapshot contract. The client's verifier builds its allow-list from
     // items[].display_name and strips any cited trend missing from it — so
@@ -1131,6 +1156,75 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
            calls[1].body.web_search_options &&
            calls[1].body.web_search_options.search_context_size === "high",
       "the 429 retry dropped the search options — a rate limit says nothing about them, and stripping them degrades every rate-limited call's search for no benefit");
+  }
+
+  // ── [PLATFORM-FRAME] Every framed platform must get a macroRule ──────────
+  //
+  // The 2026-08-10 frames gave five platforms a whatCounts list. Four also got
+  // a macroRule and recovered; YouTube got the list alone, kept generic
+  // constraint #5 ("STRICT exclusion of mainstream/macro items"), and was the
+  // only platform to go BACKWARDS — 1.7 items per run to 0.3, three of four
+  // weeks empty, while its own summaries named what it was discarding:
+  // "YouTube's upcoming shift to engaged-view counting", "policy and
+  // creator-infrastructure updates", "without drifting into generic platform
+  // updates".
+  //
+  // A whatCounts list that widens what counts, sitting under a constraint that
+  // still forbids it, is a contradiction the model resolves by returning
+  // nothing. That pairing is the bug, so the pairing is what is asserted —
+  // by RUNNING buildTrendsPrompt, not by matching source text, because a
+  // frame object can define macroRule and still not reach the prompt.
+  {
+    const { buildTrendsPrompt } = await import("../api/_lib/trends-research.js");
+    const framed = ["X", "LinkedIn", "YouTube", "Pinterest", "Facebook"];
+    const GENERIC_5 = "STRICT exclusion of mainstream/macro items";
+    for (const pf of framed) {
+      const prompt = buildTrendsPrompt(pf, {});
+      assert(!prompt.includes(GENERIC_5),
+        `${pf} is framed but still falls through to the generic macro exclusion — that exact pairing took YouTube from 1.7 items a run to 0.3 while it kept finding signal and discarding it`);
+      assert(/^5\. /m.test(prompt),
+        `${pf} lost constraint 5 entirely rather than replacing it — the numbering the other constraints reference is now wrong`);
+    }
+    // The unframed platforms are the ones the generic rule was written for and
+    // the ones scoring 12 of 12. They must KEEP it — this assertion is the
+    // regression guard on the two platforms that currently work.
+    for (const pf of ["TikTok", "Instagram"]) {
+      assert(buildTrendsPrompt(pf, {}).includes(GENERIC_5),
+        `${pf} lost the generic macro exclusion — it is unframed, it returns 12 of 12 items, and the generic prompt is the one written for it`);
+    }
+  }
+
+  // ── [RANKED-OUTPUT] + [ITEM-ANGLE] The two asks that change what is read ──
+  //
+  // MAX_TRENDS caps a generation at 5 items across all platforms, so ~2 of a
+  // platform's items reach a human. Asking for 12 unranked items means 10 were
+  // researched, paid for, stored and never read, and the 2 that got through
+  // were whichever the model wrote first. Both properties are asserted on
+  // every platform because both are platform-independent.
+  {
+    const { buildTrendsPrompt } = await import("../api/_lib/trends-research.js");
+    const ALL = ["TikTok", "Instagram", "YouTube", "LinkedIn", "X", "Pinterest", "Facebook"];
+    for (const pf of ALL) {
+      const prompt = buildTrendsPrompt(pf, {});
+      assert(/RANK the items/.test(prompt),
+        `${pf} is not asked to rank its items — only the top few survive MAX_TRENDS, so unranked output means the creator gets whichever ones came out first`);
+      assert(/"angle":/.test(prompt),
+        `${pf} does not ask for an angle — the observed path carries suggested_angles and this one would leave the creator a trend with no way in`);
+    }
+    // [ITEM-TARGET] Ask for what the platform has. Framed platforms measure ~6
+    // and were being asked for 12; over-asking is answered with padding or
+    // refusal, and refusal is what the frames exist to prevent. The unframed
+    // pair genuinely returns 12 and must not be cut back.
+    const target = (pf) => Number((buildTrendsPrompt(pf, {}).match(/Surface up to (\d+) /) || [])[1]);
+    for (const pf of ["TikTok", "Instagram"]) {
+      assert(target(pf) === 12,
+        `${pf} asks for ${target(pf)} items — it measures 12 of 12 and lowering the ask throws away signal that exists`);
+    }
+    for (const pf of ["YouTube", "LinkedIn", "X", "Pinterest", "Facebook"]) {
+      const n = target(pf);
+      assert(n >= 6 && n <= 10,
+        `${pf} asks for ${n} items — framed platforms measure ~6, and asking for far more invites the padding or the refusal this system keeps relearning`);
+    }
   }
 
   // The ceiling has to be declared, not inherited. The run that truncated was
