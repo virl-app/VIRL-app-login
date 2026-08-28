@@ -15,6 +15,7 @@
     "og:image": "node scripts/og-image.mjs"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "resend": "^4.0.0",
     "stripe": "^14.0.0"
   },
