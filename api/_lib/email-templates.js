@@ -36,8 +36,8 @@
 const APP_URL          = process.env.APP_URL || "https://app.govirl.ai";
 const UNSUBSCRIBE_BASE = `${APP_URL}/api/email/unsubscribe`;
 
-// Footer links — pulled from govirl.ai. Privacy is the live Termly-hosted policy.
-const PRIVACY_URL   = "https://app.termly.io/policy-viewer/policy.html?policyUUID=bc2fc2c6-2e38-40d0-9d73-de9941f510d0";
+// Footer links — pulled from govirl.ai, where the policies are self-hosted.
+const PRIVACY_URL   = "https://www.govirl.ai/privacy.html";
 const INSTAGRAM_URL = "https://www.instagram.com/virl_app";
 const TIKTOK_URL    = "https://www.tiktok.com/@virlapp";
 

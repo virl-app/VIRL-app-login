@@ -9171,11 +9171,11 @@ function GateScreen({onAuth}) {
               </div>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:tosAccepted?B.navy:B.muted,lineHeight:1.55}}>
                 {"I agree to VIRL's "}
-                <a href="https://app.termly.io/policy-viewer/policy.html?policyUUID=45628bcc-78b6-4904-9408-c872a26558cf" target="_blank" rel="noreferrer"
+                <a href="https://www.govirl.ai/terms.html" target="_blank" rel="noreferrer"
                   onClick={function(e){ e.stopPropagation(); }}
                   style={{color:B.blue,textDecoration:"none",fontWeight:500}}>Terms of Service</a>
                 {" and "}
-                <a href="https://app.termly.io/policy-viewer/policy.html?policyUUID=bc2fc2c6-2e38-40d0-9d73-de9941f510d0" target="_blank" rel="noreferrer"
+                <a href="https://www.govirl.ai/privacy.html" target="_blank" rel="noreferrer"
                   onClick={function(e){ e.stopPropagation(); }}
                   style={{color:B.blue,textDecoration:"none",fontWeight:500}}>Privacy Policy</a>
                 {"."}
@@ -15252,9 +15252,9 @@ return (
           </div>
           <div style={{display:"flex",flexWrap:"wrap",justifyContent:"center",gap:4,alignItems:"center"}}>
             {[
-              {label:"Privacy Policy",      href:"https://app.termly.io/policy-viewer/policy.html?policyUUID=bc2fc2c6-2e38-40d0-9d73-de9941f510d0",      isBtn:false},
-              {label:"Terms of Service",    href:"https://app.termly.io/policy-viewer/policy.html?policyUUID=45628bcc-78b6-4904-9408-c872a26558cf",         isBtn:false},
-              {label:"Cookie Policy",       href:"https://app.termly.io/policy-viewer/policy.html?policyUUID=b300ada6-f4b7-4b62-bbe6-053da497d2c6",       isBtn:false},
+              {label:"Privacy Policy",      href:"https://www.govirl.ai/privacy.html",      isBtn:false},
+              {label:"Terms of Service",    href:"https://www.govirl.ai/terms.html",         isBtn:false},
+              {label:"Cookie Policy",       href:"https://www.govirl.ai/cookies.html",       isBtn:false},
               {label:"Consent Preferences", href:"#",                               termly:true},
               {label:"Contact Us",          href:"mailto:hello@govirl.ai",          isBtn:false},
             ].map(function(link,i){return (
