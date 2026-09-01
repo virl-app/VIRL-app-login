@@ -3353,13 +3353,29 @@ const CopyIcon = ({size, checked, failed}) => (
 // the caption for this format, then the hashtags. Production direction
 // (photo / film / audio / design) is deliberately excluded — none of it
 // belongs in the caption box.
+//
+// [COPY-DIRECTION-FIX] This used to hand over the card's `description` —
+// the one-sentence strategy pitch, i.e. direction, not copy — whenever it
+// couldn't find a caption, and there were two ways to get there:
+//   1. `thread` had no branch. X cards carry `posts` and never a `caption`,
+//      so every one of them fell straight through to the description.
+//   2. It read `normalizeFormat(card.format)` while the card RENDERS as
+//      `effectiveFormat(card)`. A pre-thread X card (stored long_form_text,
+//      rendered as a thread) copied prose the card wasn't even showing.
+// Both are fixed below, and the description fallback now sits behind the
+// audience-facing fields so it only fires for genuinely legacy cards.
 function buildCardCopyText(card) {
   if (!card) return "";
-  var fmt = normalizeFormat(card.format);
+  var fmt = effectiveFormat(card);
   var parts = [];
   function push(v) { var t = String(v == null ? "" : v).trim(); if (t) parts.push(t); }
   if (fmt === "long_form_text") {
     push(card.hook); push(card.body); push(card.closing);
+  } else if (fmt === "thread") {
+    // The unit here is the post, and threadPostsFromCard is the same adapter
+    // the thread renderer uses — so "copy" hands over exactly the posts the
+    // card is showing, in the same order, blank-line separated.
+    threadPostsFromCard(card).forEach(push);
   } else if (fmt === "quote_graphic") {
     if (card.quote) push("“" + String(card.quote).trim() + "”" + (card.attribution ? "\n— " + card.attribution : ""));
     push(card.caption);
@@ -3371,14 +3387,43 @@ function buildCardCopyText(card) {
       if (f.textOverlay) frame.push("Text overlay: " + String(f.textOverlay).trim());
       if (frame.length) parts.push("Frame " + (f.frameNumber || i + 1) + ": " + frame.join("\n"));
     });
+  } else if (fmt === "carousel") {
+    push(card.caption);
+    // A caption-less carousel still has slide copy, and slide copy is text
+    // the creator types onto the post. Better that than the strategy line.
+    if (!parts.length) {
+      (Array.isArray(card.slides) ? card.slides : []).forEach(function(s, i) {
+        var slide = [];
+        if (s && s.headline) slide.push(String(s.headline).trim());
+        if (s && s.body)     slide.push(String(s.body).trim());
+        if (slide.length) parts.push("Slide " + ((s && s.slideNumber) || i + 1) + ": " + slide.join("\n"));
+      });
+    }
   } else {
     push(card.caption);
   }
-  // Older cards (pre-format schema) carry nothing but a description.
+  // Last resorts, in the order a creator would actually want them. The hook
+  // is audience-facing copy, so a caption-less video card gives up its hook
+  // rather than its brief. `description` is NOT audience-facing — the plan
+  // prompt defines it as "ONE sentence pitch — the angle / why this post
+  // exists" — so it stays dead last, for pre-format cards that carry
+  // nothing else at all.
+  if (!parts.length) push(card.hook);
   if (!parts.length) push(card.description);
   var tags = hashtagLine(card.hashtags);
   if (tags) parts.push(tags);
   return parts.join("\n\n");
+}
+
+// The button's tooltip/aria-label has to name what it will actually put on
+// the clipboard — "Copy caption" on a card that has no caption (a thread, a
+// story) is how a creator ends up pasting the wrong thing without noticing.
+function cardCopyLabel(card) {
+  var fmt = effectiveFormat(card);
+  if (fmt === "thread")         return "Copy thread + hashtags";
+  if (fmt === "story")          return "Copy story frames";
+  if (fmt === "long_form_text") return "Copy post + hashtags";
+  return "Copy caption + hashtags";
 }
 
 // The app's single copy affordance — every generation surface uses this
@@ -3421,7 +3466,7 @@ function IconCopyButton({text, title, variant}) {
 }
 
 function CardCopyButton({card}) {
-  return <IconCopyButton text={buildCardCopyText(card)} title="Copy caption + hashtags"/>;
+  return <IconCopyButton text={buildCardCopyText(card)} title={cardCopyLabel(card)}/>;
 }
 
 // Strip a leading "#" if the model returned hashtags with the prefix already
@@ -3814,6 +3859,76 @@ const MTag = ({type,children}) => {
     :{color:B.sub,background:B.divider};
   return <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,padding:"3px 10px",borderRadius:99,...s}}>{children}</span>;
 };
+
+// [CARD-PLATFORM] Which platform a card is for is the first thing a creator
+// needs to know about it — it decides where the post goes, how it gets shot,
+// and how long the caption can be. It used to be the tail of the day eyebrow
+// ("Day 1 - Mon · Instagram"): one truncating line, platform last, so on a
+// phone the platform was exactly the half the ellipsis ate. It's its own
+// badge now — the platform name never truncates, whatever else in the header
+// has to give — and it carries a color, so a stacked week can be scanned by
+// platform without reading a word.
+// The colors are quiet tints in the direction of each platform rather than
+// the literal brand colors: this sits inside VIRL's navy palette, and seven
+// saturated logo colors in one stack would fight the page and each other.
+const PLATFORM_META = {
+  TikTok:    { fg:"#0E7490", bg:"#ECFEFF" },
+  Instagram: { fg:"#A21CAF", bg:"#FAF5FF" },
+  Facebook:  { fg:"#1D4ED8", bg:"#EFF6FF" },
+  YouTube:   { fg:"#B91C1C", bg:"#FEF2F2" },
+  LinkedIn:  { fg:"#075985", bg:"#E0F2FE" },
+  X:         { fg:"#0F172A", bg:"#F1F5F9" },
+  Pinterest: { fg:"#BE123C", bg:"#FFF1F2" },
+};
+// Cards reach the renderer from plan history, hand edits and older prompt
+// versions, so the platform string isn't always one of the seven canonical
+// spellings. Fold the common variants in rather than dropping those cards to
+// the neutral gray chip.
+const PLATFORM_ALIASES = {
+  ig:"Instagram", insta:"Instagram", instagram:"Instagram",
+  tiktok:"TikTok", "tik tok":"TikTok",
+  facebook:"Facebook", fb:"Facebook", meta:"Facebook",
+  youtube:"YouTube", yt:"YouTube", shorts:"YouTube", "youtube shorts":"YouTube",
+  linkedin:"LinkedIn", li:"LinkedIn",
+  x:"X", twitter:"X", "x (twitter)":"X",
+  pinterest:"Pinterest",
+};
+function canonicalPlatform(raw) {
+  var v = String(raw == null ? "" : raw).trim();
+  if (!v) return "";
+  if (PLATFORM_META[v]) return v;
+  return PLATFORM_ALIASES[v.toLowerCase()] || v;
+}
+
+// Platform badge. `format` is optional and renders as a second word inside
+// the same pill, because "Instagram" on its own doesn't tell a creator
+// whether they're filming a reel or writing a carousel — the pair is the
+// actual answer to "what am I making, and where does it go".
+function PlatformBadge({platform, format}) {
+  var name = canonicalPlatform(platform);
+  if (!name) return null;
+  var meta = PLATFORM_META[name] || { fg:B.navy, bg:B.navySoft };
+  return (
+    <span title={format ? name + " · " + format : name}
+      style={{display:"inline-flex",alignItems:"center",gap:6,maxWidth:"100%",minWidth:0,overflow:"hidden",
+        /* The card header aligns its row on the text baseline; an inline-flex
+           pill whose first child is a dot has no text baseline to give it, so
+           it would hang low. Center it against the row instead. */
+        alignSelf:"center",
+        fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.14em",
+        textTransform:"uppercase",lineHeight:1,color:meta.fg,background:meta.bg,
+        padding:"5px 10px",borderRadius:99}}>
+      <span aria-hidden="true" style={{width:6,height:6,borderRadius:99,background:meta.fg,flexShrink:0}}/>
+      {/* The header row wraps, and a badge that refuses to shrink overflows
+          its column and lands under the priority pill instead of moving to
+          the next line. So the pill shrinks — but the platform name never
+          does. Pressure falls on the format word, which truncates first and
+          is the half a creator can infer from the card body anyway. */}
+      <span style={{whiteSpace:"nowrap",flexShrink:0}}>{name}</span>
+      {format && <span style={{whiteSpace:"nowrap",fontWeight:600,opacity:0.62,overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{"· " + format}</span>}
+    </span>
+  );
+}
 
 // [FRESH-TRENDS] Ambient chip rendered above each gen-type's primary
 // action button. Communicates the per-week fresh-trends allowance for
@@ -5207,14 +5322,22 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
       <div role="button" tabIndex={0} aria-expanded={expanded}
         onClick={headerToggle} onKeyDown={headerKeyDown}
         style={{cursor:editing?"default":"pointer",outline:"none"}}>
-      {/* [UX-01 / P3] Header row. postTime leads at high contrast — it's
-           the most actionable atom on the card and previously sat at 9px
-           muted gray equal-weight with day/platform. Day + platform
-           remain as the supporting eyebrow next to it. Status indicators
-           (saved dot, posted check), priority badge, and "logged /
-           script saved" tags keep their slots. */}
+      {/* [UX-01 / P3 / CARD-PLATFORM] Header row, in wrap order: platform
+           badge, postTime at high contrast (it stays the most actionable
+           atom — it used to sit at 9px muted gray, equal weight with the
+           day), then the day, which is the only element here allowed to
+           truncate. Status indicators (saved dot, posted check), priority
+           badge, and "logged / script saved" tags keep their slots. */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
         <div style={{display:"flex",alignItems:"baseline",gap:10,minWidth:0,flex:1,flexWrap:"wrap"}}>
+          {/* [CARD-PLATFORM] Platform + format. First in the row, because
+              this row wraps on a phone and whatever leads is the one thing
+              guaranteed to stay on the first line — and "which platform is
+              this for" is the question the card has to answer before any
+              other. Format only renders when the card actually declares one
+              (normalizeFormat defaults to "video", which would otherwise
+              label every legacy card a video whether it is one or not). */}
+          <PlatformBadge platform={card.platform} format={card.format ? humanizeFormat(effectiveFormat(card)) : ""}/>
           {card.postTime && (
             <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:B.ink,letterSpacing:"0.01em",lineHeight:1.1,flexShrink:0}}>{card.postTime}</div>
           )}
@@ -5226,7 +5349,14 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
             <span title="This posting window has already passed today"
               style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.coral,background:B.coralSoft,borderRadius:99,padding:"3px 9px",lineHeight:1,flexShrink:0}}>{"window passed"}</span>
           )}
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{card.day + " · " + card.platform}</div>
+          {/* Day trails, and is the only element in this row allowed to
+              truncate: the cards are already grouped under a day header, so
+              a clipped day costs nothing, while the clipped platform it used
+              to share a line with cost the creator the fact the whole card
+              is organised around. */}
+          {card.day && (
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{card.day}</div>
+          )}
           {saved && (
             <span aria-label="Saved to vault" title="Saved"
               style={{display:"inline-block",width:8,height:8,borderRadius:99,background:B.navy,flexShrink:0}}/>
@@ -5326,14 +5456,15 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>{card.insight || card.why}</div>
             </div>
           )}
-          {/* [P5] Time + platform live in the header eyebrow now — no
-               need to repeat them. Only render chips for what's NOT in
-               the eyebrow: the trend angle and the humanized format
-               label (P9 — raw snake_case shouldn't reach the user). */}
-          {(card.trend || card.format) && (
+          {/* [P5] Time, platform and format all live in the header now —
+               no need to repeat them. The trend angle is the only thing
+               left that the header doesn't already say. ([CARD-PLATFORM]
+               moved the format chip up into the platform badge; it read as
+               a second, quieter answer to a question the header had
+               already answered.) */}
+          {card.trend && (
             <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:14}}>
-              {card.trend && <MTag>{"✦ "+card.trend}</MTag>}
-              {card.format && <MTag>{humanizeFormat(effectiveFormat(card))}</MTag>}
+              <MTag>{"✦ "+card.trend}</MTag>
             </div>
           )}
           <HashtagRow hashtags={card.hashtags}/>
