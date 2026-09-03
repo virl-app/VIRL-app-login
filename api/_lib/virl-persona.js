@@ -169,6 +169,14 @@ export const CREATOR_VOICE_FIELDS = new Set([
   "text",                           // caption options
   "overlay_text", "sticker_idea",   // scan
   "script", "spokenLine", "voiceover", "remix",
+  // [PLATFORM-COMPOSER] The Pinterest / YouTube composer fields the creator
+  // publishes under their own name. Without these the bleed detector and the
+  // drift corpus stopped at `caption` — which is the one field a Pinterest or
+  // YouTube card no longer has, so those cards would have gone unchecked.
+  // chapters[].label is deliberately absent: "label" is too generic a key to
+  // claim globally, and a 3-word chapter title is no voice signal anyway.
+  "pinTitle", "pinDescription", "altText",
+  "videoTitle", "videoDescription", "thumbnailText",
 ]);
 
 // Whole subtrees that belong to VIRL's register. A walk must not descend
@@ -182,6 +190,12 @@ export const VIRL_VOICE_FIELDS = new Set([
   "insight", "description", "repurpose", "why", "why_format", "analysis",
   "tip", "thumbnailNote", "compositionTip", "photoDirection", "filmDirection",
   "designDirection", "audioRecommendation", "compliance_note",
+  // [PLATFORM-COMPOSER] Pinterest / YouTube composer fields that are direction
+  // or plumbing rather than published words. The publishable half of that set
+  // (pinTitle, pinDescription, altText, videoTitle, videoDescription,
+  // thumbnailText) is deliberately absent — those carry the creator's voice.
+  "thumbnailDirection", "pinBoard", "pinTopics", "videoTags",
+  "destinationLink", "endScreenCta",
 ]);
 
 // Builds the register-split block with the calling surface's actual field

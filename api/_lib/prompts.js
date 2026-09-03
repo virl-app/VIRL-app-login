@@ -49,7 +49,7 @@ const MIN_PARTIAL_WEEK_DAYS = 3;
 // return an empty plan.
 // Spans ABOVE 7 (the rollover case — a Saturday generation running 8-9 days)
 // are deliberately clamped to the 7-day volume rather than scaled up. The
-// plan response is already budgeted at maxTokens 14000 and heavy plans have
+// plan response is already budgeted at maxTokens 16000 and heavy plans have
 // truncated at less; a daily × 3-platform creator scaled to 9 days would ask
 // for ~27 fully-populated cards and hit the "cut off mid-thought" path. A
 // rollover week running slightly light is a far better failure than one that
@@ -1277,6 +1277,48 @@ const FORMAT_DIVERSITY_BLOCK = " CONTENT FORMAT DIVERSITY: Generate a diverse mi
   + " NEVER give an X card format=long_form_text. When the idea fits one post, use a single-post thread; when it needs more room, use format=thread and break it into posts that each clear 280 on their own."
   + " Do not write one long post and rely on the creator to split it — splitting prose into tweets is rewriting, and each post must stand alone as a sentence anyway.";
 
+// [PLATFORM-COMPOSER] Pinterest and YouTube do not publish from a caption box.
+// Their composers ask for several named inputs — Pinterest wants a Title, a
+// Description, a destination Link, a board and alt text; YouTube wants a video
+// Title, a Description, tags and a thumbnail — and each of those is a separate
+// ranking surface on a platform that is a search engine first and a feed
+// second. A card that emits one `caption` leaves every other box empty, so the
+// creator either pastes the caption into the Title (where it is 54 of 100
+// characters of a field that decides whether the pin is ever found) or types
+// something from scratch at posting time, which is the moment VIRL exists to
+// remove.
+//
+// These fields are keyed off `platform`, not `format`, because they apply to a
+// Pinterest pin whether it is an image, a video Idea Pin or a carousel — the
+// composer asks the same questions either way. That makes them a sibling of
+// the FORMAT-SPECIFIC FIELDS block, not a replacement for it: a Pinterest
+// image card still emits photoDirection and compositionTip.
+//
+// Lives in the SHARED cache tier and names both platforms unconditionally, so
+// the prefix stays byte-identical across creators regardless of which
+// platforms they picked.
+const PLATFORM_COMPOSER_BLOCK = ""
+  + " PLATFORM-SPECIFIC FIELDS — emit these IN ADDITION to the universal and format-specific fields above, keyed off the card's `platform` value. Two platforms publish through a composer that asks for several named inputs instead of one caption box, and each input is separately searchable. A card that hands the creator only a caption leaves those inputs empty."
+  + " platform=Pinterest → emit `pinTitle`, `pinDescription`, `altText`, `pinBoard`, `pinTopics`, and `destinationLink`. Emit these INSTEAD of `caption` — do NOT emit a `caption` field on a Pinterest card, because there is no caption box in the Pinterest composer to paste it into."
+  + " `pinTitle`: 40-100 characters. The phrase a person would actually TYPE INTO PINTEREST SEARCH, stated as a benefit — e.g. 'Content strategy for small business owners who hate posting'. Front-load the keyword: only about the first 40 characters show in feed and search results. Never open with the creator's brand name, and never put a bare URL in the title."
+  + " `pinDescription`: 2-4 sentences, 150-500 characters. Pinterest ranks this as natural-language text, so write real sentences carrying the search terms and the intent — not a keyword list and not the pinTitle rephrased. Say what the pin delivers, then what happens at the link."
+  + " `altText`: one literal sentence, under 500 characters, describing what is actually VISIBLE in the image (or in the cover frame, for a video pin). It serves screen readers and Pinterest's image recognition, so describe the picture, never the offer — 'a desk with an open notebook, a pen and a laptop in morning light', not 'content strategy tips'."
+  + " `pinBoard`: which board this pin goes on. Board topic is a ranking signal, so it has to match the pin's subject. Use one of the creator's existing boards when the profile names any; otherwise propose a keyword-shaped board name of 50 characters or fewer for them to create."
+  + " `pinTopics`: 3-6 plain words or short phrases for Pinterest's 'Tag related topics' input, no '#' prefix. These are INTEREST tags, a different input from `hashtags` — do not emit the same list in both fields."
+  + " `destinationLink`: the page this pin sends people to. Use the creator's business website EXACTLY as their profile states it — never invent a deeper path, a landing-page slug, or a URL for a page you have not been told exists. When no website appears in this prompt, OMIT the field entirely rather than guessing one."
+  + " platform=YouTube → emit `youtubeFormat`, `videoTitle`, `videoDescription`, `videoTags`, `thumbnailText`, and `thumbnailDirection`. Emit `videoDescription` INSTEAD of `caption` — do NOT emit a `caption` field on a YouTube card. Long-form cards additionally emit `chapters` and `endScreenCta`."
+  + " `youtubeFormat`: exactly \"short\" or \"long\". A Short is vertical 9:16 and at most 3 minutes; anything longer or horizontal is a long-form upload. The two are composed, ranked and watched differently, so every YouTube card must declare which one it is. Honour the creator's selected YouTube formats when their profile states them."
+  + " `videoTitle`: 100 characters maximum, with the searchable phrase inside the first 60 — the rest is truncated in search, on mobile, and in suggested-video rails. This is the title the creator types into YouTube. The card's own `title` is a plan headline for the VIRL UI and is NOT publishable as a video title, so `videoTitle` must be written separately and must never be a copy of it."
+  + " `videoDescription`: the YouTube description box, up to 5000 characters. The first two lines are all that show above the '...more' fold — put the keyword and the payoff there. Then 2-4 short paragraphs of genuine detail, then the CTA and any link. Write at least 400 characters: a one-line description wastes the single largest text field YouTube indexes."
+  + " `videoTags`: 8-15 plain words or phrases, no '#' prefix, under 500 characters TOTAL across the whole array — that is YouTube's combined budget for the tag box. Keep them literal (topic, format, spelling variants). YouTube states tags carry little ranking weight except for terms people misspell or that are ambiguous, so never stuff them, and never let them stand in for a real title and description. `videoTags` is a different input from `hashtags` and must not repeat it."
+  + " `thumbnailText`: 3-5 words maximum that go ON the thumbnail image, legible at phone size. Required on `long` cards, optional on `short` ones. It must NOT repeat the videoTitle word for word — the thumbnail and the title are read together, so they should say two halves of one idea."
+  + " `thumbnailDirection`: what the thumbnail image shows — subject, framing, expression, contrast. Phone-shootable, no crew or equipment assumptions, same standard as photoDirection. On long-form, the thumbnail and title together decide the click, so say how this image earns it."
+  + " `chapters` (long-form only, and only when the video runs past ~3 minutes with genuinely distinct sections): an array of objects, each `{\"timestamp\":\"0:00\",\"label\":\"...\"}`. YouTube silently drops the ENTIRE chapter list unless all three of these hold: the first timestamp is exactly 0:00, there are at least 3 chapters, and each one starts at least 10 seconds after the one before it. Labels are 100 characters or fewer. Omit the field rather than emit a set that breaks any of those rules. Emit them ONLY as this structured field — do not ALSO write the timestamp lines into `videoDescription`, which would give the creator the same list twice."
+  + " `endScreenCta` (long-form only): one line naming what the end screen should point at — the next video, a playlist, or subscribe — and why that is the right next step after THIS video."
+  + " YOUTUBE SHORTS vs LONG-FORM: on a Short, the hook is the first frame and the title is supplementary, hashtags carry more discovery weight than tags, and there are no chapters or end screens — do not emit those fields. On long-form, the title and thumbnail carry the click and the description carries the search."
+  + " YOUTUBE HASHTAG CEILING: the first 3 hashtags in the description render above the video title as links, and past 15 hashtags YouTube ignores every hashtag on the video. Never exceed 15 on a YouTube card. Keep them in the `hashtags` array as on every other platform — do not write them into `videoDescription` as well."
+  + " Every other platform is unaffected by this block — keep emitting `caption` as specified above.";
+
 // [PERSONA] Field-level register map for the plan schema. The split is the
 // whole ballgame on this surface: the creator reads `insight` and `the_bet`
 // as VIRL talking to them, and PUBLISHES `caption` and `hook` as themselves.
@@ -1293,12 +1335,24 @@ const PLAN_REGISTER_SPLIT = registerSplitFor(
     "restDayTips[].title", "restDayTips[].body",
     "filmDirection", "photoDirection", "compositionTip",
     "slides[].designDirection", "designDirection",
+    // [PLATFORM-COMPOSER] Direction and plumbing, not published words:
+    // thumbnailDirection tells the creator what to shoot, pinBoard and
+    // pinTopics are filing decisions, destinationLink is a URL. `videoTags`
+    // sits here too — tags are indexing metadata nobody reads aloud.
+    "thumbnailDirection", "pinBoard", "pinTopics", "videoTags",
+    "destinationLink", "endScreenCta",
   ],
   [
     "title", "hook", "caption", "onScreenText[]",
     "slides[].headline", "slides[].body", "quote",
     "frames[].content", "frames[].textOverlay", "frames[].interactiveElement",
     "body", "closing",
+    // [PLATFORM-COMPOSER] Everything the creator pastes into the Pinterest or
+    // YouTube composer under their own name. `altText` is included on purpose:
+    // it publishes, it is read aloud by screen readers, and generic alt text
+    // written in a house voice is exactly what it should not be.
+    "pinTitle", "pinDescription", "altText",
+    "videoTitle", "videoDescription", "thumbnailText", "chapters[].label",
   ]
 );
 
@@ -1521,13 +1575,16 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     + " format=long_form_text → include `hook` (the opening line), `body` (the full post body, formatted with line breaks for LinkedIn readability — use \\n for line breaks inside the JSON string), `closing` (the final line / CTA). LinkedIn and Facebook only — never X."
     + " format=thread → include `posts` (array of 2-8 strings, ONE per post in the thread, in order). Each string is the complete text of that post as the creator will paste it, 280 characters or fewer INCLUDING the numbering prefix. Number them \"1/\", \"2/\" and so on at the start of each string. Post 1 must work as a standalone post — it is the only one that appears in replies and reposts, so it carries the hook and has to earn the tap on its own. The last post carries the CTA or the closing turn. Do NOT emit `caption`, `body`, or `closing` on a thread card — `posts` is the whole artifact. A one-post thread is valid and correct when the idea fits in 280: emit a single-element array."
     + " Always include `format`, `platform`, and `day` on every card. If you cannot produce a meaningful format-specific field for a card, omit just that field (do not invent placeholder content)."
+    // [PLATFORM-COMPOSER] Pinterest / YouTube composer fields — see the block
+    // definition above for why these key off `platform` rather than `format`.
+    + PLATFORM_COMPOSER_BLOCK
     // [REPURPOSE 1] Every asset should ship more than once. Two rules:
     // a universal per-card `repurpose` line, and a film-once planning
     // rule so multi-platform weeks reuse assets instead of multiplying
     // creation work.
     + " REPURPOSING — every card must include `repurpose`: ONE sentence naming where this exact asset goes after posting and what to tweak (e.g. 'Share to your IG Story with a poll sticker an hour after posting' / 'Same clip posts to TikTok as-is — swap to 3 niche hashtags' / 'Pull the best line as a quote graphic later this month'). Match suggestions to the creator's selected platforms only. Cross-posting craft: when a video moves platforms, say to use the clean exported clip (never a TikTok-watermarked download — Instagram deprioritizes it); feed posts share to Stories natively via the share button."
     + " FILM ONCE, SHIP EVERYWHERE: when the creator selected 2+ platforms that suit the same content, do NOT author two separate creation tasks. Make ONE primary card, and make the second platform's card an explicit repost: title it 'Repost: [primary title]', set its `description` to what changes ('same video — new caption below, TikTok-native hashtags'), and give it its own platform-tuned `caption`. Reposts still count toward the card range — the point is the creator films/designs once."
-    + " FINAL CHECK before emitting JSON — verify every card against this list and fix misses: (1) every card includes `repurpose`; (2) every format=video card includes `filmDirection` with 2-3 concrete clips; (3) every format=single_image card includes `photoDirection`. A card missing these is incomplete."
+    + " FINAL CHECK before emitting JSON — verify every card against this list and fix misses: (1) every card includes `repurpose`; (2) every format=video card includes `filmDirection` with 2-3 concrete clips; (3) every format=single_image card includes `photoDirection`; (4) every platform=Pinterest card includes `pinTitle`, `pinDescription`, `altText`, `pinBoard` and `pinTopics`, and carries NO `caption`; (5) every platform=YouTube card includes `youtubeFormat`, `videoTitle`, `videoDescription`, `videoTags` and `thumbnailDirection`, and carries NO `caption`. A card missing these is incomplete."
     // [COMPLIANCE 1] Per-niche guardrails. Empty string when the user's
     // niche / locale isn't covered. Per-niche but shared across all users
     // of that niche → belongs in the shared cache tier.
@@ -1821,7 +1878,11 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // exceeded 6000 and surfaced the "cut off mid-thought" error to users.
     // Sonnet 4.6 supports up to 64K; handleStreamingPlan retries once at a
     // larger budget when this still truncates.
-    maxTokens: 14000,
+    // [PLATFORM-COMPOSER] Raised from 14000: a YouTube long-form card now
+    // carries a 400+ character description, a tag array and chapters, and a
+    // Pinterest card a title, description and alt text where it used to carry
+    // one caption. A multi-platform week can hold several of each.
+    maxTokens: 16000,
     // [WEEK-START] A partial week is free. The creator didn't choose a short
     // plan — it's dictated by which day they happened to sign up or come
     // back, and it's a one-time cost paid to get them onto their own week
@@ -1951,7 +2012,7 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
     + "\n  - Use the EXACT day labels above. Do not invent other days, do not regenerate kept days."
     + "\n  - Keep each new card on the SAME platform and format as the slot it replaces (shown above): produce a genuinely different idea/angle for that slot — a fresh take, NOT a different channel. Only deviate from a slot's platform/format if it is not in the ALLOWED lists above, in which case pick the closest ALLOWED platform/format."
     + "\n  - Fit the locked strategy thesis and bet. The new cards should feel like they belong to the SAME week as the kept cards."
-    + "\n  - Follow ALL the same per-card field rules from the system prompt (universal fields + format-specific fields based on the card's `format`)."
+    + "\n  - Follow ALL the same per-card field rules from the system prompt (universal fields + format-specific fields based on the card's `format` + platform-specific composer fields based on its `platform` — a replacement Pinterest or YouTube card still carries its full composer field set)."
     + "\n  - Hashtag arrays still follow the platform's playbook hashtag_count. Strings still omit the '#' prefix."
     // [REGEN-CONTEXT] Niche success model first — it says what winning looks
     // like in this vertical, which the replacement card has to serve just as
@@ -1985,10 +2046,12 @@ function buildPlanPartial(params, profile, vaultPatterns, playbook, trends, _his
     systemPrompt: fullBuilt.systemPrompt,
     userPrompt:   userPrompt,
     model:        fullBuilt.model,
-    // ~800 tokens of output per replacement card is a safe upper bound on
-    // the heaviest formats (carousel/story). The streaming retry path
-    // covers the rare case where Sonnet still truncates.
-    maxTokens:    Math.min(800 * N + 1500, 16000),
+    // ~1000 tokens of output per replacement card is a safe upper bound on
+    // the heaviest cards — a carousel or story by format, or a YouTube
+    // long-form card by platform, which carries a description, tags, thumbnail
+    // direction and chapters on top of the format fields. The streaming retry
+    // path covers the rare case where Sonnet still truncates.
+    maxTokens:    Math.min(1000 * N + 1500, 16000),
     cost:         CREDIT_COSTS.plan_partial,
   };
 }
