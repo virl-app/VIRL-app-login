@@ -140,6 +140,22 @@ assert(/500 characters/.test(plan),
   "the prompt states no length target for the pin description — Pinterest ranks it as text and the field caps at 500");
 assert(/screen readers/.test(plan) && /image recognition/.test(plan),
   "alt text is asked for without saying what it is for — that is how it becomes a second copy of the description");
+// Pinterest ranking is keyword ranking. Naming the field is not the same as
+// saying what goes in it — the first pass asked for a description that carried
+// "the search terms" and left how many, where, and from what entirely open.
+assert(/2-3 DISTINCT keyword phrases/.test(plan),
+  "the pin description rule states no keyword count — Pinterest ranks the description text, and 'include keywords' is not a recommendation");
+assert(/INSIDE THE FIRST SENTENCE/.test(plan),
+  "nothing says the primary phrase goes in the first sentence — the description truncates, so a phrase further down does not work");
+assert(/long-tail, high-intent phrasing/.test(plan),
+  "no guidance on long-tail vs broad keywords — a broad head term is where a small account never surfaces");
+assert(/PINTEREST KEYWORD CLUSTER/.test(plan),
+  "the title, description, board and topics are matched together, and nothing tells the model to keep them on one phrase");
+assert(/NO search-volume or keyword-difficulty data/.test(plan),
+  "nothing stops the model presenting an invented keyword as researched — same defect class as the fabricated stats and invented trends this file already guards");
+assert(/does not label which platform each item came from/.test(plan),
+  "the prompt does not rule the trends block out as a keyword source — its items are not reliably platform-labelled, so treating one as a Pinterest search term invents provenance");
+
 assert(/never invent a deeper path/i.test(plan),
   "nothing stops the model inventing a destination URL — a pin pointing at a 404 is worse than a pin with no link");
 assert(/first 60/.test(plan),
