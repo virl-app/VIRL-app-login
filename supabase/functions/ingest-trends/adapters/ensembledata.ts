@@ -16,6 +16,7 @@ import type { NormalizedTrend, TrendSource } from "../types.ts";
 import { HASHTAG_CONFIG } from "./hashtags.ts";
 import {
   allCallsFailed,
+  refusalReason,
   extractPosts,
   foldPosts,
   isRefusal,
@@ -108,9 +109,12 @@ export function ensembleDataSource(opts: EnsembleOptions): TrendSource {
             failed++;
             if (isRefusal(res.status)) {
               authRefusals++;
-              log(`#${tag} HTTP ${res.status} — CREDENTIALS OR QUOTA REJECTED, not an empty result`);
+              // The body is where the vendor NAMES the reason ("insufficient
+              // units", "subscription expired"). Logging only the status is why
+              // the last outage needed a human to go look up what 493 meant.
+              log(`#${tag} HTTP ${res.status} — CREDENTIALS OR QUOTA REJECTED, not an empty result: ${await refusalReason(res)}`);
             } else {
-              log(`#${tag} HTTP ${res.status} — skipping`);
+              log(`#${tag} HTTP ${res.status} — skipping: ${await refusalReason(res)}`);
             }
             continue;
           }

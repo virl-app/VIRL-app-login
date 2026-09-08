@@ -179,3 +179,29 @@ export function isRefusal(status: number): boolean {
 export function allCallsFailed(attempted: number, failed: number): boolean {
   return attempted > 0 && failed >= attempted;
 }
+
+/**
+ * A short, safe excerpt of an error response body, for logging alongside the
+ * status.
+ *
+ * The status says we were refused; the body says why — "insufficient units",
+ * "subscription expired", "invalid token" are all different fixes wearing the
+ * same status code. The 2026-07-30 outage logged `HTTP 493` 22 times a run for
+ * forty days and never once logged the sentence next to it that would have
+ * named the cause outright.
+ *
+ * Never throws and never returns much: this runs inside an error path that must
+ * not become its own failure, and a vendor error body can be an entire HTML
+ * page. A body that cannot be read is not worth a second problem, so it just
+ * reports that.
+ */
+export async function refusalReason(res: { text?: () => Promise<string> }): Promise<string> {
+  try {
+    if (typeof res.text !== "function") return "(no body)";
+    const body = (await res.text()).trim().replace(/\s+/g, " ");
+    if (!body) return "(empty body)";
+    return body.length > 200 ? body.slice(0, 200) + "…" : body;
+  } catch {
+    return "(body unreadable)";
+  }
+}

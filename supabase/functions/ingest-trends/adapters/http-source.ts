@@ -45,6 +45,7 @@ import {
   extractPosts,
   foldPosts,
   allCallsFailed,
+  refusalReason,
   isRefusal,
   normalizeName,
   type SoundTally,
@@ -152,9 +153,10 @@ export function httpTrendSource(opts: HttpSourceOptions): TrendSource {
             failed++;
             if (isRefusal(res.status)) {
               refusals++;
-              log(`#${tag} HTTP ${res.status} — CREDENTIALS OR QUOTA REJECTED, not an empty result`);
+              // See ensembledata.ts: the status alone does not say why.
+              log(`#${tag} HTTP ${res.status} — CREDENTIALS OR QUOTA REJECTED, not an empty result: ${await refusalReason(res)}`);
             } else {
-              log(`#${tag} HTTP ${res.status} — skipping`);
+              log(`#${tag} HTTP ${res.status} — skipping: ${await refusalReason(res)}`);
             }
             continue;
           }

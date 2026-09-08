@@ -129,6 +129,32 @@ try {
 assert(!threw, `a partially refused run threw (${threw && threw.message}) — discarding real trends to raise a louder alarm is the wrong trade, and the adapter says so in its own comment`);
 assert(got && got.length > 0, "a partially refused run dropped the data it did get");
 
+// ── The refusal log names the reason, not just the status ─────────────────
+//
+// "HTTP 493" is a lookup task; "HTTP 493: insufficient units" is a fix. The
+// forty-day outage logged the former 22 times a run and never the latter.
+
+const lines = [];
+try {
+  await ensembleDataSource({
+    token: "t", hashtags: HASHTAGS, log: (m) => lines.push(String(m)),
+    fetchImpl: async () => ({ ok: false, status: 493, text: async () => '{"detail":"insufficient units"}' }),
+  }).fetch();
+} catch { /* the refusal throw is asserted above; here we only read the log */ }
+assert(lines.some(l => /insufficient units/.test(l)),
+  "the refusal log does not include the vendor's reason — the status alone leaves the reader looking up what a nonstandard code means, which is how 493 went unread for forty days");
+
+// And it must survive a vendor that returns no readable body at all.
+const noBody = [];
+try {
+  await ensembleDataSource({
+    token: "t", hashtags: HASHTAGS, log: (m) => noBody.push(String(m)),
+    fetchImpl: async () => ({ ok: false, status: 493, text: async () => { throw new Error("stream consumed"); } }),
+  }).fetch();
+} catch { /* expected */ }
+assert(noBody.some(l => /493/.test(l)),
+  "an unreadable error body suppressed the refusal log entirely — reading the reason must never become its own failure");
+
 if (failures > 0) {
   console.error(`\nTrend source health check FAILED with ${failures} failure(s).`);
   process.exit(1);
