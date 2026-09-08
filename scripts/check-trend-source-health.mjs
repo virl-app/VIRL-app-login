@@ -43,7 +43,7 @@ function assert(cond, msg) {
 }
 
 const SRC = new URL("../supabase/functions/ingest-trends/adapters/", import.meta.url);
-const MODULES = ["tiktok-normalize", "hashtags", "ensembledata", "http-source"];
+const MODULES = ["tiktok-normalize", "hashtags", "ensembledata", "http-source", "youtube", "youtube-terms"];
 
 // Transform each adapter to ESM Node can import, rewriting "./x.ts" → "./x.mjs".
 const dir = mkdtempSync(join(tmpdir(), "virl-adapters-"));
@@ -58,6 +58,7 @@ writeFileSync(join(dir, "types.mjs"), "export {};\n");
 
 const { isRefusal, allCallsFailed } = await import(pathToFileURL(join(dir, "tiktok-normalize.mjs")).href);
 const { ensembleDataSource } = await import(pathToFileURL(join(dir, "ensembledata.mjs")).href);
+const { youtubeSource, extractHashtags } = await import(pathToFileURL(join(dir, "youtube.mjs")).href);
 
 // ── isRefusal knows the codes vendors actually send ────────────────────────
 
@@ -154,6 +155,77 @@ try {
 } catch { /* expected */ }
 assert(noBody.some(l => /493/.test(l)),
   "an unreadable error body suppressed the refusal log entirely — reading the reason must never become its own failure");
+
+// ── YouTube adapter: the first non-TikTok observed source ─────────────────
+//
+// Same pairs as above, on the free source. Plus the one thing that is
+// different about a search platform: a query that matched no videos this week
+// is a real answer, not a failure, and must not trip the backstop.
+
+const TERMS = [{ term: "house tour", segment: "real_estate" }, { term: "life coach", segment: "coach" }];
+const ytVideo = (id, views, desc) => ({ id, statistics: { viewCount: String(views) }, snippet: { title: `Video ${id}`, description: desc } });
+const ytOk = (body) => ({ ok: true, status: 200, json: async () => body });
+const ytFetch = (search, videos) => async (url) => String(url).includes("/search?") ? search(url) : videos(url);
+
+// (a) Healthy: one search_term per query, views summed, hashtags aggregated across queries.
+let ytGot = null; let ytThrew = null;
+try {
+  ytGot = await youtubeSource({ apiKey: "k", terms: TERMS, log: () => {}, fetchImpl: ytFetch(
+    () => ytOk({ items: [{ id: { videoId: "v1" } }, { id: { videoId: "v2" } }] }),
+    () => ytOk({ items: [ytVideo("v1", 1000, "tips #realestate #housetour"), ytVideo("v2", 500, "more #realestate")] }),
+  ) }).fetch();
+} catch (e) { ytThrew = e; }
+assert(!ytThrew, `a healthy YouTube run threw (${ytThrew && ytThrew.message})`);
+const terms = (ytGot || []).filter((t) => t.type === "search_term");
+const tags  = (ytGot || []).filter((t) => t.type === "hashtag");
+assert(terms.length === 2 && terms.every((t) => t.platform === "youtube" && t.source === "youtube-data-api"),
+  "the YouTube adapter did not emit one youtube/search_term row per query with its own source name — a row stamped tiktok or ensembledata would be misattributed for the life of the table");
+assert(terms.every((t) => t.views === 1500 && t.postCount === 2),
+  "search_term views/postCount are not the sampled videos' sum and count — the lifecycle scorer reads exactly those two numbers");
+// Both queries return the same two videos, so #realestate is on TWO videos
+// (not four — a video matched by two queries is still one video) and
+// #housetour is on one.
+assert(tags.some((t) => t.displayName === "#realestate" && t.postCount === 2 && t.views === 1500) && !tags.some((t) => t.displayName === "#housetour"),
+  `hashtags are not aggregated across queries, deduped by video, with a minimum of two videos — got ${JSON.stringify(tags.map((t) => [t.displayName, t.postCount]))}; a tag on one video is noise, and a video seen under two queries is one endorsement, not two`);
+
+// (b) A query with no videos this week is an ANSWER: no throw, and no row for it.
+ytThrew = null; ytGot = null;
+try {
+  ytGot = await youtubeSource({ apiKey: "k", terms: TERMS, log: () => {}, fetchImpl: ytFetch(() => ytOk({ items: [] }), () => ytOk({ items: [] })) }).fetch();
+} catch (e) { ytThrew = e; }
+assert(!ytThrew && Array.isArray(ytGot) && ytGot.length === 0,
+  `two queries that matched nothing this week were treated as a failure (${ytThrew && ytThrew.message}) — on a search platform an empty week is a real result, and alarming on it is how alarms stop being read`);
+
+// (c) Quota exhausted: 403 on every call must throw with the body's reason reachable.
+ytThrew = null; const ytLines = [];
+try {
+  await youtubeSource({ apiKey: "k", terms: TERMS, log: (m) => ytLines.push(String(m)),
+    fetchImpl: async () => ({ ok: false, status: 403, text: async () => '{"error":{"errors":[{"reason":"quotaExceeded"}]}}' }) }).fetch();
+} catch (e) { ytThrew = e; }
+assert(ytThrew && /NOT an empty week/i.test(ytThrew.message),
+  "a quota-exhausted YouTube run returned normally — index.ts would record it healthy and the platform would go dark with nothing said, the forty-day shape again");
+assert(ytLines.some((l) => /quotaExceeded/.test(l)),
+  "the YouTube refusal log does not carry the API's own reason — 'HTTP 403' alone sends the reader to guess between a bad key and a spent quota");
+
+// (d) A bad key is 400, which isRefusal does not know — the backstop must still catch it.
+ytThrew = null;
+try {
+  await youtubeSource({ apiKey: "k", terms: TERMS, log: () => {}, fetchImpl: async () => ({ ok: false, status: 400, text: async () => "keyInvalid" }) }).fetch();
+} catch (e) { ytThrew = e; }
+assert(ytThrew, "every query failing with HTTP 400 (keyInvalid) returned normally — the allCallsFailed backstop is not wired into the YouTube adapter");
+
+// extractHashtags: real hashtags only, deduped, lowercased.
+const hx = extractHashtags("Tour! #HouseTour #housetour #x #real_estate #2025tips");
+assert(hx.includes("housetour") && hx.filter((h) => h === "housetour").length === 1 && !hx.includes("x") && hx.includes("real_estate"),
+  `extractHashtags mis-parsed: ${JSON.stringify(hx)}`);
+
+// index.ts no longer stamps every row as EnsembleData, and the enrichment prompt reads the row's platform.
+const indexSrc = readFileSync(new URL("../supabase/functions/ingest-trends/index.ts", import.meta.url), "utf8");
+const enrichSrc = readFileSync(new URL("../supabase/functions/ingest-trends/enrich.ts", import.meta.url), "utf8");
+assert(!/source:\s*"ensembledata"/.test(indexSrc) && /source:\s*t\.source/.test(indexSrc),
+  "index.ts hard-codes source \"ensembledata\" on upsert — every YouTube row would be attributed to the TikTok vendor");
+assert(!/trending on TikTok this week/.test(enrichSrc) && /platformLabel\(t\.platform\)/.test(enrichSrc),
+  "the enrichment prompt still says 'trending on TikTok' unconditionally — Perplexity would confidently explain why a YouTube search term is trending on TikTok, and that string is what the creator reads");
 
 if (failures > 0) {
   console.error(`\nTrend source health check FAILED with ${failures} failure(s).`);

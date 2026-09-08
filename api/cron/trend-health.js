@@ -136,8 +136,9 @@ async function newestTimestamp(table, column) {
 async function legacyFreshnessByPlatform() {
   try {
     // [TRENDS-SEGMENT] Global rows only (`segment IS NULL`). The cron now
-    // writes per-segment rows for TikTok, Instagram and LinkedIn on top of the
-    // global row per platform. Counting both would let a healthy segment row
+    // writes per-segment rows for every platform a segment's playbook names
+    // (SEGMENT_PLATFORMS in trends-refresh.js) on top of the global row per
+    // platform. Counting both would let a healthy segment row
     // make a platform look fresh while its global refresh was failing — the
     // same shape as the bug this function already fixed once, where six
     // healthy platforms hid a seventh behind a global max. Measure one tier,

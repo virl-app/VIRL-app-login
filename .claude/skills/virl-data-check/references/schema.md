@@ -29,7 +29,8 @@ looking on a day it is not scheduled to run.
 | `sources` | jsonb array of URLs, response-level rather than per item |
 | `fetched_at` | Insert time. Rows are append-only; there is no update path |
 
-Expected weekly volume: 7 global + 20 segment = 27 rows.
+Expected weekly volume: 7 global + 31 segment = 38 rows, written by two cron
+invocations ten minutes apart (`?tier=global`, then `?tier=segment`).
 
 `segment` is constrained to `real_estate`, `coach`, `creator`,
 `personal_brand`, `small_business`, `fitness`, `healthcare`, `beauty`, `hair`

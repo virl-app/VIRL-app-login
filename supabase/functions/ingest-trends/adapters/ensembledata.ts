@@ -137,6 +137,7 @@ export function ensembleDataSource(opts: EnsembleOptions): TrendSource {
         out.push({
           platform: "tiktok",
           type: "hashtag",
+          source: "ensembledata",
           normalizedName: normalizeName(tag),
           displayName: `#${tag}`,
           externalUrl: `https://www.tiktok.com/tag/${encodeURIComponent(tag)}`,
@@ -154,6 +155,7 @@ export function ensembleDataSource(opts: EnsembleOptions): TrendSource {
         out.push({
           platform: "tiktok",
           type: "sound",
+          source: "ensembledata",
           normalizedName: normalizeName(`music${s.id}`),
           displayName: s.author ? `${s.title} — ${s.author}` : s.title,
           externalUrl: `https://www.tiktok.com/music/x-${encodeURIComponent(s.id)}`,

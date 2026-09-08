@@ -596,7 +596,7 @@ export async function buildTrendContext({ platforms, niche, profile, goal, goalS
         (refreshedAt ? `[CURRENT TRENDS as of ${refreshedAt}]\n` : "[CURRENT TRENDS]\n") +
         lines.join("\n") +
         "\n  Rules: use at most 2 of these trends, and only where they fit naturally. " +
-        "Prefer RISING over peaking. Always name the exact sound or hashtag. " +
+        "Prefer RISING over peaking. Always name the exact sound, hashtag, or search term. " +
         "Never use a trend older than 7 days.",
       );
     } else if (legacy.items.length) {

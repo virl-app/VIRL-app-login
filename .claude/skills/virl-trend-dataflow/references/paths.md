@@ -134,20 +134,31 @@ Pipeline: fetch → upsert → observe → lifecycle → tag → enrich.
 
 Adapters implement `TrendSource`. `ensembledata.ts` is the original;
 `http-source.ts` is configurable for pay-as-you-go providers via
-`TREND_HTTP_URL` / `TREND_HTTP_TOKEN` / `TREND_HTTP_HEADER`. Shared post
-parsing is in `tiktok-normalize.ts`, the seed hashtags in `hashtags.ts`.
-Adapters run alongside each other and duplicates collapse keeping the richer
-row, so a vendor cutover can overlap and be compared rather than switched
-blind.
+`TREND_HTTP_URL` / `TREND_HTTP_TOKEN` / `TREND_HTTP_HEADER`; `youtube.ts` reads
+the YouTube Data API v3 (`YOUTUBE_API_KEY`, free 10k units/day, ~2.1k per run)
+and emits `search_term` rows per query in `youtube-terms.ts` plus `hashtag`
+rows aggregated from sampled videos' titles and descriptions — no sounds,
+because YouTube demand moves on topics, not audio. Shared TikTok post parsing
+is in `tiktok-normalize.ts`, the seed hashtags in `hashtags.ts`. Every emitted
+row names its adapter in `source` (this was hard-coded "ensembledata" at the
+upsert until the second adapter arrived) and its platform lowercase; from the
+upsert on, nothing is platform-specific — the enrichment prompt reads the
+row's platform rather than assuming TikTok. Adapters run alongside each other
+and duplicates collapse keeping the richer row, so a vendor cutover can
+overlap and be compared rather than switched blind.
 
 **Fail-soft, and the distinction that makes it honest.** An empty run writes
 nothing and applies no lifecycle transitions, so one bad vendor day cannot
 cascade every trend to `dead`. But "the vendor refused us" and "the vendor had
 nothing" once produced identical output — a lapsed plan turned every call into
 a skip, returned `[]`, and reported the run healthy with `ok: true, count: 0`.
-Adapters now count 401/402/403/429 separately and throw when that is the whole
-story, and `http-source` additionally distinguishes an unrecognized response
-envelope from an empty week.
+Adapters now count 401/402/403/429/493 separately (493 is EnsembleData's
+out-of-units code, and its absence from that list cost forty days) and throw
+when that is the whole story; `allCallsFailed` additionally throws when every
+call yielded nothing whatever the status, so the next vendor-invented code
+costs one run rather than another forty days; the refusal log carries the
+response body so the reason is read, not looked up. `http-source` additionally
+distinguishes an unrecognized response envelope from an empty week.
 
 `?selftest=1` is unauthenticated by design — pure in-memory lifecycle
 assertions, no data, no vendor, no spend. `?sourcetest=1` spends one call and

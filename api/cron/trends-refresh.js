@@ -35,9 +35,19 @@
 //                           segment's niche label so the search is pointed at
 //                           that vertical.
 //
-// Cost: 7 global + 20 segment = 27 Perplexity calls a week, against 7 before.
-// At sonar-pro that is single-digit dollars a month, and it is the difference
-// between a trend block about this creator's industry and one about TikTok.
+// Cost: 7 global + 31 segment = 38 Perplexity calls a week, against 7 before
+// the tier existed and 27 before it covered every platform the playbook names.
+// At sonar-pro that is still low-double-digit dollars a month at most, and it
+// is the difference between a trend block about this creator's industry and
+// one about TikTok.
+//
+// [REFRESH-TIER] 38 jobs at ~17s each over 3 workers is ~215s before any
+// rate-limit backoff, against a 300s ceiling — the same arithmetic that
+// killed the 2026-08-17 run at job 13. So the two tiers run as two
+// invocations (`?tier=global`, `?tier=segment`; see vercel.json) rather than
+// one. The global tier — the row every creator falls back to — gets its own
+// short run that segment volume can never truncate. No `tier` runs everything,
+// so a manual invocation and the existing tests behave as before.
 
 import { researchTrends } from "../_lib/trends-research.js";
 import { cronAuthorized } from "../_lib/cron-auth.js";
@@ -83,31 +93,47 @@ export const SEGMENT_LABELS = {
 
 // Which platforms get a per-segment row.
 //
-// Not every platform for every segment: that would be 63 calls for signal
-// most creators never see, and the weak platforms in the current data
-// (Pinterest at ~1 item/week, X at zero across seven weeks) would only produce
-// more empty rows. TikTok and Instagram carry the volume and the quality, and
-// TikTok is additionally the FALLBACK_PLATFORM in trend-context.js — its rows
-// reach every creator regardless of the platform they target, which makes it
-// the single highest-leverage row to make niche-specific.
+// Derived from `playbook_segments.platform_priority` — the strategist's own
+// statement of where each segment's audience is — plus TikTok for every
+// segment, because TikTok is FALLBACK_PLATFORM in trend-context.js: its
+// segment row is the one that crosses platforms and reaches every creator
+// regardless of where they post, which makes it the single highest-leverage
+// row to make niche-specific.
 //
-// LinkedIn is added for the two segments whose audiences are actually there.
-// This map is the knob to turn as segments grow; adding a pair costs one
-// Perplexity call a week.
-// [SEGMENT-HEALTH] Exported so cron/trend-health.js can monitor exactly the
-// pairs this cron writes. Duplicating the map there would mean a pair added
-// here is silently unmonitored — the same drift that let the segment tier fail
-// unwatched in the first place.
+// This map used to cover TikTok and Instagram only, with LinkedIn for two
+// segments, on the reasoning that "the weak platforms in the current data
+// (Pinterest at ~1 item/week, X at zero across seven weeks) would only
+// produce more empty rows". That was true when written and stopped being true
+// on 2026-08-10, when the per-platform research frames shipped: over the six
+// weeks to 2026-09-08 the global rows averaged Pinterest 6.5, Facebook 5.8,
+// LinkedIn 6.5, X 6.4 items a week. Meanwhile the profiles table had 6
+// creators on Facebook, 5 on Pinterest and 9 on LinkedIn with either no
+// segment row at all or one for two segments of nine — every one of them
+// served platform-wide research, or a TikTok row borrowed across, in place of
+// their own industry's. The reason for the narrow map had expired and the
+// map had not moved with it.
+//
+// X is deliberately absent: no segment's platform_priority names it, so an X
+// creator gets the X global row plus their segment's TikTok row borrowed
+// across — the same as before. Add X to a segment here the day the playbook
+// says its audience is there, not before.
+//
+// Keep this in step with platform_priority. The SQL that diffs them:
+//   select segment_key, platform_priority from playbook_segments;
+// A pair present there and absent here is a creator being served the wrong
+// tier. Adding a pair costs one Perplexity call a week and is automatically
+// monitored — cron/trend-health.js reads this map, so a new pair that comes
+// back empty shows up in the segment-health email rather than going unwatched.
 export const SEGMENT_PLATFORMS = {
-  real_estate:    ["TikTok", "Instagram"],
-  coach:          ["TikTok", "Instagram", "LinkedIn"],
-  creator:        ["TikTok", "Instagram"],
-  personal_brand: ["TikTok", "Instagram", "LinkedIn"],
-  small_business: ["TikTok", "Instagram"],
-  fitness:        ["TikTok", "Instagram"],
-  healthcare:     ["TikTok", "Instagram"],
-  beauty:         ["TikTok", "Instagram"],
-  hair:           ["TikTok", "Instagram"],
+  real_estate:    ["TikTok", "Instagram", "Facebook"],
+  coach:          ["TikTok", "Instagram", "LinkedIn", "YouTube"],
+  creator:        ["TikTok", "Instagram", "YouTube"],
+  personal_brand: ["TikTok", "Instagram", "LinkedIn", "YouTube"],
+  small_business: ["TikTok", "Instagram", "Facebook", "YouTube"],
+  fitness:        ["TikTok", "Instagram", "YouTube"],
+  healthcare:     ["TikTok", "Instagram", "Facebook", "YouTube"],
+  beauty:         ["TikTok", "Instagram", "Pinterest"],
+  hair:           ["TikTok", "Instagram", "Pinterest"],
 };
 
 const SUPABASE_HEADERS = {
@@ -168,12 +194,24 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Server misconfigured." });
   }
 
+  // [REFRESH-TIER] Which tier(s) this invocation runs. Same query-param
+  // pattern as email-triggers' `?job=`. Anything other than the two named
+  // tiers — including no param — runs both, so a manual call is the full
+  // refresh and the request cannot be mis-typed into doing nothing.
+  const tier = (req.query && req.query.tier) || "";
+  const runGlobal  = tier !== "segment";
+  const runSegment = tier !== "global";
+
   // Build the full work list up front so the counts in the response describe
   // a plan rather than whatever happened to run before something threw.
   const jobs = [];
-  for (const platform of PLATFORMS) jobs.push({ platform, segment: null });
-  for (const segment of Object.keys(SEGMENT_PLATFORMS)) {
-    for (const platform of SEGMENT_PLATFORMS[segment]) jobs.push({ platform, segment });
+  if (runGlobal) {
+    for (const platform of PLATFORMS) jobs.push({ platform, segment: null });
+  }
+  if (runSegment) {
+    for (const segment of Object.keys(SEGMENT_PLATFORMS)) {
+      for (const platform of SEGMENT_PLATFORMS[segment]) jobs.push({ platform, segment });
+    }
   }
 
   let published = 0;
@@ -240,6 +278,7 @@ export default async function handler(req, res) {
   // safety net; this just means the response says which one when someone looks.
   return res.status(200).json({
     ok: true,
+    tier: tier || "all",
     planned: jobs.length,
     published,
     errored,

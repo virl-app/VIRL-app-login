@@ -93,8 +93,10 @@ group by coalesce(segment,'(global)')
 order by tier;
 ```
 
-Expect roughly 27 rows per week total: 7 global + 20 segment. Only 7 means the
-segment tier did not run at all.
+Expect roughly 38 rows per week total: 7 global + 31 segment. Only 7 means the
+segment tier did not run at all — it is a separate cron invocation
+(`?tier=segment`, ten minutes after the global one), so check that schedule
+before the code.
 
 ## Is the research any good?
 

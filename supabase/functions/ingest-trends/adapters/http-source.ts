@@ -180,6 +180,7 @@ export function httpTrendSource(opts: HttpSourceOptions): TrendSource {
         out.push({
           platform: "tiktok",
           type: "hashtag",
+          source: name,
           normalizedName: normalizeName(tag),
           displayName: `#${tag}`,
           externalUrl: `https://www.tiktok.com/tag/${encodeURIComponent(tag)}`,
@@ -195,6 +196,7 @@ export function httpTrendSource(opts: HttpSourceOptions): TrendSource {
         out.push({
           platform: "tiktok",
           type: "sound",
+          source: name,
           normalizedName: normalizeName(`music${s.id}`),
           displayName: s.author ? `${s.title} — ${s.author}` : s.title,
           externalUrl: `https://www.tiktok.com/music/x-${encodeURIComponent(s.id)}`,

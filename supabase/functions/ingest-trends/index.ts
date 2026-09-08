@@ -14,6 +14,8 @@ import { ensembleDataSource } from "./adapters/ensembledata.ts";
 import { HASHTAG_CONFIG } from "./adapters/hashtags.ts";
 import { buildUrl, httpSourceConfigFromEnv, httpTrendSource } from "./adapters/http-source.ts";
 import { extractPosts } from "./adapters/tiktok-normalize.ts";
+import { youtubeSource, SOURCE_NAME as YOUTUBE_SOURCE } from "./adapters/youtube.ts";
+import { YOUTUBE_SEARCH_CONFIG } from "./adapters/youtube-terms.ts";
 import { scoreLifecycle } from "./lifecycle.ts";
 import { LIFECYCLE_CASES } from "./lifecycle.cases.ts";
 import {
@@ -35,6 +37,7 @@ import {
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const ENSEMBLE_TOKEN = Deno.env.get("ENSEMBLE_TOKEN") ?? "";
+const YOUTUBE_API_KEY = Deno.env.get("YOUTUBE_API_KEY") ?? "";
 const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY") ?? "";
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const INGEST_CRON_SECRET = Deno.env.get("INGEST_CRON_SECRET") ?? "";
@@ -116,14 +119,14 @@ async function sbPatchById(table: string, id: string, patch: unknown): Promise<v
 // outage — drains 10 at a time and nothing is ever re-paid for.
 async function enrichMissingContext(onlySeenSince?: string): Promise<{ eligible: number; enriched: number }> {
   if (!PERPLEXITY_API_KEY) return { eligible: 0, enriched: 0 };
-  let q = "trend_items?select=id,display_name,status,niche_scores" +
+  let q = "trend_items?select=id,display_name,status,niche_scores,platform" +
     "&context=is.null&status=in.(new,rising)&limit=300";
   if (onlySeenSince) q += `&last_seen=gte.${encodeURIComponent(onlySeenSince)}`;
-  const rows = await sbSelect<{ id: string; display_name: string; status: TrendStatus; niche_scores: Record<string, number> | null }>(q);
+  const rows = await sbSelect<{ id: string; display_name: string; status: TrendStatus; niche_scores: Record<string, number> | null; platform?: string }>(q);
 
   const candidates: EnrichCandidate[] = rows
     .filter((r) => r.niche_scores && Object.keys(r.niche_scores).length > 0)
-    .map((r) => ({ id: r.id, displayName: r.display_name, status: r.status, scores: r.niche_scores as Record<string, number> }));
+    .map((r) => ({ id: r.id, displayName: r.display_name, status: r.status, scores: r.niche_scores as Record<string, number>, platform: r.platform }));
 
   const selected = selectForEnrichment(candidates);
   if (selected.length === 0) return { eligible: candidates.length, enriched: 0 };
@@ -171,6 +174,7 @@ async function runIngest() {
   summary.keys = {
     ensemble: !!ENSEMBLE_TOKEN,
     httpSource: !!Deno.env.get("TREND_HTTP_TOKEN"),
+    youtube: !!YOUTUBE_API_KEY,
     anthropic: !!ANTHROPIC_API_KEY,
     perplexity: !!PERPLEXITY_API_KEY,
   };
@@ -210,6 +214,18 @@ async function runIngest() {
     const error = e instanceof Error ? e.message : String(e);
     log("http-source CONFIG ERROR — adapter not registered", error);
     summary.httpSourceConfigError = error;
+  }
+
+  // The first non-TikTok observed source. Free (Data API quota), so it is
+  // enabled by the presence of a key and nothing else. Its rows carry
+  // platform "youtube" and the same views/postCount pair the lifecycle scorer
+  // reads, so everything downstream — upsert, observe, score, tag, enrich —
+  // runs unchanged; the only platform-specific string was the enrichment
+  // prompt, which now reads the row's platform.
+  if (YOUTUBE_API_KEY) {
+    sources.push(youtubeSource({ apiKey: YOUTUBE_API_KEY, terms: YOUTUBE_SEARCH_CONFIG, log: (m, e) => log(`youtube: ${m}`, e) }));
+  } else {
+    log("YOUTUBE_API_KEY missing — youtube adapter disabled");
   }
 
   const fetched: NormalizedTrend[] = [];
@@ -277,7 +293,9 @@ async function runIngest() {
     display_name: t.displayName,
     external_url: t.externalUrl ?? null,
     region: t.region,
-    source: "ensembledata",
+    // Was hard-coded "ensembledata" for as long as that was the only adapter,
+    // which would have stamped every YouTube row as TikTok-vendor data.
+    source: t.source ?? "unknown",
     last_seen: startedAt.toISOString(),
   }));
 
@@ -388,7 +406,7 @@ async function runIngest() {
         normalized_name: row.normalized_name,
         region: row.region,
         display_name: row.display_name,
-        source: row.source ?? "ensembledata",
+        source: row.source ?? "unknown",
         niche_scores: scores,
         updated_at: new Date().toISOString(),
       }];
@@ -457,6 +475,36 @@ Deno.serve(async (req: Request) => {
   // adapter works or to add the right path to extractPosts() and retry.
   //
   // The token is never echoed, only its presence and the redacted URL.
+  // Secret-gated single-query probe against the YouTube Data API. Spends ~101
+  // quota units (one search, one videos.list) and reports what came back, so a
+  // new key can be proven before the schedule depends on it — the same job
+  // ?sourcetest=1 does for the http-source. No writes.
+  if (url.searchParams.get("youtubetest") === "1") {
+    if (!YOUTUBE_API_KEY) return json({ error: "YOUTUBE_API_KEY is not set on this function." }, 400);
+    const term = url.searchParams.get("term") || YOUTUBE_SEARCH_CONFIG[0].term;
+    const lines: string[] = [];
+    try {
+      const rows = await youtubeSource({
+        apiKey: YOUTUBE_API_KEY,
+        terms: [{ term, segment: "probe" }],
+        log: (m) => lines.push(m),
+      }).fetch();
+      return json({
+        mode: "youtubetest",
+        provider: YOUTUBE_SOURCE,
+        term,
+        trendsFound: rows.length,
+        sample: rows.slice(0, 5).map((r) => ({ type: r.type, name: r.displayName, views: r.views, videos: r.postCount })),
+        log: lines,
+        verdict: rows.length > 0
+          ? "OK — the key works and the adapter produced rows."
+          : "RESPONDED BUT NO ROWS — either nothing matched this week or the response shape changed; read `log`.",
+      });
+    } catch (e) {
+      return json({ mode: "youtubetest", term, log: lines, error: e instanceof Error ? e.message : String(e) }, 502);
+    }
+  }
+
   if (url.searchParams.get("sourcetest") === "1") {
     try {
       const cfg = httpSourceConfigFromEnv((k) => Deno.env.get(k));

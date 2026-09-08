@@ -37,6 +37,12 @@ export type TrendStatus = "new" | "rising" | "peaking" | "fading" | "dead";
 export interface NormalizedTrend {
   platform: string;
   type: string;
+  /**
+   * Which adapter produced this row, written to `trend_items.source`. Was
+   * hard-coded to "ensembledata" at the upsert for as long as that was the
+   * only adapter, which misattributed every row the moment a second one ran.
+   */
+  source?: string;
   normalizedName: string;
   displayName: string;
   externalUrl?: string;
