@@ -2,7 +2,7 @@
   "name": "virl-app-login",
   "version": "1.0.0",
   "private": true,
-  "description": "VIRL app — single-page React frontend (index.html via Babel standalone) plus Vercel serverless API functions in /api.",
+  "description": "VIRL app \u2014 single-page React frontend (index.html via Babel standalone) plus Vercel serverless API functions in /api.",
   "scripts": {
     "check:index": "node scripts/check-index-syntax.mjs",
     "check:compliance": "node scripts/check-compliance.mjs",
@@ -11,9 +11,10 @@
     "check:trends": "node scripts/check-trend-personalization.mjs",
     "check:rating": "node scripts/check-rating-upsert.mjs",
     "check:composer": "node scripts/check-composer-fields.mjs",
-    "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist && npm run check:trends && npm run check:rating && npm run check:composer",
+    "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist && npm run check:trends && npm run check:trendsource && npm run check:rating && npm run check:composer",
     "audit:trends": "node scripts/audit-trend-research.mjs",
-    "og:image": "node scripts/og-image.mjs"
+    "og:image": "node scripts/og-image.mjs",
+    "check:trendsource": "node scripts/check-trend-source-health.mjs"
   },
   "dependencies": {
     "resend": "^4.0.0",

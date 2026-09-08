@@ -15,6 +15,7 @@
 import type { NormalizedTrend, TrendSource } from "../types.ts";
 import { HASHTAG_CONFIG } from "./hashtags.ts";
 import {
+  allCallsFailed,
   extractPosts,
   foldPosts,
   isRefusal,
@@ -70,6 +71,10 @@ export function ensembleDataSource(opts: EnsembleOptions): TrendSource {
       // truth about which one happened.
       let authRefusals = 0;
       let attempted = 0;
+      // Every call that yielded nothing, for ANY reason — a refusal, an
+      // unrecognized status, a thrown fetch. `authRefusals` only counts the
+      // statuses we already know to name; this counts the ones we don't.
+      let failed = 0;
 
       // Truncate up front and say so, rather than discovering the cap mid-run.
       const planned = hashtags.slice(0, maxUnits);
@@ -100,6 +105,7 @@ export function ensembleDataSource(opts: EnsembleOptions): TrendSource {
             // 401/403 = credentials rejected. 402 = payment required (the
             // shape a lapsed plan takes). 429 = quota exhausted. None of
             // these say anything about whether trends exist.
+            failed++;
             if (isRefusal(res.status)) {
               authRefusals++;
               log(`#${tag} HTTP ${res.status} — CREDENTIALS OR QUOTA REJECTED, not an empty result`);
@@ -111,6 +117,7 @@ export function ensembleDataSource(opts: EnsembleOptions): TrendSource {
           payload = await res.json();
         } catch (e) {
           units++;
+          failed++;
           log(`#${tag} fetch failed — skipping`, e instanceof Error ? e.message : e);
           continue;
         }
@@ -165,6 +172,19 @@ export function ensembleDataSource(opts: EnsembleOptions): TrendSource {
           `this is a billing/token problem, NOT an empty week. Check the EnsembleData plan and ENSEMBLE_TOKEN.`,
         );
       }
+      // [SOURCE-HEALTH] The backstop for a status `isRefusal` does not know.
+      // EnsembleData's 493 sat outside that list for forty days and every call
+      // took the generic "skipping" branch above, so the throw never fired and
+      // the run reported healthy. Whatever the code, nothing usable from every
+      // single call is a vendor problem, not a quiet week.
+      if (out.length === 0 && allCallsFailed(attempted, failed)) {
+        throw new Error(
+          `all ${attempted} calls failed and none returned usable data — ` +
+          `this is a vendor, token or quota problem, NOT an empty week. ` +
+          `Check the EnsembleData plan and ENSEMBLE_TOKEN, and see the per-hashtag HTTP statuses above.`,
+        );
+      }
+
       if (authRefusals > 0) {
         log(`WARNING: ${authRefusals}/${attempted} calls were refused (auth or quota); returning partial results`);
       }

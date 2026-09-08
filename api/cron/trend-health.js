@@ -24,7 +24,7 @@ import { sendEmail }          from "../_lib/email-send.js";
 import { trendPipelineStale } from "../_lib/email-templates.js";
 import { cronAuthorized }     from "../_lib/cron-auth.js";
 import { SEGMENT_PLATFORMS }  from "./trends-refresh.js";
-import { legacyRowHasItems }  from "../_lib/trend-context.js";
+import { legacyRowHasItems, LEGACY_TREND_FRESHNESS_DAYS } from "../_lib/trend-context.js";
 
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -268,6 +268,21 @@ export default async function handler(req, res) {
     if (age === null || age >= LEGACY_STALE_DAYS) laggingPlatforms.push(p);
   }
 
+  // [DARK-VS-LAGGING] Lagging and dark are different facts and conflating them
+  // sent a false alarm. A platform is LAGGING at LEGACY_STALE_DAYS (10) — it is
+  // overdue and worth an email, but `loadLegacyTrends` still serves its rows, so
+  // creators on it are still getting trends. It only goes DARK once it passes
+  // LEGACY_TREND_FRESHNESS_DAYS (14), the age at which that query returns
+  // nothing and the surface actually renders the "no trends this week" state.
+  //
+  // The gap between the two is the runway the thresholds were chosen to buy.
+  // Reporting a lagging platform as dark spends that runway on the day it
+  // starts, which is exactly backwards.
+  const darkPlatforms = PLATFORMS.filter(p => {
+    const age = legacyPlatformAges[p];
+    return age === null || age >= LEGACY_TREND_FRESHNESS_DAYS;
+  });
+
   // The reportable legacy age is the WORST platform, so a single lagging
   // channel can't hide behind six healthy ones.
   const knownAges = PLATFORMS.map(p => legacyPlatformAges[p]).filter(a => a !== null);
@@ -284,9 +299,24 @@ export default async function handler(req, res) {
   const observedStale = observedAge === null || observedAge >= OBSERVED_STALE_DAYS;
   const legacyStale   = laggingPlatforms.length > 0;
 
-  // Both dry is the state creators actually feel: no observed data AND no
-  // fallback means every surface renders the "no trends" empty state.
-  const bothDark = observedStale && legacyStale;
+  // [DARK-VS-LAGGING] Both dry is the state creators actually feel: no observed
+  // data AND no fallback means every surface renders the "no trends" empty
+  // state. That claim is only true when EVERY platform is dark.
+  //
+  // This was `observedStale && legacyStale`, and legacyStale is true when even
+  // one of seven platforms is merely lagging. On 2026-09-08 that sent an email
+  // headlined "Both trend sources are stale — plans are running without trends"
+  // and asserting every surface was dark, when six platforms had refreshed
+  // three days earlier and the seventh was still inside the serving window.
+  // Nothing was dark. An alert that overstates on a single lagging platform is
+  // one nobody reads by the time something really is dark — the precise way the
+  // last outage survived eight days.
+  const bothDark = observedStale && darkPlatforms.length === PLATFORMS.length;
+
+  // Observed gone AND some but not all platforms past the serving window: real
+  // creators are dark, but naming which ones is the difference between a fix
+  // and a panic.
+  const partialDark = observedStale && darkPlatforms.length > 0 && !bothDark;
 
   // [SEGMENT-HEALTH] Two distinct segment failures, because they need different
   // reactions: the tier not running at all points at the cron, while the tier
@@ -347,6 +377,7 @@ export default async function handler(req, res) {
   if ((observedStale || legacyStale || segmentDegraded) && adminUserId) {
     const tpl = trendPipelineStale({
       observedAge, legacyAge, observedStale, legacyStale, bothDark,
+      partialDark, darkPlatforms,
       laggingPlatforms,
       totalPlatforms:    PLATFORMS.length,
       observedThreshold: OBSERVED_STALE_DAYS,
@@ -377,6 +408,8 @@ export default async function handler(req, res) {
     observedStale,
     legacyStale,
     bothDark,
+    partialDark,
+    darkPlatforms,
     laggingPlatforms,
     legacyPlatformAges,
     segmentTierDown,

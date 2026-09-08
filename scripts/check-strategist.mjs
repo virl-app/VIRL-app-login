@@ -1296,6 +1296,40 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     "with only the observed pipeline stale, the email does not say the fallback is covering it — that difference decides how urgently to act");
   assert(observedOnly.subject !== both.subject,
     "a partial outage and a total one send the same subject line");
+
+  // [DARK-VS-LAGGING] "Every surface is dark" is the loudest claim this system
+  // makes and it has to be earned. It was not: bothDark was
+  // `observedStale && legacyStale`, and legacyStale is true when ONE of seven
+  // platforms is merely overdue. On 2026-09-08 that sent an email asserting
+  // every generation surface was showing the no-trends state while six
+  // platforms had refreshed three days earlier and the seventh was still being
+  // served. An alert that cries outage over one lagging platform is one nobody
+  // believes when something really is dark.
+  //
+  // Lagging (LEGACY_STALE_DAYS) means overdue but still served. Dark
+  // (LEGACY_TREND_FRESHNESS_DAYS) means loadLegacyTrends returns nothing and
+  // the surface really is empty. The gap between them IS the runway.
+  assert(!/const bothDark\s*=\s*observedStale && legacyStale/.test(healthSrc),
+    "bothDark is back to `observedStale && legacyStale` — that fires the total-outage email when a single platform of seven is merely lagging, which is the false alarm this assertion exists to prevent");
+  assert(/darkPlatforms/.test(healthSrc) && /LEGACY_TREND_FRESHNESS_DAYS/.test(healthSrc),
+    "trend-health no longer measures darkness against the window loadLegacyTrends actually serves from — without it, 'dark' is a guess rather than the point where creators genuinely see nothing");
+  assert(/bothDark\s*=\s*observedStale && darkPlatforms\.length === PLATFORMS\.length/.test(healthSrc),
+    "bothDark no longer requires EVERY platform to be dark — anything less overstates a partial outage as a total one");
+
+  // The pair, at the template level: the partial case must name who is dark,
+  // and the total case must still make the total claim.
+  const partialDarkMail = trendPipelineStale({
+    observedAge: 40, legacyAge: 15, observedStale: true, legacyStale: true,
+    bothDark: false, partialDark: true, darkPlatforms: ["YouTube"],
+    laggingPlatforms: ["YouTube"], totalPlatforms: 7,
+    observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/YouTube/.test(partialDarkMail.subject) && /YouTube/.test(partialDarkMail.text),
+    "some platforms are dark and the email does not name them — 'no trend data reaching plans' with no platform named is what sends you auditing all seven");
+  assert(!/every generation surface|Both trend sources are stale/i.test(partialDarkMail.text),
+    "a partial outage still claims every surface is dark — that is the overstatement that makes the real total-outage email unbelievable");
+  assert(/every generation surface/i.test(both.html) || /Every generation surface/.test(both.text),
+    "the genuine both-dark case no longer makes the total claim — the fix for overstating must not swing into understating");
 }
 
 if (failures > 0) {

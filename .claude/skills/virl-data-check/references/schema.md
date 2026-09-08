@@ -15,7 +15,10 @@ how they relate at runtime.
 
 ### `trends` — weekly research (Perplexity)
 
-Written by `api/cron/trends-refresh.js`, Mondays 07:00 UTC.
+Written by `api/cron/trends-refresh.js`, Saturdays 07:00 UTC — it moved off
+Mondays on 2026-08-17 so the freshest research lands the day before a
+creator-anchored planning week starts. Looking for a failed run on a Monday is
+looking on a day it is not scheduled to run.
 
 | column | notes |
 |---|---|
@@ -80,7 +83,7 @@ Vercel (`vercel.json`), UTC:
 
 | job | schedule |
 |---|---|
-| `trends-refresh` | `0 7 * * 1` — Mondays |
+| `trends-refresh` | `0 7 * * 6` — Saturdays |
 | `trend-health` | `0 13 * * *` — daily staleness check |
 | `playbook-refresh` | `0 6 1 * *` — monthly |
 | `email-triggers` | `0 14 * * *` and `30 23 * * *` |
