@@ -70,9 +70,15 @@ function engagementScore(result) {
 // content contributes nothing here rather than contributing noise. Rows
 // predating [VAULT-FULL-CARD] (which started capturing `caption`) still
 // contribute through `hook`, which is creator-voice too.
+// [PLATFORM-COMPOSER] `pinDescription` and `videoDescription` join the list
+// for the same reason `caption` is on it: on Pinterest and YouTube the card
+// carries no `caption` at all — those two fields ARE the copy the creator
+// publishes — so without them every saved pin and every saved YouTube card
+// would contribute nothing to the voice pool, and a Pinterest-first creator's
+// exemplars would quietly be empty.
 function creatorVoiceText(row) {
   if (!row) return null;
-  for (const field of ["caption", "body", "text", "quote", "closing"]) {
+  for (const field of ["caption", "pinDescription", "videoDescription", "body", "text", "quote", "closing"]) {
     const v = row[field];
     if (typeof v === "string" && v.trim()) return v;
   }

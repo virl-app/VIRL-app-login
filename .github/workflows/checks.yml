@@ -29,3 +29,5 @@ jobs:
         run: npm run check:strategist
       - name: trend selection honors segment, boundaries, goals
         run: npm run check:trends
+      - name: Pinterest + YouTube composer fields match prompt and renderer
+        run: npm run check:composer

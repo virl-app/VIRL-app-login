@@ -768,7 +768,11 @@ function buildPlanICS(cards) {
     var desc  = [];
     if (card.format)  desc.push("Format: " + card.format);
     if (card.hook)    desc.push("Hook: " + card.hook);
-    if (card.caption) desc.push(String(card.caption).slice(0, 500));
+    // [PLATFORM-COMPOSER] Pinterest / YouTube cards keep their copy in
+    // pinDescription / videoDescription, so the reminder resolves through
+    // cardBodyText rather than reading `caption` and finding nothing.
+    var icsBody = cardBodyText(card);
+    if (icsBody) desc.push(icsBody.slice(0, 500));
     desc.push("— Planned with VIRL");
     count++;
     lines.push(
@@ -3359,6 +3363,94 @@ const CopyIcon = ({size, checked, failed}) => (
   </svg>
 );
 
+// [PLATFORM-COMPOSER] Pinterest and YouTube don't publish from a caption box.
+// Pinterest asks for a Title, a Description, a Link, a board, tagged topics
+// and alt text as six separate inputs; YouTube asks for a title, a
+// description, tags and a thumbnail. Every one of those is separately
+// searchable on a platform that is a search engine before it is a feed — so a
+// card that produced one `caption` sent the creator to the composer with five
+// empty boxes and a caption that had to be retyped into whichever one it
+// half-fitted. The generator now emits a field per input (see
+// PLATFORM_COMPOSER_BLOCK in api/_lib/prompts.js); this table is the render
+// side of the same contract.
+//
+// Keyed by platform, NOT by format: the Pinterest composer asks the same
+// questions for an image pin, a video Idea Pin and a carousel pin, so these
+// sit alongside the format-specific body rather than inside it.
+//
+// `limit` is the platform's own cap on that input and drives the character
+// counter. `locked` marks a field as VIRL's call rather than the creator's
+// copy, matching the EDIT-LOCKDOWN split used for direction fields. `note`
+// says where the value goes when that is not simply the box of the same name
+// — chapters live inside the description, the thumbnail is an image, the end
+// screen is set in the editor after upload — because "here is a field" is only
+// useful next to "here is where it goes".
+var PLATFORM_COMPOSER_FIELDS = {
+  Pinterest: [
+    {key:"pinTitle",        label:"Pin title",        limit:100},
+    {key:"pinDescription",  label:"Pin description",  limit:500},
+    {key:"destinationLink", label:"Destination link", locked:true, note:"the Link box"},
+    {key:"pinBoard",        label:"Board",            limit:50,  locked:true, note:"under Pick a board"},
+    {key:"pinTopics",       label:"Tagged topics",    list:true, locked:true, note:"under Tag related topics"},
+    {key:"altText",         label:"Alt text",         limit:500, note:"under Advanced settings"},
+  ],
+  YouTube: [
+    {key:"videoTitle",         label:"Video title",       limit:100},
+    {key:"videoDescription",   label:"Description",       limit:5000},
+    {key:"chapters",           label:"Chapters",          chapters:true, locked:true, note:"paste inside the description — YouTube reads them from there, not from a comment"},
+    {key:"videoTags",          label:"Tags",              list:true, locked:true, note:"under Show more → Tags"},
+    {key:"thumbnailText",      label:"Thumbnail text",    limit:40,  note:"the words that go ON the thumbnail image"},
+    {key:"thumbnailDirection", label:"Thumbnail",         locked:true, note:"shoot this, then upload it as the custom thumbnail"},
+    {key:"endScreenCta",       label:"End screen",        locked:true, note:"add in the YouTube editor after the video is up"},
+  ],
+};
+
+// Chapters arrive as [{timestamp,label}] and render (and copy) as the
+// "0:00 Intro" lines YouTube actually parses out of a description.
+function chapterLines(chapters) {
+  return (Array.isArray(chapters) ? chapters : []).map(function(c){
+    if (!c) return "";
+    if (typeof c === "string") return c.trim();
+    var ts = String(c.timestamp == null ? "" : c.timestamp).trim();
+    var lb = String(c.label == null ? "" : c.label).trim();
+    return (ts && lb) ? (ts + " " + lb) : (ts || lb);
+  }).filter(Boolean);
+}
+
+// One composer field's value as the string the creator will paste. Arrays
+// (tagged topics, tags) join with commas because that is how both composers
+// accept them; chapters join with newlines because YouTube needs one per line.
+function composerFieldText(card, spec) {
+  var raw = card ? card[spec.key] : null;
+  if (spec.chapters) return chapterLines(raw).join("\n");
+  if (spec.list) {
+    return (Array.isArray(raw) ? raw : (raw ? [raw] : []))
+      .map(function(t){ return String(t == null ? "" : t).replace(/^#+/, "").trim(); })
+      .filter(Boolean).join(", ");
+  }
+  return String(raw == null ? "" : raw).trim();
+}
+
+// The composer fields this card actually carries, in composer order. Empty
+// for every platform without a composer table, and for a card generated
+// before this existed — both of which fall through to the caption path.
+function cardComposerFields(card) {
+  var specs = (card && PLATFORM_COMPOSER_FIELDS[card.platform]) || [];
+  return specs.map(function(spec){
+    return Object.assign({}, spec, { value: composerFieldText(card, spec) });
+  }).filter(function(f){ return !!f.value; });
+}
+
+function hasComposerFields(card) { return cardComposerFields(card).length > 0; }
+
+// The one field that plays the caption's role for this card, whatever the
+// platform calls it. Used by the preview line and by any caller that wants
+// "the words of this post" without caring which box they go in.
+function cardBodyText(card) {
+  if (!card) return "";
+  return String(card.pinDescription || card.videoDescription || card.caption || "").trim();
+}
+
 // Assembles the publishable copy for a card: whatever plays the role of
 // the caption for this format, then the hashtags. Production direction
 // (photo / film / audio / design) is deliberately excluded — none of it
@@ -3379,6 +3471,19 @@ function buildCardCopyText(card) {
   var fmt = effectiveFormat(card);
   var parts = [];
   function push(v) { var t = String(v == null ? "" : v).trim(); if (t) parts.push(t); }
+  // [PLATFORM-COMPOSER] A Pinterest or YouTube card has no single caption to
+  // hand over — it has one value per composer input. Copying them as an
+  // unlabelled blob is how the title ends up in the description box, so each
+  // one is copied under the name of the field it belongs in. Per-field copy
+  // buttons live on the card itself; this is the whole-card version, for
+  // pasting into a notes app or moving to a desktop.
+  var composer = cardComposerFields(card);
+  if (composer.length) {
+    composer.forEach(function(f){ parts.push(f.label.toUpperCase() + "\n" + f.value); });
+    var composerTags = hashtagLine(card.hashtags);
+    if (composerTags) parts.push("HASHTAGS\n" + composerTags);
+    return parts.join("\n\n");
+  }
   if (fmt === "long_form_text") {
     push(card.hook); push(card.body); push(card.closing);
   } else if (fmt === "thread") {
@@ -3430,6 +3535,9 @@ function buildCardCopyText(card) {
 // story) is how a creator ends up pasting the wrong thing without noticing.
 function cardCopyLabel(card) {
   var fmt = effectiveFormat(card);
+  // [PLATFORM-COMPOSER] These cards copy as labelled composer fields, not a
+  // caption, and the label has to say so.
+  if (hasComposerFields(card)) return "Copy every " + card.platform + " field";
   if (fmt === "thread")         return "Copy thread + hashtags";
   if (fmt === "story")          return "Copy story frames";
   if (fmt === "long_form_text") return "Copy post + hashtags";
@@ -4099,8 +4207,13 @@ function cardPreview(card) {
   if (!card) return "";
   var preview = "";
   if (card.hook && card.hook !== card.title) preview = card.hook;
-  if (!preview && typeof card.caption === "string" && card.caption.trim()) {
-    preview = card.caption.trim().split("\n")[0];
+  // [PLATFORM-COMPOSER] On Pinterest and YouTube the searchable title IS the
+  // audience-facing line — it is what shows in the feed under the image — so
+  // it previews ahead of the description, which is the body copy.
+  if (!preview) preview = String(card.pinTitle || card.videoTitle || "").trim();
+  if (!preview) {
+    var body = cardBodyText(card);
+    if (body) preview = body.split("\n")[0];
   }
   if (!preview && card.quote) preview = "“" + card.quote + "”";
   if (!preview) {
@@ -4499,6 +4612,10 @@ function FormatSpecificBody({card}) {
 function RepurposeWrap({card, children}) {
   return (
     <React.Fragment>
+      {/* [PLATFORM-COMPOSER] Rendered above the format body on purpose: on
+           Pinterest and YouTube these ARE the post, and the format body is
+           how to shoot the asset that goes in it. */}
+      <PlatformComposerBody card={card}/>
       {children}
       {card.repurpose && (
         <div style={{marginBottom:14,marginTop:-6}}>
@@ -4506,6 +4623,75 @@ function RepurposeWrap({card, children}) {
         </div>
       )}
     </React.Fragment>
+  );
+}
+
+// [PLATFORM-COMPOSER] The Pinterest / YouTube composer, mirrored on the card.
+//
+// One row per input the platform asks for, in the order the composer asks for
+// it, each with its own copy button — because the unit the creator publishes
+// here is the FIELD, not the card. Handing them one blob is what put a pin
+// title in a description box and left the description empty.
+//
+// Counters use each input's real cap and only turn coral once a value is
+// actually over it (same treatment as the thread post counter). Fields VIRL
+// decides rather than the creator — the board, the tags, the thumbnail
+// direction, the link — are marked so they read as recommendations.
+function PlatformComposerBody({card}) {
+  var fields = cardComposerFields(card);
+  var [copiedKey, setCopiedKey] = useState("");
+  if (!fields.length) return null;
+
+  function copyField(text, key) {
+    copyText(text).then(function(ok){
+      setCopiedKey(ok ? key : "");
+      setTimeout(function(){ setCopiedKey(""); }, 1400);
+    });
+  }
+
+  // [PLATFORM-COMPOSER] `youtubeFormat` has no paste box, so it rides the
+  // heading instead: it is not a field the creator copies, it is the fact that
+  // decides how they shoot the thing — vertical and under three minutes, or
+  // horizontal with a thumbnail and chapters.
+  var ytKind = card.platform === "YouTube"
+    ? (card.youtubeFormat === "short" ? " · Short" : card.youtubeFormat === "long" ? " · Long-form" : "")
+    : "";
+  var heading = (card.platform === "Pinterest" ? "Pin fields" : "Upload fields") + ytKind;
+  var chipStyle = {fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"4px 10px",borderRadius:99,cursor:"pointer",border:"1px solid "+B.border,background:B.card,color:B.sub};
+
+  return (
+    <div style={{marginBottom:14,padding:"12px 14px",background:B.bg,border:"1px solid "+B.border,borderRadius:12}}>
+      <FormatBodyEyebrow>{card.platform + " — " + heading}</FormatBodyEyebrow>
+      <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.5,marginBottom:10}}>
+        {"Each of these is its own input when you post, and " + card.platform + " searches them separately. Copy them one at a time."}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        {fields.map(function(f){
+          var over = !!f.limit && f.value.length > f.limit;
+          return (
+            <div key={f.key}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:4}}>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,minWidth:0}}>
+                  {f.label + (f.locked ? " · suggested" : "")}
+                </div>
+                <button onClick={function(){ copyField(f.value, f.key); }} style={chipStyle}>
+                  {copiedKey === f.key ? "Copied ✓" : "Copy"}
+                </button>
+              </div>
+              {f.note && (
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.5,marginBottom:3}}>{f.note}</div>
+              )}
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,lineHeight:1.6,whiteSpace:"pre-wrap",wordBreak:f.key==="destinationLink"?"break-all":"normal"}}>{f.value}</div>
+              {f.limit && (
+                <div style={{marginTop:3,fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:500,letterSpacing:"0.04em",color:over?B.coral:B.muted}}>
+                  {f.value.length + "/" + f.limit + (over ? " — too long, trim before posting" : "")}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -4582,10 +4768,22 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
   // core strategic rationale of the card, not content. It now renders
   // in a locked read-only block below the editor so users can refer
   // to it while editing copy but can't override it.
+  // [PLATFORM-COMPOSER] Composer inputs, split down the same EDIT-LOCKDOWN
+  // line as everything else: the words the creator publishes (pin title,
+  // description, alt text, video title, thumbnail text) are theirs to edit;
+  // the board, the tags, the thumbnail brief, the link and the chapter list
+  // are VIRL's call and render read-only below.
+  var composerSpecs   = PLATFORM_COMPOSER_FIELDS[card && card.platform] || [];
+  var composerEditable = composerSpecs.filter(function(s){ return !s.locked; }).map(function(s){
+    return {key:s.key, label:s.label + (s.limit ? " — " + s.limit + " characters max" : ""), multiline:s.key !== "thumbnailText"};
+  });
+  var composerLocked = composerSpecs.filter(function(s){ return s.locked; });
+
   var fields = [
     {key:"description", label:"Description", multiline:true},
   ]
     .concat(perFormat[fmt] || [])
+    .concat(composerEditable)
     .concat([{key:"hashtags", label:"Hashtags — comma-separated, no #", multiline:false}]);
   var inputBase = {width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:8,padding:"10px 12px",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.ink,lineHeight:1.6,outline:"none",boxSizing:"border-box"};
   var textareaStyle = Object.assign({}, inputBase, {resize:"vertical",minHeight:60});
@@ -4604,7 +4802,12 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
   var insightLocked = (card && (card.insight || card.why)) || "";
   var lockedForFormat = (perFormatLocked[fmt] || []).map(function(f){
     return { key: f.key, label: f.label, value: (card && card[f.key]) || "" };
-  }).filter(function(f){ return f.value && String(f.value).trim(); });
+  }).concat(composerLocked.map(function(s){
+    // Arrays (tagged topics, tags, chapters) resolve through the same
+    // formatter the read view uses, so the locked block shows exactly the
+    // string the copy button hands over.
+    return { key: s.key, label: s.label, value: composerFieldText(card, s) };
+  })).filter(function(f){ return f.value && String(f.value).trim(); });
   return (
     <div style={{marginBottom:14}}>
       {fields.map(function(f){
@@ -5050,6 +5253,16 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
       attribution:         card.attribution || "",
       photoDirection:      card.photoDirection || "",
       compositionTip:      card.compositionTip || "",
+      // [PLATFORM-COMPOSER] Editable composer inputs. The locked ones
+      // (board, tags, thumbnail direction, link, chapters) are read off the
+      // card directly and never enter the draft, same as the other
+      // EDIT-LOCKDOWN fields.
+      pinTitle:            card.pinTitle || "",
+      pinDescription:      card.pinDescription || "",
+      altText:             card.altText || "",
+      videoTitle:          card.videoTitle || "",
+      videoDescription:    card.videoDescription || "",
+      thumbnailText:       card.thumbnailText || "",
       audioRecommendation: card.audioRecommendation || "",
       designDirection:     card.designDirection || "",
       onScreenText:        Array.isArray(card.onScreenText) ? card.onScreenText.join("\n") : "",
@@ -5103,7 +5316,14 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
       thread:         [],
       long_form_text: ["hook","body","closing"],
     };
-    var textKeys = ["title","description"].concat(formatTextKeys[fmt] || []);
+    // [PLATFORM-COMPOSER] Composer inputs save alongside the format fields,
+    // and only the unlocked ones — the same rule that stops a video card from
+    // writing a `body` it never showed keeps a Pinterest card from writing a
+    // `videoTitle`, since the specs are keyed by this card's own platform.
+    var composerTextKeys = (PLATFORM_COMPOSER_FIELDS[card.platform] || [])
+      .filter(function(s){ return !s.locked; })
+      .map(function(s){ return s.key; });
+    var textKeys = ["title","description"].concat(formatTextKeys[fmt] || []).concat(composerTextKeys);
     var updates = {};
     textKeys.forEach(function(k){
       var draftVal = (draftCard[k] || "").trim();
@@ -8546,6 +8766,11 @@ function VaultItemModal({item, onClose}) {
     (Array.isArray(item.onScreenText) && item.onScreenText.length) ||
     item.filmDirection || item.photoDirection || item.compositionTip ||
     item.audioRecommendation || item.designDirection || item.repurpose ||
+    // [PLATFORM-COMPOSER] A Pinterest or YouTube card carries no `caption` at
+    // all — its copy lives in the composer fields — so without this a fully
+    // populated pin would have shown the "saved before VIRL captured full
+    // details" fallback.
+    hasComposerFields(item) ||
     (item.hook && item.hook !== item.title)
   );
 
@@ -11934,6 +12159,23 @@ function App() {
         filmDirection:       card.filmDirection||null,
         photoDirection:      card.photoDirection||null,
         compositionTip:      card.compositionTip||null,
+        // [PLATFORM-COMPOSER] The Pinterest / YouTube composer inputs. On
+        // those two platforms these ARE the post — a save that dropped them
+        // would keep the strategy and lose the pin.
+        pinTitle:            card.pinTitle||null,
+        pinDescription:      card.pinDescription||null,
+        altText:             card.altText||null,
+        pinBoard:            card.pinBoard||null,
+        pinTopics:           Array.isArray(card.pinTopics) ? card.pinTopics.slice() : null,
+        destinationLink:     card.destinationLink||null,
+        youtubeFormat:       card.youtubeFormat||null,
+        videoTitle:          card.videoTitle||null,
+        videoDescription:    card.videoDescription||null,
+        videoTags:           Array.isArray(card.videoTags) ? card.videoTags.slice() : null,
+        thumbnailText:       card.thumbnailText||null,
+        thumbnailDirection:  card.thumbnailDirection||null,
+        chapters:            Array.isArray(card.chapters) ? card.chapters.slice() : null,
+        endScreenCta:        card.endScreenCta||null,
         slides:              Array.isArray(card.slides) ? card.slides.slice() : null,
         quote:               card.quote||null,
         attribution:         card.attribution||null,
@@ -12015,7 +12257,12 @@ function App() {
         // one-liner — capturing only that taught the model VIRL's register
         // as the creator's. `description` stays for the existing display
         // paths; voice reads `caption` (see vault-exemplars.js).
-        caption:     card.caption||card.body||null,
+        // [PLATFORM-COMPOSER] cardBodyText resolves through pinDescription /
+        // videoDescription before caption. A Pinterest or YouTube card has no
+        // `caption`, so reading that field alone would have logged every one
+        // of them with no creator-voice copy at all — starving the exemplar
+        // pool and the drift reference for anyone posting on those platforms.
+        caption:     cardBodyText(card)||card.body||null,
         result,
         loggedAt:    fmtDate(),
       };
