@@ -184,9 +184,13 @@ async function segmentTierHealth(now) {
   }
   if (!expected.length) return null;
 
-  // Same window as the global research check: the tier refreshes weekly, so 10
-  // days absorbs one missed run without crying about it.
-  const since = new Date(now - LEGACY_STALE_DAYS * DAY_MS).toISOString();
+  // Fetch the full SERVING window, not just the alert window. Two questions
+  // are asked of these rows: "is the tier keeping up?" (LEGACY_STALE_DAYS, one
+  // missed weekly run plus slack) and "is there anything left to borrow?"
+  // (LEGACY_TREND_FRESHNESS_DAYS, the age past which loadLegacyTrends stops
+  // returning a row). The second decides whether anyone is actually dark, and
+  // a row at day 12 still answers it. Both are scored in code below.
+  const since = new Date(now - LEGACY_TREND_FRESHNESS_DAYS * DAY_MS).toISOString();
   let rows;
   try {
     const res = await fetch(
@@ -207,21 +211,38 @@ async function segmentTierHealth(now) {
   const newestByPair = new Map();
   for (const r of Array.isArray(rows) ? rows : []) {
     if (!r || !r.platform || !r.segment) continue;
+    // Belt and braces against the query, the same guard loadLegacyTrends
+    // keeps: the URL filter should already have excluded anything older than
+    // the serving window, but a row that slipped past it would be counted as
+    // cover the fallback will never actually serve. Enforcing the age here
+    // makes that a property of this probe rather than of a URL string.
+    const age = ageDays(Date.parse(r.fetched_at), now);
+    if (!Number.isFinite(age) || age >= LEGACY_TREND_FRESHNESS_DAYS) continue;
     const pair = r.segment + "/" + r.platform;
     if (newestByPair.has(pair)) continue;
-    newestByPair.set(pair, r);
+    newestByPair.set(pair, { row: r, age });
   }
 
   const barren = [];
   let fresh = 0;
   let productive = 0;
+  let serving = 0;
   for (const pair of expected) {
-    const row = newestByPair.get(pair);
-    if (row) fresh++;
+    const hit = newestByPair.get(pair);
     // legacyRowHasItems is trend-context's own test, imported rather than
     // restated, so "productive" here means exactly "renders something there".
-    if (row && legacyRowHasItems(row)) productive++;
-    else barren.push(pair);
+    const hasItems = !!(hit && legacyRowHasItems(hit.row));
+    // Alert window: is the tier keeping up? A pair that has not refreshed in
+    // LEGACY_STALE_DAYS is late even if an older row is still being served.
+    if (hit && hit.age < LEGACY_STALE_DAYS) {
+      fresh++;
+      if (hasItems) productive++;
+      else barren.push(pair);
+    } else {
+      barren.push(pair);
+    }
+    // Serving window: would loadLegacyTrends hand this row to a creator today?
+    if (hasItems) serving++;
   }
 
   return {
@@ -229,6 +250,7 @@ async function segmentTierHealth(now) {
     expected:   expected.length,
     fresh,
     productive,
+    serving,
     // Capped: this lands in an email, and 20 pair names is a wall, not a signal.
     barren:     barren.slice(0, 8),
     barrenCount: barren.length,
@@ -299,25 +321,6 @@ export default async function handler(req, res) {
   const observedStale = observedAge === null || observedAge >= OBSERVED_STALE_DAYS;
   const legacyStale   = laggingPlatforms.length > 0;
 
-  // [DARK-VS-LAGGING] Both dry is the state creators actually feel: no observed
-  // data AND no fallback means every surface renders the "no trends" empty
-  // state. That claim is only true when EVERY platform is dark.
-  //
-  // This was `observedStale && legacyStale`, and legacyStale is true when even
-  // one of seven platforms is merely lagging. On 2026-09-08 that sent an email
-  // headlined "Both trend sources are stale — plans are running without trends"
-  // and asserting every surface was dark, when six platforms had refreshed
-  // three days earlier and the seventh was still inside the serving window.
-  // Nothing was dark. An alert that overstates on a single lagging platform is
-  // one nobody reads by the time something really is dark — the precise way the
-  // last outage survived eight days.
-  const bothDark = observedStale && darkPlatforms.length === PLATFORMS.length;
-
-  // Observed gone AND some but not all platforms past the serving window: real
-  // creators are dark, but naming which ones is the difference between a fix
-  // and a panic.
-  const partialDark = observedStale && darkPlatforms.length > 0 && !bothDark;
-
   // [SEGMENT-HEALTH] Two distinct segment failures, because they need different
   // reactions: the tier not running at all points at the cron, while the tier
   // running and returning nothing points at the research prompt.
@@ -333,6 +336,43 @@ export default async function handler(req, res) {
   const segmentThin     = segmentReadable && segments.expected > 0 && !segmentTierDown
     && (segments.productive / segments.expected) < SEGMENT_PRODUCTIVE_FLOOR;
   const segmentDegraded = segmentTierDown || segmentThin;
+
+  // [DARK-VS-LAGGING] Both dry is the state creators actually feel: no observed
+  // data AND no fallback means every surface renders the "no trends" empty
+  // state. That claim is only true when EVERY platform is dark.
+  //
+  // This was `observedStale && legacyStale`, and legacyStale is true when even
+  // one of seven platforms is merely lagging. On 2026-09-08 that sent an email
+  // headlined "Both trend sources are stale — plans are running without trends"
+  // and asserting every surface was dark, when six platforms had refreshed
+  // three days earlier and the seventh was still inside the serving window.
+  // Nothing was dark. An alert that overstates on a single lagging platform is
+  // one nobody reads by the time something really is dark — the precise way the
+  // last outage survived eight days.
+  //
+  // And even that is not sufficient, because of the one rule about the
+  // research path that is most often misremembered: a SEGMENT row crosses
+  // platforms. Every creator resolves to a segment (resolveSegment defaults to
+  // `creator`), every segment has a TikTok pair in SEGMENT_PLATFORMS, and
+  // loadLegacyTrends borrows that row onto whatever platform the creator is
+  // on. So a YouTube creator whose YouTube row has aged out is still served
+  // their industry's TikTok research — degraded to one layer of imprecision,
+  // not dark. The surface is only genuinely empty when the segment tier has
+  // nothing to lend either.
+  //
+  // `serving` is measured against the 14-day window loadLegacyTrends actually
+  // reads from, not the 10-day alert window, so "no cover" here means exactly
+  // that: no segment row a creator could be handed today.
+  const segmentCover = segmentReadable && segments.serving > 0;
+  const bothDark = observedStale && darkPlatforms.length === PLATFORMS.length && !segmentCover;
+
+  // Observed gone AND some platforms past the serving window: those creators
+  // have lost their own platform's research and are running on borrowed
+  // segment rows (or nothing, if the segment tier is dry too). Naming which
+  // platforms, and what they are getting instead, is the difference between
+  // a fix and a panic.
+  const partialDark = observedStale && darkPlatforms.length > 0 && !bothDark;
+
 
   // [SEGMENT-HEALTH] The admin lookup is load-bearing: sendEmail dedupes on
   // (user_id, template, dedupe_key), so an unresolved id means no alert at all.
@@ -377,7 +417,7 @@ export default async function handler(req, res) {
   if ((observedStale || legacyStale || segmentDegraded) && adminUserId) {
     const tpl = trendPipelineStale({
       observedAge, legacyAge, observedStale, legacyStale, bothDark,
-      partialDark, darkPlatforms,
+      partialDark, darkPlatforms, segmentCover,
       laggingPlatforms,
       totalPlatforms:    PLATFORMS.length,
       observedThreshold: OBSERVED_STALE_DAYS,
@@ -410,6 +450,7 @@ export default async function handler(req, res) {
     bothDark,
     partialDark,
     darkPlatforms,
+    segmentCover,
     laggingPlatforms,
     legacyPlatformAges,
     segmentTierDown,

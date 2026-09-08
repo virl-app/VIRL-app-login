@@ -400,7 +400,7 @@ export function trendPipelineStale({
   // [DARK-VS-LAGGING] Dark = past the age at which loadLegacyTrends returns
   // nothing, so the surface really is empty. Lagging = merely overdue, still
   // being served. Optional so existing callers keep their current behaviour.
-  partialDark = false, darkPlatforms = [],
+  partialDark = false, darkPlatforms = [], segmentCover = false,
   laggingPlatforms, totalPlatforms,
   observedThreshold, legacyThreshold,
   // [SEGMENT-HEALTH] Optional — omitted by callers that only check freshness.
@@ -426,7 +426,9 @@ export function trendPipelineStale({
   const headline = bothDark
     ? "Both trend sources are stale — plans are running without trends."
     : partialDark
-      ? `Trend data has gone dark on ${dark.join(", ")}.`
+      ? (segmentCover
+          ? `${dark.join(", ")} has no research of its own left — plans there are running on borrowed TikTok signal.`
+          : `Trend data has gone dark on ${dark.join(", ")}.`)
     : observedStale
       ? "The trend ingest has stopped updating."
       : segmentOnly
@@ -440,7 +442,9 @@ export function trendPipelineStale({
   const subject = bothDark
     ? "VIRL: no trend data reaching plans"
     : partialDark
-      ? `VIRL: no trends reaching ${dark.join(", ")}`
+      ? (segmentCover
+          ? `VIRL: ${dark.join(", ")} running on borrowed trends`
+          : `VIRL: no trends reaching ${dark.join(", ")}`)
     : observedStale
       ? `VIRL trend ingest stale (${age(observedAge)})`
       : segmentOnly
@@ -455,7 +459,9 @@ export function trendPipelineStale({
   const impact = bothDark
     ? `<p style="margin:0 0 12px"><strong style="color:${COLOR.coral}">Every generation surface is currently showing the "no trends this week" state.</strong> Creators are getting plans, captions, and scans built with no trend grounding at all.</p>`
     : partialDark
-      ? `<p style="margin:0 0 12px"><strong style="color:${COLOR.coral}">Creators on ${esc(dark.join(", "))} are seeing the "no trends this week" state.</strong> The observed ingest is down and their research fallback has aged out of the serving window, so those surfaces have nothing left to ground on. Creators on the other platforms still have current research.</p>`
+      ? (segmentCover
+          ? `<p style="margin:0 0 12px"><strong style="color:${COLOR.coral}">Creators on ${esc(dark.join(", "))} have no research for their own platform inside the serving window.</strong> They are not dark: a segment row is the one thing that crosses platforms, so they are being served their industry's <strong>TikTok</strong> research borrowed across &mdash; grounded in the right industry on the wrong platform, until the next research run lands. Creators on the other platforms still have current research.</p>`
+          : `<p style="margin:0 0 12px"><strong style="color:${COLOR.coral}">Creators on ${esc(dark.join(", "))} are seeing the "no trends this week" state.</strong> Their platform's research has aged out of the serving window and the segment tier has nothing to lend across, so those surfaces have nothing left to ground on. Creators on the other platforms still have current research.</p>`)
     : segmentOnly
       ? `<p style="margin:0 0 12px">Creators are still getting trends and nothing is dark — but ${segmentTierDown ? "the per-segment research is not running at all" : `only ${segmentProductive} of ${segmentExpected} segment/platform pairs came back with anything`}, so the affected creators are being served <strong>platform-wide research instead of their own industry's</strong>. That is the difference the segment tier exists to make, and it is quietly not being made.</p>`
       : observedStale
@@ -494,7 +500,9 @@ export function trendPipelineStale({
     bothDark
       ? "Every generation surface is showing the no-trends state right now."
       : partialDark
-        ? `Creators on ${dark.join(", ")} are seeing the no-trends state — the observed ingest is down and their research fallback has aged out of the serving window. The other platforms still have current research.`
+        ? (segmentCover
+            ? `Creators on ${dark.join(", ")} have no research for their own platform inside the serving window. They are not dark — they are being served their industry's TikTok research borrowed across (a segment row is the one thing that crosses platforms), so their plans are grounded in the right industry on the wrong platform until the next research run. The other platforms still have current research.`
+            : `Creators on ${dark.join(", ")} are seeing the no-trends state — their platform's research has aged out of the serving window and the segment tier has nothing to lend across. The other platforms still have current research.`)
       : observedStale
         ? "Creators still have trends via the weekly research fallback, but the observed pipeline is not recovering."
         : segmentOnly

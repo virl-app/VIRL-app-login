@@ -1313,21 +1313,40 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     "bothDark is back to `observedStale && legacyStale` — that fires the total-outage email when a single platform of seven is merely lagging, which is the false alarm this assertion exists to prevent");
   assert(/darkPlatforms/.test(healthSrc) && /LEGACY_TREND_FRESHNESS_DAYS/.test(healthSrc),
     "trend-health no longer measures darkness against the window loadLegacyTrends actually serves from — without it, 'dark' is a guess rather than the point where creators genuinely see nothing");
-  assert(/bothDark\s*=\s*observedStale && darkPlatforms\.length === PLATFORMS\.length/.test(healthSrc),
-    "bothDark no longer requires EVERY platform to be dark — anything less overstates a partial outage as a total one");
+  assert(/bothDark\s*=\s*observedStale && darkPlatforms\.length === PLATFORMS\.length && !segmentCover/.test(healthSrc),
+    "bothDark no longer requires EVERY platform dark AND no segment tier to borrow from — a segment row is the one thing that crosses platforms, so while any productive one exists, no creator is actually dark");
 
   // The pair, at the template level: the partial case must name who is dark,
   // and the total case must still make the total claim.
+  // With the segment tier alive, a platform whose own row aged out is served
+  // its industry's TikTok row borrowed across — loadLegacyTrends admits the
+  // fallback platform for segment rows only. That creator is degraded, not
+  // dark, and the email has to say which, because "no trends" sends Lauren to
+  // check a surface that is in fact rendering a trend block.
   const partialDarkMail = trendPipelineStale({
     observedAge: 40, legacyAge: 15, observedStale: true, legacyStale: true,
-    bothDark: false, partialDark: true, darkPlatforms: ["YouTube"],
+    bothDark: false, partialDark: true, darkPlatforms: ["YouTube"], segmentCover: true,
     laggingPlatforms: ["YouTube"], totalPlatforms: 7,
     observedThreshold: 5, legacyThreshold: 10,
   });
   assert(/YouTube/.test(partialDarkMail.subject) && /YouTube/.test(partialDarkMail.text),
-    "some platforms are dark and the email does not name them — 'no trend data reaching plans' with no platform named is what sends you auditing all seven");
+    "some platforms lost their own research and the email does not name them — 'no trend data reaching plans' with no platform named is what sends you auditing all seven");
   assert(!/every generation surface|Both trend sources are stale/i.test(partialDarkMail.text),
     "a partial outage still claims every surface is dark — that is the overstatement that makes the real total-outage email unbelievable");
+  assert(!/no.trends this week|no-trends state/i.test(partialDarkMail.text),
+    "the segment tier is alive, so a YouTube creator is being served borrowed TikTok segment research — the email calls that the no-trends state, which is the cross-platform rule misremembered in the exact direction the dataflow doc warns about");
+  assert(/TikTok/.test(partialDarkMail.text) && /borrow/i.test(partialDarkMail.text),
+    "the email does not say what the affected creators ARE getting — borrowed TikTok segment research is a degradation with a specific shape, and naming it is what makes the alert actionable");
+
+  // The pair: with nothing to borrow, "no trends" is true and must be said.
+  const partialTrulyDark = trendPipelineStale({
+    observedAge: 40, legacyAge: 15, observedStale: true, legacyStale: true,
+    bothDark: false, partialDark: true, darkPlatforms: ["YouTube"], segmentCover: false,
+    laggingPlatforms: ["YouTube"], totalPlatforms: 7,
+    observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/no.trends this week|no-trends state/i.test(partialTrulyDark.text),
+    "with the segment tier dry there is nothing to borrow, so YouTube creators genuinely see no trends — and the email has stopped saying so");
   assert(/every generation surface/i.test(both.html) || /Every generation surface/.test(both.text),
     "the genuine both-dark case no longer makes the total claim — the fix for overstating must not swing into understating");
 }
