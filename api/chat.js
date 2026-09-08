@@ -8,6 +8,7 @@ import {
 } from "./_lib/prompts.js";
 import { loadPlaybook }              from "./_lib/playbook.js";
 import { loadComplianceRules, getComplianceForNiche, scrubCompliance, detectHealthcareProvider, attachWatchoutNotes } from "./_lib/compliance.js";
+import { scrubLifecycleClaims } from "./_lib/trend-claims.js";
 // [TREND-PIPELINE] Per-generation trend context now comes from the DB-backed
 // trend pipeline (trend_items + playbook layer), assembled here, instead of a
 // live Perplexity web-search on every generation. See api/_lib/trend-context.js.
@@ -616,6 +617,28 @@ async function handleStreamingPlan({ res, payload, useCache, selectedModel, gene
       // the client's progressive parser has the same input and produces
       // user-facing error UI if it can't parse. Log once and continue.
       console.warn('[compliance] post-stream scrub skipped:', e.message);
+    }
+  }
+
+  // [TREND-CLAIM-ENFORCE] Research-fed generations must not call a trend
+  // "peaking" — the rows carry no lifecycle signal and the prompt says so. The
+  // prompt saying so was the whole enforcement until now. Same advisory
+  // contract as the compliance scrub on this streaming path: the text already
+  // reached the client, so the rewrite rides a `trend_claims` event for a
+  // client that opts in, and is logged so the rate of violations is measured
+  // rather than assumed. (Non-streaming surfaces rewrite in place below.)
+  if (trendsSnapshot) {
+    try {
+      const parsed = finalText ? JSON.parse(finalText) : null;
+      if (parsed) {
+        const { scrubbed, flags } = scrubLifecycleClaims(parsed, trendsSnapshot);
+        if (flags.length > 0) {
+          console.log('virl_trend_claim', JSON.stringify({ generationType, flag_count: flags.length, trends: [...new Set(flags.map(f => f.trend))] }));
+          sendEvent('trend_claims', { flags, scrubbed: JSON.stringify(scrubbed) });
+        }
+      }
+    } catch (e) {
+      console.warn('[trend-claims] post-stream scrub skipped:', e.message);
     }
   }
 
@@ -1992,6 +2015,24 @@ export default async function handler(req, res) {
     // Failures here are non-fatal: if the model returned non-JSON or the
     // walker throws, we surface the original text — the client's
     // extractJSON handles weird responses with its own error UI.
+    // [TREND-CLAIM-ENFORCE] Non-streaming surfaces (script, caption, remix,
+    // scans) get the full JSON in one shot, so a research-fed lifecycle claim
+    // is rewritten in place — this is the one path where the rule is enforced
+    // rather than advised. Runs before compliance so the denylist sees the
+    // final wording. Fail-open: a parse failure leaves `text` untouched.
+    if (trendsSnapshotEcho) {
+      try {
+        const parsedForClaims = JSON.parse(text);
+        const { scrubbed, flags } = scrubLifecycleClaims(parsedForClaims, trendsSnapshotEcho);
+        if (flags.length > 0) {
+          console.log('virl_trend_claim', JSON.stringify({ generationType, flag_count: flags.length, trends: [...new Set(flags.map(f => f.trend))] }));
+          text = JSON.stringify(scrubbed);
+        }
+      } catch (e) {
+        console.warn('[trend-claims] post-generation scrub skipped:', e.message);
+      }
+    }
+
     let complianceFlags = [];
     if (complianceForNiche) {
       try {

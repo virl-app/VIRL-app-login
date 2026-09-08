@@ -15,7 +15,10 @@ how they relate at runtime.
 
 ### `trends` — weekly research (Perplexity)
 
-Written by `api/cron/trends-refresh.js`, Mondays 07:00 UTC.
+Written by `api/cron/trends-refresh.js`, Saturdays 07:00 UTC — it moved off
+Mondays on 2026-08-17 so the freshest research lands the day before a
+creator-anchored planning week starts. Looking for a failed run on a Monday is
+looking on a day it is not scheduled to run.
 
 | column | notes |
 |---|---|
@@ -26,7 +29,8 @@ Written by `api/cron/trends-refresh.js`, Mondays 07:00 UTC.
 | `sources` | jsonb array of URLs, response-level rather than per item |
 | `fetched_at` | Insert time. Rows are append-only; there is no update path |
 
-Expected weekly volume: 7 global + 20 segment = 27 rows.
+Expected weekly volume: 7 global + 31 segment = 38 rows, written by two cron
+invocations ten minutes apart (`?tier=global`, then `?tier=segment`).
 
 `segment` is constrained to `real_estate`, `coach`, `creator`,
 `personal_brand`, `small_business`, `fitness`, `healthcare`, `beauty`, `hair`
@@ -80,7 +84,7 @@ Vercel (`vercel.json`), UTC:
 
 | job | schedule |
 |---|---|
-| `trends-refresh` | `0 7 * * 1` — Mondays |
+| `trends-refresh` | `0 7 * * 6` — Saturdays |
 | `trend-health` | `0 13 * * *` — daily staleness check |
 | `playbook-refresh` | `0 6 1 * *` — monthly |
 | `email-triggers` | `0 14 * * *` and `30 23 * * *` |

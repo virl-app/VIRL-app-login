@@ -19,18 +19,29 @@ shape.
 
 **Observed** — `trend_items` + `trend_observations`. Written only by the
 `ingest-trends` Supabase edge function (Deno), Mon + Thu 10:00 UTC via
-`pg_cron`. Samples real posts through a vendor API, aggregates sounds across
-hashtags, scores a lifecycle (`new`/`rising`/`peaking`/`fading`/`dead`) from
-observation history, tags `niche_scores` with Claude, enriches context with
-Perplexity.
+`pg_cron`. Samples real posts through per-platform adapters, aggregates sounds
+(TikTok) or hashtags (YouTube) across probes, scores a lifecycle
+(`new`/`rising`/`peaking`/`fading`/`dead`) from observation history, tags
+`niche_scores` with Claude, enriches context with Perplexity.
+
+Adapters, each enabled by the presence of its key and nothing else: EnsembleData
+(TikTok, `ENSEMBLE_TOKEN`, $100/mo floor — the one that ran dry on 2026-07-30),
+the vendor-agnostic pay-as-you-go http-source (TikTok, `TREND_HTTP_*`), and the
+YouTube Data API (`YOUTUBE_API_KEY`, free quota, rows typed `search_term` and
+`hashtag`). Every row carries its platform lowercase and its adapter in
+`source`; the pipeline after the adapter is platform-agnostic. Probe a new key
+with `?youtubetest=1` / `?sourcetest=1` before the schedule depends on it.
 
 This is the only source that can say something is **measurably** rising, and
 the only one carrying real sound IDs.
 
 **Research** — `trends`. Written by `api/cron/trends-refresh.js` (Node, Vercel),
-**Saturdays 07:00 UTC** (`0 7 * * 6` in `vercel.json`). Asks Perplexity what is
+**Saturdays 07:00 UTC** as two invocations: `?tier=global` at `0 7 * * 6` and
+`?tier=segment` at `10 7 * * 6` (see `vercel.json`). Asks Perplexity what is
 being discussed, per platform and per segment. Auto-publishes with no review
-step.
+step. 7 global + 31 segment = 38 rows a week; the segment pairs mirror
+`playbook_segments.platform_priority` plus TikTok for every segment, and the
+split exists because 38 jobs in one invocation overrun the 300s ceiling.
 
 It ran Mondays until 2026-08-17, when planning weeks became creator-anchored
 with a Sunday default: refreshing the day BEFORE the week starts puts the
@@ -82,6 +93,15 @@ platform-wide TikTok row served to a YouTube creator is wrong about the
 industry and the platform both, which is two layers of imprecision rather than
 one. Only a *segment* row crosses platforms, because that one is already about
 the creator's industry.
+
+**Lifecycle enforcement.** The prompt tells the model research rows are never
+"peaking"; `api/_lib/trend-claims.js` checks the OUTPUT. On a research-fed
+generation (snapshot items all `status: null`), a lifecycle claim within 120
+chars of a served trend's name is rewritten to "being talked about" — in place
+on non-streaming surfaces, as a `trend_claims` event on the streaming plan.
+Never on observed-fed output, where "peaking" is a measured fact, and never on
+a claim that is not about a served trend ("your numbers are exploding" is
+voice).
 
 **Niche filtering.** Observed rows carry `niche_scores` and must clear
 `FIT_FLOOR` (0.6). Research rows carry no scores at all — their niche relevance

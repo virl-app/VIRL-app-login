@@ -166,6 +166,25 @@ export interface EnrichCandidate {
   displayName: string;
   status: TrendStatus;
   scores: Record<string, number>;
+  /** Lowercase `trend_items.platform`. Drives the wording of the enrichment prompt. */
+  platform?: string;
+}
+
+/**
+ * The platform as a person would write it, for the enrichment prompt. The
+ * prompt said "trending on TikTok" unconditionally for as long as TikTok was
+ * the only observed platform; asking Perplexity why a YouTube search term is
+ * trending on TikTok would return a confident answer to the wrong question,
+ * and that answer is the most-read output of the whole ingest.
+ */
+export function platformLabel(platform: string | undefined): string {
+  const key = String(platform ?? "").trim().toLowerCase();
+  const labels: Record<string, string> = {
+    tiktok: "TikTok", instagram: "Instagram", youtube: "YouTube", facebook: "Facebook",
+    x: "X", pinterest: "Pinterest", linkedin: "LinkedIn", google: "Google",
+  };
+  if (labels[key]) return labels[key];
+  return key ? key.charAt(0).toUpperCase() + key.slice(1) : "TikTok";
 }
 
 /**
@@ -217,7 +236,7 @@ export function stripCitations(s: string): string {
  * ingestion run.
  */
 export async function enrichContext(
-  selected: Array<{ id: string; displayName: string; topSegment: string }>,
+  selected: Array<{ id: string; displayName: string; topSegment: string; platform?: string }>,
   opts: {
     apiKey: string;
     segmentLabels?: Record<string, string>;
@@ -239,7 +258,7 @@ export async function enrichContext(
     if (calls >= PERPLEXITY_MAX_CALLS) break;
     const label = opts.segmentLabels?.[t.topSegment] ?? t.topSegment.replace(/_/g, " ");
     const prompt =
-`Explain why ${t.displayName} is trending on TikTok this week and give 3 ways a ${label} could adapt it.
+`Explain why ${t.displayName} is trending on ${platformLabel(t.platform)} this week and give 3 ways a ${label} could adapt it.
 
 Respond with ONLY JSON: {"explanation": "2-3 sentences", "angles": ["way 1", "way 2", "way 3"]}`;
 

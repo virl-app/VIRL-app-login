@@ -397,6 +397,10 @@ export function playbookRefreshReport({ drafted, summaries, errored, errors, sta
 // symptom lived in a log line.
 export function trendPipelineStale({
   observedAge, legacyAge, observedStale, legacyStale, bothDark,
+  // [DARK-VS-LAGGING] Dark = past the age at which loadLegacyTrends returns
+  // nothing, so the surface really is empty. Lagging = merely overdue, still
+  // being served. Optional so existing callers keep their current behaviour.
+  partialDark = false, darkPlatforms = [], segmentCover = false,
   laggingPlatforms, totalPlatforms,
   observedThreshold, legacyThreshold,
   // [SEGMENT-HEALTH] Optional — omitted by callers that only check freshness.
@@ -405,6 +409,7 @@ export function trendPipelineStale({
   segmentBarren = [], segmentBarrenCount = 0,
 }) {
   const lagging = Array.isArray(laggingPlatforms) ? laggingPlatforms : [];
+  const dark = Array.isArray(darkPlatforms) ? darkPlatforms : [];
   const allLagging = totalPlatforms ? lagging.length >= totalPlatforms : false;
   const age = (d) => (d === null ? "no data at all" : d === 1 ? "1 day old" : `${d} days old`);
   const segmentDegraded = segmentTierDown || segmentThin;
@@ -420,6 +425,10 @@ export function trendPipelineStale({
   // often all that gets read.
   const headline = bothDark
     ? "Both trend sources are stale — plans are running without trends."
+    : partialDark
+      ? (segmentCover
+          ? `${dark.join(", ")} has no research of its own left — plans there are running on borrowed TikTok signal.`
+          : `Trend data has gone dark on ${dark.join(", ")}.`)
     : observedStale
       ? "The trend ingest has stopped updating."
       : segmentOnly
@@ -432,6 +441,10 @@ export function trendPipelineStale({
 
   const subject = bothDark
     ? "VIRL: no trend data reaching plans"
+    : partialDark
+      ? (segmentCover
+          ? `VIRL: ${dark.join(", ")} running on borrowed trends`
+          : `VIRL: no trends reaching ${dark.join(", ")}`)
     : observedStale
       ? `VIRL trend ingest stale (${age(observedAge)})`
       : segmentOnly
@@ -445,6 +458,10 @@ export function trendPipelineStale({
   // Creator impact first. Which pipeline broke is the second question.
   const impact = bothDark
     ? `<p style="margin:0 0 12px"><strong style="color:${COLOR.coral}">Every generation surface is currently showing the "no trends this week" state.</strong> Creators are getting plans, captions, and scans built with no trend grounding at all.</p>`
+    : partialDark
+      ? (segmentCover
+          ? `<p style="margin:0 0 12px"><strong style="color:${COLOR.coral}">Creators on ${esc(dark.join(", "))} have no research for their own platform inside the serving window.</strong> They are not dark: a segment row is the one thing that crosses platforms, so they are being served their industry's <strong>TikTok</strong> research borrowed across &mdash; grounded in the right industry on the wrong platform, until the next research run lands. Creators on the other platforms still have current research.</p>`
+          : `<p style="margin:0 0 12px"><strong style="color:${COLOR.coral}">Creators on ${esc(dark.join(", "))} are seeing the "no trends this week" state.</strong> Their platform's research has aged out of the serving window and the segment tier has nothing to lend across, so those surfaces have nothing left to ground on. Creators on the other platforms still have current research.</p>`)
     : segmentOnly
       ? `<p style="margin:0 0 12px">Creators are still getting trends and nothing is dark — but ${segmentTierDown ? "the per-segment research is not running at all" : `only ${segmentProductive} of ${segmentExpected} segment/platform pairs came back with anything`}, so the affected creators are being served <strong>platform-wide research instead of their own industry's</strong>. That is the difference the segment tier exists to make, and it is quietly not being made.</p>`
       : observedStale
@@ -455,7 +472,7 @@ export function trendPipelineStale({
 
   const rows = [
     `<li style="margin:6px 0"><strong>Observed ingest</strong> (trend_items, Mon + Thu): ${esc(age(observedAge))}${observedStale ? ` &mdash; past the ${observedThreshold}-day threshold` : " &mdash; healthy"}</li>`,
-    `<li style="margin:6px 0"><strong>Weekly research</strong> (trends, Mondays), oldest platform: ${esc(age(legacyAge))}${legacyStale ? ` &mdash; past the ${legacyThreshold}-day threshold` : " &mdash; healthy"}</li>`,
+    `<li style="margin:6px 0"><strong>Weekly research</strong> (trends, Saturdays), oldest platform: ${esc(age(legacyAge))}${legacyStale ? ` &mdash; past the ${legacyThreshold}-day threshold` : " &mdash; healthy"}</li>`,
     lagging.length
       ? `<li style="margin:6px 0"><strong>Platforms not refreshing:</strong> ${esc(lagging.join(", "))}${totalPlatforms ? ` (${lagging.length} of ${totalPlatforms})` : ""}</li>`
       : "",
@@ -482,6 +499,10 @@ export function trendPipelineStale({
     "",
     bothDark
       ? "Every generation surface is showing the no-trends state right now."
+      : partialDark
+        ? (segmentCover
+            ? `Creators on ${dark.join(", ")} have no research for their own platform inside the serving window. They are not dark — they are being served their industry's TikTok research borrowed across (a segment row is the one thing that crosses platforms), so their plans are grounded in the right industry on the wrong platform until the next research run. The other platforms still have current research.`
+            : `Creators on ${dark.join(", ")} are seeing the no-trends state — their platform's research has aged out of the serving window and the segment tier has nothing to lend across. The other platforms still have current research.`)
       : observedStale
         ? "Creators still have trends via the weekly research fallback, but the observed pipeline is not recovering."
         : segmentOnly
@@ -493,7 +514,7 @@ export function trendPipelineStale({
             : "Plans are fine; the fallback behind them is stale.",
     "",
     `Observed ingest (trend_items, Mon + Thu): ${age(observedAge)}${observedStale ? ` — past the ${observedThreshold}-day threshold` : " — healthy"}`,
-    `Weekly research (trends, Mondays), oldest platform: ${age(legacyAge)}${legacyStale ? ` — past the ${legacyThreshold}-day threshold` : " — healthy"}`,
+    `Weekly research (trends, Saturdays), oldest platform: ${age(legacyAge)}${legacyStale ? ` — past the ${legacyThreshold}-day threshold` : " — healthy"}`,
     lagging.length ? `Platforms not refreshing: ${lagging.join(", ")}${totalPlatforms ? ` (${lagging.length} of ${totalPlatforms})` : ""}` : "",
     segmentDegraded
       ? `Per-segment research: ${segmentTierDown ? "no rows written at all" : `${segmentProductive} of ${segmentExpected} pairs produced items`}${barren.length ? ` — empty: ${barren.join(", ")}${segmentBarrenCount > barren.length ? `, +${segmentBarrenCount - barren.length} more` : ""}` : ""}`
@@ -510,7 +531,7 @@ export function trendPipelineStale({
       eyebrow: "Admin",
       headline,
       body,
-      accent: bothDark ? "coral" : undefined,
+      accent: (bothDark || partialDark) ? "coral" : undefined,
       primaryCta: { href: APP_URL + "/?tab=admin", label: "Open the dashboard" },
     }),
     text: textLines,

@@ -1094,6 +1094,93 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
       `${maxInFlight} research calls were in flight at once, over the ${REFRESH_CONCURRENCY_LIMIT} cap — that is the unbounded burst the sequential design existed to avoid`);
   }
 
+  // ── [REFRESH-TIER] Two invocations, one tier each, covering every platform ──
+  //
+  // 38 jobs at ~17s over 3 workers is ~215s against a 300s ceiling, which is
+  // the arithmetic that killed the 2026-08-17 run at job 13. The tiers run as
+  // two crons so the global rows — the ones every creator falls back to — are
+  // never truncated by segment volume. These assert the split is clean and
+  // that the map covers what the playbook says it should.
+  {
+    const { default: trendsRefresh, SEGMENT_PLATFORMS: SP } =
+      await import("../api/cron/trends-refresh.js");
+    const refreshSrc = readFileSync(new URL("../api/cron/trends-refresh.js", import.meta.url), "utf8");
+    const concurrency = Number((refreshSrc.match(/REFRESH_CONCURRENCY\s*=\s*(\d+)/) || [])[1]);
+    const vercelCfg = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+
+    const segmentPairs = Object.entries(SP).flatMap(([seg, pfs]) => pfs.map((pf) => `${pf}/${seg}`));
+
+    // Coverage: every segment carries TikTok (the row that crosses platforms),
+    // and every platform the playbook names for a segment has a pair. The
+    // expected list mirrors playbook_segments.platform_priority as of
+    // 2026-09-08; if the playbook moves, move this with it — the point is that
+    // the map cannot silently fall behind the strategist's own statement of
+    // where each audience is.
+    for (const seg of Object.keys(SP)) {
+      assert(SP[seg].includes("TikTok"),
+        `${seg} has no TikTok segment row — that is the only row loadLegacyTrends borrows across platforms, so every creator in this segment on any other platform loses their industry's research`);
+    }
+    const playbookSays = {
+      real_estate: ["Instagram", "Facebook"], coach: ["Instagram", "LinkedIn", "YouTube"],
+      creator: ["Instagram", "YouTube"], personal_brand: ["LinkedIn", "Instagram", "YouTube"],
+      small_business: ["Facebook", "Instagram", "YouTube"], fitness: ["Instagram", "YouTube"],
+      healthcare: ["YouTube", "Facebook", "Instagram"], beauty: ["Instagram", "Pinterest"], hair: ["Instagram", "Pinterest"],
+    };
+    for (const [seg, pfs] of Object.entries(playbookSays)) {
+      for (const pf of pfs) {
+        assert((SP[seg] || []).includes(pf),
+          `playbook_segments.platform_priority names ${pf} for ${seg} but SEGMENT_PLATFORMS has no ${pf}/${seg} pair — creators there are served platform-wide research in place of their industry's`);
+      }
+    }
+
+    // Ceiling: the larger tier must fit with headroom. ~17s per productive
+    // call is the measured figure in the REFRESH-CONCURRENCY comment; 240s is
+    // 80% of the declared maxDuration, leaving room for 429 backoff.
+    const maxDuration = Number(((vercelCfg.functions || {})["api/cron/trends-refresh.js"] || {}).maxDuration);
+    const worstTierSeconds = Math.ceil(Math.max(segmentPairs.length, 7) / concurrency) * 17;
+    assert(worstTierSeconds <= maxDuration * 0.8,
+      `the segment tier is ${segmentPairs.length} jobs ≈ ${worstTierSeconds}s at ${concurrency} in flight, over 80% of the ${maxDuration}s ceiling — shard it further before adding pairs, or the run truncates in job order exactly as 2026-08-17 did`);
+
+    // Schedule: both tiers are scheduled, segment after global.
+    const crons = (vercelCfg.crons || []).filter((c) => c.path.startsWith("/api/cron/trends-refresh"));
+    const globalCron  = crons.find((c) => c.path.includes("tier=global"));
+    const segmentCron = crons.find((c) => c.path.includes("tier=segment"));
+    assert(globalCron && segmentCron,
+      "vercel.json does not schedule both refresh tiers — a tier that is not scheduled writes nothing and the staleness monitor is the only thing that will notice");
+    assert(!crons.some((c) => !c.path.includes("tier=")),
+      "vercel.json still schedules the untiered refresh — that runs all 38 jobs in one invocation and reintroduces the truncation the split exists to prevent");
+
+    // Behaviour: each tier runs exactly its own jobs, and the two together are the whole plan.
+    const realFetch4 = globalThis.fetch;
+    const perplexityBody = { choices: [{ message: { content: JSON.stringify({
+      summary: "s", items: [{ trend: "a named thing", category: "format", source_url: "https://example.com/a", reason: "" }],
+    }) } }], citations: [] };
+    const runTier = async (tier) => {
+      const inserted = [];
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.includes("api.perplexity.ai")) return { ok: true, status: 200, json: async () => perplexityBody, text: async () => "" };
+        if (u.includes("/rest/v1/trends")) { inserted.push(JSON.parse(init.body)); return { ok: true, status: 201, text: async () => "" }; }
+        return { ok: true, status: 200, json: async () => [], text: async () => "" };
+      };
+      const out = {};
+      const r = { status(c) { out.code = c; return r; }, json(b) { out.body = b; return r; } };
+      await trendsRefresh({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` }, query: tier ? { tier } : {} }, r);
+      return { out, inserted };
+    };
+    const g = await runTier("global");
+    const sg = await runTier("segment");
+    const all = await runTier("");
+    globalThis.fetch = realFetch4;
+
+    assert(g.out.body && g.out.body.planned === 7 && g.inserted.every((row) => row.segment == null),
+      `tier=global did not run exactly the 7 global rows: ${JSON.stringify(g.out.body)}`);
+    assert(sg.out.body && sg.out.body.planned === segmentPairs.length && sg.inserted.every((row) => row.segment),
+      `tier=segment did not run exactly the ${segmentPairs.length} segment pairs: ${JSON.stringify(sg.out.body)}`);
+    assert(all.out.body && all.out.body.planned === 7 + segmentPairs.length,
+      `an untiered call no longer runs the whole plan — a manual refresh would silently do half the job: ${JSON.stringify(all.out.body)}`);
+  }
+
   // ── [RATE-LIMIT] A 429 must be backed off, never stripped-and-resent ───────
   //
   // On 2026-08-22 the refresh wrote 4 of 27 rows in 13 seconds and returned a
@@ -1296,6 +1383,103 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     "with only the observed pipeline stale, the email does not say the fallback is covering it — that difference decides how urgently to act");
   assert(observedOnly.subject !== both.subject,
     "a partial outage and a total one send the same subject line");
+
+  // [DARK-VS-LAGGING] "Every surface is dark" is the loudest claim this system
+  // makes and it has to be earned. It was not: bothDark was
+  // `observedStale && legacyStale`, and legacyStale is true when ONE of seven
+  // platforms is merely overdue. On 2026-09-08 that sent an email asserting
+  // every generation surface was showing the no-trends state while six
+  // platforms had refreshed three days earlier and the seventh was still being
+  // served. An alert that cries outage over one lagging platform is one nobody
+  // believes when something really is dark.
+  //
+  // Lagging (LEGACY_STALE_DAYS) means overdue but still served. Dark
+  // (LEGACY_TREND_FRESHNESS_DAYS) means loadLegacyTrends returns nothing and
+  // the surface really is empty. The gap between them IS the runway.
+  assert(!/const bothDark\s*=\s*observedStale && legacyStale/.test(healthSrc),
+    "bothDark is back to `observedStale && legacyStale` — that fires the total-outage email when a single platform of seven is merely lagging, which is the false alarm this assertion exists to prevent");
+  assert(/darkPlatforms/.test(healthSrc) && /LEGACY_TREND_FRESHNESS_DAYS/.test(healthSrc),
+    "trend-health no longer measures darkness against the window loadLegacyTrends actually serves from — without it, 'dark' is a guess rather than the point where creators genuinely see nothing");
+  assert(/bothDark\s*=\s*observedStale && darkPlatforms\.length === PLATFORMS\.length && !segmentCover/.test(healthSrc),
+    "bothDark no longer requires EVERY platform dark AND no segment tier to borrow from — a segment row is the one thing that crosses platforms, so while any productive one exists, no creator is actually dark");
+
+  // The pair, at the template level: the partial case must name who is dark,
+  // and the total case must still make the total claim.
+  // With the segment tier alive, a platform whose own row aged out is served
+  // its industry's TikTok row borrowed across — loadLegacyTrends admits the
+  // fallback platform for segment rows only. That creator is degraded, not
+  // dark, and the email has to say which, because "no trends" sends Lauren to
+  // check a surface that is in fact rendering a trend block.
+  const partialDarkMail = trendPipelineStale({
+    observedAge: 40, legacyAge: 15, observedStale: true, legacyStale: true,
+    bothDark: false, partialDark: true, darkPlatforms: ["YouTube"], segmentCover: true,
+    laggingPlatforms: ["YouTube"], totalPlatforms: 7,
+    observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/YouTube/.test(partialDarkMail.subject) && /YouTube/.test(partialDarkMail.text),
+    "some platforms lost their own research and the email does not name them — 'no trend data reaching plans' with no platform named is what sends you auditing all seven");
+  assert(!/every generation surface|Both trend sources are stale/i.test(partialDarkMail.text),
+    "a partial outage still claims every surface is dark — that is the overstatement that makes the real total-outage email unbelievable");
+  assert(!/no.trends this week|no-trends state/i.test(partialDarkMail.text),
+    "the segment tier is alive, so a YouTube creator is being served borrowed TikTok segment research — the email calls that the no-trends state, which is the cross-platform rule misremembered in the exact direction the dataflow doc warns about");
+  assert(/TikTok/.test(partialDarkMail.text) && /borrow/i.test(partialDarkMail.text),
+    "the email does not say what the affected creators ARE getting — borrowed TikTok segment research is a degradation with a specific shape, and naming it is what makes the alert actionable");
+
+  // The pair: with nothing to borrow, "no trends" is true and must be said.
+  const partialTrulyDark = trendPipelineStale({
+    observedAge: 40, legacyAge: 15, observedStale: true, legacyStale: true,
+    bothDark: false, partialDark: true, darkPlatforms: ["YouTube"], segmentCover: false,
+    laggingPlatforms: ["YouTube"], totalPlatforms: 7,
+    observedThreshold: 5, legacyThreshold: 10,
+  });
+  assert(/no.trends this week|no-trends state/i.test(partialTrulyDark.text),
+    "with the segment tier dry there is nothing to borrow, so YouTube creators genuinely see no trends — and the email has stopped saying so");
+  assert(/every generation surface/i.test(both.html) || /Every generation surface/.test(both.text),
+    "the genuine both-dark case no longer makes the total claim — the fix for overstating must not swing into understating");
+}
+
+// ── [TREND-CLAIM-ENFORCE] The no-lifecycle-claim rule is enforced, not advised ──
+//
+// The prompt tells the model research rows are never "peaking"; the assertions
+// above check the prompt text. These check the OUTPUT path. Pairs: rewrite on
+// research-fed next to a served trend; untouched on observed-fed (a measured
+// "peaking" is true); untouched when the claim is not about a served trend.
+{
+  const { scrubLifecycleClaims, isResearchFed } = await import("../api/_lib/trend-claims.js");
+  const researchSnap = { v: 2, items: [{ display_name: "Coastal Grandmother aesthetic", status: null, platform: "tiktok" }] };
+  const observedSnap = { v: 2, items: [{ display_name: "Coastal Grandmother aesthetic", status: "peaking", platform: "tiktok" }] };
+  assert(isResearchFed(researchSnap) && !isResearchFed(observedSnap),
+    "isResearchFed does not separate a null-status snapshot from a measured one — the whole scrub keys on that");
+
+  const doc = () => ({
+    cards: [{
+      hook: "The Coastal Grandmother aesthetic is peaking right now — here's the listing version.",
+      caption: "Your open house numbers are exploding this month. Let's talk.",
+    }],
+    strategy: "Ride the Coastal Grandmother aesthetic while it's blowing up on TikTok.",
+  });
+
+  const r = scrubLifecycleClaims(doc(), researchSnap);
+  assert(r.flags.length === 2 && r.flags.every(f => f.rewritten && f.trend === "coastal grandmother aesthetic"),
+    `research-fed: expected exactly the two claims next to the served trend to be rewritten, got ${JSON.stringify(r.flags)}`);
+  assert(/is being talked about right now/.test(r.scrubbed.cards[0].hook) && /being talked about on TikTok/.test(r.scrubbed.strategy),
+    `research-fed: the rewrite did not land as neutral wording: ${JSON.stringify(r.scrubbed)}`);
+  // The pair inside the pair: "your numbers are exploding" is voice, not a
+  // trend claim, and sits nowhere near a served trend. It must survive.
+  assert(/numbers are exploding/.test(r.scrubbed.cards[0].caption),
+    "the scrub rewrote 'your open house numbers are exploding' — that is the creator's voice, not a claim about a trend, and touching it is the voice regression this scrub must never cause");
+
+  const o = scrubLifecycleClaims(doc(), observedSnap);
+  assert(o.flags.length === 0 && /is peaking right now/.test(o.scrubbed.cards[0].hook),
+    "observed-fed: a measured 'peaking' was rewritten — the observed row carries that status and the sentence is true");
+
+  const none = scrubLifecycleClaims(doc(), null);
+  assert(none.flags.length === 0, "with no snapshot the scrub still rewrote — it cannot know what was served, so it must not act");
+
+  // Both hook sites in chat.js call it.
+  const chatSrc = readFileSync(new URL("../api/chat.js", import.meta.url), "utf8");
+  assert((chatSrc.match(/scrubLifecycleClaims\(/g) || []).length >= 2,
+    "chat.js calls scrubLifecycleClaims at fewer than two sites — the streaming plan path and the non-streaming path each need it, or one surface family stays on goodwill");
 }
 
 if (failures > 0) {

@@ -44,6 +44,8 @@ import type { NormalizedTrend, TrendSource } from "../types.ts";
 import {
   extractPosts,
   foldPosts,
+  allCallsFailed,
+  refusalReason,
   isRefusal,
   normalizeName,
   type SoundTally,
@@ -123,6 +125,9 @@ export function httpTrendSource(opts: HttpSourceOptions): TrendSource {
       let refusals = 0;
       let attempted = 0;
       let emptyPayloads = 0;
+      // Calls that yielded nothing for ANY reason, including a status neither
+      // isRefusal nor a successful-but-empty payload accounts for.
+      let failed = 0;
 
       const planned = opts.hashtags.slice(0, maxCalls);
       if (planned.length < opts.hashtags.length) {
@@ -145,17 +150,20 @@ export function httpTrendSource(opts: HttpSourceOptions): TrendSource {
           const res = await doFetch(url, { headers });
           calls++;
           if (!res.ok) {
+            failed++;
             if (isRefusal(res.status)) {
               refusals++;
-              log(`#${tag} HTTP ${res.status} — CREDENTIALS OR QUOTA REJECTED, not an empty result`);
+              // See ensembledata.ts: the status alone does not say why.
+              log(`#${tag} HTTP ${res.status} — CREDENTIALS OR QUOTA REJECTED, not an empty result: ${await refusalReason(res)}`);
             } else {
-              log(`#${tag} HTTP ${res.status} — skipping`);
+              log(`#${tag} HTTP ${res.status} — skipping: ${await refusalReason(res)}`);
             }
             continue;
           }
           payload = await res.json();
         } catch (e) {
           calls++;
+          failed++;
           log(`#${tag} fetch failed — skipping`, e instanceof Error ? e.message : e);
           continue;
         }
@@ -172,6 +180,7 @@ export function httpTrendSource(opts: HttpSourceOptions): TrendSource {
         out.push({
           platform: "tiktok",
           type: "hashtag",
+          source: name,
           normalizedName: normalizeName(tag),
           displayName: `#${tag}`,
           externalUrl: `https://www.tiktok.com/tag/${encodeURIComponent(tag)}`,
@@ -187,6 +196,7 @@ export function httpTrendSource(opts: HttpSourceOptions): TrendSource {
         out.push({
           platform: "tiktok",
           type: "sound",
+          source: name,
           normalizedName: normalizeName(`music${s.id}`),
           displayName: s.author ? `${s.title} — ${s.author}` : s.title,
           externalUrl: `https://www.tiktok.com/music/x-${encodeURIComponent(s.id)}`,
@@ -215,6 +225,18 @@ export function httpTrendSource(opts: HttpSourceOptions): TrendSource {
           `all ${attempted} responses parsed to zero posts. The provider replied ` +
           `successfully, so this is most likely an UNRECOGNIZED RESPONSE ENVELOPE, not an empty week. ` +
           `Run ?sourcetest=1 to see the raw keys and add the envelope path to extractPosts().`,
+        );
+      }
+
+      // [SOURCE-HEALTH] Same backstop as the EnsembleData adapter, for the same
+      // reason: a status outside isRefusal's list used to fall through both
+      // throws above — not a refusal it recognizes, and never reaching
+      // extractPosts to count as an empty payload — and returned [] silently.
+      if (out.length === 0 && allCallsFailed(attempted, failed)) {
+        throw new Error(
+          `all ${attempted} calls failed and none returned usable data — ` +
+          `this is a vendor, token or quota problem, NOT an empty week. ` +
+          `Check the provider plan and TREND_HTTP_TOKEN, and see the per-hashtag HTTP statuses above.`,
         );
       }
 

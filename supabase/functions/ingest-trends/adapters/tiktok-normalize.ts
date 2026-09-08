@@ -141,11 +141,67 @@ export function foldPosts(
 /**
  * HTTP statuses that mean "the vendor refused us", as distinct from "the
  * vendor had nothing". 401/403 credentials, 402 payment required (the shape a
- * lapsed plan takes), 429 quota exhausted.
+ * lapsed plan takes), 429 quota exhausted, 493 EnsembleData's non-standard
+ * "out of units / subscription lapsed" code.
  *
  * Shared because every adapter needs the same distinction and getting it wrong
  * is what let a billing lapse read as a quiet week for nine days.
+ *
+ * 493 is not an IANA status — EnsembleData invented it — and its absence from
+ * this list cost forty days. From 2026-07-30 every one of the 22 hashtag calls
+ * came back 493. Each fell to the generic branch and logged an ordinary
+ * "skipping", `authRefusals` stayed 0, the all-refused throw never fired, and
+ * the run reported healthy while writing nothing. The staleness monitor caught
+ * it, as designed — but only after creators had been trend-dark for weeks.
+ *
+ * The lesson is that ENUMERATING codes is itself the weakness: the next vendor
+ * will invent its own. `allCallsFailed` below closes the class, so an unknown
+ * code costs one bad run rather than another forty days.
  */
 export function isRefusal(status: number): boolean {
-  return status === 401 || status === 402 || status === 403 || status === 429;
+  return status === 401 || status === 402 || status === 403 || status === 429 ||
+    status === 493;
+}
+
+/**
+ * True when an adapter attempted calls and NOT ONE of them yielded usable data.
+ *
+ * The backstop for `isRefusal`. A vendor that answers nothing on every single
+ * call is refusing us, whatever status it dresses that up in — 22 consecutive
+ * failures is never the shape of a genuinely quiet week. Adapters throw on this
+ * so index.ts records `ok:false` with a reason instead of taking the fail-soft
+ * empty branch and reporting a healthy 200.
+ *
+ * Deliberately requires ALL of them: a run that got partial data is still a
+ * useful run, and discarding real trends to raise a louder alarm is the wrong
+ * trade. That is the same line the per-adapter refusal throws already draw.
+ */
+export function allCallsFailed(attempted: number, failed: number): boolean {
+  return attempted > 0 && failed >= attempted;
+}
+
+/**
+ * A short, safe excerpt of an error response body, for logging alongside the
+ * status.
+ *
+ * The status says we were refused; the body says why — "insufficient units",
+ * "subscription expired", "invalid token" are all different fixes wearing the
+ * same status code. The 2026-07-30 outage logged `HTTP 493` 22 times a run for
+ * forty days and never once logged the sentence next to it that would have
+ * named the cause outright.
+ *
+ * Never throws and never returns much: this runs inside an error path that must
+ * not become its own failure, and a vendor error body can be an entire HTML
+ * page. A body that cannot be read is not worth a second problem, so it just
+ * reports that.
+ */
+export async function refusalReason(res: { text?: () => Promise<string> }): Promise<string> {
+  try {
+    if (typeof res.text !== "function") return "(no body)";
+    const body = (await res.text()).trim().replace(/\s+/g, " ");
+    if (!body) return "(empty body)";
+    return body.length > 200 ? body.slice(0, 200) + "…" : body;
+  } catch {
+    return "(body unreadable)";
+  }
 }

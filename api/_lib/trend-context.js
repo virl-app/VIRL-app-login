@@ -48,7 +48,13 @@ const FALLBACK_PLATFORM = "tiktok";
 // labels the difference rather than hiding it — these items carry no lifecycle
 // signal, so the model is told to cite them as what is being discussed, never
 // as what is peaking.
-const LEGACY_TREND_FRESHNESS_DAYS = 14;  // the cron is weekly; two cycles of slack
+// Exported because cron/trend-health.js needs the exact point at which this
+// query stops returning rows: past this age the fallback yields nothing and the
+// platform is genuinely dark, which is a different and far louder fact than
+// merely being overdue for a refresh. Importing it keeps the monitor's
+// definition of "dark" pinned to the behaviour it describes rather than to a
+// second copy of the number that can drift away from this one.
+export const LEGACY_TREND_FRESHNESS_DAYS = 14;  // the cron is weekly; two cycles of slack
 const LEGACY_TREND_CATEGORIES = new Set(["topic", "audio", "format", "hook", "hashtag"]);
 
 // ── Segment resolution ─────────────────────────────────────────────────────
@@ -590,7 +596,7 @@ export async function buildTrendContext({ platforms, niche, profile, goal, goalS
         (refreshedAt ? `[CURRENT TRENDS as of ${refreshedAt}]\n` : "[CURRENT TRENDS]\n") +
         lines.join("\n") +
         "\n  Rules: use at most 2 of these trends, and only where they fit naturally. " +
-        "Prefer RISING over peaking. Always name the exact sound or hashtag. " +
+        "Prefer RISING over peaking. Always name the exact sound, hashtag, or search term. " +
         "Never use a trend older than 7 days.",
       );
     } else if (legacy.items.length) {

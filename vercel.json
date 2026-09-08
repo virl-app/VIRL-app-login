@@ -1,6 +1,8 @@
 {
   "functions": {
-    "api/cron/trends-refresh.js": { "maxDuration": 300 }
+    "api/cron/trends-refresh.js": {
+      "maxDuration": 300
+    }
   },
   "crons": [
     {
@@ -20,8 +22,12 @@
       "schedule": "0 6 1 * *"
     },
     {
-      "path": "/api/cron/trends-refresh",
+      "path": "/api/cron/trends-refresh?tier=global",
       "schedule": "0 7 * * 6"
+    },
+    {
+      "path": "/api/cron/trends-refresh?tier=segment",
+      "schedule": "10 7 * * 6"
     },
     {
       "path": "/api/cron/trend-health",
