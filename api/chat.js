@@ -974,7 +974,8 @@ async function fetchProfile(userId) {
       // primary sample_caption field. Empty array on pre-migration rows.
       // Used by voice-drift.js to enrich the reference corpus when the
       // single sample_caption would otherwise be too thin.
-      voiceSamples:      Array.isArray(data.voice_samples) ? data.voice_samples : [],
+      // voiceSamples is mapped further down with the onboarding voice_sample
+      // as its fallback ([PR1]).
       // [BUSINESS-WEBSITE] Optional URL. Threaded into the Perplexity
       // research call (gated on learn_from_public_posts) and into
       // prompts.js buildProfileCtx as canonical CTA destination.
@@ -1000,6 +1001,20 @@ async function fetchProfile(userId) {
       // value, written once by the client; niche_pack is the current one.
       nichePack:           data.niche_pack           || "",
       legacyNiche:         data.legacy_niche         || "",
+      // [PR1] Migration 029. strategy is read by every prompt builder via
+      // buildProfileCtx once it exists; until then the old path runs.
+      strategy:            (data.strategy && typeof data.strategy === "object") ? data.strategy : null,
+      strategyVersion:     data.strategy_version || 0,
+      strategistNotes:     Array.isArray(data.strategist_notes) ? data.strategist_notes : [],
+      contentSlot:         data.content_slot || null,
+      // The onboarding voice sample is the voice reference when the old
+      // sample fields are empty, so the fingerprint and drift have text.
+      voiceSample:         data.voice_sample || "",
+      voiceSamples:        (Array.isArray(data.voice_samples) && data.voice_samples.length)
+                             ? data.voice_samples
+                             : (data.voice_sample ? [data.voice_sample] : []),
+      emojiUse:            data.emoji_use   || "",
+      emojiWhere:          data.emoji_where || "",
     };
   } catch (e) {
     return {};

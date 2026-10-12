@@ -35,3 +35,5 @@ jobs:
         run: npm run check:rating
       - name: trend source refusals are told apart from empty weeks
         run: npm run check:trendsource
+      - name: strategist build, interpreter and plan hand-off hold together
+        run: npm run check:strategy

@@ -215,6 +215,9 @@ import {
 // nicheCategory back from this module) — safe because both sides only
 // reference the other's exports at call time, never at module eval.
 import { formatNichePlaybookForPrompt, formatNicheModelForPrompt } from "./niche-playbook.js";
+// [PR1] A built strategy, when the account has one, is the thing every
+// surface serves. Rendered into the per-user tier so all surfaces inherit it.
+import { formatStrategyForPrompt } from "./strategist-prompts.js";
 
 // ── Models ─────────────────────────────────────────────────────────────────
 export const MODEL_SONNET    = "claude-sonnet-4-6";
@@ -721,6 +724,11 @@ function buildProfileCtx(profile) {
     } else {
       parts.push("EMOJI RULE: Use emojis sparingly — only where they add clear value.");
     }
+    // [PR1] The "Sound like you" placement toggle. Only meaningful when
+    // emojis are allowed at all.
+    if (profile.emojiPref !== "Never" && profile.emojiWhere === "end") {
+      parts.push("EMOJI PLACEMENT: only at the end of a caption or line, never inside a sentence and never in the first line.");
+    }
   }
 
   if (profile.purpose)               parts.push("Content purpose: " + profile.purpose + ".");
@@ -822,6 +830,14 @@ function buildProfileCtx(profile) {
   }
   if (profile.commonObjections) {
     parts.push("COMMON OBJECTIONS this creator hears from prospects (generated content should resolve these head-on whenever the topic lets it — turn each objection into a hook, a story, or a counter-frame; do not pretend they don't exist): " + profile.commonObjections + ".");
+  }
+  // [PR1] The strategy outranks every generic setting above it. Present on
+  // every surface through buildProfileCtx so nothing is generated in
+  // isolation once the account has one; absent, the old profile path runs
+  // unchanged.
+  if (profile.strategy) {
+    const block = formatStrategyForPrompt(profile.strategy, profile.strategistNotes);
+    if (block) parts.push("\n\n" + block + "\n");
   }
 
   return parts.join(" ");
@@ -1659,6 +1675,13 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // after the settings line so the model reads WHAT winning means here
     // before it reads any of the how-to-format guidance below.
     + nichePlaybookCtx
+    // [PR1] When a strategy exists it was built WITH the creator and it is
+    // what this plan serves: the pillars, the primary platform and its
+    // rework targets, the cadence. Every card maps to one pillar and names
+    // it in `pillar_role`.
+    + (profile && profile.strategy
+        ? " THIS CREATOR HAS A STRATEGY (rendered in the creator context above). Build the week from its pillars in their stated shares, on its primary platform with the other platforms as reworks of the same idea, at its cadence. Every card MUST carry `pillar` (the pillar name) and `pillar_role` (reach | trust | connection | convert) and its `insight` must say which pillar job it does."
+        : "")
     + (context  ? " Extra context: " + context : "")
     // [AUDIENCE 1] Week-of business context as a hard constraint, not
     // generic flavor. The creator told us what is happening in their
