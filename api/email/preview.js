@@ -48,6 +48,11 @@ const TEMPLATES = {
   renewal_upcoming:       (uid) => T.renewalUpcoming({ name: "Lauren", plan: "founding", amountUsd: 225, renewalDate: new Date(Date.now() + 7 * 86400000).toISOString() }),
   account_deleted:        (uid) => T.accountDeleted({ name: "Lauren" }),
   referral_milestone:     (uid) => T.referralMilestone({ name: "Lauren", milestone: 7, unsubscribeToken: makeUnsubToken(uid) }),
+  // [PR2] Strategist touches (transactional, no unsubscribe footer).
+  strategist_plan_ready:  (uid) => T.strategistPlanReady({ name: "Lauren", weekNote: "This week is three trust posts and one ask. Your audience asked about pricing twice last week, so Tuesday answers it head on. I'm watching whether the carousel gets saves.", card: { platform: "Instagram", day: "Day 1 - Mon", title: "What a first appointment actually looks like", caption: "if you've been thinking about it and scared to ask, this is the whole thing. no filter." }, link: APP_URL + "/?tab=plan" }),
+  slot_reminder:          (uid) => T.slotReminder({ name: "Lauren", card: { platform: "Instagram", postTime: "7:00 PM", title: "What a first appointment actually looks like", caption: "if you've been thinking about it and scared to ask, this is the whole thing. no filter." }, link: APP_URL + "/?tab=plan" }),
+  did_you_post_day1:      (uid) => T.didYouPost({ name: "Lauren", dayNumber: 1, card: { hook: "What a first Botox appointment actually looks like.", caption: "if you've been thinking about it and scared to ask, this is the whole thing. no filter." }, link: APP_URL + "/?tab=plan" }),
+  did_you_post_day3:      (uid) => T.didYouPost({ name: "Lauren", dayNumber: 3, card: { hook: "The part people are scared of, in 20 seconds.", caption: "nobody tells you this part. so here it is." }, link: APP_URL + "/?tab=plan" }),
 };
 
 async function verifyAdmin(token) {

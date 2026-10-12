@@ -816,3 +816,60 @@ export function referralMilestone({ name, milestone, unsubscribeToken }) {
 }
 
 
+
+// ── [PR2] Strategist touches ────────────────────────────────────────────────
+// All three are transactional (marketing:false): they are the product doing
+// what the creator opted into, timed to their content slot. VIRL voice.
+// Card fields are AI-generated and esc()'d. `link` deep-links to the card.
+
+function captionBlock(card) {
+  const cap = card && (card.caption || (Array.isArray(card.posts) && card.posts[0]) || card.body || "");
+  if (!cap) return "";
+  return `<div style="margin:14px 0 6px;padding:14px 16px;border-left:3px solid ${COLOR.blue};background:${COLOR.bg};border-radius:10px;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.7;color:${COLOR.ink};white-space:pre-wrap">${esc(String(cap).slice(0, 900))}</div>`;
+}
+function captionText(card) {
+  const cap = card && (card.caption || (Array.isArray(card.posts) && card.posts[0]) || card.body || "");
+  return cap ? "\n\n" + String(cap).slice(0, 900) : "";
+}
+
+// 27. The plan is ready: sent the evening before the slot, after autogen.
+export function strategistPlanReady({ name, weekNote, card, link }) {
+  const headline = "Your week's planned. Here's my note.";
+  const body = `
+    <p style="margin:0 0 14px">${esc(weekNote || "I've planned your week around your strategy.")}</p>
+    ${card ? `<p style="margin:0 0 4px;font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${COLOR.navy}">${esc([card.platform, card.day].filter(Boolean).join(" · "))}</p>
+    <p style="margin:0 0 4px;font-family:Georgia,'Times New Roman',serif;font-size:17px;color:${COLOR.ink}">${esc(card.title || "")}</p>${captionBlock(card)}` : ""}
+    <p style="margin:14px 0 0">${name ? name + ", it's" : "It's"} all in the app, in your words. Your slot is tomorrow.</p>`;
+  return {
+    subject: "Your week's planned",
+    html:    layout({ eyebrow: "Your week", headline, body, primaryCta: { href: link || (APP_URL + "/?tab=plan"), label: "See the plan" } }),
+    text:    `${headline}\n\n${weekNote || ""}${card ? "\n\n" + [card.platform, card.day].filter(Boolean).join(" · ") + "\n" + (card.title || "") + captionText(card) : ""}\n\n${link || (APP_URL + "/?tab=plan")}`,
+  };
+}
+
+// 28. At the slot: one reminder, the first post's caption inline.
+export function slotReminder({ name, card, link }) {
+  const headline = "It's your content slot.";
+  const body = `
+    <p style="margin:0 0 10px">${name ? name + ", this" : "This"} is the one. Caption's below; tap Posted in the app when it's up.</p>
+    ${card ? `<p style="margin:0 0 4px;font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${COLOR.navy}">${esc([card.platform, card.postTime].filter(Boolean).join(" · "))}</p>
+    <p style="margin:0 0 4px;font-family:Georgia,'Times New Roman',serif;font-size:17px;color:${COLOR.ink}">${esc(card.title || "")}</p>${captionBlock(card)}` : ""}`;
+  return {
+    subject: "It's your content slot",
+    html:    layout({ eyebrow: "Now", accent: "coral", headline, body, primaryCta: { href: link || (APP_URL + "/?tab=plan"), label: "Open this post" } }),
+    text:    `${headline}\n\n${card ? (card.title || "") + captionText(card) : ""}\n\n${link || (APP_URL + "/?tab=plan")}`,
+  };
+}
+
+// 29. Days one and three after onboarding: "Did you post it? Tap when you do."
+export function didYouPost({ name, card, link, dayNumber }) {
+  const headline = "Did you post it? Tap when you do.";
+  const body = `
+    <p style="margin:0 0 10px">${dayNumber === 3 ? "Second one." : "The first one's the hardest."} ${name ? name + ", here" : "Here"}'s the post, caption and all. When it's up, mark it in the app so I can plan from what you actually did.</p>
+    ${card ? `<p style="margin:0 0 4px;font-family:Georgia,'Times New Roman',serif;font-size:17px;color:${COLOR.ink}">${esc(card.hook || card.title || "")}</p>${captionBlock(card)}` : ""}`;
+  return {
+    subject: dayNumber === 3 ? "Post two. Did you post it?" : "Did you post it?",
+    html:    layout({ eyebrow: "Your first post", accent: "coral", headline, body, primaryCta: { href: link || (APP_URL + "/?tab=plan"), label: "Mark it posted" } }),
+    text:    `${headline}\n\n${card ? (card.hook || card.title || "") + captionText(card) : ""}\n\n${link || (APP_URL + "/?tab=plan")}`,
+  };
+}

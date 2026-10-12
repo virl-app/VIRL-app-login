@@ -288,6 +288,9 @@ async function loadProfileFromSupabase(userId) {
       contentSlot: data.content_slot||null,
       emojiUse: data.emoji_use||"",
       emojiWhere: data.emoji_where||"",
+      // [PR2] Migration 030.
+      planAutogen: !!data.plan_autogen,
+      brand: (data.brand && typeof data.brand === "object") ? data.brand : null,
       legacyNiche: data.legacy_niche||"",
       workedWell: data.worked_well||"",
       // [INTEL 1] Personal-fact columns. Existing rows pre-migration return
@@ -4940,7 +4943,7 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
 }
 
 
-function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenBusy,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends,allDayLabels}) {
+function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenBusy,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends,allDayLabels,postStatus,onStatus,initialExpanded,userPlatforms}) {
   // When `replacing` is true, this card slot is awaiting a streaming
   // replacement from /api/chat?generationType=plan_partial. Render a
   // skeleton instead of the real card so the user sees their kept cards
@@ -4957,8 +4960,13 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
   }
   var cardId = buildCardId(card);
   var bl = card.priority==="HIGH"?B.navy:card.priority==="MED"?B.blue:B.border;
-  const [expanded,setExpanded] = useState(false);
+  const [expanded,setExpanded] = useState(!!initialExpanded);
   const [showLog,setShowLog]   = useState(false);
+  // [PR2] Skip state from the posts row (server), plus the chip picker.
+  const [skipped,setSkipped]   = useState(!!(postStatus && postStatus.status === "skipped"));
+  const [skipReason,setSkipReason] = useState((postStatus && postStatus.skip_reason) || null);
+  const [showSkip,setShowSkip] = useState(false);
+  useEffect(function(){ if (postStatus) { setSkipped(postStatus.status === "skipped"); setSkipReason(postStatus.skip_reason || null); if (postStatus.status === "posted") setPosted(true); } }, [postStatus && postStatus.status, postStatus && postStatus.skip_reason]);
   const [showScript,setShowScript] = useState(false);
   // [LINKEDIN-LONG-POST] Parallel state to showScript. Independent
   // so a user could conceptually have both modals' actions queued —
@@ -5174,7 +5182,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
   // [UX-01] Posted state mirrored to local React state so the checkmark
   // re-renders immediately after a click without forcing a parent
   // re-render. Initialized from localStorage on mount.
-  const [posted,setPosted]     = useState(function(){ return isCardPosted(cardId); });
+  const [posted,setPosted]     = useState(function(){ return isCardPosted(cardId) || !!(postStatus && postStatus.status === "posted"); });
   var hasSavedScript = !!card.savedScript;
   // [P1] One-line preview shown beneath the title on collapsed cards so
   // the user can differentiate a stacked week of cards without expanding
@@ -5222,9 +5230,12 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
     if (posted) {
       clearCardPosted(cardId);
       setPosted(false);
+      if (onStatus) onStatus(card, { status: "planned", posted_at: null });
     } else {
       setCardPosted(cardId);
       setPosted(true);
+      setSkipped(false); setSkipReason(null); setShowSkip(false);
+      if (onStatus) onStatus(card, { status: "posted", posted_at: new Date().toISOString(), skip_reason: null });
       try {
         logEvent(window.__virlUserId || null, "post_marked", {
           cardId:   cardId,
@@ -5346,6 +5357,8 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
           )}
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
+          <PillarTag card={card}/>
+          {skipped && <MTag>{"Skipped" + (skipReason ? " · " + (SKIP_REASONS.filter(function(r){ return r.key===skipReason; })[0] || {label: skipReason}).label : "")}</MTag>}
           {usedFreshTrends && <MTag type="result">✦ Fresh trend</MTag>}
           {hasSavedScript && <MTag type="result">Script saved</MTag>}
           {result && <MTag type="result">Logged</MTag>}
@@ -5428,11 +5441,25 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
               fields, so the existing description-only layout below stays
               intact for backward compatibility. */}
           <FormatSpecificBody card={card}/>
+          {/* [PR2] The one post a week that needs nothing but a tap. */}
+          {card.rendered && userToken && <RenderButtons card={card} token={userToken} platforms={userPlatforms}/>}
+          {/* [PR2] What the voice sample did to this caption, honestly; and
+              what changed in a rework and why. */}
+          {card.sounds_like_you && (
+            <div style={{display:"flex",gap:8,alignItems:"flex-start",fontFamily:"'Jost',sans-serif",fontSize:12,color:B.navy,lineHeight:1.6,marginBottom:10}}>
+              <span style={{fontFamily:"'Italiana',serif",fontSize:15,lineHeight:1.2}}>V</span><span>{card.sounds_like_you}</span>
+            </div>
+          )}
+          {card.is_rework && (
+            <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,color:B.muted,lineHeight:1.6,marginBottom:10,padding:"8px 12px",background:B.bg,borderRadius:8}}>
+              {"Rework" + (card.rework_of ? " of “" + card.rework_of + "”" : "") + (card.rework_note ? ". " + card.rework_note : ".")}
+            </div>
+          )}
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.sub,lineHeight:1.7,marginBottom:(card.insight||card.why)?10:14}}>{card.description}</div>
           {(card.insight || card.why) && (
             <div style={{background:B.navySoft,borderRadius:10,padding:"10px 14px",marginBottom:14,borderLeft:"3px solid "+B.blue}}>
               <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.1em",color:B.blue,textTransform:"uppercase",marginBottom:4}}>Why this works</div>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>{card.insight || card.why}</div>
+              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.6}}>{card.why || card.insight}</div>
             </div>
           )}
           {/* [P5] Time, platform and format all live in the header now —
@@ -5490,10 +5517,26 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
             {"Log results"}
           </button>
         ) : (
-          <button onClick={handleTogglePosted}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
-            {"Mark as posted"}
-          </button>
+          <React.Fragment>
+            <button onClick={handleTogglePosted}
+              style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer",transition:"all .15s"}}>
+              {"Posted"}
+            </button>
+            {/* [PR2] Skip is a first-class outcome. One optional chip; the
+                reason feeds next Monday's note when it repeats. */}
+            {onStatus && !skipped && (
+              <button onClick={function(){ setShowSkip(function(v){ return !v; }); }}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 14px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
+                {"Skip"}
+              </button>
+            )}
+            {onStatus && skipped && (
+              <button onClick={function(){ setSkipped(false); setSkipReason(null); onStatus(card, { status: "planned", skip_reason: null }); }}
+                style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 14px",background:"transparent",color:B.muted,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
+                {"Unskip"}
+              </button>
+            )}
+          </React.Fragment>
         )}
         {/* [EDIT] Edit lives in the expanded-only action set so the
              collapsed card stays simple. Disabled when no onEdit prop
@@ -5542,6 +5585,10 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
         )}
       </div>
       ) : null}
+      {expanded && showSkip && !skipped && (
+        <SkipChips onCancel={function(){ setShowSkip(false); }}
+          onPick={function(reason){ setSkipped(true); setSkipReason(reason); setShowSkip(false); if (onStatus) onStatus(card, { status: "skipped", skip_reason: reason, posted_at: null }); }}/>
+      )}
 
       {/* [MOVE-CARD] Day-picker popover. Opens below the action row when
            "Move to..." is tapped. Lists the full set of weekday labels;
@@ -9191,6 +9238,164 @@ function SundayLogModal({unloggedCards, onLog, onClose, userToken}) {
   );
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [PR2] posts: the server-side record of what the creator did with a card.
+// One row per card per week, keyed the way everything else keys a card
+// (title + day). "Posted" used to live only in localStorage; it still does
+// for instant paint, and the row is the truth the monthly review reads.
+// ═══════════════════════════════════════════════════════════════════════════
+var SKIP_REASONS = [{ key: "no_time", label: "No time" }, { key: "not_me", label: "Didn't feel like me" }, { key: "didnt_know_how", label: "Didn't know how" }];
+function postRowFromCard(userId, weekStart, card) {
+  var role = card.pillar_role;
+  return {
+    user_id: userId, week_start: weekStart, card_key: buildCardId(card), day: card.day || null, title: card.title || null,
+    platform: card.platform || null, format: card.format || null, pillar: card.pillar || null,
+    pillar_role: ["reach", "trust", "connection", "convert"].indexOf(role) >= 0 ? role : null,
+    is_rework: !!card.is_rework, rendered: !!card.rendered, updated_at: new Date().toISOString(),
+  };
+}
+async function upsertPostRows(userId, weekStart, cards) {
+  if (!userId || !weekStart || !Array.isArray(cards) || !cards.length) return;
+  try {
+    var rows = cards.filter(function (c) { return c && c.title; }).map(function (c) { return Object.assign(postRowFromCard(userId, weekStart, c), { status: "planned" }); });
+    await supabaseClient.from("posts").upsert(rows, { onConflict: "user_id,week_start,card_key", ignoreDuplicates: true });
+  } catch (e) {}
+}
+// patch: { status, posted_at, skip_reason, edits_made }
+async function setPostStatus(userId, weekStart, card, patch) {
+  if (!userId || !weekStart || !card) return;
+  try {
+    var row = Object.assign(postRowFromCard(userId, weekStart, card), patch || {});
+    await supabaseClient.from("posts").upsert(row, { onConflict: "user_id,week_start,card_key" });
+    logEvent(userId, patch && patch.status === "skipped" ? "post_skipped" : "post_status", Object.assign({ cardKey: row.card_key, platform: card.platform || null, pillar_role: row.pillar_role }, patch || {}));
+  } catch (e) {}
+}
+window.__virlSetPostStatus = setPostStatus;
+async function loadPostStatus(userId, weekStart) {
+  try {
+    var r = await supabaseClient.from("posts").select("card_key,status,skip_reason,posted_at").eq("user_id", userId).eq("week_start", weekStart);
+    var map = {};
+    (r && r.data || []).forEach(function (row) { map[row.card_key] = row; });
+    return map;
+  } catch (e) { return {}; }
+}
+function downloadBase64(name, mime, b64) {
+  try {
+    var bytes = atob(b64); var arr = new Uint8Array(bytes.length);
+    for (var i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    var url = URL.createObjectURL(new Blob([arr], { type: mime }));
+    var a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+  } catch (e) {}
+}
+
+var PILLAR_ROLE_COLOR = { reach: { fg: "#1D4ED8", bg: "#DBEAFE" }, trust: { fg: "#1F3A8A", bg: "#E0E7FF" }, connection: { fg: "#047857", bg: "#D1FAE5" }, convert: { fg: "#BE123C", bg: "#FFE4E6" } };
+function PillarTag({ card }) {
+  if (!card || !card.pillar_role) return null;
+  var c = PILLAR_ROLE_COLOR[card.pillar_role] || { fg: B.sub, bg: B.divider };
+  return (
+    <span title={card.pillar || card.pillar_role} style={{ fontFamily: "'Jost',sans-serif", fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", padding: "4px 9px", borderRadius: 99, color: c.fg, background: c.bg, whiteSpace: "nowrap" }}>
+      {card.pillar_role}
+    </span>
+  );
+}
+
+// The strategist's note for the week: what we're doing, why, what I'm
+// watching; then the drift line; then the LinkedIn comments item when the
+// plan carries one. Replaces the old "This week's strategy" hero for
+// strategy accounts. The autogen opt-in lives here because this is the
+// thing it would deliver.
+function WeekNote({ strategy, autogen, onToggleAutogen, slot }) {
+  var s = strategy || {};
+  var angles = s.daily_comments && Array.isArray(s.daily_comments.angles) ? s.daily_comments.angles : [];
+  var slotLine = slot && slot.weekday ? slot.weekday + (slot.time ? " at " + slot.time : "") : "";
+  return (
+    <div style={{ background: B.navy, borderRadius: 16, padding: "20px 22px 18px", marginBottom: 16, color: B.white, boxShadow: "0 4px 20px rgba(31,58,138,0.18)" }}>
+      <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+        <div style={{ fontFamily: "'Italiana',serif", fontSize: 30, lineHeight: 1, color: B.sky, marginTop: 2 }}>V</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 9, fontWeight: 700, letterSpacing: "0.28em", textTransform: "uppercase", color: B.sky, marginBottom: 8 }}>This week</div>
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 15, lineHeight: 1.75, fontWeight: 300 }}>{s.week_note}</div>
+          {s.drift && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, fontWeight: 600, color: B.sky, marginTop: 10 }}>{s.drift}</div>}
+          {angles.length > 0 && (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
+              <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 9, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase", color: B.sky, marginBottom: 6 }}>Every day: 3 comments on LinkedIn, in your words</div>
+              {angles.map(function (a, i) { return <div key={i} style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, lineHeight: 1.6, color: "rgba(255,255,255,0.9)" }}>{"· " + a}</div>; })}
+            </div>
+          )}
+          {onToggleAutogen && (
+            <div onClick={onToggleAutogen} role="switch" aria-checked={!!autogen}
+              style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.14)", cursor: "pointer" }}>
+              <div style={{ width: 36, height: 20, background: autogen ? B.sky : "rgba(255,255,255,0.25)", borderRadius: 99, position: "relative", flexShrink: 0, transition: "background .2s" }}>
+                <div style={{ position: "absolute", top: 2, left: autogen ? 18 : 2, width: 16, height: 16, borderRadius: "50%", background: B.white, transition: "left .2s" }} />
+              </div>
+              <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, color: "rgba(255,255,255,0.85)", lineHeight: 1.5 }}>
+                {autogen ? "I'll have next week planned the evening before your slot" + (slotLine ? " (" + slotLine + ")" : "") + "." : "Have next week planned the evening before your slot" + (slotLine ? " (" + slotLine + ")" : "") + "?"}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SkipChips({ onPick, onCancel }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: 8 }}>
+      <span style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: B.muted, marginRight: 4 }}>Skipping it. Why, if you want to say:</span>
+      {SKIP_REASONS.map(function (r) {
+        return <button key={r.key} onClick={function () { onPick(r.key); }} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, padding: "6px 12px", background: B.bg, color: B.sub, border: "1px solid " + B.border, borderRadius: 99, cursor: "pointer" }}>{r.label}</button>;
+      })}
+      <button onClick={function () { onPick(null); }} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, padding: "6px 10px", background: "transparent", color: B.muted, border: "none", cursor: "pointer" }}>Just skip</button>
+      <button onClick={onCancel} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, padding: "6px 10px", background: "transparent", color: B.muted, border: "none", cursor: "pointer" }}>Never mind</button>
+    </div>
+  );
+}
+
+// Download buttons for the week's rendered static post. Images for every
+// platform, the PDF document post for LinkedIn, the 1000x1500 pin when
+// Pinterest is one of the creator's platforms. Copy never says "publish".
+function RenderButtons({ card, token, platforms }) {
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState("");
+  var plats = Array.isArray(platforms) ? platforms : [];
+  var showPdf = card.platform === "LinkedIn" || plats.indexOf("LinkedIn") >= 0;
+  var showPin = plats.indexOf("Pinterest") >= 0;
+  async function get(kind) {
+    if (!token) return;
+    setBusy(kind); setMsg("");
+    try {
+      var r = await fetch("/api/render", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token }, body: JSON.stringify({ kind: kind, card: card, kicker: card.pillar || "", footer: "" }) });
+      var j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Couldn't render.");
+      (j.files || []).forEach(function (f, i) { setTimeout(function () { downloadBase64(f.name, f.mime, f.base64); }, i * 250); });
+      setMsg((j.files || []).length + " file" + ((j.files || []).length === 1 ? "" : "s") + " downloading. Caption is above; post it where you like.");
+      logEvent(window.__virlUserId || null, "static_post_downloaded", { kind: kind, title: card.title || "" });
+    } catch (e) { setMsg(e.message || "Couldn't render."); }
+    setBusy("");
+  }
+  var btn = { fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", padding: "8px 14px", background: B.navy, color: B.white, border: "none", borderRadius: 99, cursor: "pointer" };
+  return (
+    <div style={{ marginBottom: 14, padding: "12px 14px", background: B.navySoft, borderRadius: 12 }}>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.navy, marginBottom: 8 }}>This week's ready-made post</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <button style={btn} disabled={!!busy} onClick={function () { get("images"); }}>{busy === "images" ? "Rendering" : "Download image" + (Array.isArray(card.slides) && card.slides.length > 1 ? "s" : "")}</button>
+        {showPdf && <button style={btn} disabled={!!busy} onClick={function () { get("pdf"); }}>{busy === "pdf" ? "Rendering" : "LinkedIn PDF"}</button>}
+        {showPin && <button style={btn} disabled={!!busy} onClick={function () { get("pin"); }}>{busy === "pin" ? "Rendering" : "Pinterest pin"}</button>}
+      </div>
+      {msg && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: B.navy, marginTop: 8 }}>{msg}</div>}
+      {showPin && (card.pinTitle || card.pinDescription) && (
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, color: B.sub, marginTop: 8, lineHeight: 1.6 }}>
+          {card.pinTitle && <div><strong style={{ color: B.ink }}>Pin title: </strong>{card.pinTitle}</div>}
+          {card.pinDescription && <div><strong style={{ color: B.ink }}>Pin description: </strong>{card.pinDescription}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // [PR1] THE STRATEGIST — onboarding interview, build state, one-page
 // strategy, "This isn't quite right", and the "What I know about you" tab.
@@ -10589,6 +10794,42 @@ function App() {
   // session, so "no strategy" means no strategy rather than "not loaded".
   // sgEdit: { screen } opens one onboarding screen pre-filled in edit mode.
   const [sgFlag,setSgFlag]       = useState(null);
+  // [PR2] posts rows for the current plan week, keyed by card id; the
+  // deep-linked card from ?post=; the autogen opt-in mirrors the profile row.
+  const [postStatus,setPostStatus] = useState({});
+  const focusPostKey = useMemo(function(){ try { return new URLSearchParams(window.location.search).get("post") || ""; } catch(e) { return ""; } }, []);
+  function currentWeekStart() { return weekStartISO(Date.now(), profile && profile.weekStartDay); }
+  function refreshPostStatus(uid, cardsForBackfill) {
+    var ws = currentWeekStart();
+    return loadPostStatus(uid, ws).then(function(map){
+      // One-off backfill: posted marks that only ever lived in localStorage.
+      var pending = [];
+      (cardsForBackfill || []).forEach(function(c){
+        var key = buildCardId(c);
+        if (c && c.title && isCardPosted(key) && !(map[key] && map[key].status === "posted")) {
+          var at = parseInt(localStorage.getItem("virl_posted_" + key) || "0", 10);
+          map[key] = { card_key: key, status: "posted", posted_at: new Date(at || Date.now()).toISOString() };
+          pending.push(window.__virlSetPostStatus(uid, ws, c, { status: "posted", posted_at: map[key].posted_at }));
+        }
+      });
+      setPostStatus(map);
+      return Promise.all(pending);
+    });
+  }
+  function onCardStatus(card, patch) {
+    if (!session || !session.user) return;
+    var ws = currentWeekStart();
+    var key = buildCardId(card);
+    setPostStatus(function(prev){ var next = Object.assign({}, prev); next[key] = Object.assign({}, prev[key] || { card_key: key }, patch); return next; });
+    window.__virlSetPostStatus(session.user.id, ws, card, patch);
+  }
+  function toggleAutogen() {
+    if (!session || !session.user) return;
+    var next = !(profile && profile.planAutogen);
+    setProfile(function(prev){ return Object.assign({}, prev, { planAutogen: next }); });
+    supabaseClient.from("profiles").update({ plan_autogen: next }).eq("id", session.user.id).then(function(){});
+    logEvent(session.user.id, "plan_autogen_toggled", { on: next, strategist_v2: true });
+  }
   const [sgReady,setSgReady]     = useState(false);
   const [sgEdit,setSgEdit]       = useState(null);
   const [sgRestart,setSgRestart] = useState(false);
@@ -10853,6 +11094,8 @@ function App() {
         setCards(row.cards);
         if (row.stats)    setStats(row.stats);
         if (row.strategy) setStrategy(row.strategy);
+        // [PR2] posts rows for this week (and the one-off localStorage backfill).
+        try { refreshPostStatus(userId, row.cards); } catch(e) {}
         // [FRESH-TRENDS] Restore the cached snapshot so a regen-after-reload
         // still reuses the original Perplexity result. usedFreshTrends does
         // not survive a reload (the post-action banner is intentionally
@@ -11972,6 +12215,13 @@ function App() {
         }
       }
       var parsedStrategy = parsed && parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
+      // [PR2] The strategist's note for the week rides the strategy object so
+      // it persists with the plan and survives a reload.
+      if (parsedStrategy && parsed) {
+        if (typeof parsed.week_note === "string") parsedStrategy.week_note = parsed.week_note;
+        if (typeof parsed.drift === "string")     parsedStrategy.drift = parsed.drift;
+        if (parsed.daily_comments && typeof parsed.daily_comments === "object") parsedStrategy.daily_comments = parsed.daily_comments;
+      }
       var parsedStats    = parsed && parsed.stats    && typeof parsed.stats    === "object" ? parsed.stats    : null;
       var parsedTips     = parsed && Array.isArray(parsed.restDayTips) ? parsed.restDayTips : null;
       if (!(parsedCards && parsedCards.length > 0)) {
@@ -12039,6 +12289,8 @@ function App() {
         localStorage.setItem(KEY, JSON.stringify(current));
       } catch(e){}
       if (session) queuePlanSave(session.user.id, parsedCards, parsedStats, planExpiresAt, parsedStrategy, freshSnapshot, parsedTips, profile && profile.weekStartDay);
+      // [PR2] One posts row per card, status planned. Fire-and-forget.
+      if (session) { setPostStatus({}); upsertPostRows(session.user.id, weekStartISO(Date.now(), profile && profile.weekStartDay), parsedCards); }
       try {
         var weekStart = (function(){
           try { return new Date().toISOString().slice(0, 10); }
@@ -13460,7 +13712,27 @@ return (
                   answers={profile.onboardingAnswers} profile={profile} token={userToken}
                   onEdit={function(n){ setSgEdit({ screen: n }); }}
                   onRestart={function(){ if (window.confirm("Start the interview over? Your current strategy is kept in history.")) setSgRestart(true); }}/>
-                <div style={{marginTop:28,paddingTop:20,borderTop:"1px solid "+B.divider}}>
+                <div style={{marginTop:24,paddingTop:18,borderTop:"1px solid "+B.divider}}>
+                  <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>Brand colours for your ready-made post</div>
+                  <div style={{display:"flex",gap:14,alignItems:"center",flexWrap:"wrap"}}>
+                    {[["bg","Background"],["fg","Text"],["accent","Accent"]].map(function(f){
+                      var val = (profile.brand && profile.brand[f[0]]) || ({bg:"#1F3A8A",fg:"#FFFFFF",accent:"#93C5FD"})[f[0]];
+                      return (
+                        <label key={f[0]} style={{display:"flex",alignItems:"center",gap:8,fontFamily:"'Jost',sans-serif",fontSize:12,color:B.sub}}>
+                          <input type="color" value={val} onChange={function(e){
+                            var next = Object.assign({}, profile.brand || {}, { [f[0]]: e.target.value });
+                            setProfile(function(prev){ return Object.assign({}, prev, { brand: next }); });
+                            if (session && session.user) supabaseClient.from("profiles").update({ brand: next }).eq("id", session.user.id).then(function(){});
+                          }} style={{width:34,height:28,border:"1px solid "+B.border,borderRadius:6,padding:0,background:"transparent"}}/>
+                          {f[1]}
+                        </label>
+                      );
+                    })}
+                    <button onClick={function(){ setProfile(function(prev){ return Object.assign({}, prev, { brand: null }); }); if (session && session.user) supabaseClient.from("profiles").update({ brand: null }).eq("id", session.user.id).then(function(){}); }}
+                      style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",background:"transparent",color:B.muted,border:"none",cursor:"pointer"}}>VIRL defaults</button>
+                  </div>
+                </div>
+                <div style={{marginTop:24,paddingTop:18,borderTop:"1px solid "+B.divider}}>
                   <Eyebrow>Your full profile</Eyebrow>
                   <div style={{fontSize:13,fontWeight:300,color:B.muted,lineHeight:1.7,maxWidth:480}}>Everything below still feeds your plans. Your learning sources live here too.</div>
                 </div>
@@ -14045,7 +14317,25 @@ return (
                 {/* [PLAN-STATE v2] Strategy is the frame for the week, so it
                     leads — compact hero (thesis + the bet, details behind
                     "Full strategy") above the week summary and cards. */}
-                <StrategyHero strategy={strategy}/>
+                {strategy && strategy.week_note
+                  ? <WeekNote strategy={strategy} autogen={!!(profile && profile.planAutogen)} onToggleAutogen={sgFlag===true && profile && profile.strategy ? toggleAutogen : null} slot={profile && profile.contentSlot}/>
+                  : <StrategyHero strategy={strategy}/>}
+                {/* [PR2] After the slot has passed with nothing marked, the
+                    in-app half of "Did you post it? Tap when you do." */}
+                {sgFlag===true && profile && profile.strategy && profile.contentSlot && (function(){
+                  var anyPosted = Object.keys(postStatus).some(function(k){ return postStatus[k] && postStatus[k].status === "posted"; });
+                  if (anyPosted) return null;
+                  var slot = profile.contentSlot; var now = new Date();
+                  var dayIdx = ["sun","mon","tue","wed","thu","fri","sat"].indexOf(String(slot.weekday||"").slice(0,3).toLowerCase());
+                  var hour = (function(t){ var m = String(t||"").toLowerCase().match(/(\d{1,2})(?::(\d{2}))?\s*(a|p|am|pm)?/); if (!m) return 19; var h = parseInt(m[1],10); var ap = m[3] ? m[3][0] : ""; if (ap==="p" && h<12) h+=12; if (ap==="a" && h===12) h=0; if (!ap && h>=1 && h<=9) h+=12; return h; })(slot.time);
+                  var passed = dayIdx >= 0 && (now.getDay() > dayIdx || (now.getDay() === dayIdx && now.getHours() >= hour));
+                  if (!passed) return null;
+                  return (
+                    <div style={{background:B.coralSoft,borderRadius:12,padding:"12px 16px",marginBottom:16,fontFamily:"'Jost',sans-serif",fontSize:13,color:B.coral,lineHeight:1.6}}>
+                      {"Did you post it? Tap Posted on the card when you do, and I'll plan from what you actually did."}
+                    </div>
+                  );
+                })()}
                 {(function() {
                   const pc = {};
                   cards.forEach(function(card){ pc[card.platform]=(pc[card.platform]||0)+1; });
@@ -14175,6 +14465,10 @@ return (
                                 onSave={saveToVault} onLog={logResult}
                                 onSaveScript={saveScriptForCard}
                                 onEdit={updateCardAt}
+                                postStatus={postStatus[buildCardId(card)]}
+                                onStatus={onCardStatus}
+                                initialExpanded={!!focusPostKey && focusPostKey === buildCardId(card)}
+                                userPlatforms={platforms}
                                 allDayLabels={allDayLabels}
                                 saved={vault.some(function(v){return v.id===card.title+card.day;})}
                                 result={results.find(function(r){return r.id===card.title+card.day;})}
