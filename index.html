@@ -279,6 +279,15 @@ async function loadProfileFromSupabase(userId) {
       weekStartDay: normalizeWeekStartDay(data.week_start_day),
       // [NICHE-PACKS] Migration 028. Read-only here; written once at login.
       nichePack: data.niche_pack||"",
+      // [PR1] Migration 029: the strategist's columns.
+      strategy: (data.strategy && typeof data.strategy === "object") ? data.strategy : null,
+      strategyVersion: data.strategy_version||0,
+      strategyHistory: Array.isArray(data.strategy_history) ? data.strategy_history : [],
+      strategistNotes: Array.isArray(data.strategist_notes) ? data.strategist_notes : [],
+      onboardingAnswers: (data.onboarding_answers && typeof data.onboarding_answers === "object") ? data.onboarding_answers : null,
+      contentSlot: data.content_slot||null,
+      emojiUse: data.emoji_use||"",
+      emojiWhere: data.emoji_where||"",
       legacyNiche: data.legacy_niche||"",
       workedWell: data.worked_well||"",
       // [INTEL 1] Personal-fact columns. Existing rows pre-migration return
@@ -9182,6 +9191,873 @@ function SundayLogModal({unloggedCards, onLog, onClose, userToken}) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [PR1] THE STRATEGIST — onboarding interview, build state, one-page
+// strategy, "This isn't quite right", and the "What I know about you" tab.
+// Gated by account_flags.strategist_v2 (see App: strategist state). While
+// the flag is off nothing below renders and the old wizard / plan / profile
+// pages run untouched.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SG_GOALS = [
+  { key: "clients",   label: "Bring me clients or customers",       reflect: "Then every post has a job: get the right person to message you." },
+  { key: "income",    label: "Turn content into my income",         reflect: "Then we build an audience that buys, not one that just watches." },
+  { key: "authority", label: "Make me the go-to name in my field",  reflect: "Then we show your thinking, not just your results." },
+  { key: "community", label: "Grow a community around something I love", reflect: "Then the comments matter more than the views." },
+  { key: "launch",    label: "Help me launch something new",        reflect: "Then we build the runway before the launch, not after." },
+  { key: "unsure",    label: "I'm not sure yet, help me figure it out", reflect: "That's fine. Tell me about you and I'll make a call you can argue with." },
+];
+const SG_PLATFORMS = ["TikTok", "Instagram", "Facebook", "LinkedIn", "X", "Threads", "YouTube Shorts", "Pinterest", "Other"];
+const SG_SIZES   = [{ key: "new", label: "New" }, { key: "under_1k", label: "Under 1k" }, { key: "1k_10k", label: "1k to 10k" }, { key: "10k+", label: "10k+" }];
+const SG_CAMERA  = [{ key: "love", label: "Love it" }, { key: "fine", label: "Fine with it" }, { key: "rather_not", label: "I'd rather not" }, { key: "grow_into", label: "I want to grow into it" }];
+const SG_TIME    = [{ key: "1h", label: "About 1 hour" }, { key: "2-3h", label: "2 to 3" }, { key: "4-6h", label: "4 to 6" }, { key: "7h+", label: "7+" }];
+const SG_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const SG_TONES = ["Warm", "Direct", "Funny", "Calm", "Hype", "Dry", "Nerdy", "Blunt", "Gentle", "Polished"];
+const SG_EMOJI_USE = [{ key: "none", label: "None" }, { key: "few", label: "A few" }, { key: "lots", label: "Lots" }];
+const SG_EMOJI_WHERE = [{ key: "end", label: "End of the caption only" }, { key: "anywhere", label: "Anywhere" }];
+// Static fallback chips per pack when the "What I heard" call exceeds 4s.
+const SG_PACK_FALLBACK = {
+  "Real Estate": { items: ["Buying", "Selling", "Neighborhoods", "Market updates"], audience: ["First-time buyers", "Sellers", "Relocating families", "Investors"] },
+  "Small Business": { items: ["My services", "Behind the scenes", "Results", "Pricing"], audience: ["Local customers", "First-timers", "Repeat clients", "Referrals"] },
+  "Creators & Personal Brands": { items: ["My story", "What I've learned", "My process", "Opinions"], audience: ["People like me", "Beginners", "Peers", "Fans"] },
+};
+const SG_ABOUT_EXAMPLES = {
+  clients:   ["I run a med spa in Franklin. Most of my clients are women 30 to 55 who are nervous about their first treatment.", "I'm a realtor in East Nashville. I work with first-time buyers who think they can't afford it yet.", "I'm a family photographer. Moms find me on Instagram and book minis in the fall."],
+  income:    ["I make sourdough videos. I sell a starter kit and a course and I'd like that to be my income.", "I'm a fitness coach with an app. Content is my only marketing.", "I teach watercolor online. My classes sell when I show the messy middle."],
+  authority: ["I'm a financial planner who wants to be the person my city asks about money.", "I'm a labor and delivery nurse. I want to be the calm voice for first-time parents.", "I run a small design studio and I have opinions about branding nobody's saying out loud."],
+  community: ["I restore old trucks in my garage. People who do the same keep finding me.", "I'm a mom of three and I post what the day actually looks like.", "I run a Thursday run club and I want more people to feel like they belong."],
+  launch:    ["I'm opening a second salon location in March.", "I'm launching a podcast about small-town business in the spring.", "My first book comes out in six weeks and I've never posted consistently."],
+  unsure:    ["I'm a hairstylist. I post sometimes. I don't know what it's for yet.", "I have a day job and a side thing making candles.", "I'm good at my work and bad at talking about it."],
+};
+const SG_BUILD_LINES = [
+  "Mapping who you're talking to",
+  "Checking what's working in your niche this week",
+  "Choosing your platform and rhythm",
+  "Picking your content pillars",
+  "Writing your first post in your voice",
+];
+const SG_GOAL_FROM_OLD = { "Sell my services": "clients", "Book appointments / consults": "clients", "Generate leads": "clients", "Convert followers to clients": "clients", "Drive traffic to my site or listings": "clients", "Sell products": "income", "Land brand deals": "income", "Build community": "community", "Grow my following": "community", "Go viral": "authority" };
+
+async function strategyAPI(action, body, token) {
+  var r = await fetch("/api/strategy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+    body: JSON.stringify(Object.assign({ action: action }, body || {})),
+  });
+  var j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(j.error || ("Request failed (" + r.status + ")"));
+  return j;
+}
+
+function sgLog(name, props) {
+  try { logEvent(window.__virlUserId || null, name, Object.assign({ strategist_v2: true }, props || {})); } catch (e) {}
+}
+
+// Shared bits ---------------------------------------------------------------
+function SgField({ label, hint, children }) {
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 8 }}>{label}</div>
+      {children}
+      {hint && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 300, color: B.muted, marginTop: 6, lineHeight: 1.5 }}>{hint}</div>}
+    </div>
+  );
+}
+function SgInput(props) {
+  return <input {...props} style={Object.assign({ width: "100%", boxSizing: "border-box", background: B.bg, border: "1px solid " + B.border, borderRadius: 10, color: B.ink, fontSize: 14, padding: "11px 12px", fontFamily: "'Jost',sans-serif" }, props.style || {})} />;
+}
+function SgTextarea(props) {
+  return <textarea {...props} style={Object.assign({ width: "100%", boxSizing: "border-box", background: B.bg, border: "1px solid " + B.border, borderRadius: 10, color: B.ink, fontSize: 14, padding: "12px", fontFamily: "'Jost',sans-serif", lineHeight: 1.6, resize: "vertical" }, props.style || {})} />;
+}
+function SgChipGroup({ values, onChange, placeholder }) {
+  const [adding, setAdding] = useState("");
+  var list = Array.isArray(values) ? values : [];
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+      {list.map(function (v, i) {
+        return (
+          <span key={v + i} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "'Jost',sans-serif", fontSize: 12, fontWeight: 500, padding: "6px 10px 6px 14px", background: B.navySoft, color: B.navy, borderRadius: 99 }}>
+            {v}
+            <button onClick={function () { onChange(list.filter(function (_, k) { return k !== i; })); }} aria-label={"Remove " + v}
+              style={{ background: "none", border: "none", color: B.navy, cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0 }}>{"×"}</button>
+          </span>
+        );
+      })}
+      <input value={adding} onChange={function (e) { setAdding(e.target.value); }}
+        onKeyDown={function (e) { if (e.key === "Enter" && adding.trim()) { onChange(list.concat([adding.trim()])); setAdding(""); } }}
+        placeholder={placeholder || "add your own"}
+        style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, padding: "6px 10px", border: "1px dashed " + B.border, borderRadius: 99, background: "transparent", color: B.ink, minWidth: 110 }} />
+    </div>
+  );
+}
+function SgNote({ children }) {
+  if (!children) return null;
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", background: B.navySoft, borderRadius: 12, padding: "12px 16px", marginTop: 14 }}>
+      <div style={{ fontFamily: "'Italiana',serif", fontSize: 18, color: B.navy, lineHeight: 1, marginTop: 1 }}>V</div>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.navy, lineHeight: 1.6 }}>{children}</div>
+    </div>
+  );
+}
+function SgPrimary({ onClick, disabled, children, loading }) {
+  return (
+    <button onClick={onClick} disabled={disabled || loading}
+      style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", padding: "14px 22px", background: disabled ? B.border : B.navy, color: B.white, border: "none", borderRadius: 99, cursor: disabled ? "default" : "pointer" }}>
+      {loading ? "One sec" : children}
+    </button>
+  );
+}
+function SgGhost({ onClick, children }) {
+  return (
+    <button onClick={onClick}
+      style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", background: "transparent", color: B.muted, border: "none", cursor: "pointer" }}>
+      {children}
+    </button>
+  );
+}
+
+// Voice note: 30s cap, MediaRecorder → base64 → /api/strategy transcribe.
+function SgVoiceNote({ token, prompt, onText }) {
+  const [state, setState] = useState("idle"); // idle | recording | sending | done | error
+  const [secs, setSecs] = useState(0);
+  const [msg, setMsg] = useState("");
+  const recRef = useRef(null);
+  const chunksRef = useRef([]);
+  const timerRef = useRef(null);
+  var supported = typeof window !== "undefined" && window.MediaRecorder && navigator.mediaDevices;
+  function stop() {
+    try { if (recRef.current && recRef.current.state !== "inactive") recRef.current.stop(); } catch (e) {}
+    clearInterval(timerRef.current);
+  }
+  async function start() {
+    if (!supported) { setMsg("This browser can't record. Paste captions instead."); setState("error"); return; }
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      var rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = function (e) { if (e.data && e.data.size) chunksRef.current.push(e.data); };
+      rec.onstop = async function () {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        setState("sending");
+        try {
+          var blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+          var b64 = await new Promise(function (resolve, reject) {
+            var fr = new FileReader();
+            fr.onload = function () { resolve(String(fr.result).split(",")[1] || ""); };
+            fr.onerror = reject;
+            fr.readAsDataURL(blob);
+          });
+          var j = await strategyAPI("transcribe", { audioBase64: b64, mimeType: blob.type }, token);
+          if (j.text) { onText(j.text); setState("done"); setMsg("Got it. You can edit the text below."); }
+          else { setState("error"); setMsg(j.reason || "I couldn't hear that one."); }
+        } catch (e) { setState("error"); setMsg("I couldn't hear that one. Try again or paste captions."); }
+      };
+      recRef.current = rec;
+      rec.start();
+      setState("recording"); setSecs(0);
+      timerRef.current = setInterval(function () {
+        setSecs(function (s) { if (s + 1 >= 30) { stop(); } return s + 1; });
+      }, 1000);
+    } catch (e) { setState("error"); setMsg("Microphone access was blocked. Paste captions instead."); }
+  }
+  useEffect(function () { return function () { clearInterval(timerRef.current); }; }, []);
+  return (
+    <div style={{ border: "1px solid " + B.border, borderRadius: 12, padding: "12px 14px", marginTop: 10 }}>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, color: B.sub, marginBottom: 8 }}>{prompt}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {state !== "recording" ? (
+          <button onClick={start} disabled={state === "sending"}
+            style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", padding: "9px 14px", background: B.coralSoft, color: B.coral, border: "none", borderRadius: 99, cursor: "pointer" }}>
+            {state === "sending" ? "Listening back" : "Record a voice note"}
+          </button>
+        ) : (
+          <button onClick={stop}
+            style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", padding: "9px 14px", background: B.coral, color: B.white, border: "none", borderRadius: 99, cursor: "pointer" }}>
+            {"Stop (" + secs + "s / 30s)"}
+          </button>
+        )}
+        {msg && <span style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: state === "error" ? B.coral : B.muted }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── The interview ──────────────────────────────────────────────────────────
+// props: session, profile, stored (localStorage snapshot), mode ("new" |
+// "meet" | "edit"), startScreen (edit mode), consents {edits,vault,results,
+// publicPosts}, onBuilt(strategy, version), onCancel (edit mode only)
+function StrategistOnboarding({ session, profile, stored, mode, startScreen, initialAnswers, consents, onBuilt, onCancel }) {
+  var token = session ? session.access_token : null;
+  var meet = mode === "meet";
+  var edit = mode === "edit";
+  var pack = (profile && profile.nichePack) || "Creators & Personal Brands";
+
+  // Answers ------------------------------------------------------------------
+  var migratedGoal = stored && stored.goal ? SG_GOAL_FROM_OLD[stored.goal] : null;
+  const [goal, setGoal] = useState((initialAnswers && initialAnswers.goal && initialAnswers.goal.primary) || migratedGoal || null);
+  const [goalSecondary, setGoalSecondary] = useState((initialAnswers && initialAnswers.goal && initialAnswers.goal.secondary) || []);
+  const [about, setAbout] = useState((initialAnswers && initialAnswers.about) || "");
+  // Stored answers may predate a field (price_bands, city); normalise so the
+  // edit screen never reads a missing list.
+  const [heard, setHeard] = useState(function(){
+    var h = initialAnswers && initialAnswers.heard;
+    if (!h || typeof h !== "object" || (!h.identity && !(h.items && h.items.length))) return null;
+    return {
+      identity: h.identity || "", items: Array.isArray(h.items) ? h.items : [], audience: Array.isArray(h.audience) ? h.audience : [],
+      market: ["local", "online", "both"].indexOf(h.market) >= 0 ? h.market : "both", city: h.city || "", edge: h.edge || "",
+      price_bands: Array.isArray(h.price_bands) ? h.price_bands : [], price_band: h.price_band || "", reflection: h.reflection || "",
+    };
+  });
+  const [heardState, setHeardState] = useState("idle"); // idle | loading | ready | fallback
+  const [migrated, setMigrated] = useState(null);
+  const [platforms, setPlatforms] = useState((initialAnswers && initialAnswers.reality && initialAnswers.reality.platforms) || (meet && profile && profile.myPlatforms ? profile.myPlatforms.map(function (p) { return p === "YouTube" ? "YouTube Shorts" : p; }).filter(function (p) { return SG_PLATFORMS.indexOf(p) >= 0; }) : []));
+  const [otherPlatform, setOtherPlatform] = useState((initialAnswers && initialAnswers.reality && initialAnswers.reality.other) || "");
+  const [sizes, setSizes] = useState((initialAnswers && initialAnswers.reality && initialAnswers.reality.sizes) || {});
+  const [camera, setCamera] = useState((initialAnswers && initialAnswers.reality && initialAnswers.reality.camera) || "");
+  const [timeBand, setTimeBand] = useState((initialAnswers && initialAnswers.reality && initialAnswers.reality.time) || "");
+  const [slot, setSlot] = useState((initialAnswers && initialAnswers.reality && initialAnswers.reality.slot) || { weekday: "Sunday", time: "", place: "" });
+  const [sample, setSample] = useState((initialAnswers && initialAnswers.voice && initialAnswers.voice.sample) || (meet && profile ? [profile.sampleCaption].concat(profile.voiceSamples || []).filter(Boolean).join("\n\n") : ""));
+  const [tone, setTone] = useState((initialAnswers && initialAnswers.voice && initialAnswers.voice.tone) || (meet && profile && profile.vibes ? profile.vibes.slice(0, 3) : []));
+  const [offLimits, setOffLimits] = useState((initialAnswers && initialAnswers.voice && initialAnswers.voice.off_limits) || (meet && profile ? (profile.offLimits || "") : ""));
+  const [rules, setRules] = useState((initialAnswers && initialAnswers.voice && initialAnswers.voice.rules) || "");
+  const [emojiUse, setEmojiUse] = useState((initialAnswers && initialAnswers.voice && initialAnswers.voice.emoji_use) || (profile && profile.emojiPref === "Never" ? "none" : profile && profile.emojiPref === "Always" ? "lots" : "few"));
+  const [emojiWhere, setEmojiWhere] = useState((initialAnswers && initialAnswers.voice && initialAnswers.voice.emoji_where) || "end");
+  const [consent, setConsent] = useState(consents || { edits: true, vault: true, results: true, publicPosts: true });
+
+  // Screen flow --------------------------------------------------------------
+  // new:  1 goal → 2 about → 3 heard → 4 reality → 5 voice → build
+  // meet: 1 goal (one tap) → 3 heard (prefilled) → 4 reality (gaps) → build
+  // edit: the one screen asked for → build (rebuild)
+  var order = meet ? [1, 3, 4] : edit ? [startScreen || 1] : [1, 2, 3, 4, 5];
+  const [idx, setIdx] = useState(0);
+  var screen = order[idx];
+  const [building, setBuilding] = useState(false);
+  const [buildLine, setBuildLine] = useState(0);
+  const [error, setError] = useState("");
+  const screenStart = useRef(Date.now());
+  useEffect(function () {
+    screenStart.current = Date.now();
+    sgLog("strategist_screen_viewed", { screen: screen, mode: mode });
+  }, [screen]);
+  function leave(kind) {
+    sgLog("strategist_screen_" + kind, { screen: screen, mode: mode, ms: Date.now() - screenStart.current });
+  }
+
+  // Fetch "What I heard" when screen 3 opens, with the 4s fallback handled server-side.
+  useEffect(function () {
+    if (screen !== 3 || heard || heardState === "loading") return;
+    var cancelled = false;
+    setHeardState("loading");
+    strategyAPI("heard", meet ? { fromProfile: true, goal: goal || "unsure" } : { goal: goal || "unsure", about: about }, token)
+      .then(function (j) {
+        if (cancelled) return;
+        if (j.migrated) setMigrated(j.migrated);
+        if (j.heard) { setHeard(normaliseHeard(j.heard)); setHeardState("ready"); }
+        else { setHeard(fallbackHeard()); setHeardState("fallback"); }
+      })
+      .catch(function () { if (!cancelled) { setHeard(fallbackHeard()); setHeardState("fallback"); } });
+    return function () { cancelled = true; };
+  }, [screen]);
+  function fallbackHeard() {
+    var f = SG_PACK_FALLBACK[pack] || SG_PACK_FALLBACK["Creators & Personal Brands"];
+    return { identity: (profile && profile.knownFor) || "", items: f.items, audience: f.audience, market: "both", city: "", edge: "", price_bands: [], reflection: "I couldn't pull your details just now, so start from these and make them yours." };
+  }
+  function normaliseHeard(h) {
+    return {
+      identity: h.identity || "", items: Array.isArray(h.items) ? h.items : [], audience: Array.isArray(h.audience) ? h.audience : [],
+      market: ["local", "online", "both"].indexOf(h.market) >= 0 ? h.market : "both", city: h.city || "", edge: h.edge || "",
+      price_bands: Array.isArray(h.price_bands) ? h.price_bands : [], price_band: "", reflection: h.reflection || "",
+    };
+  }
+
+  function answers(label) {
+    var sources = {};
+    if (meet && migrated) { Object.keys(migrated).forEach(function (k) { sources[k] = "migrated"; }); }
+    return {
+      goal: { primary: goal || "unsure", secondary: goalSecondary },
+      about: meet && migrated && migrated.about ? migrated.about.value : about,
+      heard: heard || {},
+      reality: { platforms: platforms, sizes: sizes, camera: camera, time: timeBand, slot: slot, other: otherPlatform },
+      voice: { sample: sample, tone: tone, off_limits: offLimits, rules: rules, emoji_use: emojiUse, emoji_where: emojiWhere },
+      sources: sources, label: label || "",
+    };
+  }
+
+  async function build(label) {
+    setBuilding(true); setError(""); setBuildLine(0);
+    var t = setInterval(function () { setBuildLine(function (n) { return Math.min(n + 1, SG_BUILD_LINES.length - 1); }); }, 6000);
+    var started = Date.now();
+    try {
+      // Consents ride the profile row through the existing save path.
+      if (!edit && session && session.user) {
+        var merged = Object.assign({}, profile || {}, { learnFromEdits: !!consent.edits, learnFromVault: !!consent.vault, learnFromResults: !!consent.results, learnFromPublicPosts: !!consent.publicPosts, emojiPref: emojiUse === "none" ? "Never" : emojiUse === "lots" ? "Always" : "Sometimes" });
+        if (!merged.name) merged.name = (heard && heard.identity) || merged.name || "";
+        try { await supabaseClient.from("profiles").update({ learn_from_edits: !!consent.edits, learn_from_vault: !!consent.vault, learn_from_results: !!consent.results, learn_from_public_posts: !!consent.publicPosts }).eq("id", session.user.id); } catch (e) {}
+      }
+      var j = await strategyAPI("build", { answers: answers(label), includeProfile: meet }, token);
+      clearInterval(t);
+      sgLog("strategist_build_done", { ms: Date.now() - started, mode: mode, rubric_pass: j.quality && j.quality.pass });
+      onBuilt(j.strategy, j.version, answers(label));
+    } catch (e) {
+      clearInterval(t);
+      setBuilding(false);
+      setError(e.message || "I couldn't finish your strategy. Try again.");
+    }
+  }
+
+  function next() {
+    leave("completed");
+    if (idx + 1 >= order.length) { build(edit ? "Profile edit" : meet ? "Meet your strategist" : "First strategy"); return; }
+    setIdx(idx + 1);
+  }
+  function skip() { leave("skipped"); if (idx + 1 >= order.length) build(edit ? "Profile edit" : "First strategy"); else setIdx(idx + 1); }
+  function back() { if (idx > 0) setIdx(idx - 1); }
+
+  // Progress: three labelled steps; first step pre-filled 35%.
+  var stepIndex = screen <= 2 ? 0 : screen === 3 ? 1 : 2;
+  var pct = screen === 1 ? 35 : screen === 2 ? 50 : screen === 3 ? 70 : screen === 4 ? 85 : 95;
+
+  var canNext = screen === 1 ? !!goal
+    : screen === 2 ? about.trim().length >= 10
+    : screen === 3 ? !!(heard && (heard.items.length || heard.identity) && heard.audience.length)
+    : screen === 4 ? (platforms.length > 0 && !!slot.time)
+    : true;
+
+  const [exampleIdx, setExampleIdx] = useState(0);
+  useEffect(function () { if (screen !== 2) return; var t = setInterval(function () { setExampleIdx(function (i) { return (i + 1) % 3; }); }, 5000); return function () { clearInterval(t); }; }, [screen]);
+
+  if (building) {
+    return (
+      <div style={{ minHeight: "100vh", background: B.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ maxWidth: 440, width: "100%" }}>
+          <div style={{ fontFamily: "'Italiana',serif", fontSize: 30, color: B.navy, marginBottom: 20 }}>Building your strategy.</div>
+          {SG_BUILD_LINES.map(function (l, i) {
+            var done = i < buildLine, now = i === buildLine;
+            return (
+              <div key={l} style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 0", opacity: i > buildLine ? 0.35 : 1 }}>
+                <div style={{ width: 18, height: 18, borderRadius: "50%", border: "2px solid " + (done ? B.green : now ? B.navy : B.border), background: done ? B.green : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: B.white, fontSize: 11 }}>{done ? "✓" : ""}</div>
+                <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 14, color: now ? B.navy : B.sub, fontWeight: now ? 600 : 400 }}>{l}</div>
+                {now && <svg className="spin" width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={B.navy} strokeWidth={2.5}><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" /></svg>}
+              </div>
+            );
+          })}
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, color: B.muted, marginTop: 16 }}>Usually 20 to 40 seconds.</div>
+        </div>
+      </div>
+    );
+  }
+
+  var examples = SG_ABOUT_EXAMPLES[goal || "unsure"] || SG_ABOUT_EXAMPLES.unsure;
+  var goalMeta = SG_GOALS.filter(function (g) { return g.key === goal; })[0];
+  var businessGoal = goal === "clients" || goal === "income";
+
+  return (
+    <div style={{ minHeight: "100vh", background: B.bg, fontFamily: "'Jost',sans-serif", color: B.ink }}>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "28px 20px 60px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div style={{ fontFamily: "'Italiana',serif", fontSize: 24, color: B.navy, letterSpacing: "0.06em" }}>VIRL</div>
+          {edit && <SgGhost onClick={onCancel}>Cancel</SgGhost>}
+        </div>
+        {!edit && (
+          <div style={{ marginBottom: 26 }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+              {["You", "What I heard", "Your reality"].map(function (s, i) {
+                return <div key={s} style={{ flex: 1, fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: i <= stepIndex ? B.navy : B.muted }}>{s}</div>;
+              })}
+            </div>
+            <div style={{ height: 4, background: B.divider, borderRadius: 99, overflow: "hidden" }}>
+              <div style={{ width: pct + "%", height: "100%", background: B.navy, transition: "width .4s" }} />
+            </div>
+          </div>
+        )}
+
+        {meet && idx === 0 && (
+          <div style={{ background: B.navy, borderRadius: 16, padding: "18px 20px", marginBottom: 20, color: B.white }}>
+            <div style={{ fontFamily: "'Italiana',serif", fontSize: 24, marginBottom: 6 }}>I've read your profile.</div>
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, fontWeight: 300, color: "rgba(255,255,255,0.8)", lineHeight: 1.6 }}>Three quick screens: confirm what I heard, fill in what your old profile never asked, and I'll build your strategy. Your profile stays as it is.</div>
+          </div>
+        )}
+
+        {screen === 1 && (
+          <div className="su">
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 18, color: B.ink }}>What do you most want from social right now?</h1>
+            <div style={{ display: "grid", gap: 8 }}>
+              {SG_GOALS.map(function (g) {
+                var on = goal === g.key;
+                return (
+                  <button key={g.key} onClick={function () { setGoal(g.key); setGoalSecondary(goalSecondary.filter(function (s) { return s !== g.key; })); }}
+                    style={{ textAlign: "left", fontFamily: "'Jost',sans-serif", fontSize: 14, fontWeight: on ? 600 : 400, padding: "14px 16px", background: on ? B.navy : B.card, color: on ? B.white : B.ink, border: "1px solid " + (on ? B.navy : B.border), borderRadius: 12, cursor: "pointer" }}>
+                    {g.label}
+                  </button>
+                );
+              })}
+            </div>
+            {goal && goal !== "unsure" && (
+              <SgField label="Also, if it fits (optional)">
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {SG_GOALS.filter(function (g) { return g.key !== goal && g.key !== "unsure"; }).map(function (g) {
+                    var on = goalSecondary.indexOf(g.key) >= 0;
+                    return <Chip key={g.key} active={on} onClick={function () { setGoalSecondary(on ? goalSecondary.filter(function (s) { return s !== g.key; }) : goalSecondary.concat([g.key]).slice(-2)); }}>{g.label}</Chip>;
+                  })}
+                </div>
+              </SgField>
+            )}
+            {goalMeta && <SgNote>{goalMeta.reflect}</SgNote>}
+          </div>
+        )}
+
+        {screen === 2 && (
+          <div className="su">
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 10, color: B.ink }}>Tell me about you, the way you'd tell a friend.</h1>
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.muted, marginBottom: 14, lineHeight: 1.6 }}>What you do, who it's for, where you are. A few sentences is plenty.</div>
+            <SgTextarea value={about} onChange={function (e) { setAbout(e.target.value); }} rows={6} placeholder={examples[exampleIdx]} />
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: B.muted, marginTop: 6 }}>{"For example: " + examples[(exampleIdx + 1) % 3]}</div>
+            <SgVoiceNote token={token} prompt="Or say it out loud. Thirty seconds, I'll write it down." onText={function (t) { setAbout(function (a) { return (a ? a + "\n\n" : "") + t; }); }} />
+          </div>
+        )}
+
+        {screen === 3 && (
+          <div className="su">
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 10, color: B.ink }}>Here's what I heard.</h1>
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.muted, marginBottom: 14, lineHeight: 1.6 }}>Fix anything that's off. Everything here is editable.</div>
+            {heardState === "loading" && <Spinner text="Reading that back" />}
+            {heard && (
+              <div>
+                <SgField label="You are">
+                  <SgInput value={heard.identity} onChange={function (e) { setHeard(Object.assign({}, heard, { identity: e.target.value })); }} placeholder="e.g. med spa owner in Franklin, TN" />
+                </SgField>
+                <SgField label={businessGoal ? "What you offer" : "What you talk about"}>
+                  <SgChipGroup values={heard.items} onChange={function (v) { setHeard(Object.assign({}, heard, { items: v })); }} />
+                </SgField>
+                <SgField label="Who it's for">
+                  <SgChipGroup values={heard.audience} onChange={function (v) { setHeard(Object.assign({}, heard, { audience: v })); }} />
+                </SgField>
+                <SgField label="Where you work">
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                    {[["local", "Local"], ["online", "Online"], ["both", "Both"]].map(function (m) {
+                      return <Chip key={m[0]} active={heard.market === m[0]} onClick={function () { setHeard(Object.assign({}, heard, { market: m[0] })); }}>{m[1]}</Chip>;
+                    })}
+                  </div>
+                  {heard.market !== "online" && <SgInput value={heard.city} onChange={function (e) { setHeard(Object.assign({}, heard, { city: e.target.value })); }} placeholder="City or area" />}
+                </SgField>
+                <SgField label="What makes you different (optional)">
+                  <SgInput value={heard.edge} onChange={function (e) { setHeard(Object.assign({}, heard, { edge: e.target.value })); }} placeholder="Only if you'd say it yourself" />
+                </SgField>
+                {businessGoal && (
+                  <SgField label="Price band">
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {(heard.price_bands.length ? heard.price_bands : ["Under $100", "$100 to $500", "$500 to $2,000", "$2,000+"]).map(function (b) {
+                        return <Chip key={b} active={heard.price_band === b} onClick={function () { setHeard(Object.assign({}, heard, { price_band: heard.price_band === b ? "" : b })); }}>{b}</Chip>;
+                      })}
+                    </div>
+                  </SgField>
+                )}
+                <SgNote>{heard.reflection}</SgNote>
+              </div>
+            )}
+          </div>
+        )}
+
+        {screen === 4 && (
+          <div className="su">
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 18, color: B.ink }}>Your reality.</h1>
+            <SgField label="Where you post">
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {SG_PLATFORMS.map(function (p) {
+                  var on = platforms.indexOf(p) >= 0;
+                  return <Chip key={p} active={on} onClick={function () { setPlatforms(on ? platforms.filter(function (x) { return x !== p; }) : platforms.concat([p])); }}>{p}</Chip>;
+                })}
+              </div>
+              {platforms.indexOf("Other") >= 0 && <SgInput style={{ marginTop: 8 }} value={otherPlatform} onChange={function (e) { setOtherPlatform(e.target.value); }} placeholder="Which one?" />}
+            </SgField>
+            {platforms.filter(function (p) { return p !== "Other"; }).length > 0 && (
+              <SgField label="How big is each one">
+                {platforms.filter(function (p) { return p !== "Other"; }).map(function (p) {
+                  return (
+                    <div key={p} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                      <div style={{ width: 110, fontFamily: "'Jost',sans-serif", fontSize: 12, color: B.sub }}>{p}</div>
+                      {SG_SIZES.map(function (s) {
+                        return <Chip key={s.key} active={sizes[p] === s.key} onClick={function () { setSizes(Object.assign({}, sizes, { [p]: s.key })); }}>{s.label}</Chip>;
+                      })}
+                    </div>
+                  );
+                })}
+              </SgField>
+            )}
+            <SgField label="On camera">
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {SG_CAMERA.map(function (c) { return <Chip key={c.key} active={camera === c.key} onClick={function () { setCamera(c.key); }}>{c.label}</Chip>; })}
+              </div>
+            </SgField>
+            <SgField label="Hours a week for content">
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {SG_TIME.map(function (t) { return <Chip key={t.key} active={timeBand === t.key} onClick={function () { setTimeBand(t.key); }}>{t.label}</Chip>; })}
+              </div>
+            </SgField>
+            <SgField label="When's your content slot?" hint="The one block each week you'll give this. The plan and its reminder land around it.">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                <Sel value={slot.weekday} onChange={function (e) { setSlot(Object.assign({}, slot, { weekday: e.target.value })); }}>
+                  {SG_WEEKDAYS.map(function (d) { return <option key={d}>{d}</option>; })}
+                </Sel>
+                <SgInput value={slot.time} onChange={function (e) { setSlot(Object.assign({}, slot, { time: e.target.value })); }} placeholder="e.g. 7pm" />
+              </div>
+              <SgInput value={slot.place} onChange={function (e) { setSlot(Object.assign({}, slot, { place: e.target.value })); }} placeholder="Where (kitchen table, the car, the salon after close)" />
+            </SgField>
+            {platforms.length > 0 && timeBand && (
+              <SgNote>{"Planning around " + (platforms.filter(function (p) { return p !== "Other"; })[0] || "your main platform") + ", " + ({ "1h": "2 to 3", "2-3h": "3 to 4", "4-6h": "4 to 5", "7h+": "5 to 7" })[timeBand] + " posts a week" + (slot.time ? ", made on " + slot.weekday + " at " + slot.time : "") + "."}</SgNote>
+            )}
+          </div>
+        )}
+
+        {screen === 5 && (
+          <div className="su">
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 10, color: B.ink }}>Sound like you.</h1>
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.muted, marginBottom: 14, lineHeight: 1.6 }}>Paste three captions you've written, or record a voice note. Either one becomes your first post's raw material.</div>
+            <SgTextarea value={sample} onChange={function (e) { setSample(e.target.value); }} rows={6} placeholder="Paste 3 captions here, separated by blank lines" />
+            <SgVoiceNote token={token} prompt="Tell me why you started. Thirty seconds." onText={function (t) { setSample(function (s) { return (s ? s + "\n\n" : "") + t; }); }} />
+            <div style={{ height: 14 }} />
+            <SgField label="Tone (up to 3)">
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {SG_TONES.map(function (t) {
+                  var on = tone.indexOf(t) >= 0;
+                  return <Chip key={t} active={on} onClick={function () { setTone(on ? tone.filter(function (x) { return x !== t; }) : tone.concat([t]).slice(-3)); }}>{t}</Chip>;
+                })}
+              </div>
+            </SgField>
+            <SgField label="Emojis in your captions?">
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: emojiUse !== "none" ? 8 : 0 }}>
+                {SG_EMOJI_USE.map(function (e) { return <Chip key={e.key} active={emojiUse === e.key} onClick={function () { setEmojiUse(e.key); }}>{e.label}</Chip>; })}
+              </div>
+              {emojiUse !== "none" && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {SG_EMOJI_WHERE.map(function (e) { return <Chip key={e.key} active={emojiWhere === e.key} onClick={function () { setEmojiWhere(e.key); }}>{e.label}</Chip>; })}
+                </div>
+              )}
+            </SgField>
+            <SgField label="Off limits">
+              <SgInput value={offLimits} onChange={function (e) { setOffLimits(e.target.value); }} placeholder="Topics, people, words I should never use" />
+            </SgField>
+            <SgField label="Rules you work under (optional)">
+              <SgInput value={rules} onChange={function (e) { setRules(e.target.value); }} placeholder="Licensing rules, a brokerage policy, medical claims" />
+            </SgField>
+            <SgField label="What I'm allowed to use" hint="These stay on your profile page. Turn any of them off at any time.">
+              {[["edits", "My edits to drafts"], ["vault", "My saved posts"], ["results", "The results I log"], ["publicPosts", "My public posts on the handles I give"]].map(function (c) {
+                var on = !!consent[c[0]];
+                return (
+                  <div key={c[0]} onClick={function () { setConsent(Object.assign({}, consent, { [c[0]]: !on })); }}
+                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: on ? B.navySoft : B.bg, border: "1px solid " + (on ? B.blue : B.border), borderRadius: 10, cursor: "pointer", marginBottom: 6 }}>
+                    <div style={{ width: 18, height: 18, border: "2px solid " + (on ? B.blue : B.border), borderRadius: 4, background: on ? B.blue : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: B.white, fontSize: 12 }}>{on ? "✓" : ""}</div>
+                    <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: on ? B.navy : B.ink }}>{c[1]}</div>
+                  </div>
+                );
+              })}
+            </SgField>
+          </div>
+        )}
+
+        <ErrBox msg={error} />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 26, gap: 10 }}>
+          <div>{idx > 0 && !edit && <SgGhost onClick={back}>Back</SgGhost>}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {screen === 5 && !edit && <SgGhost onClick={skip}>Skip for now</SgGhost>}
+            <SgPrimary onClick={next} disabled={!canNext}>{idx + 1 >= order.length ? (edit ? "Save and rebuild" : "Build my strategy") : "Next"}</SgPrimary>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── The strategy page ──────────────────────────────────────────────────────
+function sgGoalLabel(k) { var g = SG_GOALS.filter(function (x) { return x.key === k; })[0]; return g ? g.label : k; }
+function sgStage(s) { return ({ start: "Starting", grow: "Growing", convert: "Converting", scale: "Scaling" })[s] || s; }
+
+function SgNotQuiteRight({ section, token, onResult }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function send() {
+    if (!text.trim()) return;
+    setBusy(true);
+    try {
+      var j = await strategyAPI("interpret", { text: text, section: section }, token);
+      sgLog("strategist_not_quite_right_used", { section: section, words: text.trim().split(/\s+/).length, changes: (j.diff || []).length });
+      onResult(j);
+      setText(""); setOpen(false);
+    } catch (e) { onResult({ note: e.message }); }
+    setBusy(false);
+  }
+  return (
+    <div style={{ marginTop: 10 }}>
+      {!open ? (
+        <button onClick={function () { setOpen(true); }} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", background: "transparent", color: B.navy, border: "1px solid " + B.border, borderRadius: 99, padding: "7px 12px", cursor: "pointer" }}>This isn't quite right</button>
+      ) : (
+        <div>
+          <SgTextarea value={text} onChange={function (e) { setText(e.target.value); }} rows={2} placeholder="Say what's off, in your words" autoFocus />
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <SgPrimary onClick={send} disabled={!text.trim()} loading={busy}>Tell me</SgPrimary>
+            <SgGhost onClick={function () { setOpen(false); setText(""); }}>Never mind</SgGhost>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SgSection({ id, title, omitted, children, token, onResult }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <button onClick={function () { setOpen(!open); }} aria-expanded={open}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "14px 18px", background: B.card, border: "1px solid " + B.border, borderRadius: 14, cursor: "pointer", fontFamily: "'Jost',sans-serif" }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: B.navy }}>{title}</span>
+        <span aria-hidden="true" style={{ fontSize: 16, color: B.navy }}>{open ? "▴" : "▾"}</span>
+      </button>
+      {open && (
+        <div style={{ padding: "14px 18px 4px" }}>
+          {omitted ? (
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.muted, lineHeight: 1.6 }}>I wasn't happy with what I wrote here, so I've left it out rather than show you something generic. Tell me what you'd want and I'll take another run.</div>
+          ) : children}
+          <SgNotQuiteRight section={id} token={token} onResult={onResult} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SgDiffBanner({ diff, note, onUndo, onClose }) {
+  if (!note && !(diff && diff.length)) return null;
+  function label(p) { return p.replace(/^\//, "").replace(/\//g, " › ").replace(/_/g, " "); }
+  function show(v) { if (v == null) return "—"; if (typeof v === "object") return JSON.stringify(v); return String(v); }
+  return (
+    <div className="su" style={{ background: B.navy, color: B.white, borderRadius: 14, padding: "14px 18px", marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+        <div style={{ fontFamily: "'Italiana',serif", fontSize: 20, lineHeight: 1 }}>V</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, lineHeight: 1.6, marginBottom: diff && diff.length ? 10 : 0 }}>{note}</div>
+          {(diff || []).slice(0, 8).map(function (d) {
+            return (
+              <div key={d.path} style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, lineHeight: 1.6, borderLeft: "2px solid " + B.sky, paddingLeft: 10, marginBottom: 6 }}>
+                <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: B.sky }}>{label(d.path)}</div>
+                <div style={{ color: "rgba(255,255,255,0.6)", textDecoration: "line-through" }}>{show(d.before)}</div>
+                <div>{show(d.after)}</div>
+              </div>
+            );
+          })}
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            {diff && diff.length > 0 && <button onClick={onUndo} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", background: B.white, color: B.navy, border: "none", borderRadius: 99, padding: "7px 12px", cursor: "pointer" }}>Undo</button>}
+            <button onClick={onClose} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", background: "transparent", color: "rgba(255,255,255,0.7)", border: "none", padding: "7px 6px", cursor: "pointer" }}>Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StrategyPage({ strategy, version, token, onStrategyChange, onOpenScreen, onNavigatePlan, name }) {
+  const [banner, setBanner] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [showOutline, setShowOutline] = useState(false);
+  useEffect(function () { sgLog("strategist_strategy_viewed", { version: version }); }, []);
+  if (!strategy) return null;
+  var s = strategy;
+  var omit = Array.isArray(s.omit) ? s.omit : [];
+  function onResult(j) {
+    if (j.strategy) onStrategyChange(j.strategy, j.version);
+    setBanner({ diff: j.diff || [], note: j.note || "" });
+    if (j.open_screen) onOpenScreen(j.open_screen);
+  }
+  async function undo() {
+    try { var j = await strategyAPI("undo", {}, token); onStrategyChange(j.strategy, j.version); setBanner({ diff: [], note: "Put back the way it was." }); }
+    catch (e) { setBanner({ diff: [], note: e.message }); }
+  }
+  function copyFirst() {
+    var txt = (s.first_post.hook ? s.first_post.hook + "\n\n" : "") + s.first_post.caption;
+    try { navigator.clipboard.writeText(txt); } catch (e) {}
+    setCopied(true); setTimeout(function () { setCopied(false); }, 2000);
+    sgLog("strategist_first_post_copied", { version: version });
+  }
+  var facts = [
+    ["Goal", sgGoalLabel(s.goal && s.goal.primary)],
+    ["Platform", s.platform ? s.platform.primary + (s.platform.rework && s.platform.rework.length ? " (+" + s.platform.rework.length + " rework)" : "") : ""],
+    ["Rhythm", s.cadence ? s.cadence.posts_per_week + " a week" : ""],
+    ["Stage", sgStage(s.stage)],
+  ];
+  var pillars = Array.isArray(s.pillars) ? s.pillars : [];
+  var roleColor = { reach: B.sky, trust: B.navy, connection: B.green, convert: B.coral };
+  return (
+    <div>
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 8 }}>{"Version " + (version || 1)}</div>
+        <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(30px,5vw,46px)", lineHeight: 1, marginBottom: 10, letterSpacing: "-0.02em", color: B.ink }}>{s.identity || (name ? name + "'s strategy" : "Your strategy")}</h1>
+        {s.positioning && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 15, color: B.sub, lineHeight: 1.6, maxWidth: 560 }}>{s.positioning}</div>}
+      </div>
+      <SgDiffBanner diff={banner && banner.diff} note={banner && banner.note} onUndo={undo} onClose={function () { setBanner(null); }} />
+      {s.opening_note && omit.indexOf("opening_note") < 0 && (
+        <div style={{ display: "flex", gap: 14, alignItems: "flex-start", background: B.navy, borderRadius: 16, padding: "20px 22px", marginBottom: 14, color: B.white }}>
+          <div style={{ fontFamily: "'Italiana',serif", fontSize: 30, lineHeight: 1, color: B.sky }}>V</div>
+          <div>
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 14, lineHeight: 1.7, fontWeight: 300 }}>{s.opening_note}</div>
+            <SgNotQuiteRight section="opening_note" token={token} onResult={onResult} />
+          </div>
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 14 }}>
+        {facts.map(function (f) {
+          return (
+            <div key={f[0]} style={{ background: B.card, borderRadius: 12, padding: "12px 14px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+              <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 9, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 4 }}>{f[0]}</div>
+              <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, fontWeight: 600, color: B.ink }}>{f[1]}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {s.first_post && omit.indexOf("first_post") < 0 && (
+        <div style={{ background: B.card, borderRadius: 16, padding: "18px 20px", marginBottom: 14, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", borderLeft: "3px solid " + B.coral }}>
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.coral, marginBottom: 8 }}>Your first post. Make it tonight.</div>
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 16, fontWeight: 600, color: B.ink, lineHeight: 1.4, marginBottom: 8 }}>{s.first_post.hook}</div>
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.sub, lineHeight: 1.7, whiteSpace: "pre-wrap", marginBottom: 10 }}>{s.first_post.caption}</div>
+          {showOutline && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, color: B.sub, lineHeight: 1.7, whiteSpace: "pre-wrap", background: B.bg, borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>{s.first_post.outline}</div>}
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, color: B.navy, lineHeight: 1.6, marginBottom: 12, display: "flex", gap: 8 }}><span style={{ fontFamily: "'Italiana',serif", fontSize: 16, lineHeight: 1 }}>V</span><span>{s.first_post.why}</span></div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={copyFirst} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", background: B.navy, color: B.white, border: "none", borderRadius: 99, padding: "9px 14px", cursor: "pointer" }}>{copied ? "Copied" : "Copy hook + caption"}</button>
+            <button onClick={function () { setShowOutline(!showOutline); }} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", background: "transparent", color: B.navy, border: "1px solid " + B.border, borderRadius: 99, padding: "9px 14px", cursor: "pointer" }}>{showOutline ? "Hide the outline" : "What to show or say"}</button>
+          </div>
+          <SgNotQuiteRight section="first_post" token={token} onResult={onResult} />
+        </div>
+      )}
+
+      <SgSection id="lane" title="Your lane" omitted={omit.indexOf("strategy") >= 0} token={token} onResult={onResult}>
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.sub, lineHeight: 1.7 }}>
+          <div><strong style={{ color: B.ink }}>For: </strong>{(s.audience || []).join("; ")}</div>
+          {s.struggle && <div><strong style={{ color: B.ink }}>Their struggle: </strong>{s.struggle}</div>}
+          {s.market && <div><strong style={{ color: B.ink }}>Market: </strong>{s.market.type}{s.market.city ? ", " + s.market.city : ""}</div>}
+          {s.edge && <div><strong style={{ color: B.ink }}>Your edge: </strong>{s.edge}</div>}
+          {s.price_band && <div><strong style={{ color: B.ink }}>Price band: </strong>{s.price_band}</div>}
+        </div>
+      </SgSection>
+      <SgSection id="pillars" title="Your pillars" token={token} onResult={onResult}>
+        <div style={{ display: "flex", height: 10, borderRadius: 99, overflow: "hidden", marginBottom: 12 }}>
+          {pillars.map(function (p) { return <div key={p.name} style={{ width: p.share + "%", background: roleColor[p.role] || B.navy }} />; })}
+        </div>
+        {pillars.map(function (p) {
+          return (
+            <div key={p.name} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
+              <div style={{ width: 10, height: 10, borderRadius: 3, background: roleColor[p.role] || B.navy, marginTop: 5, flexShrink: 0 }} />
+              <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, lineHeight: 1.6 }}>
+                <span style={{ fontWeight: 600, color: B.ink }}>{p.name}</span>
+                <span style={{ color: B.muted }}>{" · " + p.role + " · " + p.share + "%"}</span>
+                <div style={{ color: B.sub }}>{p.job}</div>
+              </div>
+            </div>
+          );
+        })}
+      </SgSection>
+      <SgSection id="where_and_how" title="Where and how" token={token} onResult={onResult}>
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.sub, lineHeight: 1.7 }}>
+          <div><strong style={{ color: B.ink }}>Primary: </strong>{s.platform && s.platform.primary}</div>
+          {s.platform && s.platform.rework && s.platform.rework.length > 0 && <div><strong style={{ color: B.ink }}>Rework for: </strong>{s.platform.rework.join(", ")}<span style={{ color: B.muted }}>{" (the same idea rewritten for each, never copied)"}</span></div>}
+          <div><strong style={{ color: B.ink }}>Formats: </strong>{(s.formats || []).join(", ")}</div>
+        </div>
+      </SgSection>
+      <SgSection id="rhythm" title="Your rhythm" token={token} onResult={onResult}>
+        {s.cadence && (
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.sub, lineHeight: 1.7 }}>
+            {[[(s.cadence.slot && s.cadence.slot.weekday) || "Your slot", (s.cadence.slot ? [s.cadence.slot.time, s.cadence.slot.place].filter(Boolean).join(", ") : "") + ": " + s.cadence.batch], ["Through the week", s.cadence.posts_per_week + " posts go out"], ["Next slot", "I'll have the next week waiting"]].map(function (step, i) {
+              return (
+                <div key={i} style={{ display: "flex", gap: 12, marginBottom: 8 }}>
+                  <div style={{ width: 22, height: 22, borderRadius: "50%", background: B.navySoft, color: B.navy, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{i + 1}</div>
+                  <div><strong style={{ color: B.ink }}>{step[0]}. </strong>{step[1]}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </SgSection>
+      <SgSection id="results" title="How content turns into results" token={token} onResult={onResult}>
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.sub, lineHeight: 1.7 }}>{s.path_to_results}</div>
+      </SgSection>
+      <SgSection id="watch" title="What we'll watch" token={token} onResult={onResult}>
+        <ul style={{ margin: 0, paddingLeft: 18, fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.sub, lineHeight: 1.7 }}>
+          {(s.metrics || []).map(function (m) { return <li key={m}>{m}</li>; })}
+        </ul>
+        {s.guardrails && (s.guardrails.rules || (s.guardrails.off_limits || []).length > 0) && (
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, color: B.muted, lineHeight: 1.6, marginTop: 10 }}>
+            <strong style={{ color: B.sub }}>Guardrails: </strong>{(s.guardrails.off_limits || []).length ? "off limits: " + s.guardrails.off_limits.join(", ") + ". " : ""}{s.guardrails.rules}
+          </div>
+        )}
+      </SgSection>
+      <SgSection id="learning" title="What I'm still learning" token={token} onResult={onResult}>
+        <ul style={{ margin: 0, paddingLeft: 18, fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.sub, lineHeight: 1.7 }}>
+          {(s.still_learning || []).map(function (m) { return <li key={m}>{m}</li>; })}
+        </ul>
+      </SgSection>
+      {Array.isArray(s.research) && s.research.length > 0 && (
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: B.muted, lineHeight: 1.6, marginTop: 14 }}>
+          {"Built with " + s.research.length + " research findings from your niche, fetched " + (s.research[0].fetched_at ? new Date(s.research[0].fetched_at).toLocaleDateString() : "recently") + "."}
+        </div>
+      )}
+      <div style={{ marginTop: 22 }}>
+        <GenBtn onClick={onNavigatePlan}>Plan this week from it</GenBtn>
+      </div>
+    </div>
+  );
+}
+
+// ── "What I know about you" ────────────────────────────────────────────────
+function StrategistProfileTab({ strategy, version, history, notes, answers, profile, token, onEdit, onRestart, onStrategyChange }) {
+  var a = answers || {};
+  var reality = a.reality || {};
+  var voice = a.voice || {};
+  var s = strategy || {};
+  const [note, setNote] = useState("");
+  var rows = [
+    { label: "Goal", value: sgGoalLabel(a.goal && a.goal.primary) + ((a.goal && a.goal.secondary && a.goal.secondary.length) ? " (also " + a.goal.secondary.map(sgGoalLabel).join(", ") + ")" : ""), screen: 1 },
+    { label: "In your words", value: a.about || "", screen: 2 },
+    { label: "You are", value: (s.identity || "") + (s.edge ? " · " + s.edge : ""), screen: 3 },
+    { label: "What you offer or talk about", value: ((a.heard && a.heard.items) || []).join(", "), screen: 3 },
+    { label: "Who it's for", value: ((a.heard && a.heard.audience) || []).join(", "), screen: 3 },
+    { label: "Platforms and capacity", value: (reality.platforms || []).join(", ") + (reality.camera ? " · camera: " + ({ love: "love it", fine: "fine", rather_not: "rather not", grow_into: "growing into it" })[reality.camera] : "") + (reality.time ? " · " + reality.time + " a week" : ""), screen: 4 },
+    { label: "Content slot", value: reality.slot ? [reality.slot.weekday, reality.slot.time, reality.slot.place].filter(Boolean).join(", ") : "", screen: 4 },
+    { label: "Voice and guardrails", value: [(voice.tone || []).join(", "), voice.emoji_use ? "emojis: " + voice.emoji_use : "", voice.off_limits ? "off limits: " + voice.off_limits : ""].filter(Boolean).join(" · "), screen: 5 },
+  ];
+  var migratedKeys = a.sources ? Object.keys(a.sources) : [];
+  return (
+    <div>
+      {rows.map(function (r) {
+        return (
+          <div key={r.label} style={{ display: "flex", gap: 12, alignItems: "flex-start", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid " + B.divider }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: B.muted, marginBottom: 3 }}>{r.label}</div>
+              <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: r.value ? B.ink : B.muted, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{r.value || "Not set"}</div>
+            </div>
+            <button onClick={function () { onEdit(r.screen); }} style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", background: "transparent", color: B.navy, border: "1px solid " + B.border, borderRadius: 99, padding: "6px 10px", cursor: "pointer", flexShrink: 0 }}>Edit</button>
+          </div>
+        );
+      })}
+      <div style={{ padding: "12px 0", borderBottom: "1px solid " + B.divider }}>
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: B.muted, marginBottom: 6 }}>Things you've told me</div>
+        {(notes || []).length === 0 && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.muted }}>Nothing yet. Use "This isn't quite right" on any section of your strategy.</div>}
+        {(notes || []).slice().reverse().map(function (n, i) { return <div key={i} style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.sub, lineHeight: 1.6, padding: "4px 0" }}>{"“" + n + "”"}</div>; })}
+      </div>
+      {migratedKeys.length > 0 && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: B.muted, marginTop: 10, lineHeight: 1.6 }}>Some of this came from your older profile. Your old profile is untouched.</div>}
+      <div style={{ marginTop: 20 }}>
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: B.muted, marginBottom: 8 }}>Strategy history</div>
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.sub, lineHeight: 1.6 }}>
+          <div><strong style={{ color: B.ink }}>{"Version " + (version || 1)}</strong>{" · current"}</div>
+          {(history || []).slice().reverse().map(function (h) { return <div key={h.version + h.at}>{"Version " + h.version + " · " + (h.label || "") + " · " + (h.at ? new Date(h.at).toLocaleDateString() : "")}</div>; })}
+        </div>
+      </div>
+      <div style={{ marginTop: 26 }}>
+        <SgGhost onClick={onRestart}>Start the interview over</SgGhost>
+      </div>
+    </div>
+  );
+}
+
+
 function App() {
 
 // ── Supabase session state ──────────────────────────────────────────────
@@ -9456,7 +10332,7 @@ function App() {
   // refresh on those tabs bounced the user; both included now. "vault" and
   // "results" merged into "library" — legacy remembered values migrate
   // below so an in-flight session doesn't lose its place.
-  const ALLOWED_TABS = ["profile","plan","caption","scan","library","circle","admin"];
+  const ALLOWED_TABS = ["profile","strategy","plan","caption","scan","library","circle","admin"];
   const LEGACY_TAB_MAP = { vault: "library", results: "library" };
   // [TAB-PERSIST FIX] Tracks whether the initial tab came from sessionStorage
   // (a real page refresh while the user was on a specific tab) vs a default
@@ -9699,6 +10575,31 @@ function App() {
   // during the load window.
   const [userDataHydrated,setUserDataHydrated] = useState(false);
   const [profile,setProfile] = useState(stored.profile||{});
+  // [PR1] Strategist rollout. sgFlag: null until account_flags is read,
+  // then true/false. sgReady: the profile row has been fetched for this
+  // session, so "no strategy" means no strategy rather than "not loaded".
+  // sgEdit: { screen } opens one onboarding screen pre-filled in edit mode.
+  const [sgFlag,setSgFlag]       = useState(null);
+  const [sgReady,setSgReady]     = useState(false);
+  const [sgEdit,setSgEdit]       = useState(null);
+  const [sgRestart,setSgRestart] = useState(false);
+  useEffect(function(){
+    if (!session || !session.user) { setSgFlag(null); setSgReady(false); return; }
+    var cancelled = false;
+    supabaseClient.from("account_flags").select("strategist_v2").eq("user_id", session.user.id).maybeSingle()
+      .then(function(r){ if (!cancelled) setSgFlag(!!(r && r.data && r.data.strategist_v2)); })
+      .catch(function(){ if (!cancelled) setSgFlag(false); });
+    return function(){ cancelled = true; };
+  }, [session]);
+  function sgReloadProfile() {
+    if (!session || !session.user) return Promise.resolve();
+    return loadProfileFromSupabase(session.user.id).then(function(p){
+      if (p && Object.keys(p).length) {
+        setProfile(function(prev){ return Object.assign({}, prev, p); });
+        try { var cur = load() || {}; cur.profile = Object.assign({}, cur.profile || {}, p); save(cur); } catch(e) {}
+      }
+    });
+  }
   const [sbCredits,setSbCredits]     = useState(null); // Supabase credits row (authoritative)
   // [TASK 1] Sync state for profile save: "idle" | "syncing" | "synced" | "failed"
   const [profileSync,setProfileSync] = useState("idle");
@@ -9877,6 +10778,13 @@ function App() {
     // Mirror the Supabase profile back to localStorage so the cache stays consistent
     // and a refresh can paint instantly before the round-trip resolves.
     loadProfileFromSupabase(userId).then(function(p) {
+      // [PR1] Strategist state rides the profile row; it is loaded whether or
+      // not the old profile has a name, so a flagged account with a strategy
+      // never flashes the interview.
+      if (p && (p.strategy || p.onboardingAnswers) && !(p && p.name)) {
+        setProfile(function(prev){ return Object.assign({}, prev, p); });
+      }
+      setSgReady(true);
       // [NICHE-PACKS] One-off: record this browser's pre-PR 0 niche and its
       // pack on the profile row (migration 028). legacy_niche is only ever
       // written when the row has none, so the first value sticks.
@@ -10684,6 +11592,8 @@ function App() {
   // admin Dashboard stays double-gated: hidden here for non-admins and
   // rejected server-side by verifyAdmin in every /api/admin/* endpoint.
   const TABS = [
+    // [PR1] The strategy page leads once the account has one.
+    ...((sgFlag===true&&profile&&profile.strategy)?[{key:"strategy", label:"Strategy"}]:[]),
     {key:"plan",    label:"Plan"},
     {key:"caption", label:"Captions"},
     {key:"scan",    label:"Scan"},
@@ -11782,6 +12692,31 @@ function App() {
     <SetNewPasswordScreen onDone={function(){ setPasswordRecoveryMode(false); }}/>
   );
 
+  // [PR1] The strategist path. Flag on + no strategy → the interview (or
+  // "Meet your strategist" for an account with an old profile). Flag on +
+  // an edit requested → one screen in edit mode, then a rebuild. Flag off
+  // → nothing here runs and the old pages render below, untouched.
+  if (sgFlag === true && sgReady) {
+    var sgHasStrategy = !!(profile && profile.strategy);
+    var sgOldProfile  = !!(profile && profile.name && (profile.voice || profile.audience || profile.offerings || profile.knownFor));
+    var sgOnBuilt = function(strategy, version, answers) {
+      setProfile(function(prev){ return Object.assign({}, prev, { strategy: strategy, strategyVersion: version, onboardingAnswers: answers }); });
+      setSgEdit(null); setSgRestart(false);
+      sgReloadProfile();
+      setTab("strategy");
+    };
+    if (sgEdit) return (
+      <StrategistOnboarding session={session} profile={profile} stored={stored} mode="edit" startScreen={sgEdit.screen}
+        initialAnswers={profile.onboardingAnswers} onBuilt={sgOnBuilt} onCancel={function(){ setSgEdit(null); }}/>
+    );
+    if (!sgHasStrategy || sgRestart) return (
+      <StrategistOnboarding session={session} profile={profile} stored={stored} mode={sgOldProfile && !sgRestart ? "meet" : "new"}
+        initialAnswers={sgRestart ? null : profile.onboardingAnswers}
+        consents={{ edits: profile.learnFromEdits !== false, vault: profile.learnFromVault !== false, results: profile.learnFromResults !== false, publicPosts: profile.learnFromPublicPosts !== false }}
+        onBuilt={sgOnBuilt} onCancel={function(){ setSgRestart(false); }}/>
+    );
+  }
+
 return (
     <div id="virl-shell" style={{minHeight:"100vh",background:B.bg,fontFamily:"'Jost',sans-serif",fontWeight:300,color:B.ink}}>
 
@@ -12503,7 +13438,26 @@ return (
 
         {tab==="profile"&&(
           <div>
-            {!profileComplete&&(
+            {sgFlag===true&&profile&&profile.strategy&&(
+              <div style={{marginBottom:28}}>
+                <Eyebrow>What I know about you</Eyebrow>
+                <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(32px,5vw,52px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
+                  What I know<br/><span style={{color:B.navy}}>about you.</span>
+                </h1>
+                <div style={{fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.75,maxWidth:480,marginBottom:14}}>
+                  Each row opens the one screen it came from. Saving rebuilds your strategy and shows you what changed.
+                </div>
+                <StrategistProfileTab strategy={profile.strategy} version={profile.strategyVersion} history={profile.strategyHistory} notes={profile.strategistNotes}
+                  answers={profile.onboardingAnswers} profile={profile} token={userToken}
+                  onEdit={function(n){ setSgEdit({ screen: n }); }}
+                  onRestart={function(){ if (window.confirm("Start the interview over? Your current strategy is kept in history.")) setSgRestart(true); }}/>
+                <div style={{marginTop:28,paddingTop:20,borderTop:"1px solid "+B.divider}}>
+                  <Eyebrow>Your full profile</Eyebrow>
+                  <div style={{fontSize:13,fontWeight:300,color:B.muted,lineHeight:1.7,maxWidth:480}}>Everything below still feeds your plans. Your learning sources live here too.</div>
+                </div>
+              </div>
+            )}
+            {!profileComplete&&!(sgFlag===true&&profile&&profile.strategy)&&(
               <div style={{background:B.navy,borderRadius:16,padding:"20px",marginBottom:20,color:B.white}}>
                 {/* [UX] Single editorial kicker. Replaces the prior "Getting started"
                     heading + redundant gray label in the same row. */}
@@ -12769,6 +13723,16 @@ return (
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {tab==="strategy"&&sgFlag===true&&profile&&profile.strategy&&(
+          <div>
+            <Eyebrow>Your strategy</Eyebrow>
+            <StrategyPage strategy={profile.strategy} version={profile.strategyVersion} token={userToken} name={profile.name}
+              onStrategyChange={function(st, v){ setProfile(function(prev){ return Object.assign({}, prev, { strategy: st, strategyVersion: v }); }); sgReloadProfile(); }}
+              onOpenScreen={function(n){ setSgEdit({ screen: n }); }}
+              onNavigatePlan={function(){ setTab("plan"); }}/>
           </div>
         )}
 

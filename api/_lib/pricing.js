@@ -8,6 +8,21 @@
 // monthly bill. For exact figures, refer to the Anthropic console.
 
 const PRICING = {
+  // [PR1] Strategist tiers (api/strategy.js): Opus 5.5 builds the strategy,
+  // runs the "isn't quite right" interpreter and the monthly review; Haiku
+  // 5.5 does the "What I heard" extraction and one-line notes.
+  "claude-opus-5-5": {
+    input:      4.00 / 1_000_000,
+    output:    20.00 / 1_000_000,
+    cacheRead:  0.20 / 1_000_000,
+    cacheWrite: 5.00 / 1_000_000,
+  },
+  "claude-haiku-5-5": {
+    input:      0.10 / 1_000_000,
+    output:     0.50 / 1_000_000,
+    cacheRead:  0.01 / 1_000_000,
+    cacheWrite: 0.125 / 1_000_000,
+  },
   // Sonnet 4.6 — used for plan / script / scan
   "claude-sonnet-4-6": {
     input:      3.00 / 1_000_000,

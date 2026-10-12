@@ -17,24 +17,41 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ENDPOINT          = "https://api.anthropic.com/v1/messages";
 const API_VERSION       = "2023-06-01";
 
-export async function callClaude({ system, prompt, model, maxTokens, temperature }) {
+// [PR1] Optional extras for the strategist calls (api/strategy.js):
+//   outputSchema — a JSON schema; the reply is constrained to it via
+//                  output_config.format (structured outputs), so the text
+//                  is always parseable JSON.
+//   effort       — output_config.effort ("low" | "medium" | "high" | ...).
+//                  The 5.x models think adaptively by default; effort is the
+//                  depth control. Never pass `temperature` with them.
+//   fallbacks    — true opts into the server-side refusal fallback: a policy
+//                  decline re-runs on a fallback model inside the same call.
+export async function callClaude({ system, prompt, model, maxTokens, temperature, outputSchema, effort, fallbacks }) {
   if (!ANTHROPIC_API_KEY) return null;
   if (!prompt || typeof prompt !== "string") return null;
+
+  const outputConfig = {};
+  if (outputSchema) outputConfig.format = { type: "json_schema", schema: outputSchema };
+  if (effort)       outputConfig.effort = effort;
+  const headers = {
+    "x-api-key":         ANTHROPIC_API_KEY,
+    "anthropic-version": API_VERSION,
+    "Content-Type":      "application/json",
+  };
+  if (fallbacks) headers["anthropic-beta"] = "server-side-fallback-2026-07-01";
 
   let res;
   try {
     res = await fetch(ENDPOINT, {
       method: "POST",
-      headers: {
-        "x-api-key":         ANTHROPIC_API_KEY,
-        "anthropic-version": API_VERSION,
-        "Content-Type":      "application/json",
-      },
+      headers,
       body: JSON.stringify({
         model:       model || "claude-sonnet-4-6",
         max_tokens:  maxTokens || 1500,
         ...(typeof temperature === "number" ? { temperature } : {}),
         ...(system ? { system } : {}),
+        ...(Object.keys(outputConfig).length ? { output_config: outputConfig } : {}),
+        ...(fallbacks ? { fallbacks: "default" } : {}),
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -61,6 +78,7 @@ export async function callClaude({ system, prompt, model, maxTokens, temperature
     text:       text.trim(),
     stopReason: body.stop_reason || null,
     usage:      body.usage || null,
+    model:      body.model || model || null,
   };
 }
 

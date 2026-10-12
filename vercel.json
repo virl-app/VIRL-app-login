@@ -2,6 +2,9 @@
   "functions": {
     "api/cron/trends-refresh.js": {
       "maxDuration": 300
+    },
+    "api/strategy.js": {
+      "maxDuration": 180
     }
   },
   "crons": [
