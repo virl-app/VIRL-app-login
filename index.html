@@ -4,7 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>VIRL - Finally, a content strategy that sounds like you.</title>
-<meta name="description" content="VIRL is the first AI content strategist. It learns your voice and maps a full week of social content in about 60 seconds. 14-day free trial, no card."/>
+<meta name="description" content="VIRL is the first AI content strategist. It plans your week and writes every post in your voice, in about 60 seconds. 14-day free trial, no card."/>
 <link rel="canonical" href="https://govirl.ai/"/>
 
 <!-- [LINK PREVIEW] Open Graph + Twitter Card tags. These are what X, iMessage,
@@ -39,7 +39,7 @@
 <meta property="og:site_name" content="VIRL"/>
 <meta property="og:url" content="https://govirl.ai/"/>
 <meta property="og:title" content="VIRL — Finally, a strategy that sounds like you."/>
-<meta property="og:description" content="The first AI content strategist. VIRL learns your voice and maps a full week of social content in about 60 seconds. 14-day free trial, no card."/>
+<meta property="og:description" content="The first AI content strategist. VIRL plans your week and writes every post in your voice, in about 60 seconds. 14-day free trial, no card."/>
 <meta property="og:image" content="https://app.govirl.ai/og-image.png?v=2"/>
 <meta property="og:image:secure_url" content="https://app.govirl.ai/og-image.png?v=2"/>
 <meta property="og:image:type" content="image/png"/>
@@ -50,7 +50,7 @@
 
 <meta name="twitter:card" content="summary_large_image"/>
 <meta name="twitter:title" content="VIRL — Finally, a strategy that sounds like you."/>
-<meta name="twitter:description" content="The first AI content strategist. VIRL learns your voice and maps a full week of social content in about 60 seconds. 14-day free trial, no card."/>
+<meta name="twitter:description" content="The first AI content strategist. VIRL plans your week and writes every post in your voice, in about 60 seconds. 14-day free trial, no card."/>
 <meta name="twitter:image" content="https://app.govirl.ai/og-image.png?v=2"/>
 <meta name="twitter:image:alt" content="VIRL — Finally, a strategy that sounds like you."/>
 <script type="text/javascript" src="https://app.termly.io/resource-blocker/a8c380c9-9255-4beb-b922-7a884c5cc9e0?autoBlock=on"></script>
@@ -277,6 +277,9 @@ async function loadProfileFromSupabase(userId) {
       // [WEEK-START] Normalize rather than `||` — Sunday is 0 and would be
       // swallowed by a falsy default.
       weekStartDay: normalizeWeekStartDay(data.week_start_day),
+      // [NICHE-PACKS] Migration 028. Read-only here; written once at login.
+      nichePack: data.niche_pack||"",
+      legacyNiche: data.legacy_niche||"",
       workedWell: data.worked_well||"",
       // [INTEL 1] Personal-fact columns. Existing rows pre-migration return
       // null for these and fall through the || "" so the textareas render empty.
@@ -861,7 +864,7 @@ function getFormatsForPlatform(platform) {
       ];
     case "LinkedIn":
       return [
-        { value:"long_post",  label:"Long-form Text Posts" },
+        { value:"long_post",  label:"Text Posts" },
         { value:"document",   label:"Document Carousels (PDF)" },
         { value:"image_post", label:"Image Posts" },
         { value:"video",      label:"Native Video" }
@@ -894,19 +897,33 @@ function getFormatsForPlatform(platform) {
       return [{ value:"post", label:"Standard Posts" }];
   }
 }
-const NICHES = ["Lifestyle","Fitness","Food & Recipes","Finance","Beauty","Travel","Education","Parenting","Home & Family","Wellness","Healthcare & Medical","Small Business","Real Estate","Gaming","Tech","Sports","Fashion"];
+// [NICHE-PACKS] PR 0: three packs replace the 17-value picker. The old
+// value a user had picked is kept as legacyNiche (localStorage +
+// profiles.legacy_niche) and still rides every request, because the
+// server's compliance floor and trend segments key off the finer label.
+const NICHES = ["Real Estate","Small Business","Creators & Personal Brands"];
+const LEGACY_NICHES = ["Lifestyle","Fitness","Food & Recipes","Finance","Beauty","Travel","Education","Parenting","Home & Family","Wellness","Healthcare & Medical","Small Business","Real Estate","Gaming","Tech","Sports","Fashion"];
+// Which pack an old niche lands in. Anything not Real Estate / Small
+// Business / Healthcare is a business if the profile says it sells
+// something, otherwise a creator or personal brand.
+function nichePackFor(oldNiche, profile) {
+  if (NICHES.indexOf(oldNiche) >= 0) return oldNiche;
+  if (oldNiche === "Healthcare & Medical") return "Small Business";
+  var p = profile || {};
+  var sells = [p.offerings, p.serviceArea, p.primaryCta, p.businessWebsite].some(function(v){ return typeof v === "string" && v.trim(); });
+  return sells ? "Small Business" : "Creators & Personal Brands";
+}
 // [PROFILE-SALES-FIELDS] GOALS expanded with conversion-focused
 // options for the service-business audience (agents, coaches,
 // dental practices, small biz). Original five all preserved so
 // existing profiles don't lose their selection.
 const GOALS = ["Grow my following","Land brand deals","Sell products","Sell my services","Book appointments / consults","Generate leads","Convert followers to clients","Drive traffic to my site or listings","Build community","Go viral"];
-// [LONG-FORM-PILL] Long-form post added so LinkedIn-first creators
-// can opt into thought-leadership / blog-style content as part of
-// their weekly mix. When this chip is on, the planner biases toward
-// long_form_text format cards (LinkedIn especially per industry
-// format guidance), and the "Write Full Post" action surfaces on
-// those cards in the rendered plan.
-const FORMATS = ["Talking-head video","Aesthetic B-roll","Day in my life","Tutorial","Trend duets","Carousel","Long-form post"];
+// [TEXT-POST-PILL] "Text post" biases the planner toward long_form_text
+// cards (a LinkedIn / Facebook text post inside the plan). It was labelled
+// "Long-form post" before PR 0; stored selections with the old label still
+// resolve (see FORMAT_LABEL_ALIASES) and prompts.js accepts either value.
+const FORMATS = ["Talking-head video","Aesthetic B-roll","Day in my life","Tutorial","Trend duets","Carousel","Text post"];
+const FORMAT_LABEL_ALIASES = { "Long-form post": "Text post" };
 const FOLLOWERS = ["Under 1K","1K-5K","5K-20K","20K-100K","100K+"];
 const TONES = ["Warm & relatable","Educational","Funny & playful","Inspirational","Bold & direct"];
 const VIBES = ["Real & unfiltered","Bold & direct","Witty & dry","Educational expert","Motivational coach","No-nonsense","Analytical","Soft & aesthetic","Warm & nurturing","Conversational bestie","Hype & energetic","Laid-back & chill"];
@@ -1286,8 +1303,14 @@ function vfSentenceCount(text) {
   var parts = text.split(/[.!?]+(?:\s+|$)/).filter(function(s){ return s.trim().length > 0; });
   return Math.max(1, parts.length);
 }
+// Mirrors normalizeApostrophes in voice-drift.js: curly apostrophes from
+// phone keyboards must count as contractions or the panel shows "averse".
+function vfNormalizeApostrophes(text) {
+  return text.replace(/[‘’ʼ′]/g, "'");
+}
 function vfFeaturize(text) {
   if (!text || typeof text !== "string") return null;
+  text = vfNormalizeApostrophes(text);
   var words = vfTokenize(text);
   var wc = words.length;
   if (wc < 20) return null;
@@ -1463,7 +1486,7 @@ function FirstPlanCelebration({onDismiss}) {
         </div>
         <div style={{fontFamily:"'Italiana',serif",fontSize:32,color:B.navy,lineHeight:1.15,marginBottom:12}}>Your first plan is live.</div>
         <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.7,marginBottom:24}}>
-          That's the hardest part. Save what you love, log what you post — VIRL learns from every move and gets sharper every week.
+          That's the hardest part. Save what you love and log what you post. With your permission, VIRL uses both when it writes your next plan.
         </div>
         <button onClick={onDismiss}
           style={{
@@ -1556,14 +1579,14 @@ function loadRatingMemory(generationType, targetRef) {
     return (parsed && typeof parsed === "object") ? parsed : null;
   } catch (e) { return null; }
 }
-function saveRatingMemory(generationType, targetRef, rating, reason) {
+function saveRatingMemory(generationType, targetRef, rating) {
   if (!targetRef) return;
   try {
     const key = ratingMemoryKey(generationType, targetRef);
     // No rating means the server row is gone; drop the local copy too
     // rather than leaving a ghost the UI would rehydrate from.
     if (!rating) localStorage.removeItem(key);
-    else localStorage.setItem(key, JSON.stringify({ rating: rating, reason: reason || null }));
+    else localStorage.setItem(key, JSON.stringify({ rating: rating }));
   } catch (e) { /* private mode / quota — the widget still works in-session */ }
 }
 
@@ -1581,11 +1604,6 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
     setWorking(true);
     const previous = rating;
     setRating(next); // optimistic
-    // [REACTION-LOOP] Leaving a thumbs-down clears any chip state, so
-    // coming back to it later offers the chips again rather than showing
-    // a stale confirmation for a reaction the server no longer holds
-    // (clearing a rating deletes the row, reason included).
-    if (next !== "down") setChipState("");
     fetch("/api/rate", {
       method:  "POST",
       headers: { "Content-Type":"application/json", "Authorization":"Bearer "+sessionToken },
@@ -1593,10 +1611,7 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
     })
       .then(function(r){
         if (!r.ok) { setRating(previous); return; }
-        // Rating without a chip clears any stored reason, matching the
-        // server: /api/rate writes reason:null on a bare rate call, and
-        // clearing a rating deletes the row outright.
-        saveRatingMemory(generationType, targetRef, next, null);
+        saveRatingMemory(generationType, targetRef, next);
       })
       .catch(function(){ setRating(previous); })
       .finally(function(){ setWorking(false); });
@@ -1604,38 +1619,9 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
 
   function onUp()   { send(rating === "up"   ? null : "up");   }
   function onDown() { send(rating === "down" ? null : "down"); }
-  // [REACTION-LOOP] One-tap "what was off" after a thumbs-down.
-  //
-  // This used to POST to /api/feedback — the support inbox — with
-  // sentiment:"negative", which isn't in that endpoint's allowed set
-  // {happy, neutral, sad}, so every tap was stored with a null sentiment.
-  // Nothing read the rows back into generation either way, while the UI
-  // promised "Noted — I'll learn from this."
-  //
-  // The chip now goes to /api/rate as an annotation on the thumbs-down it
-  // describes, and api/_lib/voice-reactions.js feeds it into this
-  // creator's next drafts. The confirmation below is stated only after
-  // the server confirms the write, so the promise matches what happened.
-  const [chipState,setChipState] = useState(remembered && remembered.reason ? "sent" : "");  // "" | "sending" | "sent" | "failed"
-  function sendChip(label) {
-    if (!sessionToken || !targetRef) return;
-    setChipState("sending");
-    fetch("/api/rate", {
-      method: "POST",
-      headers: { "Content-Type":"application/json", "Authorization":"Bearer "+sessionToken },
-      body: JSON.stringify({ generation_type: generationType, target_ref: targetRef, rating: "down", reason: label }),
-    }).then(function(r){
-      // reasonStored:false means the rating landed but the reason didn't
-      // (a database still waiting on migration 025). Don't claim to have
-      // learned something that wasn't recorded.
-      return r.json().catch(function(){ return {}; }).then(function(j){
-        const stored = r.ok && j.reasonStored !== false;
-        if (stored) saveRatingMemory(generationType, targetRef, "down", label);
-        setChipState(stored ? "sent" : "failed");
-      });
-    }).catch(function(){ setChipState("failed"); });
-  }
-
+  // [PR0] The one-tap reason chips ("Too formal" / "Not my words" /
+  // "Wrong energy") were removed. A vote is recorded and nothing else;
+  // the strategist's "This isn't quite right" box replaces them.
   return (
     <div style={{display:"inline-flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
       <button onClick={onUp} disabled={working} aria-label="Thumbs up"
@@ -1648,22 +1634,6 @@ function RatingButtons({sessionToken, generationType, targetRef, size}) {
         }}>
         {"👍"}
       </button>
-      {rating==="down"&&chipState!=="sent"&&(
-        <span style={{display:"inline-flex",gap:4,alignItems:"center"}}>
-          {["Too formal","Not my words","Wrong energy"].map(function(c){ return (
-            <button key={c} onClick={function(){ sendChip(c); }} disabled={chipState==="sending"}
-              style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,padding:"4px 8px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:chipState==="sending"?"default":"pointer",lineHeight:1,opacity:chipState==="sending"?0.5:1}}>
-              {c}
-            </button>
-          );})}
-        </span>
-      )}
-      {rating==="down"&&chipState==="sent"&&(
-        <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,color:B.muted}}>Got it — your next drafts will account for this</span>
-      )}
-      {rating==="down"&&chipState==="failed"&&(
-        <span style={{fontFamily:"'Jost',sans-serif",fontSize:9,color:B.coral}}>Didn't save — tap again</span>
-      )}
       <button onClick={onDown} disabled={working} aria-label="Thumbs down"
         style={{
           fontFamily:"'Jost',sans-serif",fontSize:btnSize,padding:btnPad,
@@ -2513,6 +2483,15 @@ function storedNiche() {
     return null;
   }
 }
+// [NICHE-PACKS] The pre-PR 0 picker value, if this browser ever had one.
+function storedLegacyNiche() {
+  try {
+    var parsed = JSON.parse(localStorage.getItem(KEY) || "{}");
+    return (parsed && parsed.legacyNiche) || null;
+  } catch (e) {
+    return null;
+  }
+}
 
 // [PERF 3] SSE-stream consumer for the plan endpoint. Reads the chunked
 // response, parses out our wire events ("text", "meta", "error", "reset"),
@@ -2534,6 +2513,10 @@ async function consumePlanStream(generationType, params, opts, callbacks) {
   if (!mergedParams.niche) {
     var n = storedNiche();
     if (n) mergedParams.niche = n;
+  }
+  if (!mergedParams.legacyNiche) {
+    var ln = storedLegacyNiche();
+    if (ln) mergedParams.legacyNiche = ln;
   }
   var body = { generationType: generationType, params: mergedParams };
   // plan_partial reuses the parent plan's Perplexity snapshot so the
@@ -2627,6 +2610,10 @@ async function callAPI(generationType, params, opts) {
   if (!mergedParams.niche) {
     const n = storedNiche();
     if (n) mergedParams.niche = n;
+  }
+  if (!mergedParams.legacyNiche) {
+    const ln = storedLegacyNiche();
+    if (ln) mergedParams.legacyNiche = ln;
   }
   const body = { generationType, params: mergedParams };
   if (opts.imageBase64) { body.imageBase64 = opts.imageBase64; body.imageType = opts.imageType; }
@@ -4943,253 +4930,8 @@ function EditCardBody({draftCard, format, updateDraft, updateDraftItem, card}) {
   );
 }
 
-// [LINKEDIN-LONG-POST] Modal that expands a long_form_text plan card
-// into a full 500-1500 word LinkedIn post. Mirrors ScriptGenerator's
-// shape so the user experience is consistent across "Write Script"
-// (video) and "Write Full Post" (long-form text) actions.
-//
-// State lifecycle matches ScriptGenerator: opens with any previously-
-// saved long post on the card, lets the user regenerate / edit /
-// copy / save to the card. "Save to card" persists the artifact on
-// the card so it survives session reloads and shows the saved
-// version next time the modal opens (no re-billing).
-function LongFormPostGenerator({card,onClose,profile,userToken,onCreditsUsed,onSaveLongPost}) {
-  const initialSaved = card && card.savedLongPost ? card.savedLongPost : null;
-  const [post,setPost]         = useState(initialSaved);
-  const [loading,setLoading]   = useState(false);
-  const [error,setError]       = useState("");
-  const [length,setLength]     = useState("medium");
-  const [savedOnCard,setSavedOnCard] = useState(!!initialSaved);
 
-  // [POST-EDIT] Inline edit, same shape as ScriptGenerator's edit mode.
-  const [editing,setEditing]       = useState(false);
-  const [draftPost,setDraftPost]   = useState(null);
-  function startEdit() {
-    if (!post) return;
-    setDraftPost({
-      hook:     post.hook || "",
-      body:     post.body || "",
-      closing:  post.closing || "",
-      hashtags: Array.isArray(post.hashtags) ? post.hashtags.join(" ") : "",
-    });
-    setEditing(true);
-  }
-  function cancelEdit() { setDraftPost(null); setEditing(false); }
-  function updateDraft(field, value) {
-    setDraftPost(function(d){ return d ? Object.assign({}, d, { [field]: value }) : d; });
-  }
-  function saveEdit() {
-    if (!draftPost) { setEditing(false); return; }
-    var nextHashtags = (draftPost.hashtags || "")
-      .split(/[\s,]+/)
-      .map(function(t){ return t.replace(/^#/, "").trim(); })
-      .filter(Boolean);
-    var next = {
-      hook:     (draftPost.hook || "").trim(),
-      body:     (draftPost.body || "").trim(),
-      closing:  (draftPost.closing || "").trim(),
-      hashtags: nextHashtags,
-    };
-    if (post && typeof window !== "undefined" && typeof window.__virlCaptureEdit === "function") {
-      try {
-        window.__virlCaptureEdit(
-          "long_post",
-          { hook: post.hook || "", body: post.body || "", closing: post.closing || "" },
-          { hook: next.hook,        body: next.body,        closing: next.closing },
-        );
-      } catch(e){}
-    }
-    setPost(next);
-    setDraftPost(null);
-    setEditing(false);
-    if (onSaveLongPost) {
-      onSaveLongPost(next);
-      setSavedOnCard(true);
-    }
-  }
-
-  function generate() {
-    setLoading(true); setPost(null); setError("");
-    setEditing(false); setDraftPost(null);
-    callAPI("long_post", { card: card, length: length }, { token: userToken }).then(function(data) {
-      if (!(data && data.text)) {
-        setError("VIRL's still warming up - tap Try Again.");
-        return;
-      }
-      // [LONG-POST-PARSE] Use the tolerant extractJSON helper that
-      // ScriptGenerator already relies on. Strips ```json``` code fences
-      // and locates the outer { ... } block even when the model adds
-      // preamble — strict JSON.parse failed in production whenever the
-      // model wrapped its reply in markdown despite the prompt-side
-      // "no markdown" instruction.
-      var parsed = extractJSON(data.text);
-      if (!parsed || typeof parsed !== "object" || !parsed.hook) {
-        setError("VIRL drafted something but the format came back garbled. Tap Try Again.");
-        return;
-      }
-      setPost(parsed);
-      setSavedOnCard(false);
-      if (onCreditsUsed) onCreditsUsed({ cost: (data && data.cost) || 2 });
-      try {
-        var postUsage = (data && data.usage) || {};
-        logEvent(session && session.user && session.user.id, "long_post_generated", {
-          cardId:   (card.title || "") + (card.day || ""),
-          platform: card.platform || "LinkedIn",
-          day:      card.day || null,
-          length:   length,
-          outputTokens:        postUsage.outputTokens        || 0,
-          cachedInputTokens:   postUsage.cachedInputTokens   || 0,
-          uncachedInputTokens: postUsage.uncachedInputTokens || 0,
-          truncated:           !!postUsage.truncated,
-          model:               postUsage.model || null,
-        });
-      } catch(e){}
-    }).catch(function(e){ setError(e.message); }).finally(function(){ setLoading(false); });
-  }
-
-  // Feeds the header copy button. Production notes (the compliance
-  // disclosure hint) stay out — this is what gets pasted into the post box.
-  function buildPostText() {
-    if (!post) return "";
-    var body = (post.hook || "") + "\n\n"
-             + (post.body || "")
-             + (post.closing ? "\n\n" + post.closing : "");
-    return withHashtags(body, post.hashtags);
-  }
-
-  // Modal shell — same overlay treatment as ScriptGenerator so the two
-  // generators feel like a pair.
-  return (
-    <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.55)",zIndex:9999,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}} onClick={onClose}>
-      <div onClick={function(e){ e.stopPropagation(); }}
-        style={{background:B.card,borderRadius:18,maxWidth:680,width:"100%",padding:"28px 28px 24px",boxShadow:"0 24px 60px rgba(15,23,42,0.35)",position:"relative"}}>
-        <button onClick={onClose} aria-label="Close"
-          style={{position:"absolute",top:14,right:14,width:32,height:32,borderRadius:"50%",border:"none",background:"transparent",fontSize:22,color:B.muted,cursor:"pointer",lineHeight:1}}>{"×"}</button>
-
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.navy,marginBottom:6}}>{"LinkedIn long-form post"}</div>
-        <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,lineHeight:1.2,marginBottom:6}}>{card.title || "Long-form post"}</div>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:18}}>{card.description || ""}</div>
-
-        {/* Length chips */}
-        {!post && !loading && (
-          <div style={{marginBottom:18}}>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>{"Target length"}</div>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              {[
-                {v:"short",  l:"Short (~350 words)"},
-                {v:"medium", l:"Medium (~600 words)"},
-                {v:"long",   l:"Long (~1200 words)"},
-              ].map(function(opt){
-                var active = length === opt.v;
-                return (
-                  <button key={opt.v} onClick={function(){setLength(opt.v);}}
-                    style={{
-                      fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",
-                      padding:"8px 14px",borderRadius:99,cursor:"pointer",
-                      background:active?B.navy:B.bg,color:active?B.white:B.sub,border:"1px solid "+(active?B.navy:B.border),
-                    }}>{opt.l}</button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {!post && !loading && (
-          <button onClick={generate}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",padding:"14px 22px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-            {"Write the full post"}
-          </button>
-        )}
-
-        {loading && (
-          <div style={{padding:"30px 0",textAlign:"center",fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.muted}}>
-            {"Drafting your post…"}
-          </div>
-        )}
-
-        {error && !loading && (
-          <div style={{marginTop:12,padding:"12px 16px",background:B.coralSoft,border:"1px solid "+B.coral,borderRadius:10,fontFamily:"'Jost',sans-serif",fontSize:12,color:B.ink}}>{error}</div>
-        )}
-
-        {/* Render the post — edit mode is a parallel set of textareas. */}
-        {post && !editing && (
-          <div>
-            <div style={{padding:"18px 20px",background:B.bg,borderRadius:12,border:"1px solid "+B.border,marginBottom:14}}>
-              {/* [CARD-COPY] Copy sits at the top of the draft, same two-squares
-                   glyph as everywhere else, so the action row below is verbs only. */}
-              <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
-                <IconCopyButton text={buildPostText()} title="Copy post + hashtags"/>
-              </div>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.ink,lineHeight:1.6,marginBottom:12,whiteSpace:"pre-wrap"}}>{post.hook}</div>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{post.body}</div>
-              {post.closing && <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{post.closing}</div>}
-              {post.hashtags && post.hashtags.length > 0 && (
-                <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.blue}}>
-                  {post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")}
-                </div>
-              )}
-              {post.compliance_note && (
-                <div style={{marginTop:14,padding:"10px 14px",background:B.coralSoft,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.coral,lineHeight:1.5}}>
-                  {"Suggested disclosure: " + post.compliance_note}
-                </div>
-              )}
-            </div>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              {onSaveLongPost && !savedOnCard && (
-                <button onClick={function(){ onSaveLongPost(post); setSavedOnCard(true); }}
-                  style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
-                  {"Save to card"}
-                </button>
-              )}
-              {onSaveLongPost && savedOnCard && (
-                <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",color:B.green}}>
-                  {"Saved ✓"}
-                </span>
-              )}
-              <button onClick={startEdit}
-                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
-                {"Edit"}
-              </button>
-              <button onClick={generate}
-                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
-                {"Regenerate"}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {post && editing && draftPost && (
-          <div>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Hook"}</div>
-            <textarea value={draftPost.hook} onChange={function(e){updateDraft("hook", e.target.value);}}
-              style={{width:"100%",minHeight:60,padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13,marginBottom:12}}/>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Body"}</div>
-            <textarea value={draftPost.body} onChange={function(e){updateDraft("body", e.target.value);}}
-              style={{width:"100%",minHeight:200,padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13,lineHeight:1.6,marginBottom:12}}/>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Closing"}</div>
-            <textarea value={draftPost.closing} onChange={function(e){updateDraft("closing", e.target.value);}}
-              style={{width:"100%",minHeight:60,padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13,marginBottom:12}}/>
-            <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{"Hashtags (space-separated, no #)"}</div>
-            <input value={draftPost.hashtags} onChange={function(e){updateDraft("hashtags", e.target.value);}}
-              style={{width:"100%",padding:"10px 12px",border:"1px solid "+B.border,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:13,marginBottom:14}}/>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={saveEdit}
-                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-                {"Save changes"}
-              </button>
-              <button onClick={cancelEdit}
-                style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
-                {"Cancel"}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRegenerate,regenBusy,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends,allDayLabels}) {
+function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenBusy,saved,result,profile,userToken,onCreditsUsed,editMode,markedReplace,onToggleReplace,replacing,usedFreshTrends,allDayLabels}) {
   // When `replacing` is true, this card slot is awaiting a streaming
   // replacement from /api/chat?generationType=plan_partial. Render a
   // skeleton instead of the real card so the user sees their kept cards
@@ -5213,7 +4955,6 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
   // so a user could conceptually have both modals' actions queued —
   // in practice only one is shown at a time but the state separation
   // keeps the rendering logic predictable.
-  const [showLongPost,setShowLongPost] = useState(false);
   // [MOVE-CARD] Inline popover state. Open → list of weekday labels;
   // tap a label → updateCardAt fires with { day: newLabel }, the
   // existing persistence + id-migration path takes over. Replaces
@@ -5544,7 +5285,6 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
     <div className="su" onClick={rootClickExpand}
       style={{background:cardBackground,borderRadius:12,boxShadow:cardShadow,borderLeft:cardBorderLeft,padding:"18px 22px",marginBottom:8,animationDelay:(idx*0.04)+"s",opacity:cardOpacity,transition:"background .15s, box-shadow .15s",cursor:(!expanded&&!editing&&!editMode)?"pointer":"default"}}>
       {showScript&&<ScriptGenerator card={card} onClose={function(){setShowScript(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveScript={onSaveScript ? function(s){ onSaveScript(idx, s); } : null}/>}
-      {showLongPost&&<LongFormPostGenerator card={card} onClose={function(){setShowLongPost(false);}} profile={profile} userToken={userToken} onCreditsUsed={onCreditsUsed} onSaveLongPost={onSaveLongPost ? function(p){ onSaveLongPost(idx, p); } : null}/>}
 
       {/* [CARD-CLICK] Header + title + preview form the expand/collapse
            control (replaces the old TAP TO EXPAND button — chevron in the
@@ -5786,24 +5526,6 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onSaveLongPost,onEdit,onRe
           <button onClick={function(){ setShowScript(true); }}
             style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
             {"Write Script"}
-          </button>
-        )}
-        {/* [LINKEDIN-LONG-POST] Surface "Write Full Post" only when
-            the card is a long-form text card. The seed (hook, body,
-            closing fragments produced by the planner) feeds into the
-            long_post prompt as starting material rather than the model
-            improvising from a blank brief. Hidden for video/carousel/
-            etc. — those cards have other action affordances. */}
-        {/* [X-280] effectiveFormat, not normalizeFormat, so X is excluded.
-            This action runs the long_post builder, which is LinkedIn-shaped
-            end to end and targets 500-1500 words — on an X card it produced a
-            post a free-tier account cannot publish, from a card that was
-            already unpostable. X cards need no expansion step: a thread card
-            carries its finished posts. */}
-        {expanded && effectiveFormat(card) === "long_form_text" && (
-          <button onClick={function(){ setShowLongPost(true); }}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"8px 16px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
-            {card.savedLongPost ? "View Full Post" : "Write Full Post"}
           </button>
         )}
         {expanded && userToken && (
@@ -6237,471 +5959,6 @@ function CaptionGen({profile,onSaveCaption,userToken,onCreditsUsed,freshTrendsLe
   );
 }
 
-// [VIRL-POSTS-TAB] Dedicated long-form writing surface. Drives the
-// `long_post` (LinkedIn) and `blog_post` (blog) generation types
-// from a topic + supporting points form instead of needing a plan
-// card seed (which the in-plan "Write Full Post" action already
-// covers). Reuses every voice signal — vault exemplars, fingerprint,
-// recent edits, denylist — because long-form is the heaviest voice
-// fidelity test VIRL has.
-function PostWriter({profile,userToken,onCreditsUsed,isPaid,daysUntilReset,onUpgrade,onSavePost}) {
-  // Mode selects which generation type fires. Output shape branches
-  // accordingly; LinkedIn = hook/body/closing/hashtags, blog = title/
-  // intro/sections/conclusion/meta_description.
-  const [mode,setMode]            = useState("linkedin");
-  const [topic,setTopic]          = useState("");
-  const [points,setPoints]        = useState("");
-  const [tone,setTone]            = useState("");
-  const [guidance,setGuidance]    = useState("");
-  const [length,setLength]        = useState("medium");
-  const [loading,setLoading]      = useState(false);
-  const [error,setError]          = useState("");
-  const [post,setPost]            = useState(null);
-  // [POST-EDIT/SAVE] Inline edit + save-to-vault, mirroring
-  // LongFormPostGenerator. draftPost holds the in-progress edit (sections
-  // stay an array for blog mode); savedToVault gates the button so repeated
-  // taps don't create duplicate vault items.
-  const [editing,setEditing]      = useState(false);
-  const [draftPost,setDraftPost]  = useState(null);
-  const [savedToVault,setSavedToVault] = useState(false);
-
-  // Length labels differ across modes — blog goes much longer than
-  // LinkedIn. UI-only copy; server enforces the actual word ranges
-  // (api/_lib/prompts.js buildLongPost / buildBlogPost).
-  var lengthOptions = mode === "blog"
-    ? [
-        {v:"short",  l:"Short (~750 words)"},
-        {v:"medium", l:"Medium (~1300 words)"},
-        {v:"long",   l:"Long (~2000+ words)"},
-      ]
-    : [
-        {v:"short",  l:"Short (~350 words)"},
-        {v:"medium", l:"Medium (~600 words)"},
-        {v:"long",   l:"Long (~1200 words)"},
-      ];
-
-  function generate() {
-    if (!topic.trim()) return;
-    setLoading(true); setError(""); setPost(null);
-    setEditing(false); setDraftPost(null); setSavedToVault(false);
-    // Supporting points: textarea is one-per-line for the user; server
-    // expects an array.
-    var supportingPoints = (points || "")
-      .split(/\n+/)
-      .map(function(s){ return s.replace(/^[-•*]\s*/, "").trim(); })
-      .filter(Boolean);
-    var genType = mode === "blog" ? "blog_post" : "long_post";
-    var params = {
-      topic:            topic.trim(),
-      supportingPoints: supportingPoints,
-      tone:             (tone || "").trim() || null,
-      guidance:         (guidance || "").trim() || null,
-      length:           length,
-    };
-    callAPI(genType, params, { token: userToken }).then(function(data){
-      if (!(data && data.text)) {
-        setError("VIRL's still warming up — tap Try Again.");
-        return;
-      }
-      // [LONG-POST-PARSE] Tolerant parser strips markdown fences /
-      // preamble that Claude occasionally adds despite the prompt.
-      var parsed = extractJSON(data.text);
-      // Sanity-check the shape per mode so a wrong-type response
-      // doesn't half-render in the UI.
-      var ok = parsed && typeof parsed === "object" && (
-        mode === "blog"
-          ? (parsed.title && parsed.sections)
-          : (parsed.hook && parsed.body)
-      );
-      if (!ok) {
-        setError("VIRL drafted something but the format came back garbled. Tap Try Again.");
-        return;
-      }
-      setPost(parsed);
-      if (onCreditsUsed) onCreditsUsed({ cost: (data && data.cost) || 2 });
-      try {
-        var u = (data && data.usage) || {};
-        logEvent(window.__virlUserId||null, mode === "blog" ? "blog_post_generated" : "long_post_generated", {
-          source:              "posts_tab",
-          length:              length,
-          topicLen:            topic.length,
-          supportingPointsLen: supportingPoints.length,
-          outputTokens:        u.outputTokens        || 0,
-          cachedInputTokens:   u.cachedInputTokens   || 0,
-          uncachedInputTokens: u.uncachedInputTokens || 0,
-          truncated:           !!u.truncated,
-          model:               u.model || null,
-        });
-      } catch(e) {}
-    }).catch(function(e){
-      setError((e && e.message) || "Something went wrong. Try again.");
-    }).finally(function(){ setLoading(false); });
-  }
-
-  // Assemble the full post into plain text. Shared by Copy and Save to
-  // Vault so both always reflect the same (possibly edited) content.
-  function assemblePostText(p) {
-    if (!p) return "";
-    if (mode === "blog") {
-      var sections = (p.sections || []).map(function(s){
-        return (s.heading ? s.heading + "\n\n" : "") + (s.body || "");
-      }).join("\n\n");
-      return (p.title || "") + "\n\n"
-           + (p.subtitle ? p.subtitle + "\n\n" : "")
-           + (p.intro || "") + "\n\n"
-           + sections + "\n\n"
-           + (p.conclusion || "");
-    }
-    var hashtagLine = (p.hashtags && p.hashtags.length)
-      ? "\n\n" + p.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")
-      : "";
-    return (p.hook || "") + "\n\n"
-         + (p.body || "")
-         + (p.closing ? "\n\n" + p.closing : "")
-         + hashtagLine;
-  }
-
-  // [POST-SAVE] Persist the current post to the Vault as a caption-type
-  // item (same shape saveCaption expects). Gated on onSavePost so older
-  // call sites that don't pass it simply hide the button.
-  function handleSaveToVault() {
-    if (!post || !onSavePost) return;
-    var text   = assemblePostText(post);
-    var isBlog = mode === "blog";
-    var title  = isBlog
-      ? (post.title || topic.trim() || "Blog post")
-      : (topic.trim() || (post.hook || "").slice(0, 60) || "LinkedIn post");
-    onSavePost({
-      title:    title,
-      preview:  (isBlog ? (post.subtitle || post.intro || "") : (post.hook || text)).slice(0, 160),
-      text:     text,
-      hook:     isBlog ? (post.subtitle || null) : (post.hook || null),
-      hashtags: Array.isArray(post.hashtags) ? post.hashtags.slice() : [],
-      platform: isBlog ? "Blog" : "LinkedIn",
-    });
-    setSavedToVault(true);
-  }
-
-  // [POST-EDIT] Inline edit, mirroring LongFormPostGenerator. Blog keeps
-  // sections as an array so each heading/body stays independently editable.
-  function startEdit() {
-    if (!post) return;
-    if (mode === "blog") {
-      setDraftPost({
-        title:            post.title || "",
-        subtitle:         post.subtitle || "",
-        intro:            post.intro || "",
-        sections:         Array.isArray(post.sections) ? post.sections.map(function(s){ return { heading: s.heading || "", body: s.body || "" }; }) : [],
-        conclusion:       post.conclusion || "",
-        meta_description: post.meta_description || "",
-        hashtags:         Array.isArray(post.hashtags) ? post.hashtags.join(" ") : "",
-      });
-    } else {
-      setDraftPost({
-        hook:     post.hook || "",
-        body:     post.body || "",
-        closing:  post.closing || "",
-        hashtags: Array.isArray(post.hashtags) ? post.hashtags.join(" ") : "",
-      });
-    }
-    setEditing(true);
-  }
-  function cancelEdit() { setDraftPost(null); setEditing(false); }
-  function updateDraft(field, value) {
-    setDraftPost(function(d){ return d ? Object.assign({}, d, { [field]: value }) : d; });
-  }
-  function updateDraftSection(i, field, value) {
-    setDraftPost(function(d){
-      if (!d || !Array.isArray(d.sections) || i < 0 || i >= d.sections.length) return d;
-      var next = d.sections.slice();
-      next[i] = Object.assign({}, next[i], { [field]: value });
-      return Object.assign({}, d, { sections: next });
-    });
-  }
-  function parsePostHashtags(str) {
-    return (str || "").split(/[\s,]+/).map(function(t){ return t.replace(/^#/, "").trim(); }).filter(Boolean);
-  }
-  function saveEdit() {
-    if (!draftPost) { setEditing(false); return; }
-    var next;
-    if (mode === "blog") {
-      next = Object.assign({}, post, {
-        title:            (draftPost.title || "").trim(),
-        subtitle:         (draftPost.subtitle || "").trim(),
-        intro:            (draftPost.intro || "").trim(),
-        sections:         (draftPost.sections || []).map(function(s){ return { heading: (s.heading||"").trim(), body: (s.body||"").trim() }; }),
-        conclusion:       (draftPost.conclusion || "").trim(),
-        meta_description: (draftPost.meta_description || "").trim(),
-        hashtags:         parsePostHashtags(draftPost.hashtags),
-      });
-    } else {
-      next = Object.assign({}, post, {
-        hook:     (draftPost.hook || "").trim(),
-        body:     (draftPost.body || "").trim(),
-        closing:  (draftPost.closing || "").trim(),
-        hashtags: parsePostHashtags(draftPost.hashtags),
-      });
-    }
-    // [LEARN-FROM-EDITS] Capture the voice diff (same surfaces the per-card
-    // editor uses) so future generations learn the user's hand-edits.
-    if (post && typeof window !== "undefined" && typeof window.__virlCaptureEdit === "function") {
-      try {
-        if (mode === "blog") {
-          window.__virlCaptureEdit("blog_post",
-            { intro: post.intro || "", conclusion: post.conclusion || "" },
-            { intro: next.intro,        conclusion: next.conclusion });
-        } else {
-          window.__virlCaptureEdit("long_post",
-            { hook: post.hook || "", body: post.body || "", closing: post.closing || "" },
-            { hook: next.hook,        body: next.body,        closing: next.closing });
-        }
-      } catch(e){}
-    }
-    setPost(next);
-    setDraftPost(null);
-    setEditing(false);
-    setSavedToVault(false); // the edited version is worth saving again
-  }
-
-  // Shared action row appended under both display blocks. Save to Vault /
-  // Edit / Regenerate, with Save flipping to a "Saved ✓" badge. Copy is not
-  // here — it's the icon button at the top of the draft.
-  function renderActions() {
-    return (
-      <div style={{marginTop:18,display:"flex",gap:8,flexWrap:"wrap"}}>
-        {onSavePost && !savedToVault && (
-          <button onClick={handleSaveToVault}
-            style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.blueSoft,color:B.blue,border:"none",borderRadius:99,cursor:"pointer"}}>
-            {"Save to Vault"}
-          </button>
-        )}
-        {onSavePost && savedToVault && (
-          <span style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",color:B.green}}>
-            {"Saved to Vault ✓"}
-          </span>
-        )}
-        <button onClick={startEdit}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
-          {"Edit"}
-        </button>
-        <button onClick={generate} disabled={loading}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 18px",background:B.bg,color:B.sub,border:"1px solid "+B.border,borderRadius:99,cursor:loading?"default":"pointer"}}>
-          {"Regenerate"}
-        </button>
-      </div>
-    );
-  }
-
-  // Reusable edit-mode field. Single-line uses input; multiline uses textarea.
-  function editField(label, value, onChange, opts) {
-    opts = opts || {};
-    return (
-      <div style={{marginBottom:12}}>
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>{label}</div>
-        <textarea value={value} onChange={function(e){ onChange(e.target.value); }}
-          rows={opts.rows || 3}
-          style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:13,fontWeight:300,padding:"10px 12px",resize:"vertical",lineHeight:1.6,boxSizing:"border-box"}}/>
-      </div>
-    );
-  }
-  function renderEditActions() {
-    return (
-      <div style={{marginTop:6,display:"flex",gap:8,flexWrap:"wrap"}}>
-        <button onClick={saveEdit}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 20px",background:B.navy,color:B.white,border:"none",borderRadius:99,cursor:"pointer"}}>
-          {"Save changes"}
-        </button>
-        <button onClick={cancelEdit}
-          style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",padding:"10px 16px",background:"transparent",color:B.muted,border:"1px solid "+B.border,borderRadius:99,cursor:"pointer"}}>
-          {"Cancel"}
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <SherpaTip>
-        {mode === "blog"
-          ? "Give VIRL a blog topic and 2-5 supporting points. It drafts a structured post with title, sections, and SEO summary — in your voice."
-          : "Give VIRL a topic and your supporting points. It drafts a LinkedIn long-form post that hooks before the 'see more' fold and lands in your voice."}
-      </SherpaTip>
-
-      <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,overflow:"hidden"}}>
-        {/* Mode picker */}
-        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
-          <Label>What are you writing?</Label>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <Chip active={mode==="linkedin"} onClick={function(){setMode("linkedin"); setPost(null); setError("");}}>{"LinkedIn long-form post"}</Chip>
-            <Chip active={mode==="blog"}     onClick={function(){setMode("blog");     setPost(null); setError("");}}>{"Blog post"}</Chip>
-          </div>
-          <div style={{marginTop:10,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,fontStyle:"italic",lineHeight:1.5}}>
-            {mode === "blog"
-              ? "Structured for a blog / Substack / website. Title, sections with headings, SEO summary."
-              : "Optimized for LinkedIn's see-more fold + plain-text formatting (no markdown)."}
-          </div>
-        </div>
-
-        {/* Topic */}
-        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
-          <Label>{mode === "blog" ? "Blog topic" : "What is this post about?"}</Label>
-          <textarea value={topic} onChange={function(e){setTopic(e.target.value);}}
-            placeholder={mode === "blog"
-              ? "e.g. The hidden cost of daily standups for early-stage teams"
-              : "e.g. Why I stopped doing client work for free, and what changed"}
-            style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,fontStyle:"italic",padding:"11px 14px",resize:"vertical",minHeight:72,lineHeight:1.6}}/>
-        </div>
-
-        {/* Supporting points */}
-        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
-          <Label>Supporting points (optional, one per line)</Label>
-          <textarea value={points} onChange={function(e){setPoints(e.target.value);}}
-            placeholder={"e.g.\nWhat I tried first\nThe moment I realized it wasn't working\nWhat I do now instead"}
-            style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,padding:"11px 14px",resize:"vertical",minHeight:96,lineHeight:1.6}}/>
-          <div style={{marginTop:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,fontStyle:"italic",lineHeight:1.5}}>
-            Skip if you want VIRL to develop the argument on its own — but giving it 2-5 beats anchors the post in YOUR thinking.
-          </div>
-        </div>
-
-        {/* Optional tone refinement */}
-        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
-          <Label>Tone for this post (optional)</Label>
-          <input value={tone} onChange={function(e){setTone(e.target.value);}}
-            placeholder="e.g. contrarian, story-led, data-driven, vulnerable…"
-            style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,padding:"11px 14px",lineHeight:1.6}}/>
-          <div style={{marginTop:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,fontStyle:"italic",lineHeight:1.5}}>
-            Defaults to your saved profile voice. Use this to nudge a specific post in a different direction.
-          </div>
-        </div>
-
-        {/* [POST-GUIDANCE] Optional free-text guidance for this specific post */}
-        <div style={{padding:"22px 26px",borderBottom:"1px solid "+B.divider}}>
-          <Label>Specific guidance for this post (optional)</Label>
-          <textarea value={guidance} onChange={function(e){setGuidance(e.target.value);}}
-            maxLength={800}
-            placeholder={mode === "blog"
-              ? "e.g. Open with the client story, mention our new pricing, avoid jargon, end pointing to the booking page"
-              : "e.g. Take a contrarian angle, reference the launch, speak to first-time founders, don't pitch"}
-            style={{width:"100%",background:B.bg,border:"1px solid "+B.border,borderRadius:10,color:B.ink,fontSize:14,fontWeight:300,padding:"11px 14px",resize:"vertical",minHeight:72,lineHeight:1.6}}/>
-          <div style={{marginTop:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.muted,fontStyle:"italic",lineHeight:1.5}}>
-            Anything VIRL should do (or avoid) for this post — an angle, a detail to include, a CTA. VIRL follows it while keeping your voice.
-          </div>
-        </div>
-
-        {/* Length */}
-        <div style={{padding:"22px 26px"}}>
-          <Label>Length</Label>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            {lengthOptions.map(function(opt){
-              return <Chip key={opt.v} active={length===opt.v} onClick={function(){setLength(opt.v);}}>{opt.l}</Chip>;
-            })}
-          </div>
-        </div>
-      </div>
-
-      <GenBtn onClick={generate} loading={loading} disabled={!topic.trim()}>
-        {loading
-          ? (mode === "blog" ? "Drafting your blog post..." : "Writing your post...")
-          : (mode === "blog" ? "Write the blog post" : "Write the LinkedIn post")}
-      </GenBtn>
-      <ErrBox msg={error}/>
-      {loading && !post && <RotatingStatus kind="post"/>}
-
-      {/* Result rendering — branches per mode */}
-      {post && !editing && mode === "linkedin" && (
-        <div style={{background:B.card,borderRadius:16,padding:"22px 24px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
-          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
-            <IconCopyButton text={assemblePostText(post)} title="Copy post + hashtags"/>
-          </div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:600,color:B.ink,lineHeight:1.6,marginBottom:14,whiteSpace:"pre-wrap"}}>{post.hook}</div>
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:300,color:B.sub,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{post.body}</div>
-          {post.closing && <div style={{marginTop:16,fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:500,color:B.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{post.closing}</div>}
-          {post.hashtags && post.hashtags.length > 0 && (
-            <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.blue}}>
-              {post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")}
-            </div>
-          )}
-          {post.compliance_note && (
-            <div style={{marginTop:14,padding:"10px 14px",background:B.coralSoft,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.coral,lineHeight:1.5}}>
-              {"Suggested disclosure: " + post.compliance_note}
-            </div>
-          )}
-          {renderActions()}
-        </div>
-      )}
-
-      {/* Edit mode — LinkedIn */}
-      {post && editing && draftPost && mode === "linkedin" && (
-        <div style={{background:B.card,borderRadius:16,padding:"22px 24px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
-          {editField("Hook",     draftPost.hook,     function(v){ updateDraft("hook", v); },     { rows: 2 })}
-          {editField("Body",     draftPost.body,     function(v){ updateDraft("body", v); },     { rows: 10 })}
-          {editField("Closing",  draftPost.closing,  function(v){ updateDraft("closing", v); },  { rows: 2 })}
-          {editField("Hashtags (space-separated)", draftPost.hashtags, function(v){ updateDraft("hashtags", v); }, { rows: 2 })}
-          {renderEditActions()}
-        </div>
-      )}
-
-      {post && !editing && mode === "blog" && (
-        <div style={{background:B.card,borderRadius:16,padding:"24px 26px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
-          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
-            <IconCopyButton text={assemblePostText(post)} title="Copy full post"/>
-          </div>
-          <div style={{fontFamily:"'Italiana',serif",fontSize:28,color:B.ink,lineHeight:1.2,marginBottom:8}}>{post.title}</div>
-          {post.subtitle && <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,fontStyle:"italic",color:B.muted,lineHeight:1.55,marginBottom:18}}>{post.subtitle}</div>}
-          <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-wrap",marginBottom:18}}>{post.intro}</div>
-          {Array.isArray(post.sections) && post.sections.map(function(s, i){
-            return (
-              <div key={"sec-"+i} style={{marginBottom:18}}>
-                {s.heading && <div style={{fontFamily:"'Italiana',serif",fontSize:20,color:B.navy,lineHeight:1.3,marginBottom:8}}>{s.heading}</div>}
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.sub,lineHeight:1.8,whiteSpace:"pre-wrap"}}>{s.body}</div>
-              </div>
-            );
-          })}
-          {post.conclusion && <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:400,color:B.ink,lineHeight:1.75,whiteSpace:"pre-wrap",paddingTop:14,borderTop:"1px solid "+B.divider}}>{post.conclusion}</div>}
-          {post.meta_description && (
-            <div style={{marginTop:18,padding:"12px 14px",background:B.bg,borderRadius:10,border:"1px solid "+B.divider}}>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.18em",textTransform:"uppercase",color:B.muted,marginBottom:4}}>{"Meta description (SEO)"}</div>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.sub,lineHeight:1.55}}>{post.meta_description}</div>
-            </div>
-          )}
-          {post.hashtags && post.hashtags.length > 0 && (
-            <div style={{marginTop:14,fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:500,color:B.blue}}>
-              {post.hashtags.map(function(h){ return "#" + h.replace(/^#/, ""); }).join(" ")}
-            </div>
-          )}
-          {post.compliance_note && (
-            <div style={{marginTop:14,padding:"10px 14px",background:B.coralSoft,borderRadius:8,fontFamily:"'Jost',sans-serif",fontSize:11,color:B.coral,lineHeight:1.5}}>
-              {"Suggested disclosure: " + post.compliance_note}
-            </div>
-          )}
-          {renderActions()}
-        </div>
-      )}
-
-      {/* Edit mode — Blog */}
-      {post && editing && draftPost && mode === "blog" && (
-        <div style={{background:B.card,borderRadius:16,padding:"24px 26px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginTop:14}}>
-          {editField("Title",    draftPost.title,    function(v){ updateDraft("title", v); },    { rows: 2 })}
-          {editField("Subtitle", draftPost.subtitle, function(v){ updateDraft("subtitle", v); }, { rows: 2 })}
-          {editField("Intro",    draftPost.intro,    function(v){ updateDraft("intro", v); },    { rows: 5 })}
-          {Array.isArray(draftPost.sections) && draftPost.sections.map(function(s, i){
-            return (
-              <div key={"edit-sec-"+i} style={{padding:"12px 14px",background:B.bg,borderRadius:10,border:"1px solid "+B.border,marginBottom:12}}>
-                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700,letterSpacing:"0.14em",textTransform:"uppercase",color:B.muted,marginBottom:8}}>{"Section " + (i + 1)}</div>
-                {editField("Heading", s.heading, function(v){ updateDraftSection(i, "heading", v); }, { rows: 1 })}
-                {editField("Body",    s.body,    function(v){ updateDraftSection(i, "body", v); },    { rows: 6 })}
-              </div>
-            );
-          })}
-          {editField("Conclusion",          draftPost.conclusion,       function(v){ updateDraft("conclusion", v); },       { rows: 4 })}
-          {editField("Meta description (SEO)", draftPost.meta_description, function(v){ updateDraft("meta_description", v); }, { rows: 2 })}
-          {editField("Hashtags (space-separated)", draftPost.hashtags, function(v){ updateDraft("hashtags", v); }, { rows: 2 })}
-          {renderEditActions()}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function EditableScanCaption({captionText,platform,onSave,profile,userToken,onCreditsUsed,hashtags}) {
   const [editing,setEditing] = useState(false);
@@ -7765,7 +7022,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
     <div style={{background:B.card,borderRadius:16,boxShadow:"0 1px 3px rgba(0,0,0,0.05)",marginBottom:12,padding:"22px 24px"}}>
       <div style={{marginBottom:6,fontFamily:"'Italiana',serif",fontSize:22,color:B.ink,lineHeight:1.15}}>Personalization &amp; privacy</div>
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.55,marginBottom:16}}>
-        VIRL learns from how you use the app so generations sound more like you. Personalization is on by default — you can turn off the whole thing, or any individual source, at any time.
+        VIRL can use your edits, saved posts, logged results and public posts when it writes for you. Personalization is on by default; turn off the whole thing, or any single source, at any time.
       </div>
       {/* [LEARNING-CONSENT] Master toggle — visually distinct from the
           four granular controls (navy fill when on; pill-shaped) so the
@@ -7783,8 +7040,8 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:11,fontWeight:300,color:personalizationOn?"rgba(255,255,255,0.75)":B.muted,lineHeight:1.5}}>
             {personalizationOn
-              ? "I'm learning from the sources you've enabled below."
-              : "I'm not learning from any source right now. Your generations will be less tailored to your voice."}
+              ? "I'm using the sources you've enabled below."
+              : "I'm not using any of these sources right now. Your generations will be less tailored to your voice."}
           </div>
         </div>
       </div>
@@ -7793,7 +7050,7 @@ function CreatorProfile({profile,syncState,syncError,onSave,onNavigateToPlan}) {
           four; kept inline (not extracted into a helper) so the section
           stays grep-able as a single block. */}
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.16em",textTransform:"uppercase",color:B.muted,marginBottom:10}}>
-        Sources VIRL learns from
+        Sources VIRL can use
       </div>
       <div style={{display:"flex",alignItems:"flex-start",gap:12,padding:"14px 16px",background:learnFromEdits?B.navySoft:B.bg,border:"1px solid "+(learnFromEdits?B.blue:B.border),borderRadius:12,cursor:"pointer",transition:"all .2s",marginBottom:10}}
         onClick={function(){ setLearnFromEdits(function(v){ return !v; }); }}>
@@ -9010,7 +8267,7 @@ function Results({results,onPlanWithInsights,vault}) {
     <div style={{textAlign:"center",padding:"60px 20px"}}>
       <div style={{fontFamily:"'Italiana',serif",fontSize:24,color:B.ink,marginBottom:8}}>Nothing logged yet.</div>
       <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,maxWidth:420,margin:"0 auto",lineHeight:1.65}}>
-        {"When you mark a plan card as posted and log a number — even just views — it lands here, grouped by week. I read these to learn what's actually working for your audience and sharpen next week's plan."}
+        {"When you mark a plan card as posted and log a number — even just views — it lands here, grouped by week. If you've allowed it, I read these when I write next week's plan."}
       </div>
     </div>
   );
@@ -9861,7 +9118,7 @@ function SundayLogModal({unloggedCards, onLog, onClose, userToken}) {
             <div style={{fontFamily:"'Italiana',serif",fontSize:26,color:B.navy,lineHeight:1.15}}>Tell me how they landed.</div>
           </div>
           <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.muted,lineHeight:1.6,textAlign:"center",marginTop:6}}>
-            Fill in what you remember. I use these numbers to make next week's plan sharper.
+            Fill in what you remember. If you've allowed it, I use these numbers in next week's plan.
           </div>
         </div>
 
@@ -10195,11 +9452,11 @@ function App() {
   // "algo" removed from the whitelist along with the Algorithm tab —
   // strategic insights are moving inline. Add it back here if the tab
   // is ever restored.
-  // [NAV-5] "posts" and "circle" were missing from this allowlist, so a
+  // [NAV-5] "circle" was missing from this allowlist, so a
   // refresh on those tabs bounced the user; both included now. "vault" and
   // "results" merged into "library" — legacy remembered values migrate
   // below so an in-flight session doesn't lose its place.
-  const ALLOWED_TABS = ["profile","plan","caption","posts","scan","library","circle","admin"];
+  const ALLOWED_TABS = ["profile","plan","caption","scan","library","circle","admin"];
   const LEGACY_TAB_MAP = { vault: "library", results: "library" };
   // [TAB-PERSIST FIX] Tracks whether the initial tab came from sessionStorage
   // (a real page refresh while the user was on a specific tab) vs a default
@@ -10281,13 +9538,23 @@ function App() {
     try { sessionStorage.setItem("virl_active_tab", tab); } catch(e) {}
   }, [tab]);
   const [platforms,setPlatforms] = useState(stored.platforms||["TikTok","Instagram"]);
-  const [niche,setNiche] = useState(stored.niche||"Lifestyle");
+  // [NICHE-PACKS] A stored pre-PR 0 niche becomes legacyNiche (kept, sent on
+  // every request) and is folded into its pack for the picker.
+  const [legacyNiche] = useState(function(){
+    if (stored.legacyNiche) return stored.legacyNiche;
+    return (stored.niche && NICHES.indexOf(stored.niche) < 0 && LEGACY_NICHES.indexOf(stored.niche) >= 0) ? stored.niche : "";
+  });
+  const [niche,setNiche] = useState(function(){
+    if (stored.niche && NICHES.indexOf(stored.niche) >= 0) return stored.niche;
+    return nichePackFor(stored.niche || "", stored.profile || {});
+  });
   const [goal,setGoal] = useState(stored.goal||"Grow my following");
   // [GOALS-2] Optional secondary goal. Empty string = none. The wizard
   // renders it as its own chip row excluding the primary; the server
   // gives it 2-3 supporting cards without diluting the primary goal.
   const [goalSecondary,setGoalSecondary] = useState(stored.goalSecondary||"");
-  const [formats,setFormats] = useState(stored.formats||["Talking-head video","Day in my life"]);
+  // [TEXT-POST-PILL] Resolve pill labels saved under a pre-PR 0 name.
+  const [formats,setFormats] = useState((stored.formats||["Talking-head video","Day in my life"]).map(function(f){ return FORMAT_LABEL_ALIASES[f] || f; }));
   const [followers,setFollowers] = useState(stored.followers||"Under 1K");
   const [context,setContext] = useState("");
   // [AUDIENCE 1] Week-context state for the "What's happening in your
@@ -10610,6 +9877,18 @@ function App() {
     // Mirror the Supabase profile back to localStorage so the cache stays consistent
     // and a refresh can paint instantly before the round-trip resolves.
     loadProfileFromSupabase(userId).then(function(p) {
+      // [NICHE-PACKS] One-off: record this browser's pre-PR 0 niche and its
+      // pack on the profile row (migration 028). legacy_niche is only ever
+      // written when the row has none, so the first value sticks.
+      try {
+        var packPatch = {};
+        if (legacyNiche && !(p && p.legacyNiche)) packPatch.legacy_niche = legacyNiche;
+        var packNow = nichePackFor(legacyNiche || niche, p || {});
+        if (!p || p.nichePack !== packNow) packPatch.niche_pack = packNow;
+        if (Object.keys(packPatch).length) {
+          supabaseClient.from("profiles").update(packPatch).eq("id", userId).then(function(){});
+        }
+      } catch(e) {}
       if (p && p.name) {
         setProfile(p);
         try {
@@ -11385,8 +10664,8 @@ function App() {
   }, [cards, isFoundingOrPro, trialExpired, planNudgeDismissed]);
 
   useEffect(function(){
-    save({platforms,niche,goal,goalSecondary,formats,followers,vault,results,profile});
-  },[platforms,niche,goal,goalSecondary,formats,followers,vault,results,profile]);
+    save({platforms,niche,legacyNiche,goal,goalSecondary,formats,followers,vault,results,profile});
+  },[platforms,niche,legacyNiche,goal,goalSecondary,formats,followers,vault,results,profile]);
 
   // Persist vault + results to Supabase whenever they change. Gated on
   // userDataHydrated so the empty initial state of an incognito browser
@@ -11407,12 +10686,6 @@ function App() {
   const TABS = [
     {key:"plan",    label:"Plan"},
     {key:"caption", label:"Captions"},
-    // [VIRL-POSTS-TAB] Dedicated surface for long-form text content
-    // (LinkedIn long posts, blog posts). Built on the long_post +
-    // blog_post generation types — same prompt builders the Plan tab's
-    // "Write Full Post" action uses, just driven by a topic +
-    // supporting points instead of a plan card seed.
-    {key:"posts",   label:"Posts"},
     {key:"scan",    label:"Scan"},
     {key:"library", label:"Library"},
   ];
@@ -12294,31 +11567,6 @@ function App() {
     });
   }
 
-  // [LINKEDIN-LONG-POST] Mirror of saveScriptForCard for the long-form
-  // post artifact. Same immutable-update + localStorage + Supabase
-  // persistence pattern; the persistence path simply writes the
-  // savedLongPost field onto the card alongside savedScript. Both
-  // can coexist on the same card if the user wants to generate
-  // multiple expansions of an idea (unlikely in practice, but the
-  // shape doesn't preclude it).
-  function saveLongPostForCard(cardIdx, longPost) {
-    setCards(function(prev) {
-      if (!prev || !Array.isArray(prev) || cardIdx < 0 || cardIdx >= prev.length) return prev;
-      var next = prev.slice();
-      next[cardIdx] = Object.assign({}, prev[cardIdx], { savedLongPost: longPost });
-      var expiresAt;
-      try {
-        var current = JSON.parse(localStorage.getItem(KEY)||"{}");
-        expiresAt = (current.planExpiresAt && Date.now() < current.planExpiresAt)
-          ? current.planExpiresAt : computePlanExpiry(profile);
-        current.plan = next;
-        current.planExpiresAt = expiresAt;
-        localStorage.setItem(KEY, JSON.stringify(current));
-      } catch(e) { expiresAt = computePlanExpiry(profile); }
-      if (session) queuePlanSave(session.user.id, next, stats, expiresAt, strategy, planTrendsSnapshot, restDayTips, profile && profile.weekStartDay);
-      return next;
-    });
-  }
   // [LEARNING-CONSENT] Unified edit-diff capture for the learning loop.
   // Used by updateCardAt (plan cards) + by deep edit surfaces (caption,
   // hook, script, scan caption) via window.__virlCaptureEdit. Always
@@ -13953,7 +13201,6 @@ return (
                               <PlanCard key={i} card={card} idx={i}
                                 onSave={saveToVault} onLog={logResult}
                                 onSaveScript={saveScriptForCard}
-                                onSaveLongPost={saveLongPostForCard}
                                 onEdit={updateCardAt}
                                 allDayLabels={allDayLabels}
                                 saved={vault.some(function(v){return v.id===card.title+card.day;})}
@@ -14233,7 +13480,7 @@ return (
                   <div style={{background:B.navySoft,borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",gap:12,alignItems:"flex-start"}}>
                     <div style={{fontSize:16,flexShrink:0,color:B.navy,marginTop:1}}>{"✦"}</div>
                     <div style={{flex:1}}>
-                      <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.navy,lineHeight:1.2,marginBottom:4}}>Learning from your Vault.</div>
+                      <div style={{fontFamily:"'Italiana',serif",fontSize:17,color:B.navy,lineHeight:1.2,marginBottom:4}}>Using your Vault.</div>
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:12,fontWeight:300,color:B.navy,lineHeight:1.55}}>
                         {"Based on your "+vaultPatterns.count+" saved post"+(vaultPatterns.count===1?"":"s")+", I'm weighing "+(vaultPatterns.topFormat||vaultPatterns.topPlatform)+" content higher this week."}
                       </div>
@@ -14407,7 +13654,6 @@ return (
                           onSave={saveToVault}
                           onLog={logResult}
                           onSaveScript={null}
-                          onSaveLongPost={null}
                           saved={vault.some(function(v){ return v.id === card.title + card.day; })}
                           result={results.find(function(r){ return r.id === card.title + card.day; })}
                           profile={profile}
@@ -14452,33 +13698,6 @@ return (
           </div>
         )}
 
-        {/* [VIRL-POSTS-TAB] Long-form writing surface — LinkedIn long
-            posts + blog posts, driven by topic + supporting points
-            (no plan card seed needed). Same trial-gating + sign-in
-            requirements as the other generation tabs. */}
-        {tab==="posts"&&(
-          <div>
-            <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
-              <Eyebrow>VIRL Posts</Eyebrow>
-              <h1 style={{margin:0,fontWeight:400,fontFamily:"'Italiana',serif",fontSize:"clamp(28px,4vw,44px)",lineHeight:0.95,marginBottom:14,letterSpacing:"-0.02em",color:B.ink}}>
-                Long-form,<br/><span style={{color:B.navy}}>still in your voice.</span>
-              </h1>
-              <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,lineHeight:1.65,maxWidth:520,marginBottom:profileComplete?12:0}}>
-                For the LinkedIn post you've been meaning to write, or the blog post that's been sitting in your drafts. Give VIRL the topic and your supporting points — it does the rest in your voice.
-              </div>
-              {profileComplete && <div style={{background:B.navySoft,borderRadius:10,padding:"10px 16px",fontFamily:"'Jost',sans-serif",fontSize:13,color:B.navy}}>{"Writing in " + profile.name + "'s voice — tuned to long-form."}</div>}
-            </div>
-            <PostWriter
-              profile={profile}
-              userToken={userToken}
-              onCreditsUsed={refreshCredits}
-              isPaid={isPaid}
-              daysUntilReset={daysUntilReset}
-              onSavePost={saveCaption}
-              onUpgrade={function(){ setUpgradeReason("credits"); setShowUpgrade(true); }}/>
-          </div>
-        )}
-
         {tab==="scan"&&(
           <div>
             <div style={{marginBottom:20,paddingBottom:20,borderBottom:"1px solid "+B.divider}}>
@@ -14519,7 +13738,7 @@ return (
             </div>
             {libTab==="saved"&&(
             <div>
-              <SherpaTip>Everything you've saved from your plans and captions lives here. Your Vault grows over time into a personal content library built around your voice.</SherpaTip>
+              <SherpaTip>Everything you've saved from your plans and captions lives here. Your saved posts are also voice references when you allow it.</SherpaTip>
               {!isFoundingOrPro&&vault.length>0&&(
                 <div style={{background:B.navySoft,borderRadius:10,padding:"12px 16px",marginTop:12,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
                   <div>
@@ -14871,39 +14090,15 @@ return (
                         );
                       })}
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted,fontStyle:"italic",marginTop:8}}>{"Up-rate < 40% → tune the prompt for that type."}</div>
-                      {/* [REACTION-LOOP] Fleet-wide chip tallies. Each
-                          creator's own reactions already steer their own
-                          drafts; this is the read on whether a theme is
-                          big enough to be a default-voice problem worth
-                          fixing in the prompts for everyone. */}
-                      {bizStats.rating_reasons && Object.keys(bizStats.rating_reasons).length > 0 && (
-                        <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid "+B.divider}}>
-                          <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:B.muted,marginBottom:6}}>Why the thumbs-downs</div>
-                          {Object.keys(bizStats.rating_reasons).sort(function(a,b){
-                            return bizStats.rating_reasons[b] - bizStats.rating_reasons[a];
-                          }).map(function(reason){
-                            return (
-                              <div key={reason} style={{display:"flex",justifyContent:"space-between",fontFamily:"'Jost',sans-serif",fontSize:11,color:B.ink,padding:"3px 0"}}>
-                                <span>{reason}</span>
-                                <span style={{fontWeight:600}}>{bizStats.rating_reasons[reason]}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
                     </div>
                   </div>
                 )}
 
                 {/* [OUTREACH-SIGNAL] Who to go talk to.
 
-                    A bare thumbs-down is weak signal for the prompt — it
-                    says a draft was wrong without saying how, which is why
-                    generation only consumes the chip-annotated ones. It is
-                    strong signal for a founder: the output isn't meeting
-                    that customer's needs, and the way to find out why is to
-                    ask them. The un-annotated downs generation ignores are
-                    therefore the ones surfaced hardest here. */}
+                    A thumbs-down says a draft was wrong without saying
+                    how. The person who can find out why is Lauren, by
+                    asking them, so repeat down-raters are listed here. */}
                 {bizStats.outreach_signals && bizStats.outreach_signals.length > 0 && (
                   <div style={{marginBottom:18}}>
                     <Eyebrow>Worth reaching out to (30d)</Eyebrow>
@@ -14917,27 +14112,19 @@ return (
                                 {u.name || u.user_id.slice(0,8)}
                               </div>
                               <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,fontWeight:300,color:B.muted,lineHeight:1.5}}>
-                                {u.reasons && u.reasons.length
-                                  ? u.reasons.join(", ")
-                                  : "no reason given"}
-                                {when ? " · last " + when : ""}
+                                {when ? "last " + when : ""}
                               </div>
                             </div>
                             <div style={{textAlign:"right",flexShrink:0}}>
                               <div style={{fontFamily:"'Jost',sans-serif",fontSize:13,fontWeight:700,color:u.downs>=3?B.coral:B.ink,lineHeight:1.2}}>
                                 {u.downs}
                               </div>
-                              {u.unexplained > 0 && (
-                                <div style={{fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",color:B.coral}}>
-                                  {u.unexplained + " unexplained"}
-                                </div>
-                              )}
                             </div>
                           </div>
                         );
                       })}
                       <div style={{fontFamily:"'Jost',sans-serif",fontSize:10,color:B.muted,fontStyle:"italic",marginTop:8}}>
-                        Unexplained down-rates are the ones VIRL can't learn from on its own — those are the conversations worth having.
+                        A down-rate says a draft missed; it never says how. Those are the conversations worth having.
                       </div>
                     </div>
                   </div>

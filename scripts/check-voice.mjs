@@ -23,7 +23,7 @@
 // needs an API key. Run that one nightly/manually, not as a PR gate.
 
 import { dispatch, VOICE_LEARNING_TYPES, isValidGenerationType } from "../api/_lib/prompts.js";
-import { computeVoiceDrift, FEATURE_NORMS } from "../api/_lib/voice-drift.js";
+import { computeVoiceDrift, FEATURE_NORMS, computeVoiceFingerprint, formatFingerprintForPrompt } from "../api/_lib/voice-drift.js";
 import { selectVaultExemplars, formatExemplarsForPrompt, exemplarsAsVoiceText } from "../api/_lib/vault-exemplars.js";
 import { detectRegisterBleed } from "../api/_lib/register-check.js";
 import { extractVoiceText } from "../api/_lib/voice-drift.js";
@@ -64,8 +64,6 @@ const GOLDEN_PROFILE = {
 const SURFACES = [
   { label: "Plan",          gt: "plan",             params: { platforms: ["Instagram"], formats: ["video"], niche: "Wellness", goal: "growth" } },
   { label: "Plan (partial)", gt: "plan_partial",    params: { platforms: ["Instagram"], formats: ["video"], niche: "Wellness", goal: "growth", replaceSlots: [{ day: "Day 1 - Mon", platform: "Instagram", format: "video" }], strategy: {} } },
-  { label: "LinkedIn post", gt: "long_post",        params: { topic: "morning routines", length: "medium" } },
-  { label: "Blog post",     gt: "blog_post",        params: { topic: "morning routines", length: "medium" } },
   { label: "Caption",       gt: "caption",          params: { platform: "Instagram", topic: "morning routines" } },
   { label: "Script",        gt: "script",           params: { card: { title: "Morning reset", description: "a calm start", platform: "Instagram", format: "video" } } },
   { label: "Scan",          gt: "scan_image",       params: {} },
@@ -192,12 +190,13 @@ try {
     caption_remix:    { platform: "Instagram", topic: "morning routines", originalCaption: "mornings are hard with three kids" },
     scan_image:       {},
     scan_video_frame: {},
-    long_post:        { topic: "morning routines", length: "medium" },
-    blog_post:        { topic: "morning routines", length: "medium" },
     script:           { card: { title: "Morning reset", description: "a calm start", platform: "Instagram", format: "video" } },
   };
 
   const EDITS = [{ field: "hook", before: "Discover the transformative power of morning routines", after: "my mornings are chaos", surface: "caption" }];
+  // [PR0] The reaction chips were removed. A profile that still carries a
+  // stale voiceReactions array (old client, cached object) must NOT produce
+  // a reactions block — the inverse of the assertion that used to live here.
   const PROFILE_WITH_REACTIONS = Object.assign({}, GOLDEN_PROFILE, {
     voiceReactions: [{ reason: "Too formal", count: 3, lastAt: "2026-07-27T10:00:00Z", lastType: "caption" }],
   });
@@ -224,8 +223,8 @@ try {
       `${gt}: in VOICE_LEARNING_TYPES but its prompt carries no edit-diff block`);
     assert(/my mornings are chaos/.test(text),
       `${gt}: edit-diff block present but the actual diff text is missing`);
-    assert(/WHAT THIS CREATOR HAS FLAGGED AS OFF/.test(text),
-      `${gt}: in VOICE_LEARNING_TYPES but its prompt carries no reaction block`);
+    assert(!/WHAT THIS CREATOR HAS FLAGGED AS OFF/.test(text),
+      `${gt}: prompt still renders the removed reaction-chip block`);
   }
 
   // The inverse: a type deliberately EXCLUDED must stay excluded, so the
@@ -331,8 +330,6 @@ assert(!isValidGenerationType("plan_strategy"),
     { label: "Plan",     gt: "plan",             params: { platforms: ["Instagram"], formats: ["video"], niche: "Wellness", goal: "growth" } },
     { label: "Caption",  gt: "caption",          params: { platform: "Instagram", topic: "morning routines" } },
     { label: "Script",   gt: "script",           params: { card: { title: "Morning reset", description: "a calm start", platform: "Instagram", format: "video" } } },
-    { label: "LinkedIn", gt: "long_post",        params: { topic: "morning routines", length: "medium" } },
-    { label: "Blog",     gt: "blog_post",        params: { topic: "morning routines", length: "medium" } },
     { label: "Scan",     gt: "scan_image",       params: {} },
     { label: "Scan (video)", gt: "scan_video_frame", params: {} },
   ];
@@ -454,6 +451,41 @@ const DRIFTED = "Mornings represent a profound opportunity — a canvas — upon
 const DRIFT = computeVoiceDrift(DRIFTED, REF);
 assert(DRIFT && DRIFT.score > 0, "a clearly off-voice draft should score > 0 drift");
 assert(DRIFT && DRIFT.deltas && DRIFT.deltas.emdashRate > 0, "em-dash-heavy draft should move the emdashRate axis");
+
+// [CURLY-APOSTROPHE] A creator who pasted captions from their phone writes
+// "I’m" with U+2019. That must count as a contraction, on both the server
+// fingerprint and the client mirror, or the prompt tells the model to write
+// "I am" for a creator who never does. Production had this bug: half the
+// profiles with voice samples were labelled contraction-averse.
+const CURLY = "if they don’t remember, at least we have videos. I’ve wanted this for as long as I can remember. I’m only two weeks in, but it’s already taught me more than I’ll ever give back. That’s the whole point, isn’t it.";
+const STRAIGHT = CURLY.replace(/’/g, "'");
+const FP_CURLY = computeVoiceFingerprint(CURLY);
+const FP_STRAIGHT = computeVoiceFingerprint(STRAIGHT);
+assert(FP_CURLY && FP_STRAIGHT && FP_CURLY.contractRate === FP_STRAIGHT.contractRate,
+  `curly and straight apostrophes must featurize identically (got ${FP_CURLY && FP_CURLY.contractRate} vs ${FP_STRAIGHT && FP_STRAIGHT.contractRate})`);
+assert(FP_CURLY && FP_CURLY.labels.contractions === "heavy",
+  `a contraction-heavy sample typed with curly apostrophes must read "heavy", got ${FP_CURLY && FP_CURLY.labels.contractions}`);
+assert(!/Prefer "I am,"/.test(formatFingerprintForPrompt(FP_CURLY)),
+  "fingerprint prompt told the model to spell out contractions for a contraction-heavy creator");
+const indexSrcForFp = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+assert(/vfNormalizeApostrophes/.test(indexSrcForFp) && /text = vfNormalizeApostrophes\(text\)/.test(indexSrcForFp),
+  "index.html client fingerprint no longer normalises curly apostrophes — Profile panel will disagree with the server");
+
+// [OUTPUT-CHECK] The anti-slop rules are callable on finished text, and the
+// prompt wording they are rendered from did not move.
+{
+  const { scanBannedPhrases } = await import("../api/_lib/output-check.js");
+  const { STYLE_GUARD } = await import("../api/_lib/prompts.js");
+  assert(/ - delve into, dive into, embark on, navigate, leverage \(as a verb\), unlock, unleash, harness\n/.test(STYLE_GUARD),
+    "STYLE_GUARD's banned vocabulary line changed — the list is rendered from BANNED_VOCAB_GROUPS and must read as before");
+  const slop = scanBannedPhrases("Let's delve into the rich tapestry of mornings — it's not just a routine — it's a lifestyle — truly.");
+  assert(!slop.pass && slop.phrases.includes("delve into") && slop.phrases.includes("tapestry"),
+    "scanBannedPhrases missed banned vocabulary");
+  assert(slop.emdashes === 3 && slop.hits.some(h => /em-dashes/.test(h)), "scanBannedPhrases did not flag em-dash overuse");
+  assert(slop.inversion, "scanBannedPhrases missed the \"not just X, it's Y\" inversion");
+  const clean = scanBannedPhrases({ hook: "my mornings are chaos.", caption: "three kids, one coffee, zero plan. and honestly it's fine." });
+  assert(clean.pass, "scanBannedPhrases flagged clean creator copy: " + clean.hits.join("; "));
+}
 
 // FEATURE_NORMS export (single source of truth shared with the gate) intact.
 assert(FEATURE_NORMS && typeof FEATURE_NORMS.emdashRate === "number", "FEATURE_NORMS.emdashRate must be exported as a number");

@@ -31,3 +31,7 @@ jobs:
         run: npm run check:trends
       - name: Pinterest + YouTube composer fields match prompt and renderer
         run: npm run check:composer
+      - name: ratings are vote-only and the upsert names its conflict target
+        run: npm run check:rating
+      - name: trend source refusals are told apart from empty weeks
+        run: npm run check:trendsource

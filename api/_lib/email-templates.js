@@ -259,7 +259,7 @@ export function subscriptionWelcome({ name, plan }) {
     <ul style="margin:0 0 16px;padding-left:18px">
       <li>Generate a fresh plan every Monday morning.</li>
       <li>Run VIRL Scan on anything sitting in your camera roll before you delete it.</li>
-      <li>Log results on every post — VIRL learns what's working for <em>your</em> audience.</li>
+      <li>Log results on every post — with your permission, VIRL uses them in next week's plan.</li>
     </ul>
     <p style="margin:0">Billing receipts come from Stripe; this is the human note.</p>`;
   return {
@@ -301,13 +301,13 @@ export function subscriptionCancelled({ name }) {
 // Greeting is weekday-neutral: the cron now sends this on each user's own
 // credit-reset day (see api/cron/email-triggers.js), which is rarely a Monday.
 export function weeklyReset({ name, unsubscribeToken }) {
-  const headline = "Your week's ready when you are.";
+  const headline = "New week. Want your plan?";
   const body = `
     <p style="margin:0 0 12px">New week. Give me 60 seconds and I'll have your next seven days planned before the week gets ahead of you.</p>
     <p style="margin:0 0 12px">The earlier you generate it, the more room you have to actually post it. That's the whole game.</p>
     <p style="margin:0">If your audience grew last week, or anything changed about how you sound, update your profile first and I'll fold it in.</p>`;
   return {
-    subject: "Your week's ready — here's my thinking",
+    subject: "New week — ready to plan it?",
     html:    layout({ eyebrow: "Fresh week", headline, body, primaryCta: { href: APP_URL, label: "Generate this week's plan" }, unsubscribeToken }),
     text:    `${headline}\n\nNew week. Give me 60 seconds and I'll have your next seven days planned.\n\nThe earlier you generate it, the more room you have to post it.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
@@ -576,9 +576,9 @@ export function firstPlanGenerated({ name }) {
   const body = `
     <p style="margin:0 0 12px">It's live. A few things to know now that you have one:</p>
     <ul style="margin:0 0 16px;padding-left:18px">
-      <li><strong>Save the posts you love</strong> to your Vault — I learn your taste from what you save and weight similar styles in next week's plan.</li>
+      <li><strong>Save the posts you love</strong> to your Vault — with your permission, I use them as voice references in next week's plan.</li>
       <li><strong>Generate scripts</strong> from any plan card. The hook, sections, and CTA all stay in your voice.</li>
-      <li><strong>Log results after you post</strong> (views, likes, saves). That's how I learn what's actually working for <em>your</em> audience, not generic best practices.</li>
+      <li><strong>Log results after you post</strong> (views, likes, saves). With your permission, I read them when I plan your next week.</li>
     </ul>
     <p style="margin:0">Plans reset Monday morning. Until then, this one's yours to refine and ship.</p>`;
   return {
@@ -609,12 +609,12 @@ export function sundayLogNudge({ name, unloggedCount, unsubscribeToken }) {
   const headline = "How did this week land?";
   const body = `
     <p style="margin:0 0 12px">${name ? name + ", you" : "You"} have ${unloggedCount} ${noun} from this week's plan that ${unloggedCount === 1 ? "still needs" : "still need"} results logged. It takes 90 seconds.</p>
-    <p style="margin:0 0 12px">Why it's worth it: I learn what's working for <em>your</em> audience from these numbers. Tell me how it landed and next week's plan gets sharper in ways generic best practices can't.</p>
+    <p style="margin:0 0 12px">Why it's worth it: with your permission, I read these numbers when I write next week's plan, so it leans on what worked for <em>your</em> audience.</p>
     <p style="margin:0">Plans reset tomorrow morning, so this is the last good window to log this week.</p>`;
   return {
     subject: `Log this week's ${noun} — ${unloggedCount} pending`,
     html:    layout({ eyebrow: "Weekly wrap", headline, body, primaryCta: { href: APP_URL + "/?tab=results", label: "Log results" }, unsubscribeToken }),
-    text:    `${headline}\n\nYou have ${unloggedCount} ${noun} from this week's plan that need results logged. Takes 90 seconds.\n\nTell me how they landed and next week's plan gets sharper.\n\n${APP_URL}/?tab=results${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nYou have ${unloggedCount} ${noun} from this week's plan that need results logged. Takes 90 seconds.\n\nTell me how they landed and I'll use it in next week's plan.\n\n${APP_URL}/?tab=results${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 
@@ -651,7 +651,7 @@ export function postingReminder({ name, cards, unsubscribeToken }) {
     return "  • " + (meta ? meta + " — " : "") + c.title;
   }).join("\n");
   return {
-    subject: count === 1 ? "Tomorrow's post is ready to go" : `Tomorrow's ${count} posts are ready to go`,
+    subject: count === 1 ? "Tomorrow's post, from your plan" : `Tomorrow's ${count} posts, from your plan`,
     html:    layout({ eyebrow: "Tomorrow", accent: "coral", headline, body, primaryCta: { href: APP_URL + "/?tab=plan", label: "Open tomorrow's plan" }, unsubscribeToken }),
     text:    `${headline}\n\nHere's what I've got on your plan for tomorrow:\n\n${textLines}\n\n${APP_URL}/?tab=plan${unsubscribeFooterText(unsubscribeToken)}`,
   };
@@ -669,7 +669,7 @@ export function sundayReset({ name, unloggedCount, cards, hasPlan, unsubscribeTo
     : "Next week isn't planned yet.";
   let body = `<p style="margin:0 0 14px">${name ? name + ", a" : "A"} two-minute Sunday reset:</p>`;
   if (logged) {
-    body += `<p style="margin:0 0 14px"><strong>Close out last week.</strong> ${unloggedCount} post${Number(unloggedCount) === 1 ? "" : "s"} still need${Number(unloggedCount) === 1 ? "s" : ""} results logged — that's how next week's plan gets sharper.</p>`;
+    body += `<p style="margin:0 0 14px"><strong>Close out last week.</strong> ${unloggedCount} post${Number(unloggedCount) === 1 ? "" : "s"} still need${Number(unloggedCount) === 1 ? "s" : ""} results logged — I use them in next week's plan when you allow it.</p>`;
   }
   if (hasPlan && list.length) {
     body += `<p style="margin:0 0 10px"><strong>Open next week.</strong> Here's Monday:</p>
@@ -698,17 +698,17 @@ export function sundayReset({ name, unloggedCount, cards, hasPlan, unsubscribeTo
 export function trialDay7({ name, unsubscribeToken }) {
   const headline = "One week in.";
   const body = `
-    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'re halfway through the free trial. Here's what most creators figure out by day 7: the saved-to-vault loop is where I actually start working. Once I have 3-5 saved posts to learn from, the next plan starts feeling pointed.</p>
+    <p style="margin:0 0 12px">${name ? name + ", you" : "You"}'re halfway through the free trial. Here's what most creators figure out by day 7: the saved-to-vault loop is where I actually start working. Once I have 3-5 saved posts to reference, the next plan starts feeling pointed.</p>
     <p style="margin:0 0 12px">If you haven't yet, two quick things to try this week:</p>
     <ul style="margin:0 0 16px;padding-left:18px">
       <li><strong>Save 3 posts</strong> from your plan to your vault. I'll weight similar styles higher next time.</li>
-      <li><strong>Log results</strong> on anything you've actually posted. That's how I learn what's landing for <em>your</em> audience, not generic best practices.</li>
+      <li><strong>Log results</strong> on anything you've actually posted. With your permission, I read them when I plan your next week.</li>
     </ul>
     <p style="margin:0">If something's not clicking, reply — a real person reads every one.</p>`;
   return {
-    subject: "How I get sharper after this week",
+    subject: "What makes week two better",
     html:    layout({ eyebrow: "Mid-trial", headline, body, primaryCta: { href: APP_URL, label: "Open VIRL" }, unsubscribeToken }),
-    text:    `${headline}\n\nYou're halfway through the trial. Two things to try this week: save 3 posts to your vault, and log results on anything you've posted — that's how I get sharper.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
+    text:    `${headline}\n\nYou're halfway through the trial. Two things to try this week: save 3 posts to your vault, and log results on anything you've posted — I use both in your next plan when you allow it.\n\n${APP_URL}${unsubscribeFooterText(unsubscribeToken)}`,
   };
 }
 

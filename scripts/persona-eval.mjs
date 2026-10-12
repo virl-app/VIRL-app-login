@@ -114,14 +114,12 @@ for (const p of PROFILES) {
     weekContext: p.evalTopic ? ("This week: " + p.evalTopic) : "",
   };
   const capParams = { platform: "Instagram", topic: p.evalTopic || "a small win from this week", niche: p.niche };
-  const postParams = { topic: p.evalTopic || "a lesson from this week", length: "medium", niche: p.niche };
 
-  let planText = "", capText = "", postText = "";
+  let planText = "", capText = "";
   try { planText = await generate(dispatch("plan",      planParams, p, null, {}, {}, [], null, null, null)); } catch (e) { console.error(`${p.name} plan:`, e.message); }
   try { capText  = await generate(dispatch("caption",   capParams,  p, null, {}, {}, [], null, null, null)); } catch (e) { console.error(`${p.name} caption:`, e.message); }
-  try { postText = await generate(dispatch("long_post", postParams, p, null, {}, {}, [], null, null, null)); } catch (e) { console.error(`${p.name} post:`, e.message); }
 
-  const plan = tryParse(planText), cap = tryParse(capText), post = tryParse(postText);
+  const plan = tryParse(planText), cap = tryParse(capText);
 
   // ── E2: rationale swap test ────────────────────────────────────────────
   const rationales = planRationales(plan);
@@ -143,7 +141,7 @@ for (const p of PROFILES) {
 
   // ── E3: cross-feature voice consistency ────────────────────────────────
   const drifts = {};
-  for (const [surface, parsed, gt] of [["plan", plan, "plan"], ["caption", cap, "caption"], ["post", post, "long_post"]]) {
+  for (const [surface, parsed, gt] of [["plan", plan, "plan"], ["caption", cap, "caption"]]) {
     if (!parsed || !reference) { drifts[surface] = null; continue; }
     const vt = surfaceVoiceText(gt, parsed);
     const d = vt ? computeVoiceDrift(vt, reference) : null;
@@ -155,7 +153,7 @@ for (const p of PROFILES) {
   perProfile.push({
     profile: p.name, rationales: rationales.length,
     specificity, crossLeakRate, drifts, spread,
-    parsed: { plan: !!plan, caption: !!cap, post: !!post },
+    parsed: { plan: !!plan, caption: !!cap },
   });
 
   const pct = v => v == null ? " n/a" : (v * 100).toFixed(0).padStart(3) + "%";

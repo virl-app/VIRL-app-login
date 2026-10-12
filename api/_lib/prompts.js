@@ -232,7 +232,7 @@ export const PLAN_MODEL       = MODEL_OPUS || MODEL_SONNET;
 export const ALLOWED_MODELS  = [MODEL_SONNET, PLAN_MODEL].filter((v, i, a) => v && a.indexOf(v) === i);
 
 // ── Credit costs (server is the source of truth) ──────────────────────────
-export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, long_post: 2, log_metrics: 0, voice_sample_extract: 0 };
+export const CREDIT_COSTS = { plan: 3, script: 2, caption: 1, scan: 2, regen: 1, plan_partial: 1, log_metrics: 0, voice_sample_extract: 0 };
 
 // ── Playbook helpers ──────────────────────────────────────────────────────
 // `playbook` is a map keyed by platform: { TikTok: {cadence, peak_times, ...} }.
@@ -243,7 +243,7 @@ function arr(v) { return Array.isArray(v) ? v : []; }
 
 // [PLAYBOOK-AGE] How every playbook block introduces itself to the model.
 //
-// The framing used to be a constant — longPostPlaybookContext called the entry
+// The framing used to be a constant — the old long-post context called the entry
 // "current best practice from monthly research — treat these as authoritative",
 // and planPlaybookContext said "Follow these per-platform rules", with nothing
 // anywhere reading `updated_at`. A row that had not been touched in two years
@@ -327,39 +327,6 @@ function captionPlaybookContext(playbook, platform) {
   if (arr(entry.top_signals).length)   lines.push("optimise for " + entry.top_signals.join(", "));
   if (!lines.length) return "";
   return " " + platform.toUpperCase() + " PLAYBOOK: " + lines.join("; ") + "." + playbookStaleNote(playbook, [platform]);
-}
-
-// [LIVE-PLAYBOOK] long_post used to state its own hashtag count ("3-5
-// LinkedIn hashtags") and its own see-more fold ("~210 characters") in the
-// schema line, while the playbook — the thing monthly research actually
-// refreshes — sat in scope unread. Two numbers claiming to be the same fact,
-// and the stale one won. Everything numeric this surface asserts now comes
-// from the entry below, with the old constants demoted to fallbacks for the
-// cold-start case where the playbook table is empty.
-function longPostPlaybookContext(playbook) {
-  const entry = playbook && playbook.LinkedIn;
-  if (!entry) return "";
-  const lines = [];
-  if (entry.hook_window)                 lines.push("Hook window: " + entry.hook_window);
-  if (entry.caption_limit)               lines.push("Body character limit: " + entry.caption_limit + " chars (past this LinkedIn truncates)");
-  if (entry.hashtag_count)               lines.push("Hashtags: " + entry.hashtag_count + (entry.hashtag_mix ? " (" + entry.hashtag_mix + ")" : ""));
-  if (entry.peak_times)                  lines.push("Peak posting times: " + entry.peak_times);
-  if (arr(entry.top_signals).length)     lines.push("Optimise for these signals: " + entry.top_signals.join(", "));
-  if (arr(entry.format_priority).length) lines.push("Preferred formats: "          + entry.format_priority.join(", "));
-  if (entry.notes)                       lines.push("Notes: "                      + entry.notes);
-  if (!lines.length) return "";
-  return "\n\nLINKEDIN PLAYBOOK (" + playbookAuthorityFraming(playbook, ["LinkedIn"]) + "): " + lines.join(" | ") + ".";
-}
-
-// [LIVE-PLAYBOOK] The see-more fold long_post writes its hook against. The
-// playbook's `hook_window` is the researched value; the literal character
-// count is only the fallback for an empty playbook table. Returned as a
-// phrase so the caller can drop it straight into the structure copy.
-const LONG_POST_FOLD_FALLBACK = "around 210 characters";
-function longPostFold(playbook) {
-  const entry = playbook && playbook.LinkedIn;
-  const hw = entry && entry.hook_window;
-  return (typeof hw === "string" && hw.trim()) ? hw.trim() : LONG_POST_FOLD_FALLBACK;
 }
 
 // [LIVE-PLAYBOOK] Scan picks its own platform, so it needs every platform's
@@ -573,10 +540,6 @@ export const VOICE_LEARNING_TYPES = new Set([
   "plan", "plan_partial",
   "caption", "caption_remix",
   "scan_image", "scan_video_frame",
-  // [LINKEDIN-LONG-POST] Long-form posts are voice-heavy by definition.
-  "long_post",
-  // [VIRL-POSTS-TAB] The longest single-artifact generation we produce.
-  "blog_post",
   // [VOICE-LEARNING] Scripts are words the creator will say out loud —
   // the surface where sounding like someone else is most obvious. It was
   // excluded for no recorded reason; there isn't a good one.
@@ -593,66 +556,9 @@ export const VOICE_LEARNING_TYPES = new Set([
 // before reactions (a verdict on what they didn't want), and the
 // reactions block states that precedence explicitly for the model.
 function formatVoiceLearning(recentEdits, profile) {
-  return formatEditsForPrompt(recentEdits)
-    + formatReactionsForPrompt(profile && profile.voiceReactions);
-}
-
-// [REACTION-LOOP] What each chip actually instructs the model to do.
-//
-// The chip labels are written for the creator ("Too formal") and are far
-// too compressed to act on as-is — a model handed the bare string will
-// mostly ignore it. Each one is expanded here into the concrete change it
-// implies, so the block reads as a standing correction rather than a mood
-// report. The mapping lives next to the prompt copy, not next to the
-// storage layer, because it is prompt language: api/rate.js owns which
-// labels are legal, this owns what they mean.
-const REACTION_DIRECTIVES = {
-  "Too formal": "drop the register — shorter sentences, contractions, plainer words, no polish they didn't ask for",
-  "Not my words": "the vocabulary was wrong, not the structure — lean harder on their voice samples and their own edits for word choice, and stop reaching for phrasing they never use",
-  "Wrong energy": "the intensity was off — match their actual level rather than dialling up enthusiasm, urgency, or drama the creator does not perform",
-};
-
-// Recent reaction chips → prompt context.
-//
-// Weaker evidence than edit diffs and treated as such: a reaction says a
-// draft was wrong without showing what right looks like, so this block
-// gives DIRECTION while formatEditsForPrompt gives GROUND TRUTH. When the
-// two disagree, the edits win — that precedence is stated in the block
-// itself, since the model sees both.
-//
-// Repetition is the signal that matters. One tap is noise; the same
-// complaint three times is a voice instruction, so counts are surfaced
-// explicitly and singletons are labelled as the weak evidence they are.
-function formatReactionsForPrompt(reactions) {
-  if (!Array.isArray(reactions)) return "";
-  // fetchVoiceReactions already drops reasonless rows; this is the same
-  // belt-and-braces filter formatEditsForPrompt applies, and it matters
-  // more here — an entry with no label would otherwise render the literal
-  // string "undefined" into the prompt as a voice correction.
-  const usable = reactions.filter(function (r) {
-    return r && typeof r.reason === "string" && r.reason.trim();
-  });
-  if (usable.length === 0) return "";
-  const lines = usable.map(function (r) {
-    const directive = REACTION_DIRECTIVES[r.reason];
-    // An unmapped label (a chip added to the UI but not here) still gets
-    // reported rather than dropped — better a bare label the model can
-    // partially use than a silent hole in the creator's feedback.
-    const meaning = directive ? " — " + directive : "";
-    const weight = r.count > 1
-      ? "flagged " + r.count + " times"
-      : "flagged once (weak signal — apply gently)";
-    return "  \"" + r.reason + "\" (" + weight + ")" + meaning;
-  });
-  return "\n\nWHAT THIS CREATOR HAS FLAGGED AS OFF (their own one-tap reactions to recent VIRL drafts, strongest signal first):\n"
-    + lines.join("\n")
-    + "\n\nTreat these as STANDING CORRECTIONS, not one-off notes: the creator"
-    + " tapped these about drafts VIRL already gave them, so repeating the same"
-    + " miss is the one outcome to avoid. Apply them to everything you write here."
-    + " Where a reaction seems to conflict with the creator's own edits above, the"
-    + " EDITS WIN — those show what this creator actually wrote, while a reaction"
-    + " only says what they didn't want. Do not mention, apologize for, or"
-    + " reference this feedback in the output; just write differently.";
+  // [PR0] The thumbs-down reason chips were removed; a rating is a vote
+  // only. Edit diffs remain the one learned-voice signal on this path.
+  return formatEditsForPrompt(recentEdits);
 }
 
 // Plan history → prompt context. Surfaces last 1-3 weeks' strategy + each
@@ -774,7 +680,7 @@ const X_CAPTION_LENGTH_GUIDE = {
 };
 
 const GENERATION_TYPES = [
-  "plan", "plan_partial", "script", "caption", "caption_remix", "scan_image", "scan_video_frame", "long_post", "blog_post",
+  "plan", "plan_partial", "script", "caption", "caption_remix", "scan_image", "scan_video_frame",
   // [LOG-METRICS] Screenshot → performance metrics. Not a content generation —
   // a structured vision extraction that lets a creator log a post's results by
   // snapping the platform's native insights panel instead of typing numbers.
@@ -943,7 +849,18 @@ const LOCALE_LINE = "Use US English spelling exclusively in every output (e.g. '
 // as "be safe, formal" — and produced output without contractions, which
 // reads more formal than any actual creator. Positive register hints
 // trump the model's default "formal academic English" fallback.
-const STYLE_GUARD = ""
+// [OUTPUT-CHECK] The banned list as data, so output-check.js can scan
+// finished text against the SAME phrases the prompt forbids. STYLE_GUARD is
+// rendered from it below; the prompt wording is unchanged.
+export const BANNED_VOCAB_GROUPS = [
+  ["delve into", "dive into", "embark on", "navigate", "leverage (as a verb)", "unlock", "unleash", "harness"],
+  ["in the realm of", "in today's digital landscape", "in this ever-changing", "in the world of"],
+  ["tapestry", "labyrinth", "myriad", "plethora", "treasure trove", "kaleidoscope"],
+  ["moreover", "furthermore", "in conclusion", "first and foremost", "that said"],
+  ["let's dive in", "without further ado", "I hope this finds you well", "buckle up"],
+  ["game-changing", "revolutionary", "groundbreaking", "cutting-edge", "next-level"],
+];
+export const STYLE_GUARD = ""
   + "STYLE — write like a human, not an AI.\n"
   + "\n"
   + "Voice register — write like a person texting their audience, not writing an email:\n"
@@ -960,12 +877,7 @@ const STYLE_GUARD = ""
   + " - Do not chain parenthetical asides or stack subordinate clauses for rhythmic balance.\n"
   + "\n"
   + "Banned vocabulary (do not use any of these words or phrases):\n"
-  + " - delve into, dive into, embark on, navigate, leverage (as a verb), unlock, unleash, harness\n"
-  + " - in the realm of, in today's digital landscape, in this ever-changing, in the world of\n"
-  + " - tapestry, labyrinth, myriad, plethora, treasure trove, kaleidoscope\n"
-  + " - moreover, furthermore, in conclusion, first and foremost, that said\n"
-  + " - let's dive in, without further ado, I hope this finds you well, buckle up\n"
-  + " - game-changing, revolutionary, groundbreaking, cutting-edge, next-level\n"
+  + BANNED_VOCAB_GROUPS.map(function (g) { return " - " + g.join(", ") + "\n"; }).join("")
   + " - whether you're a [X], or just [Y]... inclusive-trope openers\n"
   + "\n"
   + "Banned rhetorical patterns:\n"
@@ -1201,10 +1113,16 @@ function composeSystemPrompt(profile, role, compliance, vaultPatterns, personalD
 // Exported so api/_lib/compliance.js can map the user-facing niche label
 // onto the same internal key the prompt builder uses, without the two
 // modules disagreeing on which niche bucket a creator lands in.
+// [NICHE-PACKS] PR 0 reduced the picker to three packs. The old 17 labels
+// still arrive here for existing accounts (chat.js resolves legacy_niche
+// first) so the finer buckets keep working; the two new pack labels map to
+// the buckets they would have landed in anyway.
+export const NICHE_PACKS = ["Real Estate", "Small Business", "Creators & Personal Brands"];
 export function nicheCategory(niche) {
   switch (niche) {
     case "Real Estate":    return "real_estate";
     case "Small Business": return "service_business";
+    case "Creators & Personal Brands": return "creator";
     case "Education":      return "coach_consultant";
     case "Finance":        return "coach_consultant";
     case "Fitness":        return "fitness_pro";
@@ -1440,9 +1358,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
   // own card edits, formatted as voice ground-truth examples. Empty
   // string when no diffs (toggle off, no edits yet, or fetch failed)
   // so concatenating below is a no-op.
-  // [VOICE-LEARNING] Edit diffs + reaction chips, one block. See
-  // formatVoiceLearning — profile.voiceReactions is attached by chat.js
-  // the way profile.handleResearch is, so builder signatures stay put.
+  // [VOICE-LEARNING] See formatVoiceLearning.
   const editsCtx    = formatVoiceLearning(recentEdits, profile);
   const weekNumber  = (history && !Array.isArray(history) && history.weekNumber)
     ? history.weekNumber
@@ -1797,7 +1713,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // long-form card on LinkedIn even when LinkedIn wasn't selected this
     // week. LinkedIn if selected → Facebook if selected → otherwise the
     // instruction explicitly forbids adding an unselected platform.
-    + (Array.isArray(params.formats) && params.formats.indexOf("Long-form post") >= 0
+    + (Array.isArray(params.formats) && (params.formats.indexOf("Text post") >= 0 || params.formats.indexOf("Long-form post") >= 0)
         ? (function () {
             const anchor = platformsArr.indexOf("LinkedIn") >= 0 ? "LinkedIn"
                          : platformsArr.indexOf("Facebook") >= 0 ? "Facebook"
@@ -2110,294 +2026,9 @@ function buildScript(params, profile, vaultPatterns, playbook, trends, _history,
   };
 }
 
-// [LINKEDIN-LONG-POST] Expand a long_form_text plan card into a full
-// LinkedIn-shaped long-form post (500-1500 words). Designed as a peer
-// of buildScript: starts from an existing plan card (seed idea) and
-// produces a ready-to-post artifact. The card seed gives the model
-// the title, the description (the strategic angle), and any hook /
-// body / closing fragments the planner produced — so the long post
-// builds on the planner's thinking instead of starting from a blank
-// brief.
-//
-// Output shape: { hook, body, closing, hashtags?, compliance_note? }.
-// Mirrors the long_form_text plan card shape so the renderer can
-// reuse LongFormCardBody. Body is a single string with \n-separated
-// paragraphs (LinkedIn ignores most markdown — line breaks are the
-// only formatting native to the platform).
-//
-// Cap at 4000 output tokens — comfortable headroom for a ~1500-word
-// post plus hashtags + compliance note. LinkedIn's hard character
-// limit is 3000 characters for the body (~450 words). The 500-1500
-// word target above is for posts that USE the "see more" expansion;
-// generated posts above 3000 chars will still flow, just truncated
-// on the platform unless the user trims them. We let the model lean
-// long so creators have material to cut from, not stretch.
-function buildLongPost(params, profile, vaultPatterns, playbook, trends, _history, recentEdits, compliance, personalDenylist) {
-  const card = params.card || {};
-  // Length target. Users can specify "short" (~350 words / under
-  // LinkedIn's see-more cutoff), "medium" (~600 words, default),
-  // or "long" (~1200 words, full thought-leadership essay).
-  const lengthTarget = (params.length === "short" || params.length === "long")
-    ? params.length
-    : "medium";
-  const targetWords = lengthTarget === "short" ? "300-450"
-                    : lengthTarget === "long"  ? "1000-1500"
-                    :                           "550-800";
-  const lengthHint  = lengthTarget === "short"
-        ? "Lean punchy — fit comfortably under LinkedIn's 'see more' fold (around 3 short paragraphs) so the full post is visible without expanding."
-    : lengthTarget === "long"
-        ? "Essay-length. Earn the length with concrete examples, specific numbers, and turns of phrase — every paragraph should pay off the time it costs the reader."
-        : "Standard LinkedIn long-form. Hook + 3-5 short paragraphs of substance + closing turn or CTA.";
+// [PR0] buildLongPost and buildBlogPost were removed. VIRL writes short-form
+// only; LinkedIn, X and Threads text posts live inside the plan as cards.
 
-  // [COMPLIANCE 1] Per-niche guardrails appended to the cached prefix.
-  // [VAULT-EXEMPLARS] vaultPatterns threaded through so long posts get the
-  // same few-shot voice references as plans, scripts, captions.
-  // [PERSONAL-DENYLIST] Per-creator banned-vocab mined from edits.
-  // [PERSONA] Single-register — the whole post ships under the creator's name.
-  // [X-280] This builder is LinkedIn-shaped end to end — the system role, the
-  // 500-1500 word target, the see-more fold, and longPostPlaybookContext's
-  // unconditional read of playbook.LinkedIn. It must never receive an X card:
-  // its output is a single prose post of 3000+ characters, which a free-tier X
-  // account cannot publish at all. X cards carry format=thread and are already
-  // complete artifacts, so the plan UI does not offer this action on them.
-  const systemPrompt = composeSystemPrompt(profile, "long-form LinkedIn writer", compliance, vaultPatterns, personalDenylist, {
-    virl:    [],
-    creator: ["hook", "body", "closing"],
-  }, params.niche);
-
-  // [VIRL-POSTS-TAB] Two seed modes — plan-card seed (existing flow:
-  // "Write Full Post" on a long_form_text plan card) OR standalone
-  // topic seed (new flow: VIRL Posts tab where the user types a
-  // topic + supporting points from scratch). Either path produces
-  // the same output shape so the renderer is shared.
-  const standalone = !!(params.topic && String(params.topic).trim());
-  const topic       = standalone ? String(params.topic).trim() : "";
-  const points      = (standalone && Array.isArray(params.supportingPoints))
-    ? params.supportingPoints.map(s => String(s || "").trim()).filter(Boolean)
-    : [];
-  const tone        = (params.tone && typeof params.tone === "string")
-    ? params.tone.trim() : "";
-  // [POST-GUIDANCE] Optional free-text the creator types before generating —
-  // specific instructions for THIS post (angle to take, something to mention
-  // or avoid, audience to speak to). Clamped so a pasted essay can't blow the
-  // prompt budget. Rendered as a high-priority block below the seed.
-  const guidance    = (params.guidance && typeof params.guidance === "string")
-    ? params.guidance.trim().slice(0, 800) : "";
-  const guidanceBlock = guidance
-    ? "\n\n## SPECIFIC GUIDANCE FROM THE CREATOR (follow this closely for this post — it overrides generic defaults, but never the voice/compliance rules above)\n" + guidance
-    : "";
-  // Pull whatever the planner already produced. The full plan flow
-  // emits hook / body / closing on long_form_text cards; if the user
-  // hits this from a non-plan flow we still want to work with
-  // whatever the card carries (title + description as minimum).
-  const seedHook    = (card.hook    || "").trim();
-  const seedBody    = (card.body    || "").trim();
-  const seedClosing = (card.closing || "").trim();
-
-  const seedBlock = standalone
-    ? [
-        "## TOPIC & SUPPORTING POINTS",
-        "Topic: " + topic,
-        points.length ? "Supporting points the creator wants to make:\n" + points.map(p => "  - " + p).join("\n") : "",
-        tone ? "Tone direction for this specific post: " + tone : "",
-      ].filter(Boolean).join("\n")
-    : [
-        "## SEED FROM THE WEEKLY PLAN",
-        "Card title: " + (card.title || "(no title)"),
-        "Strategic angle: " + (card.description || card.insight || "(no description)"),
-        seedHook    ? "Planner-suggested hook: "    + seedHook    : "",
-        seedBody    ? "Planner-suggested body: "    + seedBody    : "",
-        seedClosing ? "Planner-suggested closing: " + seedClosing : "",
-      ].filter(Boolean).join("\n");
-
-  const userPrompt = ""
-    + "Write a complete LinkedIn long-form text post that builds on the seed below. "
-    + "This is a STANDALONE LinkedIn post — no image, no video, narrative writing only. "
-    + "Target length: " + targetWords + " words. " + lengthHint
-    + longPostPlaybookContext(playbook)
-    // [TREND-GROUNDING] Long-form is where "everyone is talking about X right
-    // now" reads as the writer's own market read, so an unsourced one is a
-    // credibility claim the creator can't back if asked.
-    + trendsContext(trends, {
-        lead:      "CURRENT TRENDS — the only trends this post may reference as current. Use one where it strengthens the argument; a post that stands on its own is better than one propped on a forced trend.",
-        emptyTail: "Make the argument on specifics the creator can actually stand behind instead.",
-      }) + "\n\n"
-    + seedBlock + guidanceBlock + "\n\n"
-    + "FORMAT — LinkedIn-native long-form. The body is a single string with line breaks (\\n) between paragraphs and (occasionally) before a punch line. Do NOT use markdown headers, bold/italics, or bullet styling — LinkedIn strips most of it. White space between paragraphs IS the formatting.\n\n"
-    + "Structure:\n"
-    + "  - HOOK: 1-2 sentences. First line MUST land before LinkedIn's 'see more' fold (" + longPostFold(playbook) + "). Pattern-interrupt the feed; specific over clever. No emoji-heavy openers, no \"in today's world\" framings (already banned in STYLE_GUARD).\n"
-    + "  - BODY: 3-5 short paragraphs (1-3 sentences each) of substance. Specific examples, real numbers, a story beat, a contrarian take — earn the length. Don't pad with throat-clearing or rhetorical questions designed to pivot. Insert a one-line punch every 2-3 paragraphs to keep the eye moving.\n"
-    + "  - CLOSING: 1-2 sentences. Resolve the through-line OR invite the reader's take in a way that's specific to THIS post, not generic (\"What's your take?\" is dead). If a CTA fits the creator's voice and the post's intent (e.g. a service-business closing pointing to their site), include it — otherwise skip it.\n\n"
-    + "Voice fidelity is non-negotiable. Read the creator context, vault exemplars, voice fingerprint, and personal denylist above before drafting — every paragraph should sound like THIS creator, not generic thought-leadership LinkedIn slop.\n\n"
-    + "Return ONLY valid JSON with this shape: {"
-    + "\"hook\":\"opening 1-2 sentences in creator voice — must hook before LinkedIn's see-more fold\","
-    + "\"body\":\"the full body with \\n separating paragraphs\","
-    + "\"closing\":\"final 1-2 sentences in creator voice\","
-    // [LIVE-PLAYBOOK] Hashtag count comes from the playbook entry (via
-    // hashtagSlots, the same helper buildCaption uses) instead of the literal
-    // "3-5" this line used to carry. 5 is the cold-start fallback only.
-    + "\"hashtags\":" + hashtagSchema(hashtagSlots(playbook, "LinkedIn", 5)) + ","
-    + "\"compliance_note\":\"OPTIONAL short disclosure; omit field entirely otherwise\""
-    + "}"
-    + " Hashtag strings MUST NOT include the '#' prefix — plain words only."
-    // [VOICE-LEARNING] Was fetched by chat.js and then dropped on the
-    // floor here (the param arrived as `_recentEdits`). See
-    // VOICE_LEARNING_TYPES — this surface is in the set, so it
-    // consumes the signal like every other one.
-    + formatVoiceLearning(recentEdits, profile);
-
-  return {
-    systemPrompt,
-    userPrompt,
-    model:     MODEL_SONNET,
-    // [NO-TRUNCATION] Length-aware cap so a "long" generation has the
-    // headroom it actually needs. Empirically:
-    //   - short  (~350w): ~600 output tokens
-    //   - medium (~600w): ~1100 output tokens
-    //   - long  (~1200w): ~2200 output tokens
-    // Plus hashtags + closing + JSON wrapping overhead (~500 tokens).
-    // The caps below are 2x+ headroom over the realistic worst case so
-    // truncation should not happen even on the verbose end. The
-    // non-streaming retry path in chat.js doubles + caps at 16000 if
-    // it ever does happen, providing a safety net.
-    maxTokens: lengthTarget === "short"  ? 2500
-             : lengthTarget === "long"   ? 8000
-             :                              4500,
-    cost:      CREDIT_COSTS.long_post,
-  };
-}
-
-// [VIRL-POSTS-TAB] Blog post builder. Paired with buildLongPost — same
-// creator-voice plumbing, different output shape. Blog posts use
-// headers, longer narrative arcs, and a meta description for SEO,
-// none of which fit LinkedIn's see-more-fold + no-markdown reality.
-//
-// Output shape: { title, subtitle?, intro, sections:[{heading, body}],
-//                 conclusion, meta_description, hashtags?, compliance_note? }
-// `body` inside each section is markdown-light (paragraph breaks via
-// \n; no fancy bold/italic syntax — let the creator's own CMS handle
-// styling on the way out).
-//
-// Cap at 5000 output tokens — bigger than long_post because blog
-// targets are 1000-2500 words. Cost matches long_post (2 credits)
-// since the per-token billing carries the actual variance.
-//
-// [LIVE-PLAYBOOK] DECISION: blog_post uses NO platform playbook data, and the
-// `_playbook` parameter name says so at the call boundary rather than leaving
-// a received-and-ignored argument that reads like an oversight.
-//
-// The playbook table is keyed by social platform (TikTok, Instagram, Facebook,
-// YouTube, LinkedIn, X, Pinterest) and its fields describe feed mechanics —
-// hashtag counts an algorithm indexes, caption limits a composer enforces, peak
-// windows a ranking system rewards. A blog post lives on the creator's own CMS.
-// None of those mechanics apply, and there is no "Blog" row to read: borrowing
-// LinkedIn's numbers would be inventing a platform constraint, which is the
-// same defect as the stale static tables this pass removed, pointed the other
-// way.
-//
-// So the `hashtags` field below stays a fixed 3-5 on purpose. Those are CMS tag
-// words for the creator's own taxonomy, not platform hashtags — nothing
-// external ranks them, so there is no live value they could be shadowing. If a
-// blog-side signal ever earns a playbook row (SEO tag counts, canonical meta
-// lengths), wire it here; until then, absence is the correct state.
-function buildBlogPost(params, profile, vaultPatterns, _playbook, trends, _history, recentEdits, compliance, personalDenylist) {
-  const topic = (params.topic && typeof params.topic === "string") ? params.topic.trim() : "";
-  const points = Array.isArray(params.supportingPoints)
-    ? params.supportingPoints.map(s => String(s || "").trim()).filter(Boolean)
-    : [];
-  const tone = (params.tone && typeof params.tone === "string") ? params.tone.trim() : "";
-  // [POST-GUIDANCE] Optional per-post instructions from the creator (see
-  // buildLongPost). Clamped + rendered as a high-priority block below the seed.
-  const guidance = (params.guidance && typeof params.guidance === "string")
-    ? params.guidance.trim().slice(0, 800) : "";
-  const guidanceBlock = guidance
-    ? "\n\n## SPECIFIC GUIDANCE FROM THE CREATOR (follow this closely for this post — it overrides generic defaults, but never the voice/compliance rules above)\n" + guidance
-    : "";
-  const lengthTarget = (params.length === "short" || params.length === "long")
-    ? params.length
-    : "medium";
-  const targetWords = lengthTarget === "short" ? "600-900"
-                    : lengthTarget === "long"  ? "1800-2500"
-                    :                           "1200-1500";
-  const lengthHint  = lengthTarget === "short"
-        ? "Concise — 3-4 sections covering the topic without padding. Use when the topic has a clean single argument."
-    : lengthTarget === "long"
-        ? "Deep — 5-7 sections, room for an extended example or case study. Earn the length with specifics, not padding."
-        : "Standard blog length — 4-5 sections, enough room to develop the argument without taxing the reader.";
-
-  // [PERSONA] Single-register — the whole article ships under the creator's
-  // byline. meta_description is the one neutral field: it's SEO plumbing, so
-  // it's plain and factual rather than in either voice.
-  const systemPrompt = composeSystemPrompt(profile, "long-form blog writer", compliance, vaultPatterns, personalDenylist, {
-    virl:    [],
-    creator: ["title", "subtitle", "intro", "sections[].heading", "sections[].body", "conclusion"],
-  }, params.niche);
-
-  const seedBlock = [
-    "## TOPIC & SUPPORTING POINTS",
-    "Topic: " + (topic || "(no topic provided — refuse politely if blank)"),
-    points.length ? "Supporting points the creator wants to make:\n" + points.map(p => "  - " + p).join("\n") : "",
-    tone ? "Tone direction for this specific post: " + tone : "",
-  ].filter(Boolean).join("\n");
-
-  const userPrompt = ""
-    + "Write a complete blog post on the topic below in the creator's voice. "
-    + "Target length: " + targetWords + " words. " + lengthHint
-    // [TREND-GROUNDING] Blog takes no platform playbook (see the decision note
-    // above) but it DOES take trends: the block is what is moving in this
-    // creator's niche right now, which is topic-level signal a blog post uses
-    // the same way a caption does. It is platform-labelled, so any reference
-    // stays traceable — "this is picking up on TikTok" is a checkable claim in
-    // a way that "everyone is talking about this" is not.
-    + trendsContext(trends, {
-        lead:      "CURRENT TRENDS in this creator's niche — the only trends this article may present as current. Use one where it sharpens the argument; a blog post outlives a trend cycle, so don't build the piece on one.",
-        emptyTail: "Write the piece on the creator's own expertise and specifics instead.",
-      }) + "\n\n"
-    + seedBlock + guidanceBlock + "\n\n"
-    + "FORMAT — long-form blog post. Use clean structural elements: a punchy title, an opening intro paragraph that earns the click, 4-6 sections each with a short heading + 2-4 paragraphs of substance, and a closing conclusion that resolves the through-line. No markdown styling inside the body strings (no **bold** or *italic*) — the creator's CMS will handle styling. Paragraph breaks via \\n between paragraphs. Headings live in their own `heading` field per section, never inline.\n\n"
-    + "Structure rules:\n"
-    + "  - TITLE: 6-12 words. Specific over clever. Should make the click obvious from the topic alone.\n"
-    + "  - INTRO: 1-2 paragraphs. Hook the reader within the first sentence. State the post's argument or promise clearly.\n"
-    + "  - SECTIONS: 4-6 ordered sections. Each `heading` is 3-7 words (not a question), each `body` is 2-4 paragraphs separated by \\n. Build the argument cumulatively — section 2 should rely on section 1.\n"
-    + "  - CONCLUSION: 1-2 paragraphs. Restate the argument in a sharper form than the intro, NOT a simple recap. Optional one-line CTA if it fits the creator's voice.\n"
-    + "  - META DESCRIPTION: 150-160 characters. SEO-ready summary that would make a search-result click feel obvious. NOT the title rephrased.\n\n"
-    + "Voice fidelity is non-negotiable. Read the creator context, vault exemplars, voice fingerprint, and personal denylist above before drafting — every paragraph should sound like THIS creator, not generic content-marketing blog slop.\n\n"
-    + "Return ONLY valid JSON with this shape: {"
-    + "\"title\":\"6-12 word post title\","
-    + "\"subtitle\":\"OPTIONAL 6-15 word kicker; omit field entirely if not strong\","
-    + "\"intro\":\"opening 1-2 paragraphs in creator voice — paragraphs separated by \\n\","
-    + "\"sections\":[{\"heading\":\"3-7 word section heading\",\"body\":\"section body, paragraphs separated by \\n\"}],"
-    + "\"conclusion\":\"closing 1-2 paragraphs in creator voice\","
-    + "\"meta_description\":\"150-160 character SEO summary\","
-    // [LIVE-PLAYBOOK] Fixed on purpose — CMS taxonomy tags, not platform
-    // hashtags. See the decision note above buildBlogPost.
-    + "\"hashtags\":[\"OPTIONAL 3-5 tag words for the creator's own CMS taxonomy — these are NOT social platform hashtags; omit if not useful\"],"
-    + "\"compliance_note\":\"OPTIONAL short disclosure; omit field entirely otherwise\""
-    + "}"
-    // [VOICE-LEARNING] Was fetched by chat.js and then dropped on the
-    // floor here (the param arrived as `_recentEdits`). See
-    // VOICE_LEARNING_TYPES — this surface is in the set, so it
-    // consumes the signal like every other one.
-    + formatVoiceLearning(recentEdits, profile);
-
-  return {
-    systemPrompt,
-    userPrompt,
-    model:     MODEL_SONNET,
-    // [NO-TRUNCATION] Length-aware cap. Blog targets are
-    // substantially longer than LinkedIn long posts AND the JSON
-    // wrapping is heavier (sections array, meta description, optional
-    // subtitle). Empirical worst case for a "long" blog (2500 words +
-    // 6 sections + meta + hashtags) lands around 5500 output tokens;
-    // 12000 gives ~2x headroom. Short / medium variants get
-    // proportional caps. Non-streaming retry path in chat.js doubles
-    // + caps at 16000 as a safety net.
-    maxTokens: lengthTarget === "short"  ? 4000
-             : lengthTarget === "long"   ? 12000
-             :                              7000,
-    cost:      CREDIT_COSTS.long_post,
-  };
-}
 
 // Caption output budget. A fixed 900-token ceiling truncated LinkedIn "Long"
 // captions mid-JSON (7-10 narrative lines × 3 options + hook + 7 hashtags
@@ -2731,8 +2362,6 @@ const BUILDERS = {
   caption_remix:    buildCaptionRemix,
   scan_image:       buildScanImage,
   scan_video_frame: buildScanVideoFrame,
-  long_post:        buildLongPost,
-  blog_post:        buildBlogPost,
   log_metrics:      buildLogMetrics,
   voice_sample_extract: buildVoiceSampleExtract,
 };

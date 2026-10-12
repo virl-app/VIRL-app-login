@@ -68,6 +68,11 @@ assert(reUS && reUS.nicheKey === "real_estate", "Real Estate (US) should resolve
 assert(wlUS && wlUS.nicheKey === "wellness",    "Wellness (US) should resolve");
 assert(food && food.nicheKey === "wellness",    "Food & Recipes should resolve to wellness (per nicheCategory)");
 assert(otherUS === null, "Fitness should NOT resolve in v1");
+// [NICHE-PACKS] The three pack labels: Real Estate keeps its floor; the other
+// two never resolve on their own — a Wellness creator keeps the wellness
+// floor only because chat.js resolves legacy_niche before this call.
+assert(getComplianceForNiche({}, "Small Business", "US") === null, "Small Business pack should NOT resolve");
+assert(getComplianceForNiche({}, "Creators & Personal Brands", "US") === null, "Creators pack should NOT resolve");
 assert(reCA   === null, "Non-US locale should NOT resolve in v1");
 
 // ── Prompt-level block sanity
