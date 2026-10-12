@@ -5,6 +5,12 @@
     },
     "api/strategy.js": {
       "maxDuration": 180
+    },
+    "api/render.js": {
+      "maxDuration": 60
+    },
+    "api/cron/strategist-touches.js": {
+      "maxDuration": 300
     }
   },
   "crons": [
@@ -35,6 +41,10 @@
     {
       "path": "/api/cron/trend-health",
       "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/cron/strategist-touches",
+      "schedule": "5 * * * *"
     }
   ]
 }

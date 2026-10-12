@@ -14,6 +14,8 @@ import { validateStrategy, normalisePillarShares, STRATEGY_JSON_SCHEMA } from ".
 import { applyPatch, diffStrategies } from "../api/_lib/json-patch.js";
 import { heardPrompt, buildPrompt, interpretPrompt, formatStrategyForPrompt, TEXT_FIRST_RULES } from "../api/_lib/strategist-prompts.js";
 import { migrateProfile } from "../api/strategy.js";
+import fs from "node:fs";
+const indexHtml = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 let failures = 0;
 function assert(cond, msg) { if (cond) return; failures += 1; console.error("FAIL:", msg); }
@@ -137,6 +139,58 @@ assert(STRATEGY_JSON_SCHEMA.properties.platform.properties.primary.enum.indexOf(
   assert(m.sample.value.includes("my guys.") && m.sample.value.includes("if they don't remember"), "voice sample joins caption and samples");
   assert(m.emoji_use.value === "none", "Never maps to no emojis");
   assert(Object.values(m).every(v => v.source === "migrated"), "every migrated field says so");
+}
+
+// ── F. [PR2] the plan a strategy account gets ─────────────────────────────
+{
+  const profile = { name: "Lauren", voice: "warm", audience: "x", sampleCaption: "ok so here's the thing, mornings are hard and i'm not gonna pretend they're not", strategy: STRATEGY, strategistNotes: [], emojiPref: "Sometimes",
+    postsSummary: { posted: 1, skipped: 3, byReason: { no_time: 2, not_me: 1 }, weeksSilent: 0 } };
+  const params = { platforms: ["Instagram", "LinkedIn", "Threads"], formats: ["Carousel", "Text post"], niche: "Small Business", goal: "Generate leads", followers: "1K-5K" };
+  const built = dispatch("plan", params, profile, null, {}, {}, [], [], null, null);
+  const user = built.userPrompt || "";
+  for (const needle of ["`week_note`", "`drift`", "`daily_comments`", "`pillar_role`", "`is_rework`", "`rework_note`", "`sounds_like_you`", "`rendered`: true", "TEXT-FIRST PLATFORMS", "ONE PRIMARY PLATFORM", "LinkedIn 150 to 300 words", "no time (2 times)"]) {
+    assert(user.includes(needle), "plan with strategy: user prompt lacks " + needle);
+  }
+  assert(!/daily_comments/.test(dispatch("plan", Object.assign({}, params, { platforms: ["Instagram"] }), Object.assign({}, profile, { strategy: Object.assign({}, STRATEGY, { platform: { primary: "Instagram", rework: [] } }) }), null, {}, {}, [], [], null, null).userPrompt || ""),
+    "plan without LinkedIn must not ask for daily_comments");
+  const silent = dispatch("plan", params, Object.assign({}, profile, { postsSummary: { posted: 0, skipped: 0, byReason: {}, weeksSilent: 2 } }), null, {}, {}, [], [], null, null);
+  assert(/dropping the cadence by one/.test(silent.userPrompt || ""), "two silent weeks must propose dropping cadence by one");
+  const plain = dispatch("plan", params, Object.assign({}, profile, { strategy: null, postsSummary: null }), null, {}, {}, [], [], null, null);
+  assert(!/week_note/.test(plain.userPrompt || ""), "a non-strategy plan must not carry the strategist additions");
+}
+
+// ── G. [PR2] slot timing helpers and the renderer ─────────────────────────
+{
+  const { slotHour, weekdayIndex, localParts } = await import("../api/cron/strategist-touches.js");
+  const cases = { "9p": 21, "9pm": 21, "7:30 PM": 19, "19:00": 19, "evening": 19, "7": 19, "noon": 12, "12am": 0, "": 19, "6am": 6 };
+  for (const [k, v] of Object.entries(cases)) assert(slotHour(k) === v, `slotHour("${k}") should be ${v}, got ${slotHour(k)}`);
+  assert(weekdayIndex("Sunday") === 0 && weekdayIndex("wed") === 3, "weekdayIndex");
+  const lp = localParts(new Date("2026-10-12T01:30:00Z"), "America/Chicago");
+  assert(lp.weekday === 0 && lp.hour === 20 && lp.dateISO === "2026-10-11", "localParts must convert to the creator's zone: " + JSON.stringify(lp));
+  assert(localParts(new Date(), "Not/AZone").tz === "America/Chicago", "an unknown zone falls back to the default");
+  const { renderSlides, renderPdf, slidesFromCard, resolveBrand } = await import("../api/_lib/render-post.js");
+  assert(resolveBrand({ bg: "red" }).bg === "#1F3A8A" && resolveBrand({ bg: "#000000" }).bg === "#000000", "resolveBrand validates hex");
+  const slides = slidesFromCard({ title: "t", slides: [{ headline: "One", body: "a" }, { headline: "Two", body: "b" }, { headline: "Three", body: "c" }] });
+  const pngs = await renderSlides(slides, { kicker: "k", footer: "@x" });
+  assert(pngs.length === 3 && pngs[0].length > 5000 && pngs[0][0] === 0x89, "renderSlides must return PNG buffers");
+  const pdf = await renderPdf(pngs);
+  assert(pdf.length > 5000 && pdf.slice(0, 4).toString() === "%PDF", "renderPdf must return a PDF");
+  assert(slidesFromCard({ quote: "q", attribution: "a" })[0].quote === "q", "a quote card renders as a quote slide");
+
+  // [PROFILE PR] Headline font choice: curated ids validate, uploads are
+  // path-checked, unknown input means Italiana, and the client list in
+  // index.html names the same ids as the server.
+  const { FONT_CHOICES, resolveFontChoice, fontKind, fontsForBrand } = await import("../api/_lib/render-post.js");
+  assert(resolveFontChoice({ kind: "google", id: "playfair" }).family === "Playfair Display", "a curated font resolves to its family");
+  assert(resolveFontChoice({ kind: "google", id: "italiana" }) === null && resolveFontChoice({ kind: "google", id: "comic" }) === null, "Italiana and unknown ids mean the default");
+  assert(resolveFontChoice({ kind: "upload", path: "../etc/passwd" }) === null, "an upload path must be <uuid>/<file>");
+  assert(resolveFontChoice({ kind: "upload", path: "123e4567-e89b-12d3-a456-426614174000/brand-font.otf", name: "x" }).kind === "upload", "a well-formed upload path is accepted");
+  assert(fontKind(Buffer.from("wOF2xxxx")) === null && fontKind(Buffer.from("OTTOxxxx")) === "otf" && fontKind(Buffer.from([0, 1, 0, 0, 9])) === "ttf", "fontKind reads magic bytes and rejects WOFF2");
+  const broken = await fontsForBrand({ font: { kind: "upload", path: "123e4567-e89b-12d3-a456-426614174000/x.ttf" } }, { SUPABASE_URL: "https://127.0.0.1:9", SUPABASE_SERVICE_KEY: "k" });
+  assert(broken.headlineFamily === "Italiana" && broken.fallback === true, "an unreachable upload falls back to Italiana instead of failing the render");
+  const clientIds = [...indexHtml.matchAll(/\{ id: "([a-z]+)", family: "/g)].map(m => m[1]);
+  assert(clientIds.length === FONT_CHOICES.length && clientIds.every(id => FONT_CHOICES.some(c => c.id === id)), "SG_FONTS in index.html must list the same ids as FONT_CHOICES: " + clientIds.join(","));
+  assert(fs.readFileSync("migrations/031-brand-fonts-bucket.sql", "utf8").includes("'brand-fonts'"), "migration 031 creates the brand-fonts bucket");
 }
 
 if (failures > 0) { console.error(`\nStrategy check FAILED with ${failures} failure(s).`); process.exit(1); }

@@ -217,7 +217,38 @@ import {
 import { formatNichePlaybookForPrompt, formatNicheModelForPrompt } from "./niche-playbook.js";
 // [PR1] A built strategy, when the account has one, is the thing every
 // surface serves. Rendered into the per-user tier so all surfaces inherit it.
-import { formatStrategyForPrompt } from "./strategist-prompts.js";
+import { formatStrategyForPrompt, TEXT_FIRST_RULES, ONE_PRIMARY_RULE } from "./strategist-prompts.js";
+
+// [PR2] What a strategy account's plan has to carry beyond the base schema.
+// Rides the per-request user prompt (strategy accounts only), so the shared
+// cached tier stays byte-identical for everyone else.
+function strategyPlanBlock(profile, params) {
+  const s = profile && profile.strategy;
+  if (!s) return "";
+  const platforms = Array.isArray(params && params.platforms) ? params.platforms : [];
+  const hasLinkedIn = platforms.indexOf("LinkedIn") >= 0 || (s.platform && s.platform.primary === "LinkedIn");
+  const ps = profile.postsSummary || null;
+  let history = "";
+  if (ps && (ps.posted + ps.skipped) > 0) {
+    const reasons = Object.keys(ps.byReason || {}).filter(k => ps.byReason[k] >= 2).map(k => ({ no_time: "no time", not_me: "it didn't feel like them", didnt_know_how: "they didn't know how to make it" })[k] + " (" + ps.byReason[k] + " times)");
+    history = "\n\nWHAT HAPPENED WITH RECENT PLANS (this creator's own marks, last two weeks): posted " + ps.posted + ", skipped " + ps.skipped + "."
+      + (reasons.length ? " Skip reasons that repeated: " + reasons.join("; ") + ". Address the repeated reason in week_note and change what caused it (less time per post, closer to their voice sample, a clearer outline)." : "")
+      + (ps.weeksSilent >= 2 ? " Nothing was marked posted for two consecutive weeks: in week_note propose dropping the cadence by one post this week, and plan that lower number." : "");
+  } else if (ps && ps.weeksSilent >= 2) {
+    history = "\n\nNothing was marked posted for two consecutive weeks: in week_note propose dropping the cadence by one post this week, and plan that lower number.";
+  }
+  return "\n\nTHIS CREATOR HAS A STRATEGY (rendered in the creator context above). The plan serves it: build the week from its pillars in their stated shares, on its primary platform, at its cadence, honouring its guardrails and the things they've told the strategist."
+    + " " + ONE_PRIMARY_RULE + TEXT_FIRST_RULES
+    + " ADDITIONS TO THE JSON for this creator (all required):"
+    + " top-level `week_note`: 2 to 3 sentences in your voice (first person, specific): what we're doing this week, why, what you're watching."
+    + " top-level `drift`: one line, exactly \"Still on strategy.\" or \"One shift: <what> because <why>.\""
+    + (hasLinkedIn ? " top-level `daily_comments`: { \"angles\": [3 short angles the creator can write their own comments from on others' LinkedIn posts, one line each] }. VIRL does not draft comments on specific people's posts." : "")
+    + " on every card: `pillar` (exact pillar name from the strategy), `pillar_role` (reach | trust | connection | convert), `why` (ONE line in your voice naming the pillar job and one specific input, e.g. \"Trust post. Your audience asked about pricing twice last week.\"), `is_rework` (true when this card is the primary platform's idea rewritten for another platform), `rework_of` (the primary card's title when is_rework), `rework_note` (when is_rework: one line on what changed and why, e.g. \"Shorter and more direct for Threads; the story stays, the setup goes.\"), `sounds_like_you` (one line naming what the voice sample did to this caption, e.g. \"Kept your short sentences and the 'honestly' you open with.\" When no voice sample exists, say exactly that and suggest pasting three captions; never pretend)."
+    + " Exactly ONE card this week is the rendered static post: format carousel (3 to 5 slides, each slide headline under 12 words and body under 40 words, text only) or quote_graphic, with `rendered`: true. It needs nothing from the creator but a tap; never call it publishing."
+    + " Text-first posts are complete posts, not captions for a video: LinkedIn 150 to 300 words with a first line under 12 words, short paragraphs, one idea, no emojis, a closing line that invites a comment, at most 3 hashtags never in the first line (format long_form_text, LinkedIn only); X under 280 characters or a 3 to 5 post thread where post 1 stands alone, no hashtags (format thread); Threads 100 to 300 characters written like a message to a friend (format long_form_text with `body` only, no `closing`)."
+    + " Reworks never copy: a TikTok script does not become a LinkedIn post; rewrite the idea for the platform's length and tone."
+    + history;
+}
 
 // ── Models ─────────────────────────────────────────────────────────────────
 export const MODEL_SONNET    = "claude-sonnet-4-6";
@@ -1679,9 +1710,7 @@ function buildPlan(params, profile, vaultPatterns, playbook, trends, history, re
     // what this plan serves: the pillars, the primary platform and its
     // rework targets, the cadence. Every card maps to one pillar and names
     // it in `pillar_role`.
-    + (profile && profile.strategy
-        ? " THIS CREATOR HAS A STRATEGY (rendered in the creator context above). Build the week from its pillars in their stated shares, on its primary platform with the other platforms as reworks of the same idea, at its cadence. Every card MUST carry `pillar` (the pillar name) and `pillar_role` (reach | trust | connection | convert) and its `insight` must say which pillar job it does."
-        : "")
+    + strategyPlanBlock(profile, params)
     + (context  ? " Extra context: " + context : "")
     // [AUDIENCE 1] Week-of business context as a hard constraint, not
     // generic flavor. The creator told us what is happening in their

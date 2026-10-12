@@ -524,6 +524,16 @@ async function processReminderUser(user, todayIsSunday, weekKey) {
   const email  = user.email;
   if (!email) return;
 
+  // [PR2] Accounts on the strategist path with a content slot get their
+  // reminders from api/cron/strategist-touches.js, timed to the slot in
+  // their own timezone. Skip them here so one slot never earns two emails.
+  try {
+    const sp = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=content_slot,strategy`, {
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+    });
+    if (sp.ok) { const rows = await sp.json(); if (rows[0] && rows[0].strategy && rows[0].content_slot) return; }
+  } catch (e) {}
+
   const { cards: tomorrowCards, hasPlan } = await fetchTomorrowsCards(userId);
 
   // [TRIAL-AWARE-EMAIL] This pass had NO trial check at all, which made the

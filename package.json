@@ -2,7 +2,7 @@
   "name": "virl-app-login",
   "version": "1.0.0",
   "private": true,
-  "description": "VIRL app \u2014 single-page React frontend (index.html via Babel standalone) plus Vercel serverless API functions in /api.",
+  "description": "VIRL app — single-page React frontend (index.html via Babel standalone) plus Vercel serverless API functions in /api.",
   "scripts": {
     "check:index": "node scripts/check-index-syntax.mjs",
     "check:compliance": "node scripts/check-compliance.mjs",
@@ -18,7 +18,10 @@
     "check:strategy": "node scripts/check-strategy-build.mjs"
   },
   "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "pdf-lib": "^1.17.1",
     "resend": "^4.0.0",
+    "satori": "^0.12.0",
     "stripe": "^14.0.0"
   },
   "devDependencies": {

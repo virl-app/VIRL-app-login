@@ -855,6 +855,31 @@ function pickInlinePlatforms(generationType, params, profile) {
 // the computation to the platforms it cares about via `targetPlatforms`
 // so the prompt doesn't include guidance for platforms the creator
 // isn't using this generation.
+// [PR2] Posted / skipped marks from the last two weeks, for the Monday note.
+// { posted, skipped, byReason: { no_time, not_me, didnt_know_how }, weeksSilent }
+// weeksSilent counts, among the last two distinct plan weeks on record, how
+// many had nothing marked posted. Fail-open null.
+async function fetchPostsSummary(userId) {
+  try {
+    const since = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/posts?user_id=eq.${userId}&week_start=gte.${since}&select=week_start,status,skip_reason`, {
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+    });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    const out = { posted: 0, skipped: 0, byReason: {}, weeksSilent: 0 };
+    const weeks = {};
+    for (const row of rows) {
+      if (!weeks[row.week_start]) weeks[row.week_start] = { posted: 0 };
+      if (row.status === 'posted') { out.posted++; weeks[row.week_start].posted++; }
+      if (row.status === 'skipped') { out.skipped++; if (row.skip_reason) out.byReason[row.skip_reason] = (out.byReason[row.skip_reason] || 0) + 1; }
+    }
+    const keys = Object.keys(weeks).sort().slice(-2);
+    if (keys.length === 2) out.weeksSilent = keys.filter(k => weeks[k].posted === 0).length;
+    return out;
+  } catch (e) { return null; }
+}
+
 async function fetchVaultPatterns(userId, targetPlatforms) {
   const empty = { count: 0, topPlatform: null, topFormat: null, exemplars: [], optimalDays: {}, performanceInsights: null };
   try {
@@ -1015,6 +1040,10 @@ async function fetchProfile(userId) {
                              : (data.voice_sample ? [data.voice_sample] : []),
       emojiUse:            data.emoji_use   || "",
       emojiWhere:          data.emoji_where || "",
+      // [PR2] Migration 030.
+      timezone:            data.timezone    || "",
+      planAutogen:         !!data.plan_autogen,
+      brand:               (data.brand && typeof data.brand === "object") ? data.brand : null,
     };
   } catch (e) {
     return {};
@@ -1101,7 +1130,25 @@ export default async function handler(req, res) {
   if (!token) return res.status(401).json({ error: 'Sign in required.' });
 
   let userId, createdAt, email;
-  try {
+  // [PR2] The autogen cron generates a plan on the creator's behalf. It has
+  // no user token, so it presents the cron secret plus the user id, and we
+  // resolve the rest from the admin endpoint. Plans only; nothing else may
+  // run under this identity.
+  const cronUser = req.headers['x-virl-cron-user'];
+  if (cronUser && process.env.CRON_SECRET && authHeader === process.env.CRON_SECRET) {
+    if (generationType !== 'plan') return res.status(403).json({ error: 'Cron identity is for plans only.' });
+    try {
+      const adminRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${encodeURIComponent(String(cronUser))}`, {
+        headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`, 'apikey': SUPABASE_SERVICE_KEY },
+      });
+      if (!adminRes.ok) return res.status(401).json({ error: 'Unknown user.' });
+      const u = await adminRes.json();
+      userId = u.id; createdAt = u.created_at; email = u.email || null;
+    } catch (e) {
+      return res.status(401).json({ error: 'Unknown user.' });
+    }
+  }
+  if (!userId) try {
     const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
       headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_SERVICE_KEY },
     });
@@ -1113,6 +1160,7 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
+  if (!userId) return res.status(401).json({ error: 'Sign in required.' });
 
   // ── Rate limit (burst protection) ─────────────────────────────────────────
   // Runs before credit deduction + the Anthropic call so a flood is rejected
@@ -1275,7 +1323,7 @@ export default async function handler(req, res) {
   const targetPlatforms = (generationType === "plan" || generationType === "plan_partial")
     ? (Array.isArray(params && params.platforms) ? params.platforms : [])
     : (generationType === "caption" && params && params.platform ? [params.platform] : []);
-  const [profile, vaultPatterns, playbook, history, complianceRules, listingResearch] = await Promise.all([
+  const [profile, vaultPatterns, playbook, history, complianceRules, listingResearch, postsSummary] = await Promise.all([
     fetchProfile(userId),
     VOICE_GEN_TYPES.has(generationType) ? fetchVaultPatterns(userId, targetPlatforms)                         : Promise.resolve(null),
     loadPlaybook(),
@@ -1292,6 +1340,9 @@ export default async function handler(req, res) {
     // v1). Loader returns {} on any infra failure so the get-for-niche
     // call below falls through to the hardcoded safe-defaults floor.
     loadComplianceRules(),
+    // [PR2] What the creator did with recent plans (posted / skipped and
+    // why), so the Monday note can respond to it. Plans only; fail-open.
+    generationType === 'plan' ? fetchPostsSummary(userId) : Promise.resolve(null),
     // [LISTING-INTAKE] Server-side fetch of the creator's pasted link.
     // Fail-open null — a dead link never blocks the plan; the UI told the
     // user it's best-effort.
@@ -1304,6 +1355,22 @@ export default async function handler(req, res) {
       ? fetchListingContext(params.listingUrl)
       : Promise.resolve(null),
   ]);
+  // [PR2] Recent posted/skipped marks ride the profile into the prompt
+  // builder (strategy accounts read them in strategyPlanBlock).
+  if (profile && postsSummary) profile.postsSummary = postsSummary;
+  // [PR2] Capture the browser's timezone so slot timing (autogen the evening
+  // before, the reminder at the slot) lands in local time. Fire-and-forget;
+  // only written when it changes.
+  try {
+    const tz = params && params.clientNow && typeof params.clientNow.tz === 'string' ? params.clientNow.tz.trim().slice(0, 64) : '';
+    if (tz && /^[A-Za-z_]+\/[A-Za-z_\/+-]+$/.test(tz) && profile && profile.timezone !== tz) {
+      fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`, {
+        method: 'PATCH',
+        headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+        body: JSON.stringify({ timezone: tz }),
+      }).catch(() => {});
+    }
+  } catch (e) {}
   // Inject the SERVER-fetched text (never client-supplied) for buildPlan.
   if (params && params.listingContext) delete params.listingContext;
   if (listingResearch && listingResearch.text && params) {
