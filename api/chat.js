@@ -862,16 +862,21 @@ function pickInlinePlatforms(generationType, params, profile) {
 async function fetchPostsSummary(userId) {
   try {
     const since = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/posts?user_id=eq.${userId}&week_start=gte.${since}&select=week_start,status,skip_reason`, {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/posts?user_id=eq.${userId}&week_start=gte.${since}&select=week_start,status,skip_reason,title,pillar,attributed_result,self_result`, {
       headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
     });
     if (!r.ok) return null;
     const rows = await r.json();
-    const out = { posted: 0, skipped: 0, byReason: {}, weeksSilent: 0 };
+    const out = { posted: 0, skipped: 0, byReason: {}, weeksSilent: 0, attributed: [], popped: [] };
     const weeks = {};
     for (const row of rows) {
       if (!weeks[row.week_start]) weeks[row.week_start] = { posted: 0 };
-      if (row.status === 'posted') { out.posted++; weeks[row.week_start].posted++; }
+      if (row.status === 'posted') {
+        out.posted++; weeks[row.week_start].posted++;
+        // [PR3] What they tapped on posted posts; the Monday note cites it.
+        if (row.attributed_result && out.attributed.length < 5) out.attributed.push({ title: row.title, pillar: row.pillar, result: row.attributed_result });
+        if (row.self_result === 'popped' && out.popped.length < 5) out.popped.push({ title: row.title, pillar: row.pillar });
+      }
       if (row.status === 'skipped') { out.skipped++; if (row.skip_reason) out.byReason[row.skip_reason] = (out.byReason[row.skip_reason] || 0) + 1; }
     }
     const keys = Object.keys(weeks).sort().slice(-2);

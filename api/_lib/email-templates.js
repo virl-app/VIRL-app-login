@@ -847,6 +847,21 @@ export function strategistPlanReady({ name, weekNote, card, link }) {
   };
 }
 
+// 27b. [PR3] The monthly review is written: the opening paragraph inline,
+// the proposals counted, one link.
+export function strategistReviewReady({ name, opening, proposals, link }) {
+  const headline = "Your month, reviewed.";
+  const n = Number(proposals) || 0;
+  const body = `
+    <p style="margin:0 0 14px">${esc(opening || "I've read your month back from your own posts.")}</p>
+    <p style="margin:0">${n ? (n === 1 ? "One change to decide on" : n + " changes to decide on") + ". Each shows what moves before anything changes, and you can undo it after." : "No changes proposed this month; the read is in the app."}</p>`;
+  return {
+    subject: "Your month, reviewed",
+    html:    layout({ eyebrow: "Monthly review", headline, body, primaryCta: { href: link || (APP_URL + "/?tab=strategy"), label: n ? "See the review" : "Read it" } }),
+    text:    `${headline}\n\n${opening || ""}\n\n${n ? n + " change(s) to decide on." : "No changes proposed this month."}\n\n${link || (APP_URL + "/?tab=strategy")}`,
+  };
+}
+
 // 28. At the slot: one reminder, the first post's caption inline.
 export function slotReminder({ name, card, link }) {
   const headline = "It's your content slot.";

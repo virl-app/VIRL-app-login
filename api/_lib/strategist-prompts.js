@@ -125,6 +125,38 @@ export function interpretPrompt({ strategy, section, text, notes }) {
   return { system, prompt };
 }
 
+// ── 3b. [PR3] The monthly review ─────────────────────────────────────────
+// The strongest model reads this creator's own numbers and writes the
+// review: a short paragraph, findings that each name their evidence, and 1
+// to 3 proposals, each an RFC 6902 patch the creator can accept or keep.
+export function reviewPrompt({ strategy, lines, notes, prevRates, askFresh }) {
+  const system = VIRL_PERSONA + "\n\n" + PERSONA_SHORT + ONE_PRIMARY_RULE
+    + "\nYou are writing this creator's monthly review from their own rows: what they planned, what they marked posted or skipped, the pillar and format they posted most, what they said popped or flopped, the results they attributed to posts, any insights screenshots, and how often they picked the caption written with their voice fingerprint.\n"
+    + "Rules:\n"
+    + "- Only the facts in THEIR DATA below are evidence. Never invent a number, a post, or a reason. If the data is thin, say so and propose less.\n"
+    + "- opening: one short paragraph (3 to 5 sentences), first person, specific: what happened this month in their words, the one thing that mattered, what you're proposing. Cite real titles and counts (\"you posted every Trust post and skipped two of three Reach posts\"). When a tap says a post got them a booking or a client, name it (\"That first-visit walkthrough brought a booking.\").\n"
+    + "- findings: 2 to 5 items. Each `text` is one sentence; each `evidence` names the rows it rests on (counts, titles, reasons) in a short phrase.\n"
+    + "- proposals: 0 to 3. Only propose what the evidence supports. Each has `title` (under 10 words, e.g. \"Move Reach to 20%\"), `evidence` (the rows it rests on), `note` (one sentence: the trade-off), and `changes` (RFC 6902 ops against the STRATEGY JSON: replace existing values, add only for new array items; when you move one pillar share, adjust the others so shares still sum to 100; every path must exist). Typical proposals: pillar shares, cadence posts_per_week, formats, a guardrail rule, path_to_results wording. Never change the primary platform or the goal in a review.\n"
+    + "- voice_line: one sentence on their voice. With voice checks, state the running rate as \"your captions sounded like you N of M times.\"" + (askFresh ? " It has been under 60% for two reviews: ask for three fresh captions pasted into Sound like you, and say why." : " Without checks, say there's nothing to report yet.") + "\n"
+    + "- No praise padding, no \"great job\", no emojis. Short sentences. Contractions are fine.\n"
+    + "Reply with JSON only: {\"opening\": \"...\", \"findings\": [{\"text\": \"...\", \"evidence\": \"...\"}], \"proposals\": [{\"title\": \"...\", \"evidence\": \"...\", \"note\": \"...\", \"changes\": [{\"op\":\"replace\",\"path\":\"/pillars/2/share\",\"value\":20}]}], \"voice_line\": \"...\"}";
+  const prompt = "STRATEGY (current):\n" + j(strategy)
+    + "\n\nTHEIR DATA (this account only):\n" + (lines || []).map(l => "- " + l).join("\n")
+    + (Array.isArray(prevRates) && prevRates.length ? "\n\nVoice-check rate in earlier reviews: " + prevRates.map(r => Math.round(r * 100) + "%").join(", ") : "")
+    + (Array.isArray(notes) && notes.length ? "\n\nTHINGS THEY HAVE TOLD YOU (newest last):\n" + notes.slice(-6).map(n => "- " + n).join("\n") : "")
+    + "\n\nWrite the review.";
+  return { system, prompt };
+}
+
+// [PR3] Voice check: the plan's caption carries the creator's fingerprint;
+// this makes the other variant, same content in a neutral professional
+// voice, so the pick tells us whether the fingerprint is doing its job.
+export function voiceVariantPrompt({ caption, platform }) {
+  const system = "You rewrite a social caption so it says the same things, at the same length, for the same platform, but in a neutral, polished, professional voice with none of the original writer's personal habits: standard sentence case, no trailing fragments, no slang, no signature phrases, keep or drop emojis as the original did. Return the rewritten caption only, no preface.";
+  const prompt = "PLATFORM: " + (platform || "unknown") + "\n\nCAPTION:\n" + caption;
+  return { system, prompt };
+}
+
 // ── 4. Hand the strategy to later generation ──────────────────────────────
 // Rendered into the prompt of every generation surface once a strategy
 // exists. Authoritative over the older settings line in the plan prompt.

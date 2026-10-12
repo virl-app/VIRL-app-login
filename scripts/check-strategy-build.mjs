@@ -193,5 +193,33 @@ assert(STRATEGY_JSON_SCHEMA.properties.platform.properties.primary.enum.indexOf(
   assert(fs.readFileSync("migrations/031-brand-fonts-bucket.sql", "utf8").includes("'brand-fonts'"), "migration 031 creates the brand-fonts bucket");
 }
 
+// ── H. [PR3] the monthly review ───────────────────────────────────────────
+{
+  const { statsToLines, validateProposals, isReviewDue, reviewPeriod, REVIEW_MIN_DAYS, REVIEW_MIN_POSTED } = await import("../api/_lib/review.js");
+  const { reviewPrompt, voiceVariantPrompt } = await import("../api/_lib/strategist-prompts.js");
+  const stats = { period: { start: "2026-09-01", end: "2026-10-01" }, planned: 11, posted: 8, skipped: 2, byReason: { no_time: 2 }, byPillar: { Trust: { planned: 5, posted: 5, skipped: 0 }, Reach: { planned: 3, posted: 1, skipped: 2 } }, byRole: {}, byFormat: {}, byPlatform: {}, selfResults: { flopped: 0, okay: 0, popped: 1 }, popped: [{ title: "First visit", pillar: "Trust", format: "carousel" }], flopped: [], attributed: [{ title: "First visit", pillar: "Trust", format: "carousel", result: "booking" }], attributedCounts: { booking: 1 }, insights: { count: 0, reach: 0, saves: 0, shares: 0, profile_visits: 0, dms: 0, top: null }, editsMade: 3, renderedPosted: 2, reworkPosted: 1, weeksActive: 4, weeksPlanned: 4, voice: { checks: 3, pickedFingerprint: 2, rate: 2 / 3 } };
+  const lines = statsToLines(stats).join("\n");
+  for (const t of ["8 marked posted", "no time 2", "Trust [5 of 5 posted]", "Reach [1 of 3 posted, 2 skipped]", "\"First visit\" → booking", "2 of 3 times", "none uploaded"]) assert(lines.includes(t), "statsToLines must state: " + t);
+  assert(isReviewDue(stats, "2026-09-01", new Date("2026-10-01")) && !isReviewDue({ posted: 3 }, "2026-09-01", new Date("2026-10-05")) && !isReviewDue(stats, "2026-09-20", new Date("2026-10-05")), `due means ${REVIEW_MIN_DAYS} days and ${REVIEW_MIN_POSTED} posted`);
+  assert(reviewPeriod({ strategy_built_at: "2026-09-01T10:00:00Z" }, null, new Date("2026-10-05")).start === "2026-09-01" && reviewPeriod({}, { period_end: "2026-09-15" }, new Date("2026-10-05")).start === "2026-09-15", "the period starts at the build or the last review");
+  const vp = validateProposals(STRATEGY, [
+    { title: "Move Reach to 20%", evidence: "Reach 1 of 3", changes: [{ op: "replace", path: "/pillars/0/share", value: 20 }] },
+    { title: "Bad path", evidence: "x", changes: [{ op: "replace", path: "/nope/zip", value: 1 }] },
+    { title: "Four", evidence: "y", changes: [{ op: "replace", path: "/cadence/posts_per_week", value: (STRATEGY.cadence.posts_per_week || 3) + 1 }] },
+  ]);
+  assert(vp.length === 2 && vp[0].title === "Move Reach to 20%" && vp[0].diff.length >= 1 && vp[0].decision === null && vp[1].title === "Four", "validateProposals keeps clean, evidenced patches and drops the rest: " + vp.map(p => p.title).join(","));
+  assert(validateProposals(STRATEGY, [{ title: "No evidence", evidence: "", changes: [{ op: "replace", path: "/cadence/posts_per_week", value: 9 }] }]).length === 0, "a proposal without evidence is dropped");
+  assert(validateProposals(STRATEGY, [1, 2, 3, 4].map(i => ({ title: "P" + i, evidence: "e", changes: [{ op: "replace", path: "/cadence/posts_per_week", value: 5 + i }] }))).length === 3, "at most three proposals");
+  const rp = reviewPrompt({ strategy: STRATEGY, lines: statsToLines(stats), notes: ["less selling"], prevRates: [0.5], askFresh: true });
+  for (const t of ["Only the facts in THEIR DATA", "sounded like you N of M times", "three fresh captions", "Never change the primary platform", "less selling", "Voice-check rate in earlier reviews: 50%"]) assert((rp.system + rp.prompt).includes(t), "reviewPrompt must say: " + t);
+  const vv = voiceVariantPrompt({ caption: "honestly, this one's for you.", platform: "Instagram" });
+  assert(vv.system.includes("neutral") && vv.prompt.includes("honestly"), "voiceVariantPrompt carries the caption");
+  const T = await import("../api/_lib/email-templates.js");
+  const tpl = T.strategistReviewReady({ name: "L", opening: "Four weeks, eight posted.", proposals: 2, link: "https://x" });
+  assert(tpl.subject === "Your month, reviewed" && tpl.html.includes("Four weeks") && tpl.html.includes("2 changes to decide on"), "review email renders the opening and the count");
+  assert(fs.readFileSync("migrations/032-monthly-review.sql", "utf8").includes("strategy_reviews") && fs.readFileSync("migrations/032-monthly-review.sql", "utf8").includes("voice_checks"), "migration 032 creates the review and voice-check tables");
+  for (const t of ["function AttributionChips", "function VoiceCheck", "function MonthlyReview", "attributed_result,self_result,insights", "insights_source: \"screenshot\""]) assert(indexHtml.includes(t), "index.html must carry: " + t);
+}
+
 if (failures > 0) { console.error(`\nStrategy check FAILED with ${failures} failure(s).`); process.exit(1); }
 console.log("OK: strategy schema, patcher, prompts and plan hand-off hold together.");
