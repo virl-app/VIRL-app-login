@@ -14,6 +14,8 @@ import { validateStrategy, normalisePillarShares, STRATEGY_JSON_SCHEMA } from ".
 import { applyPatch, diffStrategies } from "../api/_lib/json-patch.js";
 import { heardPrompt, buildPrompt, interpretPrompt, formatStrategyForPrompt, TEXT_FIRST_RULES } from "../api/_lib/strategist-prompts.js";
 import { migrateProfile } from "../api/strategy.js";
+import fs from "node:fs";
+const indexHtml = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 let failures = 0;
 function assert(cond, msg) { if (cond) return; failures += 1; console.error("FAIL:", msg); }
@@ -174,6 +176,21 @@ assert(STRATEGY_JSON_SCHEMA.properties.platform.properties.primary.enum.indexOf(
   const pdf = await renderPdf(pngs);
   assert(pdf.length > 5000 && pdf.slice(0, 4).toString() === "%PDF", "renderPdf must return a PDF");
   assert(slidesFromCard({ quote: "q", attribution: "a" })[0].quote === "q", "a quote card renders as a quote slide");
+
+  // [PROFILE PR] Headline font choice: curated ids validate, uploads are
+  // path-checked, unknown input means Italiana, and the client list in
+  // index.html names the same ids as the server.
+  const { FONT_CHOICES, resolveFontChoice, fontKind, fontsForBrand } = await import("../api/_lib/render-post.js");
+  assert(resolveFontChoice({ kind: "google", id: "playfair" }).family === "Playfair Display", "a curated font resolves to its family");
+  assert(resolveFontChoice({ kind: "google", id: "italiana" }) === null && resolveFontChoice({ kind: "google", id: "comic" }) === null, "Italiana and unknown ids mean the default");
+  assert(resolveFontChoice({ kind: "upload", path: "../etc/passwd" }) === null, "an upload path must be <uuid>/<file>");
+  assert(resolveFontChoice({ kind: "upload", path: "123e4567-e89b-12d3-a456-426614174000/brand-font.otf", name: "x" }).kind === "upload", "a well-formed upload path is accepted");
+  assert(fontKind(Buffer.from("wOF2xxxx")) === null && fontKind(Buffer.from("OTTOxxxx")) === "otf" && fontKind(Buffer.from([0, 1, 0, 0, 9])) === "ttf", "fontKind reads magic bytes and rejects WOFF2");
+  const broken = await fontsForBrand({ font: { kind: "upload", path: "123e4567-e89b-12d3-a456-426614174000/x.ttf" } }, { SUPABASE_URL: "https://127.0.0.1:9", SUPABASE_SERVICE_KEY: "k" });
+  assert(broken.headlineFamily === "Italiana" && broken.fallback === true, "an unreachable upload falls back to Italiana instead of failing the render");
+  const clientIds = [...indexHtml.matchAll(/\{ id: "([a-z]+)", family: "/g)].map(m => m[1]);
+  assert(clientIds.length === FONT_CHOICES.length && clientIds.every(id => FONT_CHOICES.some(c => c.id === id)), "SG_FONTS in index.html must list the same ids as FONT_CHOICES: " + clientIds.join(","));
+  assert(fs.readFileSync("migrations/031-brand-fonts-bucket.sql", "utf8").includes("'brand-fonts'"), "migration 031 creates the brand-fonts bucket");
 }
 
 if (failures > 0) { console.error(`\nStrategy check FAILED with ${failures} failure(s).`); process.exit(1); }

@@ -5,9 +5,10 @@
 //   pdf    → { files: [{ name: "...pdf", mime, base64 }] }   LinkedIn document post
 //   pin    → { files: [one 1000×1500 PNG] }
 //
-// Brand colours come from the profile row (profiles.brand), never from the
-// request, so a creator's own palette is used without trusting the client
-// with it. Everything is downloaded by the user; nothing is published.
+// Brand colours and the headline font come from the profile row
+// (profiles.brand), never from the request, so a creator's own palette and
+// font are used without trusting the client with them. Everything is
+// downloaded by the user; nothing is published.
 
 import { renderSlides, renderPdf, renderPin, slidesFromCard } from "./_lib/render-post.js";
 import { recordEvent, checkRateLimit } from "./_lib/usage.js";
@@ -58,10 +59,10 @@ export default async function handler(req, res) {
     const base = safeName(card.title);
     let files = [];
     if (kind === "pin") {
-      const png = await renderPin(slides[0], { brand, kicker, footer });
+      const png = await renderPin(slides[0], { brand, kicker, footer, env: process.env });
       files = [{ name: base + "-pin.png", mime: "image/png", base64: png.toString("base64") }];
     } else {
-      const pngs = await renderSlides(slides, { brand, kicker, footer });
+      const pngs = await renderSlides(slides, { brand, kicker, footer, env: process.env });
       if (kind === "pdf") {
         const pdf = await renderPdf(pngs);
         files = [{ name: base + ".pdf", mime: "application/pdf", base64: pdf.toString("base64") }];
