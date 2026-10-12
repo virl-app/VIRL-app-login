@@ -19,7 +19,8 @@ import { recordUsage, recordEvent, checkRateLimit } from "./_lib/usage.js";
 import { checkOutput } from "./_lib/output-check.js";
 import { applyPatch, diffStrategies } from "./_lib/json-patch.js";
 import { STRATEGY_JSON_SCHEMA, validateStrategy, normalisePillarShares, PLATFORMS, GOALS } from "./_lib/strategy-schema.js";
-import { heardPrompt, HEARD_SCHEMA, buildPrompt, buildRetryNote, interpretPrompt } from "./_lib/strategist-prompts.js";
+import { heardPrompt, HEARD_SCHEMA, buildPrompt, buildRetryNote, interpretPrompt, voiceVariantPrompt } from "./_lib/strategist-prompts.js";
+import { generateReview, fetchOpenReview, fetchLatestReview, updateReview, reviewPeriod, gatherReviewStats, isReviewDue, REVIEW_MIN_DAYS, REVIEW_MIN_POSTED } from "./_lib/review.js";
 import { loadPlaybook } from "./_lib/playbook.js";
 import { formatNicheModelForPrompt } from "./_lib/niche-playbook.js";
 import { computeVoiceFingerprint, formatFingerprintForPrompt } from "./_lib/voice-drift.js";
@@ -47,7 +48,7 @@ async function getUser(req) {
     const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_SERVICE_KEY } });
     if (!r.ok) return null;
     const u = await r.json();
-    return u && u.id ? { id: u.id, email: u.email || "" } : null;
+    return u && u.id ? { id: u.id, email: u.email || "", admin: String(u.email || "").toLowerCase() === "laurenannedoty@gmail.com" } : null;
   } catch (e) { return null; }
 }
 
@@ -60,7 +61,7 @@ async function flagOn(userId) {
   } catch (e) { return false; }
 }
 
-const PROFILE_COLS = "name,audience,voice,my_platforms,vibes,sample_caption,voice_samples,topics,purpose,off_limits,journey,known_for,pillars,emoji_pref,handles,post_freq,worked_well,personal_facts,never_assume,love_to_reference,city,business_website,offerings,service_area,ideal_client_problem,primary_cta,common_objections,niche_detail,legacy_niche,niche_pack,onboarding_answers,strategy,strategy_version,strategy_history,strategist_notes,content_slot,voice_sample,emoji_use,emoji_where";
+const PROFILE_COLS = "name,audience,voice,my_platforms,vibes,sample_caption,voice_samples,topics,purpose,off_limits,journey,known_for,pillars,emoji_pref,handles,post_freq,worked_well,personal_facts,never_assume,love_to_reference,city,business_website,offerings,service_area,ideal_client_problem,primary_cta,common_objections,niche_detail,legacy_niche,niche_pack,onboarding_answers,strategy,strategy_version,strategy_history,strategist_notes,content_slot,voice_sample,emoji_use,emoji_where,strategy_built_at,last_voice_check,voice_sample_asked_at";
 
 async function getProfile(userId) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=${PROFILE_COLS}`, { headers: sb() });
@@ -351,6 +352,87 @@ async function actionUndo(user, body, profile) {
   return { status: 200, json: { strategy: target.strategy, version } };
 }
 
+// [PR3] The monthly review.
+//   mode "get"      → the open review if any, else whether one is due
+//   mode "generate" → writes one when due (force only for admins testing)
+//   mode "decide"   → accept or keep one proposal; accept applies the patch
+//                     through the same version + history path as interpret,
+//                     so Undo on the strategy page works on it too.
+async function actionReview(user, body, profile) {
+  const mode = str(body.mode, 12) || "get";
+  if (!profile.strategy) return { status: 400, json: { error: "There's no strategy to review yet." } };
+  if (mode === "get" || mode === "generate") {
+    const open = await fetchOpenReview(user.id);
+    if (open) return { status: 200, json: { review: open } };
+    const last = await fetchLatestReview(user.id);
+    const { start, end } = reviewPeriod(profile, last);
+    const stats = await gatherReviewStats(user.id, start, end);
+    const due = isReviewDue(stats, start);
+    if (mode === "get" && !due) return { status: 200, json: { review: null, last: last ? { id: last.id, period_end: last.period_end, created_at: last.created_at } : null, due: false, progress: { posted: stats.posted, needPosted: REVIEW_MIN_POSTED, days: Math.floor((Date.now() - Date.parse(start)) / 86400000), needDays: REVIEW_MIN_DAYS } } };
+    if (mode === "get" && due) {
+      // Due and nothing open: write it now so the creator sees it the first
+      // time they open the app after the month, Monday or not.
+      const out = await generateReview(user, profile);
+      return { status: 200, json: { review: out.review } };
+    }
+    const rl = await checkRateLimit(user.id, "strategy_review", 1, 3);
+    if (!rl.ok) return { status: 429, json: { error: "One review at a time." } };
+    const out = await generateReview(user, profile, { force: !!body.force && !!user.admin });
+    if (!out.due) return { status: 200, json: { review: null, due: false, progress: { posted: out.stats.posted, needPosted: REVIEW_MIN_POSTED } } };
+    return { status: 200, json: { review: out.review } };
+  }
+  if (mode === "decide") {
+    const id = str(body.reviewId, 40);
+    const idx = Number.isInteger(body.index) ? body.index : -1;
+    const accept = !!body.accept;
+    const open = await fetchOpenReview(user.id);
+    if (!open || open.id !== id) return { status: 400, json: { error: "That review isn't open." } };
+    const review = open.review || {};
+    const proposals = arr(review.proposals);
+    const p = proposals[idx];
+    if (!p || p.decision) return { status: 400, json: { error: "That proposal is already decided." } };
+    let strategy = profile.strategy, version = profile.strategy_version || 0, diff = [], note = "";
+    if (accept) {
+      const { research: r0, quality: q0, omit: o0, ...core } = profile.strategy;
+      let next = null;
+      try {
+        next = normalisePillarShares(applyPatch(core, p.changes));
+        if (validateStrategy(next).length) next = null;
+      } catch (e) { next = null; }
+      if (!next) return { status: 400, json: { error: "I couldn't apply that cleanly against your current strategy, so I left it as it was." } };
+      next.research = r0 || []; next.quality = q0 || null; next.omit = o0 || [];
+      diff = diffStrategies(core, next);
+      version = (profile.strategy_version || 0) + 1;
+      const history = arr(profile.strategy_history);
+      history.push({ version: profile.strategy_version || 0, label: "Review: " + p.title, at: new Date().toISOString(), strategy: profile.strategy });
+      await patchProfile(user.id, { strategy: next, strategy_version: version, strategy_history: history.slice(-20) });
+      strategy = next;
+      note = p.note || ("Applied: " + p.title + ".");
+    } else {
+      note = "Kept as it was.";
+    }
+    proposals[idx] = Object.assign({}, p, { decision: accept ? "accepted" : "kept", decided_at: new Date().toISOString(), applied_version: accept ? version : null });
+    const allDecided = proposals.every(x => x.decision);
+    const saved = await updateReview(open.id, user.id, { review: Object.assign({}, review, { proposals }), status: allDecided ? "done" : "open", decided_at: allDecided ? new Date().toISOString() : null });
+    await recordEvent(user.id, accept ? "strategist_review_accepted" : "strategist_review_kept", { review_id: open.id, index: idx, title: p.title, version });
+    return { status: 200, json: { review: saved, strategy, version, diff, note } };
+  }
+  return { status: 400, json: { error: "Unknown review mode." } };
+}
+
+// [PR3] Voice check: the neutral twin of a plan caption (fast model).
+async function actionVoiceVariant(user, body) {
+  const caption = str(body.caption, 2200);
+  if (!caption) return { status: 400, json: { error: "No caption to work from." } };
+  const { system, prompt } = voiceVariantPrompt({ caption, platform: str(body.platform, 30) });
+  const res = await callClaude({ system, prompt, model: STRATEGY_MODEL_FAST, maxTokens: 900, temperature: 0.4 });
+  if (!res || !res.text) return { status: 502, json: { error: "I couldn't write the other version just now." } };
+  await recordUsage(user.id, { generationType: "strategist_voice_variant", model: res.model || STRATEGY_MODEL_FAST, usage: res.usage, stopReason: res.stopReason });
+  const variant = res.text.trim().replace(/^["“]|["”]$/g, "");
+  if (!variant || variant === caption) return { status: 502, json: { error: "The other version came back the same." } };
+  return { status: 200, json: { variant } };
+}
+
 async function actionTranscribe(user, body) {
   if (!ELEVENLABS_API_KEY) return { status: 200, json: { text: null, reason: "Voice notes aren't set up yet. Paste a few captions instead." } };
   const b64 = str(body.audioBase64, 12 * 1024 * 1024);
@@ -397,6 +479,8 @@ export default async function handler(req, res) {
       else if (action === "build")     out = await actionBuild(user, body, profile);
       else if (action === "interpret") out = await actionInterpret(user, body, profile);
       else if (action === "undo")      out = await actionUndo(user, body, profile);
+      else if (action === "review")    out = await actionReview(user, body, profile);
+      else if (action === "voice_variant") out = await actionVoiceVariant(user, body);
       else return res.status(400).json({ error: "Unknown action." });
     }
     return res.status(out.status).json(out.json);

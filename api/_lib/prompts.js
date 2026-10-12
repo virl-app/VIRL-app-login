@@ -233,7 +233,9 @@ function strategyPlanBlock(profile, params) {
     const reasons = Object.keys(ps.byReason || {}).filter(k => ps.byReason[k] >= 2).map(k => ({ no_time: "no time", not_me: "it didn't feel like them", didnt_know_how: "they didn't know how to make it" })[k] + " (" + ps.byReason[k] + " times)");
     history = "\n\nWHAT HAPPENED WITH RECENT PLANS (this creator's own marks, last two weeks): posted " + ps.posted + ", skipped " + ps.skipped + "."
       + (reasons.length ? " Skip reasons that repeated: " + reasons.join("; ") + ". Address the repeated reason in week_note and change what caused it (less time per post, closer to their voice sample, a clearer outline)." : "")
-      + (ps.weeksSilent >= 2 ? " Nothing was marked posted for two consecutive weeks: in week_note propose dropping the cadence by one post this week, and plan that lower number." : "");
+      + (ps.weeksSilent >= 2 ? " Nothing was marked posted for two consecutive weeks: in week_note propose dropping the cadence by one post this week, and plan that lower number." : "")
+      + (Array.isArray(ps.attributed) && ps.attributed.length ? " Results they attributed to posts (their own taps): " + ps.attributed.map(a => "\"" + a.title + "\" → " + ({ dm: "a DM", booking: "a booking or sale", new_client: "a new client", brand_inquiry: "a brand inquiry", other: "a result" })[a.result] + (a.pillar ? " (" + a.pillar + ")" : "")).join("; ") + ". Name the strongest one in week_note in one clause (e.g. \"That first-visit walkthrough brought a booking. Two more like it this month.\") and plan at least one card in the same pillar and shape." : "")
+      + (Array.isArray(ps.popped) && ps.popped.length ? " Posts they marked as popped: " + ps.popped.map(a => "\"" + a.title + "\"").join(", ") + "." : "");
   } else if (ps && ps.weeksSilent >= 2) {
     history = "\n\nNothing was marked posted for two consecutive weeks: in week_note propose dropping the cadence by one post this week, and plan that lower number.";
   }
@@ -2356,15 +2358,20 @@ function buildLogMetrics() {
     + "metrics. Normalize abbreviated numbers to plain integers (1.2K → 1200, "
     + "3.4M → 3400000, 12,340 → 12340). If a metric is not visible in the "
     + "image, use null — do NOT estimate. Map platform-specific labels to the "
-    + "closest field (e.g. 'plays'/'impressions'/'reach' → views; 'reposts'/"
-    + "'retweets' → shares; 'bookmarks' → saves).\n\n"
+    + "closest field (e.g. 'plays'/'impressions' → views; 'accounts reached'/"
+    + "'reach' → reach; 'reposts'/'retweets' → shares; 'bookmarks' → saves; "
+    + "'profile visits'/'profile activity' → profile_visits; 'messages'/'DMs'/"
+    + "'replies' → dms).\n\n"
     + "Reply ONLY with JSON: "
     + "{\"platform\":\"the platform name if identifiable, else null\","
     + "\"views\":<integer or null>,"
+    + "\"reach\":<integer or null>,"
     + "\"likes\":<integer or null>,"
     + "\"comments\":<integer or null>,"
     + "\"shares\":<integer or null>,"
     + "\"saves\":<integer or null>,"
+    + "\"profile_visits\":<integer or null>,"
+    + "\"dms\":<integer or null>,"
     + "\"confidence\":\"high, medium, or low — how clearly the panel read\"}";
   return {
     systemPrompt,   // plain string → single cache breakpoint, shared across users

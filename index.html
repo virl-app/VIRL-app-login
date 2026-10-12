@@ -286,6 +286,8 @@ async function loadProfileFromSupabase(userId) {
       strategistNotes: Array.isArray(data.strategist_notes) ? data.strategist_notes : [],
       onboardingAnswers: (data.onboarding_answers && typeof data.onboarding_answers === "object") ? data.onboarding_answers : null,
       contentSlot: data.content_slot||null,
+      lastVoiceCheck: data.last_voice_check||null,
+      strategyBuiltAt: data.strategy_built_at||null,
       emojiUse: data.emoji_use||"",
       emojiWhere: data.emoji_where||"",
       // [PR2] Migration 030.
@@ -5205,6 +5207,15 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
       if (m.views != null) { setViews(String(m.views)); got.push("views"); }
       if (m.likes != null) { setLikes(String(m.likes)); got.push("likes"); }
       if (m.saves != null) { setSaves2(String(m.saves)); got.push("saves"); }
+      // [PR3] Insights bridge: everything the screenshot showed goes on the
+      // post for the monthly review, which says where its numbers came from.
+      var ins = {};
+      ["views","reach","likes","comments","shares","saves","profile_visits","dms"].forEach(function(k){ if (typeof m[k] === "number" && isFinite(m[k])) ins[k] = m[k]; });
+      if (onStatus && Object.keys(ins).length) {
+        ins.platform = m.platform || null; ins.confidence = m.confidence || null; ins.read_at = new Date().toISOString();
+        onStatus(card, { insights: ins, insights_source: "screenshot" });
+        ["reach","shares","profile_visits","dms"].forEach(function(k){ if (ins[k] != null) got.push(k.replace("_", " ")); });
+      }
       setOcrHint(got.length
         ? "Read " + got.join(", ") + " from your screenshot — double-check, then Save."
         : "Couldn't find metrics in that image — enter them manually below.");
@@ -5356,8 +5367,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
               style={{fontSize:13,color:B.coral,fontWeight:700,lineHeight:1,flexShrink:0}}>{"✓"}</span>
           )}
         </div>
-        <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
-          <PillarTag card={card}/>
+        <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end"}}>
           {skipped && <MTag>{"Skipped" + (skipReason ? " · " + (SKIP_REASONS.filter(function(r){ return r.key===skipReason; })[0] || {label: skipReason}).label : "")}</MTag>}
           {usedFreshTrends && <MTag type="result">✦ Fresh trend</MTag>}
           {hasSavedScript && <MTag type="result">Script saved</MTag>}
@@ -5403,7 +5413,12 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
            a single-weight display face that reads as decorative at content
            size. Italiana stays on the page title, "Your week", and day
            names; the content you scan is crisp sans-serif. */
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:16,fontWeight:600,lineHeight:1.3,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
+        <div>
+          {/* [PR2] The pillar role sits on its own line above the title so the
+              header row keeps platform, time and day readable on a phone. */}
+          {card.pillar_role && <div style={{marginBottom:8}}><PillarTag card={card}/></div>}
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:16,fontWeight:600,lineHeight:1.3,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
+        </div>
       )}
       {/* [P1] Collapsed-only preview line — the format-specific opening
            (hook / first slide / photo direction / quote / first frame /
@@ -5588,6 +5603,11 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
       {expanded && showSkip && !skipped && (
         <SkipChips onCancel={function(){ setShowSkip(false); }}
           onPick={function(reason){ setSkipped(true); setSkipReason(reason); setShowSkip(false); if (onStatus) onStatus(card, { status: "skipped", skip_reason: reason, posted_at: null }); }}/>
+      )}
+      {/* [PR3] One tap on a posted post: what it got them, and how it did.
+          Stored on the posts row; the Monday note and the review cite it. */}
+      {expanded && posted && onStatus && (
+        <AttributionChips postStatus={postStatus} onPick={function(patch){ onStatus(card, patch); }}/>
       )}
 
       {/* [MOVE-CARD] Day-picker popover. Opens below the action row when
@@ -9285,7 +9305,7 @@ async function setPostStatus(userId, weekStart, card, patch) {
 window.__virlSetPostStatus = setPostStatus;
 async function loadPostStatus(userId, weekStart) {
   try {
-    var r = await supabaseClient.from("posts").select("card_key,status,skip_reason,posted_at").eq("user_id", userId).eq("week_start", weekStart);
+    var r = await supabaseClient.from("posts").select("card_key,status,skip_reason,posted_at,attributed_result,self_result,insights").eq("user_id", userId).eq("week_start", weekStart);
     var map = {};
     (r && r.data || []).forEach(function (row) { map[row.card_key] = row; });
     return map;
@@ -9379,8 +9399,10 @@ function RenderButtons({ card, token, platforms }) {
     setBusy(kind); setMsg("");
     try {
       var r = await fetch("/api/render", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token }, body: JSON.stringify({ kind: kind, card: card, kicker: card.pillar || "", footer: "" }) });
-      var j = await r.json();
-      if (!r.ok) throw new Error(j.error || "Couldn't render.");
+      var j = {};
+      try { j = await r.json(); } catch (e2) { j = {}; }
+      if (!r.ok) throw new Error(j.error || "I couldn't render that one just now. Try again in a minute.");
+      if (!(j.files || []).length) throw new Error("Nothing came back to download. Try again in a minute.");
       (j.files || []).forEach(function (f, i) { setTimeout(function () { downloadBase64(f.name, f.mime, f.base64); }, i * 250); });
       setMsg((j.files || []).length + " file" + ((j.files || []).length === 1 ? "" : "s") + " downloading. Caption is above; post it where you like.");
       logEvent(window.__virlUserId || null, "static_post_downloaded", { kind: kind, title: card.title || "" });
@@ -10080,7 +10102,7 @@ function SgDiffBanner({ diff, note, onUndo, onClose }) {
   );
 }
 
-function StrategyPage({ strategy, version, token, onStrategyChange, onOpenScreen, onNavigatePlan, name }) {
+function StrategyPage({ strategy, version, token, onStrategyChange, onOpenScreen, onNavigatePlan, name, renderReview }) {
   const [banner, setBanner] = useState(null);
   const [copied, setCopied] = useState(false);
   const [showOutline, setShowOutline] = useState(false);
@@ -10119,6 +10141,9 @@ function StrategyPage({ strategy, version, token, onStrategyChange, onOpenScreen
         {s.positioning && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 15, color: B.sub, lineHeight: 1.7, maxWidth: 560, marginTop: 4 }}>{s.positioning}</div>}
       </div>
       <SgDiffBanner diff={banner && banner.diff} note={banner && banner.note} onUndo={undo} onClose={function () { setBanner(null); }} />
+      {/* [PR3] The monthly review sits above the opening note; Accept goes
+          through onResult so the diff banner and Undo above cover it. */}
+      {renderReview && renderReview(onResult)}
       {s.opening_note && omit.indexOf("opening_note") < 0 && (
         <div style={{ display: "flex", gap: 14, alignItems: "flex-start", background: B.navy, borderRadius: 16, padding: "22px 22px 20px", marginBottom: 16, color: B.white }}>
           <div style={{ fontFamily: "'Italiana',serif", fontSize: 30, lineHeight: 1, color: B.sky, marginTop: 2 }}>V</div>
@@ -10244,7 +10269,7 @@ const SG_PAGES = {
 function WhereNext({ current, onGo }) {
   var others = Object.keys(SG_PAGES).filter(function (k) { return k !== current; });
   return (
-    <div style={{ margin: "4px 0 26px" }}>
+    <div style={{ margin: "26px 0 8px" }}>
       <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase", color: B.muted, marginBottom: 10 }}>Where next</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         {others.map(function (k) {
@@ -10434,6 +10459,222 @@ function StrategistProfileTab({ strategy, version, history, notes, answers, prof
     </div>
   );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [PR3] Tell me what worked: attribution chips, the voice check, and the
+// monthly review with Accept / Keep current.
+// ═══════════════════════════════════════════════════════════════════════════
+var ATTRIBUTION_CHIPS = [["dm", "A DM"], ["booking", "A booking or sale"], ["new_client", "A new client"], ["brand_inquiry", "A brand inquiry"], ["other", "Something else"]];
+var SELF_RESULT_CHIPS = [["flopped", "Flopped"], ["okay", "Okay"], ["popped", "Popped"]];
+function sgChipStyle(on) {
+  return { fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, letterSpacing: "0.02em", padding: "7px 12px", borderRadius: 99, cursor: "pointer", background: on ? B.navy : B.card, color: on ? B.white : B.sub, border: "1px solid " + (on ? B.navy : B.border) };
+}
+// One tap on a posted post. Stored on the posts row; the Monday note and the
+// monthly review cite it. Tap again to clear.
+function AttributionChips({ postStatus, onPick }) {
+  var ps = postStatus || {};
+  return (
+    <div style={{ marginTop: 12, padding: "12px 14px", background: B.bg, border: "1px solid " + B.border, borderRadius: 12 }}>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 8 }}>This post got me</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+        {ATTRIBUTION_CHIPS.map(function (c) {
+          var on = ps.attributed_result === c[0];
+          return <button key={c[0]} aria-pressed={on} onClick={function () { onPick({ attributed_result: on ? null : c[0] }); }} style={sgChipStyle(on)}>{c[1]}</button>;
+        })}
+      </div>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 8 }}>How did it do?</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {SELF_RESULT_CHIPS.map(function (c) {
+          var on = ps.self_result === c[0];
+          return <button key={c[0]} aria-pressed={on} onClick={function () { onPick({ self_result: on ? null : c[0] }); }} style={sgChipStyle(on)}>{c[1]}</button>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Every two weeks, one post, two captions: the plan's (written with the
+// creator's voice fingerprint) and a neutral twin. The pick is stored with
+// which one carried the fingerprint; the review reports the running rate.
+function VoiceCheck({ card, token, session, weekStart, onDone }) {
+  const [variant, setVariant] = useState(null);
+  const [order, setOrder] = useState(null);
+  const [picked, setPicked] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(function () {
+    var alive = true;
+    strategyAPI("voice_variant", { caption: card.caption, platform: card.platform }, token).then(function (j) {
+      if (!alive) return;
+      setVariant(j.variant); setOrder(Math.random() < 0.5 ? ["fp", "neutral"] : ["neutral", "fp"]);
+    }).catch(function () { if (alive) setFailed(true); });
+    return function () { alive = false; };
+  }, []);
+  async function pick(which) {
+    var pickedFp = which === "fp";
+    setPicked(which);
+    try {
+      if (session && session.user) {
+        await supabaseClient.from("voice_checks").insert({ user_id: session.user.id, week_start: weekStart, card_key: buildCardId(card), picked_fingerprint: pickedFp });
+        await supabaseClient.from("profiles").update({ last_voice_check: new Date().toISOString() }).eq("id", session.user.id);
+      }
+    } catch (e) {}
+    sgLog("voice_check_answered", { picked_fingerprint: pickedFp, cardKey: buildCardId(card) });
+    setTimeout(function () { onDone(true); }, 1400);
+  }
+  async function skip() {
+    try { if (session && session.user) await supabaseClient.from("profiles").update({ last_voice_check: new Date().toISOString() }).eq("id", session.user.id); } catch (e) {}
+    onDone(false);
+  }
+  if (failed || !card || !card.caption) return null;
+  if (!variant) return null;
+  var texts = { fp: card.caption, neutral: variant };
+  return (
+    <div style={{ background: B.card, borderRadius: 16, padding: "18px 20px", marginBottom: 16, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", borderLeft: "3px solid " + B.sky }}>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 6 }}>Quick check</div>
+      <div style={{ fontFamily: "'Italiana',serif", fontSize: 22, color: B.ink, lineHeight: 1.15, marginBottom: 4 }}>Which sounds more like you?</div>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, fontWeight: 300, color: B.muted, lineHeight: 1.55, marginBottom: 14 }}>{"Two versions of the caption for \"" + (card.title || "this post") + "\". Tap the one you'd post. I use your answer to keep your captions sounding like you."}</div>
+      {picked ? (
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.navy, lineHeight: 1.6 }}>Noted. Thanks.</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+          {order.map(function (k, i) {
+            return (
+              <button key={k} onClick={function () { pick(k); }}
+                style={{ textAlign: "left", padding: "14px 16px", background: B.bg, border: "1px solid " + B.border, borderRadius: 12, cursor: "pointer", fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.ink, lineHeight: 1.65, whiteSpace: "pre-wrap" }}>
+                <span style={{ display: "block", fontSize: 9, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", color: B.muted, marginBottom: 6 }}>{i === 0 ? "A" : "B"}</span>
+                {texts[k]}
+              </button>
+            );
+          })}
+          <div><SgGhost onClick={skip}>Not now</SgGhost></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The monthly review. Reads the open review (or whether one is due), shows
+// the opening paragraph, the findings with their evidence, and each
+// proposal with the exact before/after it would make. Accept applies one
+// change through the same version path as "This isn't quite right", so the
+// diff banner and Undo on the strategy page work on it.
+function MonthlyReview({ token, isAdmin, onStrategyChange, onOpenScreen, onBanner, initial, strategy }) {
+  const [state, setState] = useState(initial || null);
+  const [busy, setBusy] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(function () {
+    if (initial) return;
+    strategyAPI("review", { mode: "get" }, token).then(setState).catch(function (e) { setErr(e.message); });
+  }, []);
+  async function decide(index, accept) {
+    setBusy(index + (accept ? "a" : "k")); setErr("");
+    try {
+      var j = await strategyAPI("review", { mode: "decide", reviewId: state.review.id, index: index, accept: accept }, token);
+      setState(Object.assign({}, state, { review: j.review }));
+      if (accept) {
+        if (j.strategy) onStrategyChange(j.strategy, j.version);
+        if (onBanner) onBanner({ diff: j.diff || [], note: j.note || "" });
+      }
+      sgLog(accept ? "strategist_review_accept" : "strategist_review_keep", { index: index });
+    } catch (e) { setErr(e.message); }
+    setBusy(null);
+  }
+  async function writeNow() {
+    setBusy("gen"); setErr("");
+    try { var j = await strategyAPI("review", { mode: "generate", force: true }, token); setState(j); }
+    catch (e) { setErr(e.message); }
+    setBusy(null);
+  }
+  function show(v) { if (v == null) return "—"; if (typeof v === "object") return JSON.stringify(v); return String(v); }
+  function label(p) {
+    var m = /^\/pillars\/(\d+)\/(\w+)$/.exec(p);
+    var pillars = strategy && Array.isArray(strategy.pillars) ? strategy.pillars : [];
+    if (m && pillars[parseInt(m[1], 10)]) return pillars[parseInt(m[1], 10)].name + " · " + m[2].replace(/_/g, " ");
+    return p.replace(/^\//, "").replace(/\//g, " › ").replace(/_/g, " ");
+  }
+  if (!state) return null;
+  if (!state.review) {
+    var pr = state.progress || {};
+    return (
+      <div style={{ background: B.card, borderRadius: 14, padding: "14px 18px", marginBottom: 16, boxShadow: "0 1px 3px rgba(0,0,0,0.05)", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 200, fontFamily: "'Jost',sans-serif", fontSize: 12, color: B.muted, lineHeight: 1.6 }}>
+          {"Your monthly review comes after 30 days and 4 posted posts. So far: " + (pr.posted || 0) + " of " + (pr.needPosted || 4) + " posted" + (pr.days != null ? ", day " + pr.days + " of " + (pr.needDays || 30) : "") + "."}
+        </div>
+        {isAdmin && <button onClick={writeNow} disabled={busy === "gen"} style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", background: "transparent", color: B.navy, border: "1px solid " + B.border, borderRadius: 99, padding: "6px 12px", cursor: "pointer" }}>{busy === "gen" ? "Writing" : "Write it now (admin)"}</button>}
+        {err && <div style={{ width: "100%", fontFamily: "'Jost',sans-serif", fontSize: 12, color: "#B91C1C" }}>{err}</div>}
+      </div>
+    );
+  }
+  var r = state.review.review || {};
+  var proposals = Array.isArray(r.proposals) ? r.proposals : [];
+  var findings = Array.isArray(r.findings) ? r.findings : [];
+  var src = r.sources || {};
+  return (
+    <div style={{ background: B.navy, borderRadius: 16, padding: "22px 22px 18px", marginBottom: 16, color: B.white, boxShadow: "0 4px 20px rgba(31,58,138,0.18)" }}>
+      <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+        <div style={{ fontFamily: "'Italiana',serif", fontSize: 30, lineHeight: 1, color: B.sky, marginTop: 2 }}>V</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 9, fontWeight: 700, letterSpacing: "0.28em", textTransform: "uppercase", color: B.sky, marginBottom: 8 }}>{"Your month · " + state.review.period_start + " to " + state.review.period_end}</div>
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 15, lineHeight: 1.75, fontWeight: 300 }}>{r.opening}</div>
+          {findings.length > 0 && (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.14)" }}>
+              {findings.map(function (f, i) {
+                return (
+                  <div key={i} style={{ marginBottom: 8 }}>
+                    <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, lineHeight: 1.6 }}>{f.text}</div>
+                    {f.evidence && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: "rgba(255,255,255,0.6)", lineHeight: 1.5 }}>{"From: " + f.evidence}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {proposals.map(function (p, i) {
+            var decided = p.decision;
+            return (
+              <div key={i} style={{ marginTop: 12, background: "rgba(255,255,255,0.08)", borderRadius: 12, padding: "14px 16px" }}>
+                <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{p.title}</div>
+                <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, color: "rgba(255,255,255,0.75)", lineHeight: 1.55, marginBottom: 8 }}>{"Because: " + p.evidence}</div>
+                {(p.diff || []).slice(0, 6).map(function (d) {
+                  return (
+                    <div key={d.path} style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, lineHeight: 1.6, borderLeft: "2px solid " + B.sky, paddingLeft: 10, marginBottom: 6 }}>
+                      <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: B.sky }}>{label(d.path)}</div>
+                      <div style={{ color: "rgba(255,255,255,0.6)", textDecoration: "line-through" }}>{show(d.before)}</div>
+                      <div>{show(d.after)}</div>
+                    </div>
+                  );
+                })}
+                {p.note && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, color: "rgba(255,255,255,0.85)", lineHeight: 1.55, marginBottom: 10 }}>{p.note}</div>}
+                {decided ? (
+                  <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: B.sky }}>{decided === "accepted" ? "Accepted" : "Kept as it was"}</div>
+                ) : (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button onClick={function () { decide(i, true); }} disabled={!!busy} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", background: B.white, color: B.navy, border: "none", borderRadius: 99, padding: "8px 14px", cursor: "pointer" }}>{busy === i + "a" ? "Applying" : "Accept"}</button>
+                    <button onClick={function () { decide(i, false); }} disabled={!!busy} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", background: "rgba(255,255,255,0.12)", color: B.white, border: "1px solid rgba(255,255,255,0.55)", borderRadius: 99, padding: "8px 14px", cursor: "pointer" }}>Keep current</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {r.voice_line && (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.14)", fontFamily: "'Jost',sans-serif", fontSize: 13, lineHeight: 1.6 }}>
+              {r.voice_line}
+              {r.ask_fresh_sample && onOpenScreen && (
+                <div style={{ marginTop: 8 }}>
+                  <button onClick={function () { onOpenScreen(5); }} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", background: B.white, color: B.navy, border: "none", borderRadius: 99, padding: "8px 14px", cursor: "pointer" }}>Paste fresh captions</button>
+                </div>
+              )}
+            </div>
+          )}
+          <div style={{ marginTop: 12, fontFamily: "'Jost',sans-serif", fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>
+            {"Written from your own rows only: " + (src.posts || 0) + " planned posts" + (src.insights ? ", " + src.insights + " insights screenshots" : ", no insights screenshots") + (src.voice_checks ? ", " + src.voice_checks + " voice checks" : "") + ". Accepting a change shows the diff and can be undone."}
+          </div>
+          {err && <div style={{ marginTop: 8, fontFamily: "'Jost',sans-serif", fontSize: 12, color: "#FCA5A5" }}>{err}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 
 function App() {
@@ -10987,6 +11228,15 @@ function App() {
     setPostStatus(function(prev){ var next = Object.assign({}, prev); next[key] = Object.assign({}, prev[key] || { card_key: key }, patch); return next; });
     window.__virlSetPostStatus(session.user.id, ws, card, patch);
   }
+  // [PR3] The open monthly review (or whether one is due), fetched once per
+  // session for strategy accounts; the strategy page renders it, the plan
+  // page links to it while it's open.
+  const [sgReview,setSgReview] = useState(null);
+  const [voiceCheckHidden,setVoiceCheckHidden] = useState(false);
+  useEffect(function(){
+    if (!(sgFlag===true && profile && profile.strategy && userToken)) return;
+    strategyAPI("review", { mode: "get" }, userToken).then(setSgReview).catch(function(){});
+  }, [sgFlag, !!(profile && profile.strategy), userToken]);
   function toggleAutogen() {
     if (!session || !session.user) return;
     var next = !(profile && profile.planAutogen);
@@ -13892,12 +14142,12 @@ return (
                     Everything your plans are built from, in one place. Change a row and I'll rebuild your strategy and show you what moved.
                   </div>
                 </div>
-                <WhereNext current="profile" onGo={function(k){ setTab(k); }}/>
                 <StrategistProfileTab strategy={profile.strategy} version={profile.strategyVersion} history={profile.strategyHistory} notes={profile.strategistNotes}
                   answers={profile.onboardingAnswers} profile={profile} session={session} token={userToken}
                   onEdit={function(n){ setSgEdit({ screen: n }); }}
                   onRestart={function(){ if (window.confirm("Start the interview over? Your current strategy is kept in history.")) setSgRestart(true); }}
                   onBrand={sgSaveBrand} onConsents={sgSaveConsents}/>
+                <WhereNext current="profile" onGo={function(k){ setTab(k); }}/>
               </div>
             )}
             {!profileComplete&&!sgAccount&&(
@@ -14174,11 +14424,19 @@ return (
         {tab==="strategy"&&sgAccount&&(
           <div>
             <Eyebrow>Your strategy</Eyebrow>
-            <WhereNext current="strategy" onGo={function(k){ setTab(k); }}/>
             <StrategyPage strategy={profile.strategy} version={profile.strategyVersion} token={userToken} name={profile.name}
               onStrategyChange={function(st, v){ setProfile(function(prev){ return Object.assign({}, prev, { strategy: st, strategyVersion: v }); }); sgReloadProfile(); }}
               onOpenScreen={function(n){ setSgEdit({ screen: n }); }}
-              onNavigatePlan={function(){ setTab("plan"); }}/>
+              onNavigatePlan={function(){ setTab("plan"); }}
+              renderReview={function(onResult){
+                return (
+                  <MonthlyReview token={userToken} isAdmin={!!isAdmin} initial={sgReview} strategy={profile.strategy}
+                    onStrategyChange={function(st, v){ setProfile(function(prev){ return Object.assign({}, prev, { strategy: st, strategyVersion: v }); }); sgReloadProfile(); }}
+                    onOpenScreen={function(n){ setSgEdit({ screen: n }); }}
+                    onBanner={function(b){ onResult({ diff: b.diff, note: b.note }); }}/>
+                );
+              }}/>
+            <WhereNext current="strategy" onGo={function(k){ setTab(k); }}/>
           </div>
         )}
 
@@ -14200,7 +14458,6 @@ return (
                 </div>
               )}
             </div>
-            {sgAccount&&<WhereNext current="plan" onGo={function(k){ setTab(k); }}/>}
             {/* [PREMIUM 3] Plan-#5 celebration card. Quietly recognises
                  a milestone most creators never reach. Dismissible —
                  once dismissed, never reappears (virl_milestone_5_seen
@@ -14486,6 +14743,21 @@ return (
                 {strategy && strategy.week_note
                   ? <WeekNote strategy={strategy} autogen={!!(profile && profile.planAutogen)} onToggleAutogen={sgFlag===true && profile && profile.strategy ? toggleAutogen : null} slot={profile && profile.contentSlot}/>
                   : <StrategyHero strategy={strategy}/>}
+                {/* [PR3] While a review is open, one line to it. */}
+                {sgAccount && sgReview && sgReview.review && sgReview.review.status === "open" && (
+                  <div onClick={function(){ setTab("strategy"); }} style={{background:B.navySoft,borderRadius:12,padding:"12px 16px",marginBottom:16,fontFamily:"'Jost',sans-serif",fontSize:13,color:B.navy,lineHeight:1.6,cursor:"pointer"}}>
+                    {"Your month's review is ready, with " + ((sgReview.review.review && sgReview.review.review.proposals) || []).length + " change(s) to decide on. →"}
+                  </div>
+                )}
+                {/* [PR3] Voice check: once every two weeks, one post, two captions. */}
+                {sgAccount && !voiceCheckHidden && (function(){
+                  var last = profile && profile.lastVoiceCheck ? Date.parse(profile.lastVoiceCheck) : 0;
+                  if (Date.now() - last < 14 * 86400000) return null;
+                  var card = (cards || []).filter(function(c){ return c && c.caption && c.caption.length >= 40; })[0];
+                  if (!card) return null;
+                  return <VoiceCheck card={card} token={userToken} session={session} weekStart={currentWeekStart()}
+                    onDone={function(){ setVoiceCheckHidden(true); setProfile(function(prev){ return Object.assign({}, prev, { lastVoiceCheck: new Date().toISOString() }); }); }}/>;
+                })()}
                 {/* [PR2] After the slot has passed with nothing marked, the
                     in-app half of "Did you post it? Tap when you do." */}
                 {sgFlag===true && profile && profile.strategy && profile.contentSlot && (function(){
@@ -14564,7 +14836,7 @@ return (
                       )}
                       {/* [REFERRAL] Share moment right where the plan pays
                           off — the strongest ask is next to the value. */}
-                      <ReferralCard token={userToken}/>
+                      {!sgAccount && <ReferralCard token={userToken}/>}
                     </div>
                   );
                 })()}
@@ -15107,6 +15379,7 @@ return (
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,maxWidth:420,margin:"0 auto",lineHeight:1.65}}>Let's fill it with something that sounds exactly like you.</div>
               </div>
             )}
+            {sgAccount&&<div style={{marginTop:28}}><WhereNext current="plan" onGo={function(k){ setTab(k); }}/></div>}
           </div>
         )}
 

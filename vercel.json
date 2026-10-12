@@ -7,7 +7,8 @@
       "maxDuration": 180
     },
     "api/render.js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "node_modules/{satori,yoga-wasm-web,css-gradient-parser,linebreak,@shuding,@resvg,pdf-lib}/**"
     },
     "api/cron/strategist-touches.js": {
       "maxDuration": 300

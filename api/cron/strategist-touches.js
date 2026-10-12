@@ -21,6 +21,7 @@
 
 import { cronAuthorized } from "../_lib/cron-auth.js";
 import { sendEmail, emailEnabled } from "../_lib/email-send.js";
+import { generateReview, fetchOpenReview } from "../_lib/review.js";
 import * as T from "../_lib/email-templates.js";
 import { recordEvent } from "../_lib/usage.js";
 
@@ -30,6 +31,7 @@ const CRON_SECRET          = process.env.CRON_SECRET;
 const APP_URL              = process.env.APP_URL || "https://app.govirl.ai";
 const DEFAULT_TZ           = "America/Chicago";
 const AUTOGEN_HOUR         = 18;
+const REVIEW_HOUR          = 9;   // [PR3] Monday morning, local time
 
 export const config = { maxDuration: 300 };
 
@@ -79,7 +81,7 @@ function weekStartISO(dateISO, weekStartDay) {
 
 // ── Data ───────────────────────────────────────────────────────────────────
 async function fetchStrategistProfiles() {
-  const cols = "id,name,content_slot,timezone,plan_autogen,strategy,strategy_built_at,onboarding_answers,week_start_day,niche_pack,legacy_niche,my_platforms";
+  const cols = "id,name,content_slot,timezone,plan_autogen,strategy,strategy_built_at,strategy_version,strategy_history,strategist_notes,onboarding_answers,week_start_day,niche_pack,legacy_niche,my_platforms";
   const r = await fetch(`${SUPABASE_URL}/rest/v1/profiles?strategy=not.is.null&select=${cols}`, { headers: sb() });
   if (!r.ok) throw new Error("profiles " + r.status);
   return r.json();
@@ -204,10 +206,30 @@ async function storePlan(profile, parsed, meta, weekStart, tz) {
 // ── The hourly pass ────────────────────────────────────────────────────────
 async function processProfile(p, counts) {
   const slot = p.content_slot && typeof p.content_slot === "object" ? p.content_slot : null;
-  if (!slot || !p.strategy) return;
+  if (!p.strategy) return;
   const tz = p.timezone || DEFAULT_TZ;
   const now = new Date();
   const lp = localParts(now, tz);
+
+  // 0. [PR3] Monday morning: the monthly review, when it's due and nothing
+  //    is open. generateReview checks 30 days and 4 posted posts itself.
+  if (lp.weekday === 1 && lp.hour === REVIEW_HOUR) {
+    try {
+      const open = await fetchOpenReview(p.id);
+      if (!open) {
+        const out = await generateReview({ id: p.id }, p, { now });
+        if (out.due && out.review) {
+          counts.reviews++;
+          const to = await fetchEmail(p.id);
+          if (to) {
+            const tpl = T.strategistReviewReady({ name: p.name, opening: out.review.review.opening, proposals: out.review.review.proposals.length, link: APP_URL + "/?tab=strategy" });
+            await sendEmail({ userId: p.id, to, template: "strategist_review_ready", dedupeKey: `strategist_review_ready_${out.review.period_end}`, subject: tpl.subject, html: tpl.html, text: tpl.text, marketing: false });
+          }
+        }
+      }
+    } catch (e) { counts.errors++; console.error("[strategist-touches] review failed", p.id, e && e.message); }
+  }
+  if (!slot) return;
   const slotDay = weekdayIndex(slot.weekday);
   const hour = slotHour(slot.time);
   const weekStart = weekStartISO(lp.dateISO, p.week_start_day);
@@ -287,7 +309,7 @@ export default async function handler(req, res) {
   if (!cronAuthorized(req, "strategist-touches")) return res.status(401).json({ error: "Unauthorized" });
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return res.status(500).json({ error: "Server misconfigured." });
   if (!emailEnabled()) return res.status(200).json({ ok: true, skipped: "email_disabled" });
-  const counts = { profiles: 0, autogen: 0, reminders: 0, touches: 0, errors: 0 };
+  const counts = { profiles: 0, autogen: 0, reminders: 0, touches: 0, reviews: 0, errors: 0 };
   try {
     const profiles = await fetchStrategistProfiles();
     counts.profiles = profiles.length;
