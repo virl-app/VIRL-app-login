@@ -237,7 +237,10 @@ async function actionBuild(user, body, profile) {
     attempts++;
     const res = await callClaude({
       system, prompt: prompt + (lastFailures.length ? buildRetryNote(lastFailures) : ""),
-      model: STRATEGY_MODEL_STRONG, maxTokens: 8000, outputSchema: STRATEGY_JSON_SCHEMA, effort: "high", fallbacks: true,
+      // Measured on the first production build: high effort took 69s for
+      // 5,100 output tokens against a 20-40s target. Medium is the next
+      // step down; the rubric check still gates the output.
+      model: STRATEGY_MODEL_STRONG, maxTokens: 8000, outputSchema: STRATEGY_JSON_SCHEMA, effort: "medium", fallbacks: true,
     });
     if (!res) break;
     await recordUsage(user.id, { generationType: "strategist_build", model: res.model || STRATEGY_MODEL_STRONG, usage: res.usage, stopReason: res.stopReason });

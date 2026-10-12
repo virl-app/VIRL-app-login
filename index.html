@@ -9257,10 +9257,10 @@ function sgLog(name, props) {
 // Shared bits ---------------------------------------------------------------
 function SgField({ label, hint, children }) {
   return (
-    <div style={{ marginBottom: 18 }}>
-      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 8 }}>{label}</div>
+    <div style={{ marginBottom: 28 }}>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 10 }}>{label}</div>
       {children}
-      {hint && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 300, color: B.muted, marginTop: 6, lineHeight: 1.5 }}>{hint}</div>}
+      {hint && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, fontWeight: 300, color: B.muted, marginTop: 8, lineHeight: 1.6 }}>{hint}</div>}
     </div>
   );
 }
@@ -9291,19 +9291,43 @@ function SgChipGroup({ values, onChange, placeholder }) {
     </div>
   );
 }
+// A pill for the strategist screens. Unlike the app-wide Chip it carries no
+// bottom margin, so grid gaps stay even, and it can stretch to fill a
+// segmented row (SgSegment) so option sets read as one control on a phone.
+function SgChip({ active, onClick, children, fill, small }) {
+  return (
+    <button onClick={onClick} aria-pressed={!!active}
+      style={{ fontFamily: "'Jost',sans-serif", fontSize: small ? 12 : 13, fontWeight: active ? 600 : 400, padding: small ? "9px 8px" : "11px 14px", border: "1px solid " + (active ? B.blue : B.border), background: active ? B.blue : B.card, color: active ? B.white : B.ink, cursor: "pointer", transition: "all .15s", borderRadius: 99, width: fill ? "100%" : "auto", textAlign: "center", lineHeight: 1.2, whiteSpace: (fill && !small) ? "normal" : "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      {children}
+    </button>
+  );
+}
+// Equal-width option row. Wraps to two rows below ~360px without leaving one
+// orphan on its own line: columns are repeat(auto-fit, minmax(min, 1fr)).
+function SgSegment({ options, value, onChange, min, multiple, small }) {
+  var vals = multiple ? (Array.isArray(value) ? value : []) : null;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(" + (min || 96) + "px, 1fr))", gap: 8 }}>
+      {options.map(function (o) {
+        var on = multiple ? vals.indexOf(o.key) >= 0 : value === o.key;
+        return <SgChip key={o.key} fill small={small} active={on} onClick={function () { onChange(multiple ? (on ? vals.filter(function (v) { return v !== o.key; }) : vals.concat([o.key])) : o.key); }}>{o.label}</SgChip>;
+      })}
+    </div>
+  );
+}
 function SgNote({ children }) {
   if (!children) return null;
   return (
-    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", background: B.navySoft, borderRadius: 12, padding: "12px 16px", marginTop: 14 }}>
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", background: B.navySoft, borderRadius: 12, padding: "14px 16px", marginTop: 22 }}>
       <div style={{ fontFamily: "'Italiana',serif", fontSize: 18, color: B.navy, lineHeight: 1, marginTop: 1 }}>V</div>
-      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.navy, lineHeight: 1.6 }}>{children}</div>
+      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.navy, lineHeight: 1.7 }}>{children}</div>
     </div>
   );
 }
 function SgPrimary({ onClick, disabled, children, loading }) {
   return (
     <button onClick={onClick} disabled={disabled || loading}
-      style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", padding: "14px 22px", background: disabled ? B.border : B.navy, color: B.white, border: "none", borderRadius: 99, cursor: disabled ? "default" : "pointer" }}>
+      style={{ fontFamily: "'Jost',sans-serif", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", padding: "14px 22px", background: disabled ? B.divider : B.navy, color: disabled ? B.muted : B.white, border: "none", borderRadius: 99, cursor: disabled ? "default" : "pointer" }}>
       {loading ? "One sec" : children}
     </button>
   );
@@ -9554,14 +9578,14 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
 
   return (
     <div style={{ minHeight: "100vh", background: B.bg, fontFamily: "'Jost',sans-serif", color: B.ink }}>
-      <div style={{ maxWidth: 560, margin: "0 auto", padding: "28px 20px 60px" }}>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "32px 22px 72px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
           <div style={{ fontFamily: "'Italiana',serif", fontSize: 24, color: B.navy, letterSpacing: "0.06em" }}>VIRL</div>
           {edit && <SgGhost onClick={onCancel}>Cancel</SgGhost>}
         </div>
         {!edit && (
-          <div style={{ marginBottom: 26 }}>
-            <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+          <div style={{ marginBottom: 32 }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
               {["You", "What I heard", "Your reality"].map(function (s, i) {
                 return <div key={s} style={{ flex: 1, fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: i <= stepIndex ? B.navy : B.muted }}>{s}</div>;
               })}
@@ -9581,13 +9605,13 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
 
         {screen === 1 && (
           <div className="su">
-            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 18, color: B.ink }}>What do you most want from social right now?</h1>
-            <div style={{ display: "grid", gap: 8 }}>
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.1, marginBottom: 24, color: B.ink }}>What do you most want from social right now?</h1>
+            <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
               {SG_GOALS.map(function (g) {
                 var on = goal === g.key;
                 return (
                   <button key={g.key} onClick={function () { setGoal(g.key); setGoalSecondary(goalSecondary.filter(function (s) { return s !== g.key; })); }}
-                    style={{ textAlign: "left", fontFamily: "'Jost',sans-serif", fontSize: 14, fontWeight: on ? 600 : 400, padding: "14px 16px", background: on ? B.navy : B.card, color: on ? B.white : B.ink, border: "1px solid " + (on ? B.navy : B.border), borderRadius: 12, cursor: "pointer" }}>
+                    style={{ textAlign: "left", fontFamily: "'Jost',sans-serif", fontSize: 14, fontWeight: on ? 600 : 400, padding: "13px 16px", background: on ? B.navy : B.card, color: on ? B.white : B.ink, border: "1px solid " + (on ? B.navy : B.border), borderRadius: 12, cursor: "pointer", lineHeight: 1.3 }}>
                     {g.label}
                   </button>
                 );
@@ -9595,10 +9619,10 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
             </div>
             {goal && goal !== "unsure" && (
               <SgField label="Also, if it fits (optional)">
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                   {SG_GOALS.filter(function (g) { return g.key !== goal && g.key !== "unsure"; }).map(function (g) {
                     var on = goalSecondary.indexOf(g.key) >= 0;
-                    return <Chip key={g.key} active={on} onClick={function () { setGoalSecondary(on ? goalSecondary.filter(function (s) { return s !== g.key; }) : goalSecondary.concat([g.key]).slice(-2)); }}>{g.label}</Chip>;
+                    return <SgChip small key={g.key} active={on} onClick={function () { setGoalSecondary(on ? goalSecondary.filter(function (s) { return s !== g.key; }) : goalSecondary.concat([g.key]).slice(-2)); }}>{g.label.replace("Bring me clients or customers", "Clients").replace("Turn content into my income", "Income").replace("Make me the go-to name in my field", "Authority").replace("Grow a community around something I love", "Community").replace("Help me launch something new", "A launch")}</SgChip>;
                   })}
                 </div>
               </SgField>
@@ -9609,8 +9633,8 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
 
         {screen === 2 && (
           <div className="su">
-            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 10, color: B.ink }}>Tell me about you, the way you'd tell a friend.</h1>
-            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.muted, marginBottom: 14, lineHeight: 1.6 }}>What you do, who it's for, where you are. A few sentences is plenty.</div>
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.1, marginBottom: 12, color: B.ink }}>Tell me about you, the way you'd tell a friend.</h1>
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 14, color: B.muted, marginBottom: 22, lineHeight: 1.7 }}>What you do, who it's for, where you are. A few sentences is plenty.</div>
             <SgTextarea value={about} onChange={function (e) { setAbout(e.target.value); }} rows={6} placeholder={examples[exampleIdx]} />
             <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: B.muted, marginTop: 6 }}>{"For example: " + examples[(exampleIdx + 1) % 3]}</div>
             <SgVoiceNote token={token} prompt="Or say it out loud. Thirty seconds, I'll write it down." onText={function (t) { setAbout(function (a) { return (a ? a + "\n\n" : "") + t; }); }} />
@@ -9619,8 +9643,8 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
 
         {screen === 3 && (
           <div className="su">
-            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 10, color: B.ink }}>Here's what I heard.</h1>
-            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.muted, marginBottom: 14, lineHeight: 1.6 }}>Fix anything that's off. Everything here is editable.</div>
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.1, marginBottom: 12, color: B.ink }}>Here's what I heard.</h1>
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 14, color: B.muted, marginBottom: 22, lineHeight: 1.7 }}>Fix anything that's off. Everything here is editable.</div>
             {heardState === "loading" && <Spinner text="Reading that back" />}
             {heard && (
               <div>
@@ -9634,10 +9658,8 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
                   <SgChipGroup values={heard.audience} onChange={function (v) { setHeard(Object.assign({}, heard, { audience: v })); }} />
                 </SgField>
                 <SgField label="Where you work">
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-                    {[["local", "Local"], ["online", "Online"], ["both", "Both"]].map(function (m) {
-                      return <Chip key={m[0]} active={heard.market === m[0]} onClick={function () { setHeard(Object.assign({}, heard, { market: m[0] })); }}>{m[1]}</Chip>;
-                    })}
+                  <div style={{ marginBottom: 10 }}>
+                    <SgSegment options={[{ key: "local", label: "Local" }, { key: "online", label: "Online" }, { key: "both", label: "Both" }]} value={heard.market} onChange={function (v) { setHeard(Object.assign({}, heard, { market: v })); }} />
                   </div>
                   {heard.market !== "online" && <SgInput value={heard.city} onChange={function (e) { setHeard(Object.assign({}, heard, { city: e.target.value })); }} placeholder="City or area" />}
                 </SgField>
@@ -9661,39 +9683,28 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
 
         {screen === 4 && (
           <div className="su">
-            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 18, color: B.ink }}>Your reality.</h1>
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.1, marginBottom: 24, color: B.ink }}>Your reality.</h1>
             <SgField label="Where you post">
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {SG_PLATFORMS.map(function (p) {
-                  var on = platforms.indexOf(p) >= 0;
-                  return <Chip key={p} active={on} onClick={function () { setPlatforms(on ? platforms.filter(function (x) { return x !== p; }) : platforms.concat([p])); }}>{p}</Chip>;
-                })}
-              </div>
-              {platforms.indexOf("Other") >= 0 && <SgInput style={{ marginTop: 8 }} value={otherPlatform} onChange={function (e) { setOtherPlatform(e.target.value); }} placeholder="Which one?" />}
+              <SgSegment multiple min={104} options={SG_PLATFORMS.map(function (p) { return { key: p, label: p }; })} value={platforms} onChange={setPlatforms} />
+              {platforms.indexOf("Other") >= 0 && <SgInput style={{ marginTop: 10 }} value={otherPlatform} onChange={function (e) { setOtherPlatform(e.target.value); }} placeholder="Which one?" />}
             </SgField>
             {platforms.filter(function (p) { return p !== "Other"; }).length > 0 && (
               <SgField label="How big is each one">
                 {platforms.filter(function (p) { return p !== "Other"; }).map(function (p) {
                   return (
-                    <div key={p} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-                      <div style={{ width: 110, fontFamily: "'Jost',sans-serif", fontSize: 12, color: B.sub }}>{p}</div>
-                      {SG_SIZES.map(function (s) {
-                        return <Chip key={s.key} active={sizes[p] === s.key} onClick={function () { setSizes(Object.assign({}, sizes, { [p]: s.key })); }}>{s.label}</Chip>;
-                      })}
+                    <div key={p} style={{ marginBottom: 14 }}>
+                      <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, fontWeight: 600, color: B.ink, marginBottom: 6 }}>{p}</div>
+                      <SgSegment small min={70} options={SG_SIZES} value={sizes[p]} onChange={function (v) { setSizes(Object.assign({}, sizes, { [p]: v })); }} />
                     </div>
                   );
                 })}
               </SgField>
             )}
             <SgField label="On camera">
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {SG_CAMERA.map(function (c) { return <Chip key={c.key} active={camera === c.key} onClick={function () { setCamera(c.key); }}>{c.label}</Chip>; })}
-              </div>
+              <SgSegment min={140} options={SG_CAMERA} value={camera} onChange={setCamera} />
             </SgField>
             <SgField label="Hours a week for content">
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {SG_TIME.map(function (t) { return <Chip key={t.key} active={timeBand === t.key} onClick={function () { setTimeBand(t.key); }}>{t.label}</Chip>; })}
-              </div>
+              <SgSegment small min={70} options={SG_TIME} value={timeBand} onChange={setTimeBand} />
             </SgField>
             <SgField label="When's your content slot?" hint="The one block each week you'll give this. The plan and its reminder land around it.">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
@@ -9712,27 +9723,25 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
 
         {screen === 5 && (
           <div className="su">
-            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.05, marginBottom: 10, color: B.ink }}>Sound like you.</h1>
-            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.muted, marginBottom: 14, lineHeight: 1.6 }}>Paste three captions you've written, or record a voice note. Either one becomes your first post's raw material.</div>
+            <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.1, marginBottom: 12, color: B.ink }}>Sound like you.</h1>
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 14, color: B.muted, marginBottom: 22, lineHeight: 1.7 }}>Paste three captions you've written, or record a voice note. Either one becomes your first post's raw material.</div>
             <SgTextarea value={sample} onChange={function (e) { setSample(e.target.value); }} rows={6} placeholder="Paste 3 captions here, separated by blank lines" />
             <SgVoiceNote token={token} prompt="Tell me why you started. Thirty seconds." onText={function (t) { setSample(function (s) { return (s ? s + "\n\n" : "") + t; }); }} />
             <div style={{ height: 14 }} />
             <SgField label="Tone (up to 3)">
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {SG_TONES.map(function (t) {
                   var on = tone.indexOf(t) >= 0;
-                  return <Chip key={t} active={on} onClick={function () { setTone(on ? tone.filter(function (x) { return x !== t; }) : tone.concat([t]).slice(-3)); }}>{t}</Chip>;
+                  return <SgChip small key={t} active={on} onClick={function () { setTone(on ? tone.filter(function (x) { return x !== t; }) : tone.concat([t]).slice(-3)); }}>{t}</SgChip>;
                 })}
               </div>
             </SgField>
             <SgField label="Emojis in your captions?">
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: emojiUse !== "none" ? 8 : 0 }}>
-                {SG_EMOJI_USE.map(function (e) { return <Chip key={e.key} active={emojiUse === e.key} onClick={function () { setEmojiUse(e.key); }}>{e.label}</Chip>; })}
+              <div style={{ marginBottom: emojiUse !== "none" ? 10 : 0 }}>
+                <SgSegment min={80} options={SG_EMOJI_USE} value={emojiUse} onChange={setEmojiUse} />
               </div>
               {emojiUse !== "none" && (
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {SG_EMOJI_WHERE.map(function (e) { return <Chip key={e.key} active={emojiWhere === e.key} onClick={function () { setEmojiWhere(e.key); }}>{e.label}</Chip>; })}
-                </div>
+                <SgSegment min={150} options={SG_EMOJI_WHERE} value={emojiWhere} onChange={setEmojiWhere} />
               )}
             </SgField>
             <SgField label="Off limits">
@@ -9773,7 +9782,7 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
 function sgGoalLabel(k) { var g = SG_GOALS.filter(function (x) { return x.key === k; })[0]; return g ? g.label : k; }
 function sgStage(s) { return ({ start: "Starting", grow: "Growing", convert: "Converting", scale: "Scaling" })[s] || s; }
 
-function SgNotQuiteRight({ section, token, onResult }) {
+function SgNotQuiteRight({ section, token, onResult, dark }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -9789,15 +9798,15 @@ function SgNotQuiteRight({ section, token, onResult }) {
     setBusy(false);
   }
   return (
-    <div style={{ marginTop: 10 }}>
+    <div style={{ marginTop: 14 }}>
       {!open ? (
-        <button onClick={function () { setOpen(true); }} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", background: "transparent", color: B.navy, border: "1px solid " + B.border, borderRadius: 99, padding: "7px 12px", cursor: "pointer" }}>This isn't quite right</button>
+        <button onClick={function () { setOpen(true); }} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", background: dark ? "rgba(255,255,255,0.12)" : "transparent", color: dark ? B.white : B.navy, border: "1px solid " + (dark ? "rgba(255,255,255,0.55)" : B.border), borderRadius: 99, padding: "8px 14px", cursor: "pointer" }}>This isn't quite right</button>
       ) : (
         <div>
-          <SgTextarea value={text} onChange={function (e) { setText(e.target.value); }} rows={2} placeholder="Say what's off, in your words" autoFocus />
-          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+          <SgTextarea value={text} onChange={function (e) { setText(e.target.value); }} rows={2} placeholder="Say what's off, in your words" autoFocus style={dark ? { background: B.white } : {}} />
+          <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
             <SgPrimary onClick={send} disabled={!text.trim()} loading={busy}>Tell me</SgPrimary>
-            <SgGhost onClick={function () { setOpen(false); setText(""); }}>Never mind</SgGhost>
+            <button onClick={function () { setOpen(false); setText(""); }} style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", background: "transparent", color: dark ? "rgba(255,255,255,0.75)" : B.muted, border: "none", cursor: "pointer" }}>Never mind</button>
           </div>
         </div>
       )}
@@ -9888,22 +9897,22 @@ function StrategyPage({ strategy, version, token, onStrategyChange, onOpenScreen
   var roleColor = { reach: B.sky, trust: B.navy, connection: B.green, convert: B.coral };
   return (
     <div>
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 8 }}>{"Version " + (version || 1)}</div>
-        <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(30px,5vw,46px)", lineHeight: 1, marginBottom: 10, letterSpacing: "-0.02em", color: B.ink }}>{s.identity || (name ? name + "'s strategy" : "Your strategy")}</h1>
-        {s.positioning && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 15, color: B.sub, lineHeight: 1.6, maxWidth: 560 }}>{s.positioning}</div>}
+      <div style={{ marginBottom: 22, paddingTop: 6 }}>
+        <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: B.muted, marginBottom: 10 }}>{"Version " + (version || 1)}</div>
+        <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(30px,5vw,46px)", lineHeight: 1.05, marginBottom: 12, letterSpacing: "-0.02em", color: B.ink }}>{(function (t) { return t ? t.charAt(0).toUpperCase() + t.slice(1) : t; })(s.identity || (name ? name + "'s strategy" : "Your strategy"))}</h1>
+        {s.positioning && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 15, color: B.sub, lineHeight: 1.7, maxWidth: 560, marginTop: 4 }}>{s.positioning}</div>}
       </div>
       <SgDiffBanner diff={banner && banner.diff} note={banner && banner.note} onUndo={undo} onClose={function () { setBanner(null); }} />
       {s.opening_note && omit.indexOf("opening_note") < 0 && (
-        <div style={{ display: "flex", gap: 14, alignItems: "flex-start", background: B.navy, borderRadius: 16, padding: "20px 22px", marginBottom: 14, color: B.white }}>
-          <div style={{ fontFamily: "'Italiana',serif", fontSize: 30, lineHeight: 1, color: B.sky }}>V</div>
-          <div>
-            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 14, lineHeight: 1.7, fontWeight: 300 }}>{s.opening_note}</div>
-            <SgNotQuiteRight section="opening_note" token={token} onResult={onResult} />
+        <div style={{ display: "flex", gap: 14, alignItems: "flex-start", background: B.navy, borderRadius: 16, padding: "22px 22px 20px", marginBottom: 16, color: B.white }}>
+          <div style={{ fontFamily: "'Italiana',serif", fontSize: 30, lineHeight: 1, color: B.sky, marginTop: 2 }}>V</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 15, lineHeight: 1.75, fontWeight: 300 }}>{s.opening_note}</div>
+            <SgNotQuiteRight section="opening_note" token={token} onResult={onResult} dark />
           </div>
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginBottom: 16 }}>
         {facts.map(function (f) {
           return (
             <div key={f[0]} style={{ background: B.card, borderRadius: 12, padding: "12px 14px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
