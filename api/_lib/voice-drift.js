@@ -76,9 +76,22 @@ const EMDASH_RE      = /—/g;
 const CONTRACTION_RE = /\b\w+'(s|re|ve|m|d|ll|t)\b/gi;
 const ALLCAPS_RE     = /\b[A-Z]{2,}\b/g;
 
+// [CURLY-APOSTROPHE] Phones, Google Docs and Word insert the typographic
+// apostrophe (’ U+2019) when a creator types "I'm". The contraction regex
+// and tokenizer only know the straight one, so a creator who pasted their
+// captions from their phone scored ~0 contractions, got labelled "averse",
+// and every generation was told to "prefer 'I am,' 'do not,' 'it is'" —
+// the exact opposite of how they write. Half the profiles with voice
+// samples in production used the curly form. Normalise before featurizing.
+// Mirrored client-side in index.html (vfNormalizeApostrophes).
+function normalizeApostrophes(text) {
+  return text.replace(/[‘’ʼ′]/g, "'");
+}
+
 // Stylometric feature vector. Returns null for inputs too short to be stable.
 function featurize(text) {
   if (!text || typeof text !== "string") return null;
+  text = normalizeApostrophes(text);
   const words = tokenize(text);
   const wordCount = words.length;
   // Below 20 words the per-100 rates are too noisy to trend on. SampleCaption
@@ -240,7 +253,7 @@ export function formatFingerprintForPrompt(fp) {
   } else if (fp.labels.contractions === "averse") {
     lines.push("  - Contractions: this creator writes them out (~" + fp.contractRate + " per 100 words). Prefer \"I am,\" \"do not,\" \"it is\" — only contract when the rhythm demands it.");
   } else {
-    lines.push("  - Contractions: typical mix (~" + fp.contractRate + " per 100 words). Default to contractions; spell out occasionally for emphasis.");
+    lines.push("  - Contractions: typical mix (~" + fp.contractRate + " per 100 words). Default to contractions (\"I'm,\" \"don't,\" \"it's\"); spell one out only when the emphasis needs it.");
   }
 
   // Sentence length

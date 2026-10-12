@@ -1,8 +1,6 @@
 // scripts/check-rating-upsert.mjs
 //
-// Guards the two ways the thumbs-down reaction loop can break silently —
-// both of which have already happened once, and neither of which surfaces
-// as anything more informative than "Didn't save — tap again" in the UI.
+// Guards the ways the thumbs up/down can break silently.
 //
 // 1. The upsert must name its conflict target.
 //    PostgREST defaults ON CONFLICT to the PRIMARY KEY. content_ratings'
@@ -11,13 +9,10 @@
 //    key, UNIQUE (user_id, generation_type, target_ref), and PostgREST
 //    answers 409. The visible symptom is narrow enough to be misread as a
 //    schema problem: the FIRST rating on an item inserts fine, and only
-//    re-rates and reaction chips on that same item fail.
+//    re-rates on that same item fail.
 //
-// 2. The chip labels must match the server's closed vocabulary.
-//    api/rate.js rejects an unrecognized reason with 400 rather than
-//    storing NULL (that silent-NULL write is the original bug this loop was
-//    built to fix). So a chip label that drifts from ALLOWED_REASONS turns
-//    every tap into a 400 — same dead end, different cause.
+// 2. Ratings are vote-only (PR 0): no reason chips, no reason columns
+//    written.
 //
 // Static checks only: no Supabase, no network. Mirrors the other check
 // scripts — Node ES module, prints OK / errors, exits 1 on failure.
@@ -80,29 +75,17 @@ if (targetMatch) {
   );
 }
 
-// ── 2. Chip labels match the server's closed reason vocabulary ─────────────
-const allowedMatch = rateSrc.match(/ALLOWED_REASONS\s*=\s*new Set\(\[([^\]]*)\]\)/);
-assert(allowedMatch, "could not find ALLOWED_REASONS in api/rate.js");
-
-const chipMatch = indexSrc.match(/\{\s*\[([^\]]*)\]\.map\(function\(c\)\{ return \(/);
-assert(chipMatch, "could not find the reaction chip labels in index.html");
-
-if (allowedMatch && chipMatch) {
-  const parse = s => (s.match(/"([^"]*)"/g) || []).map(q => q.slice(1, -1));
-  const allowed = parse(allowedMatch[1]).sort();
-  const chips   = parse(chipMatch[1]).sort();
-
-  assert(chips.length > 0, "parsed no chip labels out of index.html");
-  assert(
-    JSON.stringify(allowed) === JSON.stringify(chips),
-    `reaction chips in index.html do not match ALLOWED_REASONS in api/rate.js — ` +
-    `chips ${JSON.stringify(chips)} vs allowed ${JSON.stringify(allowed)}. ` +
-    `Any chip outside the server's set is rejected with 400.`
-  );
-}
+// ── 2. A rating is a vote only ─────────────────────────────────────────────
+// [PR0] The thumbs-down reason chips were removed. Nothing may reintroduce a
+// reason vocabulary on the server or chip buttons on the client, and the
+// upsert body must not write the (still nullable) reason columns.
+assert(!/ALLOWED_REASONS/.test(rateSrc), "api/rate.js reintroduced ALLOWED_REASONS — ratings are vote-only");
+assert(!/reason_at/.test(rateSrc), "api/rate.js writes reason_at — ratings are vote-only");
+assert(!/\{\s*\[[^\]]*"Too formal"[^\]]*\]\.map\(/.test(indexSrc), "index.html reintroduced the reaction chips");
+assert(!/sendChip\(/.test(indexSrc), "index.html still has sendChip");
 
 if (failures) {
   console.error(`\n${failures} failure(s).`);
   process.exit(1);
 }
-console.log("OK: rating upsert names its conflict target; chip vocabulary matches the server.");
+console.log("OK: rating upsert names its conflict target; ratings are vote-only.");

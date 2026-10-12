@@ -26,7 +26,7 @@ const profiles = JSON.parse(readFileSync(PROFILES_PATH, "utf8"));
 
 const SURFACES = [
   { label: "caption", gt: "caption", params: (p) => ({ platform: "Instagram", topic: p.evalTopic || "a small win from this week", niche: p.niche }) },
-  { label: "long_post", gt: "long_post", params: (p) => ({ topic: p.evalTopic || "a lesson from this week", length: "medium", niche: p.niche }) },
+  { label: "script", gt: "script", params: (p) => ({ card: { title: p.evalTopic || "a lesson from this week", description: "one thing that worked this week", platform: "Instagram", format: "video" }, niche: p.niche }) },
 ];
 
 function flatten(sp) {

@@ -17,7 +17,7 @@
 // only property that makes any of them worth running. The layout mirrors
 // check-voice.mjs: Node ES module, prints OK / FAIL, exits 1 so CI blocks.
 
-import { dispatch } from "../api/_lib/prompts.js";
+import { dispatch, isValidGenerationType } from "../api/_lib/prompts.js";
 import { playbookAge, PLAYBOOK_STALE_DAYS } from "../api/_lib/playbook.js";
 import { formatNichePlaybookForPrompt } from "../api/_lib/niche-playbook.js";
 import { readFileSync } from "node:fs";
@@ -85,8 +85,6 @@ const PROSE_SURFACES = [
   { label: "plan",             gt: "plan",             params: { platforms: ["Instagram"], formats: ["video"], niche: "Real Estate", goal: "Sell my services", followers: "1K-5K" } },
   { label: "plan_partial",     gt: "plan_partial",     params: { platforms: ["Instagram"], formats: ["video"], niche: "Real Estate", goal: "Sell my services", followers: "1K-5K", replaceSlots: [{ day: "Day 1 - Mon", platform: "Instagram", format: "video" }], strategy: {} } },
   { label: "script",           gt: "script",           params: { niche: "Real Estate", card: { title: "Open house tour", platform: "Instagram", format: "video" } } },
-  { label: "long_post",        gt: "long_post",        params: { niche: "Real Estate", topic: "pricing a home", length: "medium" } },
-  { label: "blog_post",        gt: "blog_post",        params: { niche: "Real Estate", topic: "pricing a home", length: "medium" } },
   { label: "caption",          gt: "caption",          params: { niche: "Real Estate", platform: "Instagram", topic: "open house" } },
   { label: "caption_remix",    gt: "caption_remix",    params: { niche: "Real Estate", text: "come see the house on saturday" } },
   { label: "scan_image",       gt: "scan_image",       params: { niche: "Real Estate" } },
@@ -175,9 +173,16 @@ for (const s of PROSE_SURFACES) {
   const chatSrc = readFileSync(new URL("../api/chat.js", import.meta.url), "utf8");
   const freshBlock = (chatSrc.match(/const FRESH_TRENDS_TYPE = \{[\s\S]*?\};/) || [""])[0];
   assert(freshBlock, "FRESH_TRENDS_TYPE is gone from chat.js — nothing decides which surfaces collect trends");
-  for (const gt of ["script", "long_post", "blog_post"]) {
+  for (const gt of ["script"]) {
     assert(new RegExp("\\b" + gt + "\\s*:").test(freshBlock),
       `${gt} is missing from FRESH_TRENDS_TYPE — its builder renders a trend section that can never be populated`);
+  }
+  // [PR0] Long-form output was removed. Nothing may collect trends for, or
+  // build prompts for, a surface that no longer exists.
+  for (const gt of ["long_post", "blog_post"]) {
+    assert(!new RegExp("\\b" + gt + "\\s*:").test(freshBlock),
+      `${gt} is back in FRESH_TRENDS_TYPE — long-form output was removed in PR 0`);
+    assert(!isValidGenerationType(gt), `${gt} is a valid generation type again — long-form output was removed in PR 0`);
   }
   // caption_remix stays out on purpose: the request carries only the text to
   // rewrite, so there is no platform to query the pipeline with. Its builder
@@ -185,7 +190,7 @@ for (const s of PROSE_SURFACES) {
   assert(!/\bcaption_remix\s*:/.test(freshBlock),
     "caption_remix was added to FRESH_TRENDS_TYPE — it has no platform to query, so this collects nothing while implying it does");
   const pickBlock = (chatSrc.match(/function pickInlinePlatforms[\s\S]*?\n\}/) || [""])[0];
-  for (const gt of ["script", "long_post", "blog_post"]) {
+  for (const gt of ["script"]) {
     assert(pickBlock.includes("'" + gt + "'") || pickBlock.includes('"' + gt + '"'),
       `pickInlinePlatforms has no branch for ${gt} — it is in FRESH_TRENDS_TYPE but resolves to no platform, so the query never runs`);
   }
@@ -273,18 +278,126 @@ for (const s of PROSE_SURFACES) {
   assert(!user.includes('"tag10"'), "caption: hashtag slots exceed the playbook's hashtag_count");
 }
 {
-  const lp = build("long_post", { niche: "Real Estate", topic: "pricing", length: "medium" }, { playbook: playbookFixture() });
-  const user = lp.userPrompt || "";
-  assert(!/3-5 LinkedIn hashtags/.test(user),
-    "long_post: still states its own hashtag count instead of reading the playbook");
-  assert(user.includes('"tag4"') && !user.includes('"tag5"'),
-    "long_post: hashtag slots do not match the playbook's LinkedIn hashtag_count (2-4)");
-  assert(user.includes("first 140 characters before the fold"),
-    "long_post: the see-more fold is a static constant, not the playbook's LinkedIn hook_window");
-  assert(!/~210 characters/.test(user),
-    "long_post: the hardcoded ~210-character fold is back and shadows the playbook value");
-  assert(/Body character limit: 3000/.test(user),
-    "long_post: the playbook's LinkedIn caption_limit never reaches the prompt");
+  const scan = build("scan_image", { niche: "Real Estate" }, { playbook: playbookFixture(), trends: "" });
+  const user = scan.userPrompt || "";
+  assert(/audio_idea/.test(user), "scan no longer emits audio_idea — fixture is stale");
+  assert(!/"audio_idea":"OPTIONAL Reel\/Video only — a trending-audio or sound direction/.test(user),
+    "scan's audio_idea asks for a trending sound with no grounding qualifier");
+  assert(/appears in the TRENDS block/.test(user),
+    "scan's audio_idea does not tie a named sound to the TRENDS block");
+}
+
+// The collection link. chat.js is a Vercel handler with module-level config, so
+// this reads its source the way check-voice.mjs reads the trend verifier's —
+// coarse and source-level, but it catches a builder that renders trends for a
+// surface nothing ever collects them for.
+{
+  const chatSrc = readFileSync(new URL("../api/chat.js", import.meta.url), "utf8");
+  const freshBlock = (chatSrc.match(/const FRESH_TRENDS_TYPE = \{[\s\S]*?\};/) || [""])[0];
+  assert(freshBlock, "FRESH_TRENDS_TYPE is gone from chat.js — nothing decides which surfaces collect trends");
+  for (const gt of ["script"]) {
+    assert(new RegExp("\\b" + gt + "\\s*:").test(freshBlock),
+      `${gt} is missing from FRESH_TRENDS_TYPE — its builder renders a trend section that can never be populated`);
+  }
+  // [PR0] Long-form output was removed. Nothing may collect trends for, or
+  // build prompts for, a surface that no longer exists.
+  for (const gt of ["long_post", "blog_post"]) {
+    assert(!new RegExp("\\b" + gt + "\\s*:").test(freshBlock),
+      `${gt} is back in FRESH_TRENDS_TYPE — long-form output was removed in PR 0`);
+    assert(!isValidGenerationType(gt), `${gt} is a valid generation type again — long-form output was removed in PR 0`);
+  }
+  // caption_remix stays out on purpose: the request carries only the text to
+  // rewrite, so there is no platform to query the pipeline with. Its builder
+  // still renders the named empty state, which is why the exclusion is safe.
+  assert(!/\bcaption_remix\s*:/.test(freshBlock),
+    "caption_remix was added to FRESH_TRENDS_TYPE — it has no platform to query, so this collects nothing while implying it does");
+  const pickBlock = (chatSrc.match(/function pickInlinePlatforms[\s\S]*?\n\}/) || [""])[0];
+  for (const gt of ["script"]) {
+    assert(pickBlock.includes("'" + gt + "'") || pickBlock.includes('"' + gt + '"'),
+      `pickInlinePlatforms has no branch for ${gt} — it is in FRESH_TRENDS_TYPE but resolves to no platform, so the query never runs`);
+  }
+}
+
+// ── Layer 2: the niche/industry layer leaves the plan ───────────────────────
+//
+// formatNichePlaybookForPrompt had one call site and getFormatGuidance one,
+// both inside buildPlan. Seven surfaces carried no model of how content
+// converts in the creator's vertical — and what survived (offerings, service
+// area, ideal-client problem) is optional on every one of those fields.
+for (const s of PROSE_SURFACES) {
+  const built = build(s.gt, s.params, { playbook: playbookFixture() });
+  assert(/NICHE SUCCESS (MODEL|PLAYBOOK)/.test(wholeOf(built)),
+    `${s.label}: carries no niche success model — it cannot know how content converts in this creator's vertical`);
+}
+
+// The content of the model has to be the creator's actual vertical, not a
+// generic bucket, and it has to arrive for a profile with every optional
+// business field blank.
+for (const s of PROSE_SURFACES) {
+  const built = build(s.gt, s.params, { profile: BARE_REAL_ESTATE, playbook: playbookFixture() });
+  const whole = wholeOf(built);
+  assert(/People hire the agent they feel they already know/.test(whole),
+    `${s.label}: a Real Estate creator with no optional profile fields gets no real-estate grounding`);
+  assert(/DMs and profile visits|attract|Attract/.test(whole),
+    `${s.label}: niche block reaches the prompt without the funnel intent or KPI signal`);
+}
+
+// The per-niche model belongs in the SHARED (cacheable) tier — it depends on
+// nothing but the niche bucket. Plan and plan_partial are excluded: they carry
+// the fuller per-request renderer (goal tactics, follower tier) in the user
+// prompt, which is where per-request data has to live.
+for (const s of PROSE_SURFACES) {
+  if (s.gt === "plan" || s.gt === "plan_partial") continue;
+  const built = build(s.gt, s.params, { playbook: playbookFixture() });
+  assert(/NICHE SUCCESS MODEL/.test(sharedOf(built)),
+    `${s.label}: the per-niche model is not in the shared cache tier — it is per-niche constant and would be paid for on every request`);
+}
+
+// plan_partial loses everything in buildPlan's user prompt, which is where the
+// industry format mix and this week's business context live. Regenerate the
+// card built around the creator's open house and, before this, the replacement
+// did not know the open house existed.
+{
+  const built = build("plan_partial", Object.assign({}, PROSE_SURFACES[1].params, {
+    weekContext:    "FIXTURE_OPEN_HOUSE on Saturday at 14 Maple.",
+    listingContext: "FIXTURE_LISTING_FACTS: 3 bed, 2 bath, listed at 415000.",
+  }), { playbook: playbookFixture(), trends: TREND_BLOCK });
+  const user = built.userPrompt || "";
+  assert(user.includes("FIXTURE_OPEN_HOUSE"),
+    "plan_partial: this week's business context never reaches the replacement card");
+  assert(user.includes("FIXTURE_LISTING_FACTS"),
+    "plan_partial: the featured listing never reaches the replacement card");
+  assert(/FORMAT MIX FOR THIS CREATOR'S INDUSTRY/.test(user),
+    "plan_partial: no industry format mix — the replacement is formatted from generic priors");
+  assert(/NICHE SUCCESS PLAYBOOK/.test(user),
+    "plan_partial: no niche playbook — the replacement does not know what winning looks like in this vertical");
+  assert(/PLATFORM PLAYBOOK FOR Instagram/.test(user),
+    "plan_partial: no platform playbook, while the shared system prompt still tells it to follow the playbook's hashtag_count");
+}
+
+// Missing data is not negative data. An empty followers value used to fall
+// through to the smallest tier, so any surface without one would have been
+// told "Under 1K followers" as a fact about the creator's account.
+{
+  const withTier = formatNichePlaybookForPrompt("Real Estate", "", "", "20K-100K");
+  const noTier   = formatNichePlaybookForPrompt("Real Estate", "", "", "");
+  assert(/FOLLOWER-TIER BASELINE/.test(withTier),
+    "a stated follower tier no longer renders its baseline");
+  assert(!/FOLLOWER-TIER BASELINE/.test(noTier),
+    "an unstated follower count still renders a tier baseline — absence is being read as 'under 1K'");
+}
+
+// ── Layer 3: live playbook values beat static in-prompt tables ──────────────
+//
+// hashtagSlots had exactly one call site (buildCaption). Everywhere else the
+// counts were string literals, so the surface quoted a number the monthly
+// research could not reach. The fixture's counts are chosen not to match the
+// literals they replaced, so these assertions distinguish the two sources.
+{
+  const caption = build("caption", { niche: "Real Estate", platform: "Instagram", topic: "open house" }, { playbook: playbookFixture() });
+  const user = caption.userPrompt || "";
+  assert(user.includes('"tag9"'), "caption: hashtag slots do not follow the playbook's hashtag_count upper bound");
+  assert(!user.includes('"tag10"'), "caption: hashtag slots exceed the playbook's hashtag_count");
 }
 {
   const scan = build("scan_image", { niche: "Real Estate" }, { playbook: playbookFixture() });
@@ -306,18 +419,6 @@ for (const s of PROSE_SURFACES) {
   assert(/r\.post_when/.test(indexSrc),
     "index.html never renders post_when — the server emits the posting window and the creator never sees it");
 }
-// blog_post: the recorded decision is that a blog is not a social platform and
-// takes no playbook data. Asserted so the decision stays a decision rather than
-// decaying into someone wiring LinkedIn's numbers into a CMS.
-{
-  const blog = build("blog_post", { niche: "Real Estate", topic: "pricing", length: "medium" }, { playbook: playbookFixture() });
-  const whole = wholeOf(blog);
-  assert(!/LINKEDIN PLAYBOOK|PLATFORM PLAYBOOK|PLATFORM PLAYBOOK FOR/.test(whole),
-    "blog_post now carries platform playbook data — a blog has no feed mechanics, and borrowing another platform's numbers invents a constraint");
-  assert(/NOT social platform hashtags/.test(whole),
-    "blog_post's tag field no longer says these are CMS tags, not platform hashtags");
-}
-
 // ── Layer 4: playbook staleness is bounded and stated ───────────────────────
 //
 // Nothing read `updated_at`. A row untouched for two years introduced itself
@@ -351,11 +452,6 @@ for (const s of PROSE_SURFACES) {
     "plan: a 400-day-old playbook is still framed as authoritative — the framing is not a function of age");
 }
 {
-  const staleLong = build("long_post", { niche: "Real Estate", topic: "x", length: "medium" }, { playbook: playbookFixture(400) });
-  assert(!/current best practice from monthly research/.test(staleLong.userPrompt || ""),
-    "long_post: a stale LinkedIn playbook still calls itself current best practice");
-  assert(/STALE — last verified/.test(staleLong.userPrompt || ""),
-    "long_post: a stale playbook does not surface its age");
   const staleCaption = build("caption", { niche: "Real Estate", platform: "Instagram", topic: "x" }, { playbook: playbookFixture(400) });
   assert(/last verified 400 days ago/.test(staleCaption.userPrompt || ""),
     "caption: a stale playbook passes its numbers along with no staleness note");

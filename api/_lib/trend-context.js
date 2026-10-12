@@ -66,6 +66,9 @@ const LEGACY_TREND_CATEGORIES = new Set(["topic", "audio", "format", "hook", "ha
 const NICHE_TO_SEGMENT = {
   "Real Estate":          "real_estate",
   "Small Business":       "small_business",
+  // [NICHE-PACKS] The third pack label; profile hints may still lift it to
+  // personal_brand / beauty / hair below, otherwise creator.
+  "Creators & Personal Brands": "creator",
   "Education":            "coach",
   "Finance":              "coach",
   "Fitness":              "fitness",
@@ -102,8 +105,10 @@ function segmentFromProfileHints(profile) {
 export function resolveSegment(niche, profile) {
   if (typeof niche === "string" && CANONICAL_SEGMENTS.has(niche)) return niche; // already canonical
   const mapped = niche && NICHE_TO_SEGMENT[niche];
-  if (mapped) return mapped;
-  return segmentFromProfileHints(profile) || "creator";
+  // The creator pack is a catch-all; let profile text refine it before
+  // settling on the default.
+  if (mapped && mapped !== "creator") return mapped;
+  return segmentFromProfileHints(profile) || mapped || "creator";
 }
 
 // ── [TREND-PERSONALIZATION] Creator fit beyond the niche score ─────────────

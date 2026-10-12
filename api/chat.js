@@ -15,7 +15,6 @@ import { scrubLifecycleClaims } from "./_lib/trend-claims.js";
 import { buildTrendContext, isValidTrendSnapshot } from "./_lib/trend-context.js";
 import { loadPlanHistoryForPrompt }  from "./_lib/plan-history.js";
 import { fetchRecentEdits }          from "./_lib/edit-examples.js";
-import { fetchVoiceReactions }       from "./_lib/voice-reactions.js";
 import { fetchEditsForMining, mineDenylistFromEdits } from "./_lib/personal-denylist.js";
 import { sendEmail, hasSent }        from "./_lib/email-send.js";
 import { fetchListingContext }       from "./_lib/listing-research.js";
@@ -84,7 +83,7 @@ function voiceCorrectionInstruction(drift) {
 // plan_partial / regen aren't listed: they inherit the parent plan's trend
 // block via the client-supplied trendsSnapshot rather than rebuilding it, so a
 // single-card regen stays consistent with the rest of the plan.
-// [TREND-GROUNDING] script / long_post / blog_post were absent here, so no
+// [TREND-GROUNDING] script was absent here, so no
 // trend data was ever COLLECTED for them — while their prompts still emitted
 // prose that could assert what was trending. Uncollected read as unavailable,
 // and unavailable read as "answer from memory." They are eligible now; the
@@ -100,8 +99,6 @@ const FRESH_TRENDS_TYPE = {
   scan_video_frame: 'scan',
   caption:          'caption',
   script:           'script',
-  long_post:        'long_post',
-  blog_post:        'blog_post',
 };
 
 // Rate-limit ceilings for /api/chat. Tunable; the credit cap is the wallet
@@ -826,13 +823,8 @@ async function checkChatRateLimit(userId) {
 //   - plan / plan_partial:    user's selected platforms in this request
 //   - caption:                the single platform being captioned
 //   - script:                 the platform of the card being scripted
-//   - long_post:              LinkedIn — the only channel this surface writes for
-//   - blog_post / scan:       user's profile.myPlatforms (no per-request
-//                             platform list). A blog has no platform of its
-//                             own, but "what is moving in this creator's niche"
-//                             is still topic-level signal for it, and the block
-//                             is platform-labelled so any reference the article
-//                             makes stays checkable. Empty → no trend context
+//   - scan:                   user's profile.myPlatforms (no per-request
+//                             platform list). Empty → no trend context
 //                             built, and the builder states the absence.
 function pickInlinePlatforms(generationType, params, profile) {
   if (generationType === 'plan' || generationType === 'plan_partial') {
@@ -845,11 +837,7 @@ function pickInlinePlatforms(generationType, params, profile) {
     const p = params && params.card && params.card.platform;
     return p ? [p] : [];
   }
-  if (generationType === 'long_post') {
-    return ['LinkedIn'];
-  }
-  if (generationType === 'blog_post'
-      || generationType === 'scan_image' || generationType === 'scan_video_frame') {
+  if (generationType === 'scan_image' || generationType === 'scan_video_frame') {
     return Array.isArray(profile && profile.myPlatforms) ? profile.myPlatforms : [];
   }
   return [];
@@ -1008,6 +996,10 @@ async function fetchProfile(userId) {
       // Both "" on pre-migration-023 rows → prompt builder skips cleanly.
       nicheDetail:         data.niche_detail         || "",
       researchCorrections: data.research_corrections || "",
+      // [NICHE-PACKS] Migration 028. legacy_niche is the pre-PR 0 picker
+      // value, written once by the client; niche_pack is the current one.
+      nichePack:           data.niche_pack           || "",
+      legacyNiche:         data.legacy_niche         || "",
     };
   } catch (e) {
     return {};
@@ -1250,13 +1242,6 @@ export default async function handler(req, res) {
   const VOICE_GEN_TYPES = new Set([
     "plan", "plan_partial",
     "caption", "caption_remix", "script",
-    // [LINKEDIN-LONG-POST] Long-form is the heaviest voice-fidelity test
-    // we have — pull every signal (vault exemplars, fingerprint, recent
-    // edits, denylist) so the post sounds like the creator and not
-    // generic LinkedIn thought-leadership writing.
-    "long_post",
-    // [VIRL-POSTS-TAB] Blog posts get the same treatment.
-    "blog_post",
     // [SCAN-VOICE] Scan emits publishable creator copy — SCAN_REGISTERS
     // assigns hook, caption, overlay_text, sticker_idea, slides and
     // hashtags to the creator's voice — so it needs the same exemplar and
@@ -1355,6 +1340,18 @@ export default async function handler(req, res) {
   // profile that reads like a licensed practice (chiro/dental/PT/med-spa
   // signals in their own business description) gets the healthcare floor
   // even if they picked "Small Business" or "Wellness" in the picker.
+  // [NICHE-PACKS] The picker now offers three packs, but the finer pre-PR 0
+  // label still drives the compliance floor, the trend segment and the
+  // niche model better than the pack does. Resolve it ONCE here so every
+  // consumer below (compliance, trends, prompt builders) sees the same
+  // value: the request's legacyNiche (client localStorage), else the
+  // profile's stored legacy_niche, else the pack itself.
+  if (params) {
+    const legacy = (typeof params.legacyNiche === "string" && params.legacyNiche.trim())
+      ? params.legacyNiche.trim()
+      : (profile && profile.legacyNiche) || "";
+    if (legacy) params.niche = legacy;
+  }
   const effectiveNiche = detectHealthcareProvider(profile)
     ? "Healthcare & Medical"
     : (params && params.niche);
@@ -1378,33 +1375,11 @@ export default async function handler(req, res) {
   //     that doesn't map cleanly to short before/after card diffs.
   // [VOICE-LEARNING] The set lives in prompts.js and is imported here, not
   // redeclared. It used to be a local list that had to stay in agreement
-  // with what each builder consumed, and it silently didn't: long_post and
-  // blog_post were fetched for and then ignored by their builders. One
-  // list, one place, asserted by scripts/check-voice.mjs.
+  // with what each builder consumed, and it silently didn't. One list,
+  // one place, asserted by scripts/check-voice.mjs.
   const recentEdits = (VOICE_LEARNING_TYPES.has(generationType) && profile && profile.learnFromEdits)
     ? await fetchRecentEdits(userId)
     : [];
-
-  // [REACTION-LOOP] The one-tap chips after a thumbs-down ("Too formal",
-  // "Not my words", "Wrong energy") used to POST to the support inbox and
-  // die there, while the UI said "Noted — I'll learn from this." They now
-  // land on the rating row and arrive here, attached to the profile the
-  // way handleResearch is, so prompts.js can fold them in beside the edit
-  // diffs without changing eleven builder signatures.
-  //
-  // NOT gated on learnFromEdits. That toggle governs passive capture of
-  // revisions the creator made for their own reasons; a chip tap is the
-  // creator deliberately telling VIRL its output was wrong, and the tap
-  // is its own consent. Gating it would rebuild the exact silence this
-  // change exists to remove.
-  //
-  // Attached for the same generation types that consume edits, so the
-  // voice-learning surface stays one coherent set. Fail-open to [].
-  if (profile && VOICE_LEARNING_TYPES.has(generationType)) {
-    try {
-      profile.voiceReactions = await fetchVoiceReactions(userId);
-    } catch (e) { profile.voiceReactions = []; }
-  }
 
   // [PERSONAL-DENYLIST] Mine the user's broader edit history (up to 50
   // recent edits) for phrases they consistently strip out, and surface
@@ -1760,8 +1735,7 @@ export default async function handler(req, res) {
     // [NO-TRUNCATION] One-call helper so we can run the same request
     // twice if the first attempt comes back with stop_reason="max_tokens".
     // The streaming-plan path has its own retry inside handleStreamingPlan;
-    // this is the non-streaming peer for long_post, blog_post, script,
-    // caption, scan, etc.
+    // this is the non-streaming peer for script, caption, scan, etc.
     async function callAnthropic(currentPayload) {
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
