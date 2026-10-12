@@ -14,18 +14,15 @@
 import satori from "satori";
 import { Resvg } from "@resvg/resvg-js";
 import { PDFDocument } from "pdf-lib";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { ITALIANA_REGULAR, JOST_REGULAR, JOST_SEMIBOLD } from "./fonts-data.js";
 
-const FONT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "_fonts");
 let FONTS = null;
 function fonts() {
   if (FONTS) return FONTS;
   FONTS = [
-    { name: "Italiana", data: fs.readFileSync(path.join(FONT_DIR, "Italiana-Regular.ttf")), weight: 400, style: "normal" },
-    { name: "Jost",     data: fs.readFileSync(path.join(FONT_DIR, "Jost-Regular.ttf")),     weight: 400, style: "normal" },
-    { name: "Jost",     data: fs.readFileSync(path.join(FONT_DIR, "Jost-SemiBold.ttf")),    weight: 600, style: "normal" },
+    { name: "Italiana", data: Buffer.from(ITALIANA_REGULAR, "base64"), weight: 400, style: "normal" },
+    { name: "Jost",     data: Buffer.from(JOST_REGULAR, "base64"),     weight: 400, style: "normal" },
+    { name: "Jost",     data: Buffer.from(JOST_SEMIBOLD, "base64"),    weight: 600, style: "normal" },
   ];
   return FONTS;
 }
