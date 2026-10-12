@@ -219,6 +219,11 @@ assert(STRATEGY_JSON_SCHEMA.properties.platform.properties.primary.enum.indexOf(
   assert(tpl.subject === "Your month, reviewed" && tpl.html.includes("Four weeks") && tpl.html.includes("2 changes to decide on"), "review email renders the opening and the count");
   assert(fs.readFileSync("migrations/032-monthly-review.sql", "utf8").includes("strategy_reviews") && fs.readFileSync("migrations/032-monthly-review.sql", "utf8").includes("voice_checks"), "migration 032 creates the review and voice-check tables");
   for (const t of ["function AttributionChips", "function VoiceCheck", "function MonthlyReview", "attributed_result,self_result,insights", "insights_source: \"screenshot\""]) assert(indexHtml.includes(t), "index.html must carry: " + t);
+
+  // [ROLLOUT] The signup trigger flags every new account, and still does
+  // everything 017 did (profile row, credits row, the attorney's Pro plan).
+  const m033 = fs.readFileSync("migrations/033-strategist-default-on-signup.sql", "utf8");
+  for (const t of ["insert into public.account_flags (user_id, strategist_v2)", "values (new.id, true)", "insert into public.profiles (id)", "insert into public.credits (user_id, credits, reset_at, plan)", "jessee@creativecounsellaw.com", "SET search_path TO 'public'"]) assert(m033.includes(t), "migration 033 must keep: " + t);
 }
 
 if (failures > 0) { console.error(`\nStrategy check FAILED with ${failures} failure(s).`); process.exit(1); }
