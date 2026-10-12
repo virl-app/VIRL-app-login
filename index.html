@@ -5367,8 +5367,7 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
               style={{fontSize:13,color:B.coral,fontWeight:700,lineHeight:1,flexShrink:0}}>{"✓"}</span>
           )}
         </div>
-        <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
-          <PillarTag card={card}/>
+        <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end"}}>
           {skipped && <MTag>{"Skipped" + (skipReason ? " · " + (SKIP_REASONS.filter(function(r){ return r.key===skipReason; })[0] || {label: skipReason}).label : "")}</MTag>}
           {usedFreshTrends && <MTag type="result">✦ Fresh trend</MTag>}
           {hasSavedScript && <MTag type="result">Script saved</MTag>}
@@ -5414,7 +5413,12 @@ function PlanCard({card,idx,onSave,onLog,onSaveScript,onEdit,onRegenerate,regenB
            a single-weight display face that reads as decorative at content
            size. Italiana stays on the page title, "Your week", and day
            names; the content you scan is crisp sans-serif. */
-        <div style={{fontFamily:"'Jost',sans-serif",fontSize:16,fontWeight:600,lineHeight:1.3,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
+        <div>
+          {/* [PR2] The pillar role sits on its own line above the title so the
+              header row keeps platform, time and day readable on a phone. */}
+          {card.pillar_role && <div style={{marginBottom:8}}><PillarTag card={card}/></div>}
+          <div style={{fontFamily:"'Jost',sans-serif",fontSize:16,fontWeight:600,lineHeight:1.3,color:B.ink,marginBottom:expanded ? 10 : (preview ? 6 : 14)}}>{card.title}</div>
+        </div>
       )}
       {/* [P1] Collapsed-only preview line — the format-specific opening
            (hook / first slide / photo direction / quote / first frame /
@@ -9395,8 +9399,10 @@ function RenderButtons({ card, token, platforms }) {
     setBusy(kind); setMsg("");
     try {
       var r = await fetch("/api/render", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token }, body: JSON.stringify({ kind: kind, card: card, kicker: card.pillar || "", footer: "" }) });
-      var j = await r.json();
-      if (!r.ok) throw new Error(j.error || "Couldn't render.");
+      var j = {};
+      try { j = await r.json(); } catch (e2) { j = {}; }
+      if (!r.ok) throw new Error(j.error || "I couldn't render that one just now. Try again in a minute.");
+      if (!(j.files || []).length) throw new Error("Nothing came back to download. Try again in a minute.");
       (j.files || []).forEach(function (f, i) { setTimeout(function () { downloadBase64(f.name, f.mime, f.base64); }, i * 250); });
       setMsg((j.files || []).length + " file" + ((j.files || []).length === 1 ? "" : "s") + " downloading. Caption is above; post it where you like.");
       logEvent(window.__virlUserId || null, "static_post_downloaded", { kind: kind, title: card.title || "" });
@@ -10263,7 +10269,7 @@ const SG_PAGES = {
 function WhereNext({ current, onGo }) {
   var others = Object.keys(SG_PAGES).filter(function (k) { return k !== current; });
   return (
-    <div style={{ margin: "4px 0 26px" }}>
+    <div style={{ margin: "26px 0 8px" }}>
       <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase", color: B.muted, marginBottom: 10 }}>Where next</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         {others.map(function (k) {
@@ -14136,12 +14142,12 @@ return (
                     Everything your plans are built from, in one place. Change a row and I'll rebuild your strategy and show you what moved.
                   </div>
                 </div>
-                <WhereNext current="profile" onGo={function(k){ setTab(k); }}/>
                 <StrategistProfileTab strategy={profile.strategy} version={profile.strategyVersion} history={profile.strategyHistory} notes={profile.strategistNotes}
                   answers={profile.onboardingAnswers} profile={profile} session={session} token={userToken}
                   onEdit={function(n){ setSgEdit({ screen: n }); }}
                   onRestart={function(){ if (window.confirm("Start the interview over? Your current strategy is kept in history.")) setSgRestart(true); }}
                   onBrand={sgSaveBrand} onConsents={sgSaveConsents}/>
+                <WhereNext current="profile" onGo={function(k){ setTab(k); }}/>
               </div>
             )}
             {!profileComplete&&!sgAccount&&(
@@ -14418,7 +14424,6 @@ return (
         {tab==="strategy"&&sgAccount&&(
           <div>
             <Eyebrow>Your strategy</Eyebrow>
-            <WhereNext current="strategy" onGo={function(k){ setTab(k); }}/>
             <StrategyPage strategy={profile.strategy} version={profile.strategyVersion} token={userToken} name={profile.name}
               onStrategyChange={function(st, v){ setProfile(function(prev){ return Object.assign({}, prev, { strategy: st, strategyVersion: v }); }); sgReloadProfile(); }}
               onOpenScreen={function(n){ setSgEdit({ screen: n }); }}
@@ -14431,6 +14436,7 @@ return (
                     onBanner={function(b){ onResult({ diff: b.diff, note: b.note }); }}/>
                 );
               }}/>
+            <WhereNext current="strategy" onGo={function(k){ setTab(k); }}/>
           </div>
         )}
 
@@ -14452,7 +14458,6 @@ return (
                 </div>
               )}
             </div>
-            {sgAccount&&<WhereNext current="plan" onGo={function(k){ setTab(k); }}/>}
             {/* [PREMIUM 3] Plan-#5 celebration card. Quietly recognises
                  a milestone most creators never reach. Dismissible —
                  once dismissed, never reappears (virl_milestone_5_seen
@@ -14831,7 +14836,7 @@ return (
                       )}
                       {/* [REFERRAL] Share moment right where the plan pays
                           off — the strongest ask is next to the value. */}
-                      <ReferralCard token={userToken}/>
+                      {!sgAccount && <ReferralCard token={userToken}/>}
                     </div>
                   );
                 })()}
@@ -15374,6 +15379,7 @@ return (
                 <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,color:B.muted,maxWidth:420,margin:"0 auto",lineHeight:1.65}}>Let's fill it with something that sounds exactly like you.</div>
               </div>
             )}
+            {sgAccount&&<div style={{marginTop:28}}><WhereNext current="plan" onGo={function(k){ setTab(k); }}/></div>}
           </div>
         )}
 
