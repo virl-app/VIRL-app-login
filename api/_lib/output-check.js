@@ -21,7 +21,7 @@
 
 import { BANNED_VOCAB_GROUPS } from "./prompts.js";
 import { selfCheckFor } from "./virl-persona.js";
-import { callClaude } from "./anthropic.js";
+import { callClaude, extractJsonObject } from "./anthropic.js";
 
 // "leverage (as a verb)" carries a documentation qualifier in the prompt;
 // strip it so the scan matches the word itself.
@@ -70,16 +70,14 @@ export async function gradeWithRubric(input, opts) {
   const prompt = "CHECKLIST (verbatim from the generating prompt):\n" + rubric
     + (o.context ? "\n\nCREATOR MATERIAL the VOICE item compares against:\n" + o.context : "")
     + "\n\nDRAFT TO REVIEW:\n" + text;
-  const raw = await callClaude({ system, prompt, model: o.model, maxTokens: 600, temperature: 0 });
-  if (!raw) return null;
-  try {
-    const m = raw.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(m ? m[0] : raw);
-    const failures = Array.isArray(parsed.failures) ? parsed.failures.filter(f => f && typeof f.item === "string") : [];
-    return { pass: failures.length === 0 && parsed.pass !== false, failures };
-  } catch (e) {
-    return null;
-  }
+  // [A2] No temperature (the 5.x models reject it; effort "low" fits a
+  // checklist pass). callClaude returns { text, ... }, not a string — the old
+  // raw.match() threw on the object and this always fell through to null.
+  const out = await callClaude({ system, prompt, model: o.model, maxTokens: 2000, effort: "low" }); // headroom: Haiku 5.5 thinks by default and thinking counts against max_tokens
+  const parsed = out ? extractJsonObject(out.text) : null;
+  if (!parsed) return null;
+  const failures = Array.isArray(parsed.failures) ? parsed.failures.filter(f => f && typeof f.item === "string") : [];
+  return { pass: failures.length === 0 && parsed.pass !== false, failures };
 }
 
 export async function checkOutput(input, opts) {

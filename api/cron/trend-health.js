@@ -54,6 +54,19 @@ const PLATFORMS = ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X"
 //   run plus slack, and it stays under the 14-day window the fallback query
 //   uses — past 14 the fallback returns nothing and every surface goes dark.
 const OBSERVED_STALE_DAYS = 5;
+
+// [A3] The observed tier is DORMANT. Its only adapter read EnsembleData, which
+// VIRL dropped on 2026-07-30; nothing has written `trend_items` since, and
+// nothing will until a replacement vendor is chosen (a separate project).
+// While it was still counted here it tripped this alert every single day,
+// 30 emails in 30 days, all of them about a pipeline we turned off on
+// purpose — which is exactly how a real outage gets ignored. So it is
+// reported (age only) but never alerts and never counts as cover.
+// The table, the ingest-trends edge function and trend-context.js's 7-day
+// read are left in place, so reviving the tier is: wire a new adapter, then
+// flip this to false. Generation cannot see the old rows: trend-context.js
+// filters trend_items to the last TREND_FRESHNESS_DAYS (7).
+const OBSERVED_TIER_DORMANT = true;
 const LEGACY_STALE_DAYS   = 10;
 
 // [SEGMENT-HEALTH] The per-segment tier needs a DIFFERENT question asked of it,
@@ -319,7 +332,11 @@ export default async function handler(req, res) {
   // difference is deliberate: a playbook row with no `updated_at` is a schema
   // gap on data that still exists, whereas no trend row at all means the
   // pipeline has produced nothing, ever or recently.
-  const observedStale = observedAge === null || observedAge >= OBSERVED_STALE_DAYS;
+  // observedStale feeds the alert; observedCovers feeds "is anyone dark".
+  // Dormant: it never alerts and never covers.
+  const observedPastThreshold = observedAge === null || observedAge >= OBSERVED_STALE_DAYS;
+  const observedStale  = !OBSERVED_TIER_DORMANT && observedPastThreshold;
+  const observedCovers = !OBSERVED_TIER_DORMANT && !observedPastThreshold;
   const legacyStale   = laggingPlatforms.length > 0;
 
   // [SEGMENT-HEALTH] Two distinct segment failures, because they need different
@@ -365,14 +382,14 @@ export default async function handler(req, res) {
   // reads from, not the 10-day alert window, so "no cover" here means exactly
   // that: no segment row a creator could be handed today.
   const segmentCover = segmentReadable && segments.serving > 0;
-  const bothDark = observedStale && darkPlatforms.length === PLATFORMS.length && !segmentCover;
+  const bothDark = !observedCovers && darkPlatforms.length === PLATFORMS.length && !segmentCover;
 
   // Observed gone AND some platforms past the serving window: those creators
   // have lost their own platform's research and are running on borrowed
   // segment rows (or nothing, if the segment tier is dry too). Naming which
   // platforms, and what they are getting instead, is the difference between
   // a fix and a panic.
-  const partialDark = observedStale && darkPlatforms.length > 0 && !bothDark;
+  const partialDark = !observedCovers && darkPlatforms.length > 0 && !bothDark;
 
 
   // [SEGMENT-HEALTH] The admin lookup is load-bearing: sendEmail dedupes on
@@ -418,6 +435,7 @@ export default async function handler(req, res) {
   if ((observedStale || legacyStale || segmentDegraded) && adminUserId) {
     const tpl = trendPipelineStale({
       observedAge, legacyAge, observedStale, legacyStale, bothDark,
+      observedDormant:   OBSERVED_TIER_DORMANT,
       partialDark, darkPlatforms, segmentCover,
       laggingPlatforms,
       totalPlatforms:    PLATFORMS.length,
@@ -447,6 +465,7 @@ export default async function handler(req, res) {
     observedAgeDays: observedAge,
     legacyAgeDays:   legacyAge,
     observedStale,
+    observedDormant: OBSERVED_TIER_DORMANT,
     legacyStale,
     bothDark,
     partialDark,

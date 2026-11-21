@@ -870,7 +870,10 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
       const { r, out } = mockRes();
       await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
       assert(out.code === 200, `trend-health returned ${out.code} on an authorized request`);
-      assert(out.body && out.body.observedStale === true && out.body.legacyStale === true && out.body.bothDark === true,
+      // [A3] The observed tier is dormant: it reports observedStale false
+      // (it never alerts) and observedDormant true, and the weekly research
+      // alone decides staleness and darkness.
+      assert(out.body && out.body.observedDormant === true && out.body.observedStale === false && out.body.legacyStale === true && out.body.bothDark === true,
         `a 30-day-old pipeline was not reported stale: ${JSON.stringify(out.body)}`);
       assert(hits.some((u) => u.includes("/email_sends")),
         "trend-health detected a dark pipeline and never attempted an email — a monitor that only returns JSON repeats the exact failure it exists to fix");
@@ -1074,14 +1077,18 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
         if (u.includes("/auth/v1/admin/users")) return { ok: true, json: async () => ({ users: [] }) };
         if (isSegmentProbe(u)) return { ok: true, json: async () => segmentRows(freshIso) };
         if (u.includes("/trend_items?")) return { ok: true, json: async () => [{ last_seen: staleIso }] };
-        if (u.includes("/trends?")) return globalHealthy;
+        // [A3] Stale weekly research, since the dormant observed tier alone no
+        // longer counts as stale.
+        if (u.includes("/trends?")) return { ok: true, json: async () =>
+          ["TikTok", "Instagram", "Facebook", "YouTube", "LinkedIn", "X", "Pinterest"]
+            .map((pf) => ({ platform: pf, fetched_at: staleIso })) };
         return { ok: true, json: async () => [] };
       };
       const { r, out } = mockRes();
       await trendHealth({ headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }, r);
       assert(out.body && out.body.adminLookupFailed === true,
         "the admin lookup failed and the response did not say so — the alert is disabled and nothing anywhere reports it");
-      assert(out.body && out.body.observedStale === true && out.body.emailed === false,
+      assert(out.body && out.body.legacyStale === true && out.body.emailed === false,
         "a stale pipeline with no resolvable admin must still REPORT stale, even though it cannot email");
     }
 
@@ -1496,7 +1503,7 @@ const CLIENT_NOW = { iso: "2026-08-07", weekday: 5, year: 2026, hour: 15, minute
     "bothDark is back to `observedStale && legacyStale` — that fires the total-outage email when a single platform of seven is merely lagging, which is the false alarm this assertion exists to prevent");
   assert(/darkPlatforms/.test(healthSrc) && /LEGACY_TREND_FRESHNESS_DAYS/.test(healthSrc),
     "trend-health no longer measures darkness against the window loadLegacyTrends actually serves from — without it, 'dark' is a guess rather than the point where creators genuinely see nothing");
-  assert(/bothDark\s*=\s*observedStale && darkPlatforms\.length === PLATFORMS\.length && !segmentCover/.test(healthSrc),
+  assert(/bothDark\s*=\s*!observedCovers && darkPlatforms\.length === PLATFORMS\.length && !segmentCover/.test(healthSrc),
     "bothDark no longer requires EVERY platform dark AND no segment tier to borrow from — a segment row is the one thing that crosses platforms, so while any productive one exists, no creator is actually dark");
 
   // The pair, at the template level: the partial case must name who is dark,

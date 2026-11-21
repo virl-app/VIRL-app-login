@@ -403,6 +403,7 @@ export function trendPipelineStale({
   partialDark = false, darkPlatforms = [], segmentCover = false,
   laggingPlatforms, totalPlatforms,
   observedThreshold, legacyThreshold,
+  observedDormant = false,
   // [SEGMENT-HEALTH] Optional — omitted by callers that only check freshness.
   segmentTierDown = false, segmentThin = false,
   segmentExpected = null, segmentProductive = null,
@@ -424,7 +425,9 @@ export function trendPipelineStale({
   // and "everything stopped" need different reactions and the subject line is
   // often all that gets read.
   const headline = bothDark
-    ? "Both trend sources are stale — plans are running without trends."
+    ? (observedDormant
+        ? "The weekly trend research has aged out — plans are running without trends."
+        : "Both trend sources are stale — plans are running without trends.")
     : partialDark
       ? (segmentCover
           ? `${dark.join(", ")} has no research of its own left — plans there are running on borrowed TikTok signal.`
@@ -468,10 +471,14 @@ export function trendPipelineStale({
       ? `<p style="margin:0 0 12px">Creators are still getting trends — the weekly research fallback is covering it. But the observed pipeline is the one that carries live platform signal, and it is not recovering on its own.</p>`
       : (lagging.length && !allLagging)
         ? `<p style="margin:0 0 12px">Creators on <strong>${esc(lagging.join(", "))}</strong> are the ones affected — their fallback trend data has stopped refreshing while the other platforms keep updating. Everyone else is unaffected.</p>`
-        : `<p style="margin:0 0 12px">The observed pipeline is still current, so plans are fine. The weekly research is the fallback behind it, and with it stale there is no safety net if the ingest stops too.</p>`;
+        : observedDormant
+          ? `<p style="margin:0 0 12px">The weekly research is the only trend source feeding plans now. Creators still have trends until it ages past 14 days, then every surface goes to the "no trends this week" state.</p>`
+          : `<p style="margin:0 0 12px">The observed pipeline is still current, so plans are fine. The weekly research is the fallback behind it, and with it stale there is no safety net if the ingest stops too.</p>`;
 
   const rows = [
-    `<li style="margin:6px 0"><strong>Observed ingest</strong> (trend_items, Mon + Thu): ${esc(age(observedAge))}${observedStale ? ` &mdash; past the ${observedThreshold}-day threshold` : " &mdash; healthy"}</li>`,
+    observedDormant
+      ? `<li style="margin:6px 0"><strong>Observed ingest</strong> (trend_items): dormant since the vendor was dropped on 2026-07-30 &mdash; not monitored</li>`
+      : `<li style="margin:6px 0"><strong>Observed ingest</strong> (trend_items, Mon + Thu): ${esc(age(observedAge))}${observedStale ? ` &mdash; past the ${observedThreshold}-day threshold` : " &mdash; healthy"}</li>`,
     `<li style="margin:6px 0"><strong>Weekly research</strong> (trends, Saturdays), oldest platform: ${esc(age(legacyAge))}${legacyStale ? ` &mdash; past the ${legacyThreshold}-day threshold` : " &mdash; healthy"}</li>`,
     lagging.length
       ? `<li style="margin:6px 0"><strong>Platforms not refreshing:</strong> ${esc(lagging.join(", "))}${totalPlatforms ? ` (${lagging.length} of ${totalPlatforms})` : ""}</li>`
@@ -489,10 +496,14 @@ export function trendPipelineStale({
 
   const body = `${impact}
     <ul style="margin:0 0 16px;padding-left:18px">${rows}</ul>
-    <p style="margin:0 0 12px">Generation refuses any trend older than 7 days, so the observed threshold is set to warn with roughly two days of runway before creators feel it.</p>
+    ${observedDormant
+      ? `<p style="margin:0 0 12px">Generation serves weekly research for up to 14 days, and this alert fires at ${legacyThreshold}, so there are roughly four days of runway before creators feel it.</p>`
+      : `<p style="margin:0 0 12px">Generation refuses any trend older than 7 days, so the observed threshold is set to warn with roughly two days of runway before creators feel it.</p>`}
     ${segmentOnly
       ? `<p style="margin:0">Most likely cause: the research prompt, not the plumbing &mdash; these rows are usually written on schedule and simply come back with an empty items list, and the model states its reason in <code>trends.summary</code>. Read that column for the affected pairs before changing anything.</p>`
-      : `<p style="margin:0">Most likely causes: the trend vendor token expired or hit its quota, the scheduled job stopped firing, or the ingest function is erroring before it writes. Check the ingest logs first &mdash; an empty run logs "ALL ADAPTERS RETURNED EMPTY" and then exits without writing.</p>`}`;
+      : observedDormant
+        ? `<p style="margin:0">Most likely causes: the Perplexity key expired or ran out of credit, the Saturday trends-refresh cron stopped firing, or trends-refresh is erroring before it writes. Check the /api/cron/trends-refresh logs for Saturday 07:00 UTC first.</p>`
+        : `<p style="margin:0">Most likely causes: the trend vendor token expired or hit its quota, the scheduled job stopped firing, or the ingest function is erroring before it writes. Check the ingest logs first &mdash; an empty run logs "ALL ADAPTERS RETURNED EMPTY" and then exits without writing.</p>`}`;
 
   const textLines = [
     headline,
@@ -511,9 +522,13 @@ export function trendPipelineStale({
               : `Only ${segmentProductive} of ${segmentExpected} segment/platform pairs came back with anything`}, so those creators are being served platform-wide research instead of their own industry's.`
           : (lagging.length && !allLagging)
             ? `Creators on ${lagging.join(", ")} are the ones affected — their fallback data has stopped refreshing while the other platforms keep updating.`
-            : "Plans are fine; the fallback behind them is stale.",
+            : observedDormant
+              ? "The weekly research is the only trend source now. Creators keep trends until it ages past 14 days."
+              : "Plans are fine; the fallback behind them is stale.",
     "",
-    `Observed ingest (trend_items, Mon + Thu): ${age(observedAge)}${observedStale ? ` — past the ${observedThreshold}-day threshold` : " — healthy"}`,
+    observedDormant
+      ? "Observed ingest (trend_items): dormant since the vendor was dropped on 2026-07-30 — not monitored"
+      : `Observed ingest (trend_items, Mon + Thu): ${age(observedAge)}${observedStale ? ` — past the ${observedThreshold}-day threshold` : " — healthy"}`,
     `Weekly research (trends, Saturdays), oldest platform: ${age(legacyAge)}${legacyStale ? ` — past the ${legacyThreshold}-day threshold` : " — healthy"}`,
     lagging.length ? `Platforms not refreshing: ${lagging.join(", ")}${totalPlatforms ? ` (${lagging.length} of ${totalPlatforms})` : ""}` : "",
     segmentDegraded
@@ -522,7 +537,9 @@ export function trendPipelineStale({
     "",
     segmentOnly
       ? "These rows are usually written on time and simply come back empty — read trends.summary for the affected pairs, the model states its reason there."
-      : 'Check the ingest logs first — an empty run logs "ALL ADAPTERS RETURNED EMPTY" and exits without writing.',
+      : observedDormant
+        ? "Check the /api/cron/trends-refresh logs for Saturday 07:00 UTC first: an expired Perplexity key, a cron that stopped firing, or an error before the write."
+        : 'Check the ingest logs first — an empty run logs "ALL ADAPTERS RETURNED EMPTY" and exits without writing.',
   ].join("\n");
 
   return {
