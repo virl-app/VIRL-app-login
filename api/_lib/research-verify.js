@@ -313,7 +313,9 @@ export async function verifyResearch({ researchText, excerpts, groundTruth }) {
     prompt:      buildVerifyPrompt(raw, groundTruth),
     model:       VERIFY_MODEL,
     maxTokens:   VERIFY_MAX_TOKENS,
-    temperature: 0,
+    // [A2] effort "low" in place of temperature 0: a checking pass, not a
+    // creative one, and temperature is rejected once MODEL_SONNET is 5.x.
+    effort:      "low",
   });
   const parsed = out ? extractJsonObject(out.text) : null;
   if (parsed && typeof parsed.verified_text === "string") {

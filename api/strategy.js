@@ -425,7 +425,9 @@ async function actionVoiceVariant(user, body) {
   const caption = str(body.caption, 2200);
   if (!caption) return { status: 400, json: { error: "No caption to work from." } };
   const { system, prompt } = voiceVariantPrompt({ caption, platform: str(body.platform, 30) });
-  const res = await callClaude({ system, prompt, model: STRATEGY_MODEL_FAST, maxTokens: 900, temperature: 0.4 });
+  // [A2] No temperature: Haiku 5.5 rejects it, and the 400 made every voice
+  // check fail. The model's default sampling is what produces the variety.
+  const res = await callClaude({ system, prompt, model: STRATEGY_MODEL_FAST, maxTokens: 2000 }); // headroom for default thinking on Haiku 5.5
   if (!res || !res.text) return { status: 502, json: { error: "I couldn't write the other version just now." } };
   await recordUsage(user.id, { generationType: "strategist_voice_variant", model: res.model || STRATEGY_MODEL_FAST, usage: res.usage, stopReason: res.stopReason });
   const variant = res.text.trim().replace(/^["“]|["”]$/g, "");
