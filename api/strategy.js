@@ -6,7 +6,7 @@
 //   build       { answers }  → { strategy, version, quality }  strongest model
 //   interpret   { text, section } → { strategy, version, diff, note, open_screen }
 //   undo        { toVersion } → { strategy, version }
-//   transcribe  { audioBase64, mimeType } → { text } | { text: null, reason }
+//   transcribe  { audioBase64, mimeType, durationSec } → { text } | { text: null, reason }
 //
 // Gated on account_flags.strategist_v2. Nothing here costs credits: a
 // strategy is built a handful of times per account, so the rate limit is the
@@ -435,11 +435,22 @@ async function actionVoiceVariant(user, body) {
   return { status: 200, json: { variant } };
 }
 
+const MAX_AUDIO_B64 = 6 * 1024 * 1024;
+
 async function actionTranscribe(user, body) {
   if (!ELEVENLABS_API_KEY) return { status: 200, json: { text: null, reason: "Voice notes aren't set up yet. Paste a few captions instead." } };
-  const b64 = str(body.audioBase64, 12 * 1024 * 1024);
+  // [B3] Reject rather than truncate: str() cut long audio at the cap, which
+  // sent ElevenLabs a corrupt file. In practice Vercel refuses any request
+  // body over 4.5 MB before this runs; the client keeps 90s notes near 1 MB.
+  const raw = typeof body.audioBase64 === "string" ? body.audioBase64.trim() : "";
   const mime = str(body.mimeType, 60) || "audio/webm";
-  if (!b64) return { status: 400, json: { error: "No audio." } };
+  if (!raw) return { status: 400, json: { error: "No audio." } };
+  if (raw.length > MAX_AUDIO_B64) return { status: 200, json: { text: null, reason: "That one's too long for me to take in one go. Try a shorter note, or paste it." } };
+  const b64 = raw;
+  // The client's measured length; the old bytes/16000 guess was off by the
+  // codec's bitrate. Kept only when it is a sane number.
+  const d = Number(body.durationSec);
+  const durationSec = Number.isFinite(d) && d > 0 && d <= 600 ? Math.round(d * 10) / 10 : null;
   try {
     const bytes = Buffer.from(b64, "base64");
     const form = new FormData();
@@ -448,12 +459,12 @@ async function actionTranscribe(user, body) {
     const r = await fetch("https://api.elevenlabs.io/v1/speech-to-text", { method: "POST", headers: { "xi-api-key": ELEVENLABS_API_KEY }, body: form });
     if (!r.ok) {
       console.warn("[transcribe] elevenlabs", r.status, (await r.text().catch(() => "")).slice(0, 200));
-      await recordEvent(user.id, "strategist_transcribe", { ok: false, status: r.status });
+      await recordEvent(user.id, "strategist_transcribe", { ok: false, status: r.status, seconds: durationSec, bytes: bytes.length, mime: mime.split(";")[0] });
       return { status: 200, json: { text: null, reason: "I couldn't hear that one. Try again or paste captions." } };
     }
     const j = await r.json();
     const text = str(j && j.text, 6000);
-    await recordEvent(user.id, "strategist_transcribe", { ok: !!text, seconds: bytes.length / 16000 });
+    await recordEvent(user.id, "strategist_transcribe", { ok: !!text, seconds: durationSec, bytes: bytes.length, mime: mime.split(";")[0] });
     return { status: 200, json: { text: text || null, reason: text ? null : "That came through empty." } };
   } catch (e) {
     return { status: 200, json: { text: null, reason: "I couldn't hear that one. Try again or paste captions." } };
