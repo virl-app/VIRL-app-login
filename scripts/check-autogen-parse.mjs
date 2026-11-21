@@ -10,7 +10,7 @@
 // Feeds parsePlanText (api/cron/strategist-touches.js) the three shapes the
 // model actually produces, plus the two failures it must report clearly.
 
-import { parsePlanText } from "../api/cron/strategist-touches.js";
+import { parsePlanText, planExpiryISO } from "../api/cron/strategist-touches.js";
 
 let failures = 0;
 function check(label, fn) {
@@ -56,5 +56,24 @@ check("a plan with no cards throws 'empty plan'", () => {
   assert(msg === "empty plan", "got: " + msg);
 });
 
+// [A1b] Expiry mirrors computePlanExpiry in index.html. The autogen runs the
+// evening before the slot; with a Sunday slot and Sunday weeks that is
+// Saturday, one day left, so the plan must live through the FOLLOWING week.
+// The old weekStart + 7 days at 00:00 UTC expired it at 6pm Chicago that
+// same evening.
+const expiryCases = [
+  ["Saturday 6pm Chicago, Sunday weeks: through next week", "2026-11-22T00:00:00Z", "2026-11-15", "America/Chicago", 0, "2026-11-29T06:00:00.000Z"],
+  ["Wednesday Chicago: end of this week, local midnight", "2026-11-18T15:00:00Z", "2026-11-15", "America/Chicago", 0, "2026-11-22T06:00:00.000Z"],
+  ["Saturday New York across the DST change", "2026-03-07T23:00:00Z", "2026-03-01", "America/New_York", 0, "2026-03-15T04:00:00.000Z"],
+  ["Saturday London, Monday weeks: through next week", "2026-11-21T20:00:00Z", "2026-11-16", "Europe/London", 1, "2026-11-30T00:00:00.000Z"],
+];
+for (const [label, now, ws, tz, wsd, want] of expiryCases) {
+  check("expiry: " + label, () => {
+    const got = planExpiryISO(ws, new Date(now), tz, wsd);
+    assert(got === want, `expected ${want}, got ${got}`);
+    assert(Date.parse(got) > Date.parse(now), "plan expires before it is generated");
+  });
+}
+
 if (failures) { console.error(`\n${failures} autogen parse check(s) failed.`); process.exit(1); }
-console.log("OK: autogen plan parsing tolerates fences and leading text, and fails loudly otherwise.");
+console.log("OK: autogen plan parsing tolerates fences and leading text, fails loudly otherwise, and stores a plan that outlives its email.");
