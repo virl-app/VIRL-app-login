@@ -202,14 +202,44 @@ async function generatePlan(profile, tz) {
   return { parsed, meta, weekStart: params.currentWeekStart };
 }
 
+// [A1b] Mirror of computePlanExpiry in index.html, in the creator's zone.
+// The plan expires at local midnight at the end of its week. When fewer than
+// MIN_PARTIAL_WEEK_DAYS remain (the server then writes through the FOLLOWING
+// week, see prompts.js), it lives to the end of that following week instead.
+// The old code used weekStart + 7 days at 00:00 UTC, so the Saturday-evening
+// autogen for a Sunday slot stored a plan that expired at 6pm Chicago that
+// same evening: already "last week's plan" when the email went out.
+const MIN_PARTIAL_WEEK_DAYS = 3; // keep in sync with prompts.js / index.html
+// UTC instant of 00:00 on dateISO in tz.
+function zonedMidnightMs(dateISO, tz) {
+  const [y, m, d] = dateISO.split("-").map(n => parseInt(n, 10));
+  const utc = Date.UTC(y, m - 1, d);
+  const offsetAt = (ms) => {
+    const f = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    const p = {}; for (const x of f.formatToParts(new Date(ms))) p[x.type] = x.value;
+    return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute) - ms;
+  };
+  let guess = utc - offsetAt(utc);
+  guess = utc - offsetAt(guess); // second pass settles a DST edge
+  return guess;
+}
+export function planExpiryISO(weekStart, now, tz, weekStartDay) {
+  const zone = localParts(now, tz).tz;
+  const lp = localParts(now, zone);
+  const anchor = Number.isInteger(weekStartDay) ? weekStartDay : 0;
+  const daysLeft = ((anchor - lp.weekday - 1 + 7) % 7) + 1;
+  const end = new Date(weekStart + "T00:00:00Z");
+  end.setUTCDate(end.getUTCDate() + (daysLeft < MIN_PARTIAL_WEEK_DAYS ? 14 : 7));
+  return new Date(zonedMidnightMs(end.toISOString().slice(0, 10), zone)).toISOString();
+}
+
 async function storePlan(profile, parsed, meta, weekStart, tz) {
   const now = new Date();
   // Expiry: the end of the creator's week, like computePlanExpiry client-side.
-  const ws = new Date(weekStart + "T00:00:00Z");
-  const expires = new Date(ws.getTime() + 7 * 86400000);
+  const expiresAt = planExpiryISO(weekStart, now, tz, profile.week_start_day);
   const strategyObj = parsed.strategy && typeof parsed.strategy === "object" ? parsed.strategy : null;
   if (strategyObj) { strategyObj.week_note = parsed.week_note || ""; strategyObj.drift = parsed.drift || ""; strategyObj.daily_comments = parsed.daily_comments || null; }
-  await upsert("plans", [{ user_id: profile.id, cards: parsed.cards, stats: parsed.stats || null, strategy: strategyObj, trends_snapshot: meta && meta.trendsSnapshot || null, rest_day_tips: Array.isArray(parsed.restDayTips) ? parsed.restDayTips : null, expires_at: expires.toISOString(), updated_at: now.toISOString() }], "user_id");
+  await upsert("plans", [{ user_id: profile.id, cards: parsed.cards, stats: parsed.stats || null, strategy: strategyObj, trends_snapshot: meta && meta.trendsSnapshot || null, rest_day_tips: Array.isArray(parsed.restDayTips) ? parsed.restDayTips : null, expires_at: expiresAt, updated_at: now.toISOString() }], "user_id");
   await upsert("plan_history", [{ user_id: profile.id, week_start: weekStart, cards: parsed.cards, stats: parsed.stats || null, strategy: strategyObj }], "user_id,week_start");
   await upsert("posts", parsed.cards.filter(c => c && c.title).map(c => ({
     user_id: profile.id, week_start: weekStart, card_key: cardKey(c), day: c.day || null, title: c.title || null, platform: c.platform || null, format: c.format || null,
