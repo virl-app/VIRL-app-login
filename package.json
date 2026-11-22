@@ -2,8 +2,9 @@
   "name": "virl-app-login",
   "version": "1.0.0",
   "private": true,
-  "description": "VIRL app \u2014 single-page React frontend (index.html via Babel standalone) plus Vercel serverless API functions in /api.",
+  "description": "VIRL app \u2014 single-page React frontend (authored in index.html, JSX precompiled by scripts/build.mjs into dist/) plus Vercel serverless API functions in /api.",
   "scripts": {
+    "build": "node scripts/build.mjs",
     "check:index": "node scripts/check-index-syntax.mjs",
     "check:compliance": "node scripts/check-compliance.mjs",
     "check:voice": "node scripts/check-voice.mjs",
@@ -11,7 +12,7 @@
     "check:trends": "node scripts/check-trend-personalization.mjs",
     "check:rating": "node scripts/check-rating-upsert.mjs",
     "check:composer": "node scripts/check-composer-fields.mjs",
-    "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist && npm run check:trends && npm run check:trendsource && npm run check:rating && npm run check:composer && npm run check:strategy && npm run check:autogen && npm run check:anthropic && npm run check:trendhealth && npm run check:firstplan",
+    "check": "npm run check:index && npm run check:compliance && npm run check:voice && npm run check:strategist && npm run check:trends && npm run check:trendsource && npm run check:rating && npm run check:composer && npm run check:strategy && npm run check:autogen && npm run check:anthropic && npm run check:trendhealth && npm run check:firstplan && npm run check:build",
     "audit:trends": "node scripts/audit-trend-research.mjs",
     "og:image": "node scripts/og-image.mjs",
     "check:trendsource": "node scripts/check-trend-source-health.mjs",
@@ -19,7 +20,8 @@
     "check:autogen": "node scripts/check-autogen-parse.mjs",
     "check:anthropic": "node scripts/check-anthropic-params.mjs",
     "check:trendhealth": "node scripts/check-trend-health-alert.mjs",
-    "check:firstplan": "node scripts/check-first-plan.mjs"
+    "check:firstplan": "node scripts/check-first-plan.mjs",
+    "check:build": "node scripts/check-build.mjs"
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",
@@ -29,6 +31,7 @@
     "stripe": "^14.0.0"
   },
   "devDependencies": {
+    "@babel/standalone": "7.23.2",
     "sucrase": "^3.35.0"
   }
 }
