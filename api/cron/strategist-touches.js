@@ -123,8 +123,8 @@ function firstUnposted(cards, posts) {
 }
 
 // ── Autogen ────────────────────────────────────────────────────────────────
-const OLD_GOAL = { clients: "Generate leads", income: "Sell products", authority: "Grow my following", community: "Build community", launch: "Drive traffic to my site or listings", unsure: "Grow my following" };
-function formatsFor(strategy) {
+export const OLD_GOAL = { clients: "Generate leads", income: "Sell products", authority: "Grow my following", community: "Build community", launch: "Drive traffic to my site or listings", unsure: "Grow my following" };
+export function formatsFor(strategy) {
   const out = new Set();
   for (const f of (strategy.formats || [])) {
     const t = String(f).toLowerCase();
@@ -138,7 +138,7 @@ function formatsFor(strategy) {
   if (!out.size) { out.add("Talking-head video"); out.add("Carousel"); out.add("Text post"); }
   return Array.from(out);
 }
-function followersFor(profile, primary) {
+export function followersFor(profile, primary) {
   const sizes = profile.onboarding_answers && profile.onboarding_answers.reality && profile.onboarding_answers.reality.sizes || {};
   const s = sizes[primary] || "";
   return s === "10k+" ? "20K-100K" : s === "1k_10k" ? "1K-5K" : "Under 1K";

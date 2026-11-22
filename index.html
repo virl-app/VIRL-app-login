@@ -9492,6 +9492,54 @@ function sgLog(name, props) {
   try { logEvent(window.__virlUserId || null, name, Object.assign({ strategist_v2: true }, props || {})); } catch (e) {}
 }
 
+// [B2] An interview draft saved by StrategistOnboarding, or null. Drops a
+// draft from the other mode (the screens differ) or older than 30 days.
+function sgReadDraft(key, mode) {
+  if (!key) return null;
+  try {
+    var d = JSON.parse(localStorage.getItem(key) || "null");
+    if (!d || d.v !== 1 || d.mode !== mode || !d.answers || typeof d.idx !== "number") return null;
+    if (!(Date.now() - (d.savedAt || 0) < 30 * 86400000)) return null;
+    return d;
+  } catch (e) { return null; }
+}
+
+// [B1] The plan form's setup, read off a strategy. Mirrors OLD_GOAL /
+// formatsFor / followersFor in api/cron/strategist-touches.js, which builds
+// the same request for the Monday autogen; scripts/check-first-plan.mjs
+// asserts the two agree. Without this a new account's first plan used the
+// form's defaults (TikTok + Instagram, talking-head + day in my life), not
+// the platforms and formats the strategy chose.
+var SG_PLAN_GOAL = { clients: "Generate leads", income: "Sell products", authority: "Grow my following", community: "Build community", launch: "Drive traffic to my site or listings", unsure: "Grow my following" };
+function sgPlanSetupFromStrategy(strategy, answers) {
+  var s = strategy || {};
+  var plat = s.platform || {};
+  var platforms = [plat.primary].concat(plat.rework || [])
+    .filter(Boolean)
+    .map(function (p) { return p === "YouTube Shorts" ? "YouTube" : p; })
+    .filter(function (p, i, a) { return PLATFORMS.indexOf(p) >= 0 && a.indexOf(p) === i; });
+  var formats = [];
+  function add(f) { if (formats.indexOf(f) < 0) formats.push(f); }
+  (s.formats || []).forEach(function (f) {
+    var t = String(f).toLowerCase();
+    if (/camera|talking/.test(t)) add("Talking-head video");
+    if (/carousel|static|quote|card/.test(t)) add("Carousel");
+    if (/text post|text-first|linkedin post|thread/.test(t)) add("Text post");
+    if (/voiceover|b-roll|broll|clip/.test(t)) add("Aesthetic B-roll");
+    if (/tutorial|how to|how-to/.test(t)) add("Tutorial");
+    if (/day in/.test(t)) add("Day in my life");
+  });
+  if (!formats.length) { add("Talking-head video"); add("Carousel"); add("Text post"); }
+  var sizes = (answers && answers.reality && answers.reality.sizes) || {};
+  var size = sizes[plat.primary] || "";
+  return {
+    platforms: platforms,
+    formats: formats,
+    goal: SG_PLAN_GOAL[s.goal && s.goal.primary] || "Grow my following",
+    followers: size === "10k+" ? "20K-100K" : size === "1k_10k" ? "1K-5K" : "Under 1K",
+  };
+}
+
 // Shared bits ---------------------------------------------------------------
 function SgField({ label, hint, children }) {
   return (
@@ -9579,7 +9627,14 @@ function SgGhost({ onClick, children }) {
   );
 }
 
-// Voice note: 30s cap, MediaRecorder → base64 → /api/strategy transcribe.
+// Voice note: 90s cap, MediaRecorder → base64 → /api/strategy transcribe.
+// [B3] Was 30s; the first outside signup hit the cap on all three notes.
+// Recorded at 64 kbps, so 90 seconds is roughly 0.7 MB of audio, about
+// 1 MB as base64 — well under Vercel's 4.5 MB request body limit. The
+// real duration goes to the server for the transcribe event.
+var SG_VOICE_MAX_SECS = 90;
+var SG_VOICE_WARN_SECS = 75;
+var SG_VOICE_MAX_BYTES = 3 * 1024 * 1024; // base64 of this stays under 4.5 MB
 function SgVoiceNote({ token, prompt, onText }) {
   const [state, setState] = useState("idle"); // idle | recording | sending | done | error
   const [secs, setSecs] = useState(0);
@@ -9587,6 +9642,7 @@ function SgVoiceNote({ token, prompt, onText }) {
   const recRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
+  const startedRef = useRef(0);
   var supported = typeof window !== "undefined" && window.MediaRecorder && navigator.mediaDevices;
   function stop() {
     try { if (recRef.current && recRef.current.state !== "inactive") recRef.current.stop(); } catch (e) {}
@@ -9596,30 +9652,35 @@ function SgVoiceNote({ token, prompt, onText }) {
     if (!supported) { setMsg("This browser can't record. Paste captions instead."); setState("error"); return; }
     try {
       var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      var rec = new MediaRecorder(stream);
+      var rec;
+      try { rec = new MediaRecorder(stream, { audioBitsPerSecond: 64000 }); }
+      catch (e0) { rec = new MediaRecorder(stream); }
       chunksRef.current = [];
       rec.ondataavailable = function (e) { if (e.data && e.data.size) chunksRef.current.push(e.data); };
       rec.onstop = async function () {
         stream.getTracks().forEach(function (t) { t.stop(); });
-        setState("sending");
+        setState("sending"); setMsg("");
+        var durationSec = startedRef.current ? Math.round((Date.now() - startedRef.current) / 100) / 10 : null;
         try {
           var blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+          if (blob.size > SG_VOICE_MAX_BYTES) { setState("error"); setMsg("That one's too long for me to take in one go. Try a shorter note, or paste it."); return; }
           var b64 = await new Promise(function (resolve, reject) {
             var fr = new FileReader();
             fr.onload = function () { resolve(String(fr.result).split(",")[1] || ""); };
             fr.onerror = reject;
             fr.readAsDataURL(blob);
           });
-          var j = await strategyAPI("transcribe", { audioBase64: b64, mimeType: blob.type }, token);
+          var j = await strategyAPI("transcribe", { audioBase64: b64, mimeType: blob.type, durationSec: durationSec }, token);
           if (j.text) { onText(j.text); setState("done"); setMsg("Got it. You can edit the text below."); }
           else { setState("error"); setMsg(j.reason || "I couldn't hear that one."); }
         } catch (e) { setState("error"); setMsg("I couldn't hear that one. Try again or paste captions."); }
       };
       recRef.current = rec;
       rec.start();
-      setState("recording"); setSecs(0);
+      startedRef.current = Date.now();
+      setState("recording"); setSecs(0); setMsg("");
       timerRef.current = setInterval(function () {
-        setSecs(function (s) { if (s + 1 >= 30) { stop(); } return s + 1; });
+        setSecs(function (s) { if (s + 1 >= SG_VOICE_MAX_SECS) { stop(); } return s + 1; });
       }, 1000);
     } catch (e) { setState("error"); setMsg("Microphone access was blocked. Paste captions instead."); }
   }
@@ -9636,10 +9697,11 @@ function SgVoiceNote({ token, prompt, onText }) {
         ) : (
           <button onClick={stop}
             style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", padding: "9px 14px", background: B.coral, color: B.white, border: "none", borderRadius: 99, cursor: "pointer" }}>
-            {"Stop (" + secs + "s / 30s)"}
+            {"Stop (" + secs + "s / " + SG_VOICE_MAX_SECS + "s)"}
           </button>
         )}
-        {msg && <span style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: state === "error" ? B.coral : B.muted }}>{msg}</span>}
+        {state === "recording" && secs >= SG_VOICE_WARN_SECS && <span style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: B.muted }}>{(SG_VOICE_MAX_SECS - secs) + (SG_VOICE_MAX_SECS - secs === 1 ? " second left" : " seconds left")}</span>}
+        {msg && state !== "recording" && <span style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: state === "error" ? B.coral : B.muted }}>{msg}</span>}
       </div>
     </div>
   );
@@ -9649,11 +9711,19 @@ function SgVoiceNote({ token, prompt, onText }) {
 // props: session, profile, stored (localStorage snapshot), mode ("new" |
 // "meet" | "edit"), startScreen (edit mode), consents {edits,vault,results,
 // publicPosts}, onBuilt(strategy, version), onCancel (edit mode only)
-function StrategistOnboarding({ session, profile, stored, mode, startScreen, initialAnswers, consents, onBuilt, onCancel }) {
+function StrategistOnboarding({ session, profile, stored, mode, startScreen, initialAnswers: givenAnswers, consents, onBuilt, onCancel }) {
   var token = session ? session.access_token : null;
   var meet = mode === "meet";
   var edit = mode === "edit";
   var pack = (profile && profile.nichePack) || "Creators & Personal Brands";
+  // [B2] A first interview in progress survives a refresh, a closed tab or
+  // a crash: each finished screen saves the answers to this browser, and a
+  // new/meet interview with no saved answers on the profile picks up where
+  // it stopped. Local only; cleared when the build succeeds. A start-over
+  // (the profile already has answers) and edit mode never restore.
+  var draftKey = session && session.user ? "virl_sg_draft_" + session.user.id : null;
+  const [draft] = useState(function(){ return edit || (profile && profile.onboardingAnswers) ? null : sgReadDraft(draftKey, mode); });
+  var initialAnswers = givenAnswers || (draft && draft.answers) || null;
 
   // Answers ------------------------------------------------------------------
   var migratedGoal = stored && stored.goal ? SG_GOAL_FROM_OLD[stored.goal] : null;
@@ -9672,7 +9742,7 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
     };
   });
   const [heardState, setHeardState] = useState("idle"); // idle | loading | ready | fallback
-  const [migrated, setMigrated] = useState(null);
+  const [migrated, setMigrated] = useState((draft && draft.migrated) || null);
   const [platforms, setPlatforms] = useState((initialAnswers && initialAnswers.reality && initialAnswers.reality.platforms) || (meet && profile && profile.myPlatforms ? profile.myPlatforms.map(function (p) { return p === "YouTube" ? "YouTube Shorts" : p; }).filter(function (p) { return SG_PLATFORMS.indexOf(p) >= 0; }) : []));
   const [otherPlatform, setOtherPlatform] = useState((initialAnswers && initialAnswers.reality && initialAnswers.reality.other) || "");
   const [sizes, setSizes] = useState((initialAnswers && initialAnswers.reality && initialAnswers.reality.sizes) || {});
@@ -9685,14 +9755,19 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
   const [rules, setRules] = useState((initialAnswers && initialAnswers.voice && initialAnswers.voice.rules) || "");
   const [emojiUse, setEmojiUse] = useState((initialAnswers && initialAnswers.voice && initialAnswers.voice.emoji_use) || (profile && profile.emojiPref === "Never" ? "none" : profile && profile.emojiPref === "Always" ? "lots" : "few"));
   const [emojiWhere, setEmojiWhere] = useState((initialAnswers && initialAnswers.voice && initialAnswers.voice.emoji_where) || "end");
-  const [consent, setConsent] = useState(consents || { edits: true, vault: true, results: true, publicPosts: true });
+  const [consent, setConsent] = useState((draft && draft.consent) || consents || { edits: true, vault: true, results: true, publicPosts: true });
 
   // Screen flow --------------------------------------------------------------
   // new:  1 goal → 2 about → 3 heard → 4 reality → 5 voice → build
   // meet: 1 goal (one tap) → 3 heard (prefilled) → 4 reality (gaps) → build
   // edit: the one screen asked for → build (rebuild)
   var order = meet ? [1, 3, 4] : edit ? [startScreen || 1] : [1, 2, 3, 4, 5];
-  const [idx, setIdx] = useState(0);
+  const [idx, setIdx] = useState(draft ? Math.min(draft.idx, order.length - 1) : 0);
+  useEffect(function () { if (draft) sgLog("strategist_resumed", { screen: order[Math.min(draft.idx, order.length - 1)], mode: mode }); }, []);
+  function saveDraft(nextIdx) {
+    if (edit || !draftKey) return;
+    try { localStorage.setItem(draftKey, JSON.stringify({ v: 1, mode: mode, idx: nextIdx, answers: answers(""), consent: consent, migrated: migrated, savedAt: Date.now() })); } catch (e) {}
+  }
   var screen = order[idx];
   const [building, setBuilding] = useState(false);
   const [buildLine, setBuildLine] = useState(0);
@@ -9760,6 +9835,7 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
       var j = await strategyAPI("build", { answers: answers(label), includeProfile: meet }, token);
       clearInterval(t);
       sgLog("strategist_build_done", { ms: Date.now() - started, mode: mode, rubric_pass: j.quality && j.quality.pass });
+      if (draftKey) { try { localStorage.removeItem(draftKey); } catch (e) {} }
       onBuilt(j.strategy, j.version, answers(label));
     } catch (e) {
       clearInterval(t);
@@ -9770,10 +9846,11 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
 
   function next() {
     leave("completed");
+    saveDraft(Math.min(idx + 1, order.length - 1));
     if (idx + 1 >= order.length) { build(edit ? "Profile edit" : meet ? "Meet your strategist" : "First strategy"); return; }
     setIdx(idx + 1);
   }
-  function skip() { leave("skipped"); if (idx + 1 >= order.length) build(edit ? "Profile edit" : "First strategy"); else setIdx(idx + 1); }
+  function skip() { leave("skipped"); saveDraft(Math.min(idx + 1, order.length - 1)); if (idx + 1 >= order.length) build(edit ? "Profile edit" : "First strategy"); else setIdx(idx + 1); }
   function back() { if (idx > 0) setIdx(idx - 1); }
 
   // Progress: three labelled steps; first step pre-filled 35%.
@@ -9875,7 +9952,7 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
             <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 14, color: B.muted, marginBottom: 22, lineHeight: 1.7 }}>What you do, who it's for, where you are. A few sentences is plenty.</div>
             <SgTextarea value={about} onChange={function (e) { setAbout(e.target.value); }} rows={6} placeholder={examples[exampleIdx]} />
             <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 11, color: B.muted, marginTop: 6 }}>{"For example: " + examples[(exampleIdx + 1) % 3]}</div>
-            <SgVoiceNote token={token} prompt="Or say it out loud. Thirty seconds, I'll write it down." onText={function (t) { setAbout(function (a) { return (a ? a + "\n\n" : "") + t; }); }} />
+            <SgVoiceNote token={token} prompt="Or say it out loud. Up to a minute and a half, and I'll write it down." onText={function (t) { setAbout(function (a) { return (a ? a + "\n\n" : "") + t; }); }} />
           </div>
         )}
 
@@ -9964,7 +10041,7 @@ function StrategistOnboarding({ session, profile, stored, mode, startScreen, ini
             <h1 style={{ margin: 0, fontWeight: 400, fontFamily: "'Italiana',serif", fontSize: "clamp(28px,5vw,40px)", lineHeight: 1.1, marginBottom: 12, color: B.ink }}>Sound like you.</h1>
             <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 14, color: B.muted, marginBottom: 22, lineHeight: 1.7 }}>Paste three captions you've written, or record a voice note. Either one becomes your first post's raw material.</div>
             <SgTextarea value={sample} onChange={function (e) { setSample(e.target.value); }} rows={6} placeholder="Paste 3 captions here, separated by blank lines" />
-            <SgVoiceNote token={token} prompt="Tell me why you started. Thirty seconds." onText={function (t) { setSample(function (s) { return (s ? s + "\n\n" : "") + t; }); }} />
+            <SgVoiceNote token={token} prompt="Tell me why you started. Up to a minute and a half." onText={function (t) { setSample(function (s) { return (s ? s + "\n\n" : "") + t; }); }} />
             <div style={{ height: 14 }} />
             <SgField label="Tone (up to 3)">
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -10102,7 +10179,7 @@ function SgDiffBanner({ diff, note, onUndo, onClose }) {
   );
 }
 
-function StrategyPage({ strategy, version, token, onStrategyChange, onOpenScreen, onNavigatePlan, name, renderReview }) {
+function StrategyPage({ strategy, version, token, onStrategyChange, onOpenScreen, onNavigatePlan, name, renderReview, planNeeded }) {
   const [banner, setBanner] = useState(null);
   const [copied, setCopied] = useState(false);
   const [showOutline, setShowOutline] = useState(false);
@@ -10141,6 +10218,14 @@ function StrategyPage({ strategy, version, token, onStrategyChange, onOpenScreen
         {s.positioning && <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 15, color: B.sub, lineHeight: 1.7, maxWidth: 560, marginTop: 4 }}>{s.positioning}</div>}
       </div>
       <SgDiffBanner diff={banner && banner.diff} note={banner && banner.note} onUndo={undo} onClose={function () { setBanner(null); }} />
+      {/* [B1] No plan for this week yet: the way to one goes at the top, not
+          under a long page. With a current plan it stays at the bottom. */}
+      {planNeeded && (
+        <div style={{ background: B.navySoft, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
+          <div style={{ fontFamily: "'Jost',sans-serif", fontSize: 13, color: B.navy, lineHeight: 1.6, marginBottom: 12 }}>{"There's no plan for this week yet. I'll write one from this strategy."}</div>
+          <GenBtn onClick={onNavigatePlan}>Plan this week from it</GenBtn>
+        </div>
+      )}
       {/* [PR3] The monthly review sits above the opening note; Accept goes
           through onResult so the diff banner and Undo above cover it. */}
       {renderReview && renderReview(onResult)}
@@ -10249,9 +10334,11 @@ function StrategyPage({ strategy, version, token, onStrategyChange, onOpenScreen
           {"Built with " + s.research.length + " research findings from your niche, fetched " + (s.research[0].fetched_at ? new Date(s.research[0].fetched_at).toLocaleDateString() : "recently") + "."}
         </div>
       )}
-      <div style={{ marginTop: 22 }}>
-        <GenBtn onClick={onNavigatePlan}>Plan this week from it</GenBtn>
-      </div>
+      {!planNeeded && (
+        <div style={{ marginTop: 22 }}>
+          <GenBtn onClick={onNavigatePlan}>Plan this week from it</GenBtn>
+        </div>
+      )}
     </div>
   );
 }
@@ -11184,6 +11271,12 @@ function App() {
   // setupStep drives the 3-step wizard (0 platforms+niche, 1 goal+
   // formats+followers, 2 week context + trends + generate).
   const [showSetup,setShowSetup] = useState(false);
+  // [B1] The first plan after a first strategy. null | "auto" (generate as
+  // soon as the Plan tab is up) | "running" | "card" (it didn't land: show
+  // the one-tap card). firstPlanAutoRef says whether the generation in
+  // flight was the automatic one, for first_plan_generated.
+  const [firstPlan,setFirstPlan] = useState(null);
+  const firstPlanAutoRef = useRef(false);
   const [setupStep,setSetupStep] = useState(0);
   const [error,setError] = useState("");
   const [vault,setVault] = useState(stored.vault||[]);
@@ -12518,6 +12611,23 @@ function App() {
     });
   }
 
+  // [B1] First plan after a first strategy: start it once the Plan tab is
+  // up with the setup sgOnBuilt seeded. generate() is the same call the
+  // Generate button makes, so credits, strategy context, plan history and
+  // drift tracking behave exactly as a manual plan does.
+  useEffect(function(){
+    if (firstPlan !== "auto" || tab !== "plan" || loading) return;
+    firstPlanAutoRef.current = true;
+    setFirstPlan("running");
+    generate();
+  }, [firstPlan, tab, loading]);
+  // When it settles: cards mean done; anything else (trial over, no
+  // credits, generate() bailing early, a failed stream) shows the card.
+  useEffect(function(){
+    if (firstPlan !== "running" || loading) return;
+    setFirstPlan(cards && cards.length ? null : "card");
+  }, [firstPlan, loading, cards]);
+
   function generate(opts) {
     opts = opts || {};
     if (!platforms.length||!formats.length) return;
@@ -12686,6 +12796,17 @@ function App() {
         if (newCount === 1 && localStorage.getItem("virl_first_plan_celebrated") !== "1") {
           setShowFirstPlanCelebration(true);
         }
+        // [B1] How long from signup to a first week, and whether it came
+        // from the automatic first plan or a tap.
+        if (newCount === 1 && localStorage.getItem("virl_first_plan_logged") !== "1") {
+          try { localStorage.setItem("virl_first_plan_logged", "1"); } catch(e2) {}
+          var signupMs = session && session.user && session.user.created_at ? Date.parse(session.user.created_at) : NaN;
+          logEvent(session && session.user && session.user.id, "first_plan_generated", {
+            ms_since_signup: isNaN(signupMs) ? null : Date.now() - signupMs,
+            auto: !!firstPlanAutoRef.current,
+          });
+        }
+        firstPlanAutoRef.current = false;
         if (newCount === 1 && localStorage.getItem("virl_first_plan_event_fired") !== "1") {
           try { localStorage.setItem("virl_first_plan_event_fired", "1"); } catch(e2) {}
           fireLoopsEvent("firstPlanGenerated", {
@@ -13393,10 +13514,26 @@ function App() {
     var sgHasStrategy = !!(profile && profile.strategy);
     var sgOldProfile  = !!(profile && profile.name && (profile.voice || profile.audience || profile.offerings || profile.knownFor));
     var sgOnBuilt = function(strategy, version, answers) {
+      // [B1] A first strategy ("new", or "meet" for an older profile) goes
+      // straight on to its first week. Rebuilds and start-overs land on the
+      // Strategy tab as before; nothing is generated without a tap there.
+      var firstStrategy = !sgHasStrategy && !sgEdit && !sgRestart;
       setProfile(function(prev){ return Object.assign({}, prev, { strategy: strategy, strategyVersion: version, onboardingAnswers: answers }); });
       setSgEdit(null); setSgRestart(false);
       sgReloadProfile();
-      setTab("strategy");
+      if (firstStrategy) {
+        var setup = sgPlanSetupFromStrategy(strategy, answers);
+        if (setup.platforms.length) {
+          setPlatforms(setup.platforms); setFormats(setup.formats); setGoal(setup.goal); setFollowers(setup.followers);
+          setShowSetup(false);
+          setFirstPlan("auto");
+        }
+        // No supported platform in the strategy (only "Other" or Threads):
+        // the setup wizard on the Plan tab asks, as it always has.
+        setTab("plan");
+      } else {
+        setTab("strategy");
+      }
     };
     if (sgEdit) return (
       <StrategistOnboarding session={session} profile={profile} stored={stored} mode="edit" startScreen={sgEdit.screen}
@@ -14428,6 +14565,7 @@ return (
               onStrategyChange={function(st, v){ setProfile(function(prev){ return Object.assign({}, prev, { strategy: st, strategyVersion: v }); }); sgReloadProfile(); }}
               onOpenScreen={function(n){ setSgEdit({ screen: n }); }}
               onNavigatePlan={function(){ setTab("plan"); }}
+              planNeeded={!(cards && cards.length) || planExpired}
               renderReview={function(onResult){
                 return (
                   <MonthlyReview token={userToken} isAdmin={!!isAdmin} initial={sgReview} strategy={profile.strategy}
@@ -14516,6 +14654,19 @@ return (
                  plan, or the user explicitly asked for it via "Edit setup
                  & regenerate". Hidden while a generation streams so the
                  wizard doesn't flash back when generate() clears cards. */}
+            {/* [B1] The first plan didn't land (no credits, trial over, a
+                 dropped connection twice): one tap, same request, rather
+                 than an error on its own. The wizard below stays for anyone
+                 who wants to change the setup first. */}
+            {firstPlan === "card" && !loading && !cards && (
+              <div style={{background:B.navy,borderRadius:16,padding:"22px 22px 20px",marginBottom:18,color:B.white}}>
+                <div style={{fontFamily:"'Italiana',serif",fontSize:24,lineHeight:1.15,marginBottom:8}}>Your strategy is built.</div>
+                <div style={{fontFamily:"'Jost',sans-serif",fontSize:14,fontWeight:300,lineHeight:1.7,marginBottom:16}}>
+                  {"Next is this week's posts. I'll write them from the strategy we just built."}
+                </div>
+                <GenBtn onClick={function(){ firstPlanAutoRef.current = false; setFirstPlan("running"); setError(""); generate(); }}>Plan this week</GenBtn>
+              </div>
+            )}
             {(!cards || showSetup) && !loading && (
             <div>
             {cards && (
@@ -14733,6 +14884,11 @@ return (
             </div>
             )}
             <ErrBox msg={error}/>
+            {loading&&!cards&&firstPlan==="running"&&(
+              <div style={{fontFamily:"'Italiana',serif",fontSize:22,color:B.navy,lineHeight:1.3,margin:"6px 0 14px"}}>
+                Writing your first week from the strategy we just built.
+              </div>
+            )}
             {loading&&!cards&&<RotatingStatus kind="plan"/>}
 
             {cards&&(
