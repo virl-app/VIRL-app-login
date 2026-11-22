@@ -1,6 +1,25 @@
 # VIRL-app-login
 Full VIRL app
 
+## How the app is built
+
+You edit `index.html` directly: the whole React app lives in its one
+`<script type="text/babel">` block. On deploy, `npm run build`
+(`scripts/build.mjs`) compiles that block once, with the same Babel
+version and options the browser used to apply, into a cached
+`dist/app.<hash>.js`, and writes `dist/index.html` to load it. Visitors
+no longer download Babel or compile the app on their phones.
+
+- `dist/` is what Vercel serves (`vercel.json` `outputDirectory`). It holds
+  only `index.html`, the app script and the files in `STATIC_FILES` in
+  `scripts/build.mjs`. A new public file (an image an email links to, say)
+  must be added there, or it will 404.
+- `api/`, `middleware.js` and the crons are built by Vercel from the
+  project root as before.
+- `npm run check` runs against the source `index.html`, plus
+  `check-build.mjs` for the build itself.
+- To preview the built page locally: `npm run build`, then serve `dist/`.
+
 ## Operations
 
 ### Safer-defaults floor for regulated niches (internal note)
